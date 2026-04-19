@@ -8,13 +8,20 @@ Usage:
     PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py [options]
 
 Options:
-    --model MODEL        Cracking model (default: claude-sonnet-4-6)
-    --max-iterations N   Agent iterations per test (default: 20)
-    --cache-dir DIR      Plaintext cache directory (default: testgen_cache)
-    --artifact-dir DIR   Artifact directory (default: artifacts)
-    --errata-dir DIR     Errata directory (default: errata)
-    --flush-cache        Regenerate all plaintexts before running
-    --verbose            Show agent reasoning while running
+    --model MODEL          Cracking model (default: claude-sonnet-4-6)
+    --max-iterations N     Agent iterations per test (default: 20)
+    --cache-dir DIR        Plaintext cache directory (default: testgen_cache)
+    --artifact-dir DIR     Artifact directory (default: artifacts)
+    --errata-dir DIR       Errata directory (default: errata)
+    --flush-cache          Regenerate all plaintexts before running
+    --verbose              Show agent reasoning while running
+    --list-errata          List active errata and exit
+    --rerun-errata         Re-run all active errata tests
+    --rerun TEST_ID [...]  Re-run specific errata test(s) by ID
+
+Re-run mode always records results (even 100%) so history accumulates.
+If the last two recorded runs for a test are both 100%, the errata entry
+is automatically archived to errata/archive/.
 """
 from __future__ import annotations
 
@@ -81,6 +88,75 @@ class SuiteResult:
 
 
 # ---------------------------------------------------------------------------
+# Errata index helpers
+# ---------------------------------------------------------------------------
+
+def _list_active_errata(errata_dir: Path) -> list[str]:
+    """Return sorted test IDs that have active (non-archived) errata."""
+    if not errata_dir.exists():
+        return []
+    return sorted(
+        d.name for d in errata_dir.iterdir()
+        if d.is_dir() and d.name != "archive"
+    )
+
+
+def _load_spec_from_errata(test_id: str, errata_dir: Path) -> TestSpec:
+    """Reconstruct TestSpec from the most recent errata run_info.json.
+
+    Seed is parsed from the deterministic test_id format:
+        synth_{lang}_{length}{wb|nb}_s{seed}
+    """
+    import re
+    test_dir = errata_dir / test_id
+    run_dirs = sorted(r for r in test_dir.iterdir() if r.is_dir())
+    if not run_dirs:
+        raise FileNotFoundError(f"No run records found in {test_dir}")
+    info = json.loads((run_dirs[-1] / "run_info.json").read_text(encoding="utf-8"))
+    s = info["spec"]
+
+    # Prefer explicitly stored seed; fall back to parsing the test_id.
+    seed = s.get("seed")
+    if seed is None:
+        m = re.search(r"_s(\d+)$", test_id)
+        if m:
+            seed = int(m.group(1))
+
+    return TestSpec(
+        language=s["language"],
+        approx_length=s["approx_length"],
+        word_boundaries=s["word_boundaries"],
+        topic=s.get("topic", "general"),
+        seed=seed,
+    )
+
+
+def _check_and_maybe_archive(test_id: str, errata_dir: Path) -> bool:
+    """Archive errata/{test_id}/ if the last two recorded runs are both 100%.
+
+    Returns True if the entry was archived.
+    """
+    test_dir = errata_dir / test_id
+    if not test_dir.exists():
+        return False
+    run_dirs = sorted(r for r in test_dir.iterdir() if r.is_dir())
+    if len(run_dirs) < 2:
+        return False
+    for run_dir in run_dirs[-2:]:
+        info_file = run_dir / "run_info.json"
+        if not info_file.exists():
+            return False
+        info = json.loads(info_file.read_text(encoding="utf-8"))
+        if info.get("char_accuracy", 0.0) < 1.0:
+            return False
+    # Both last two runs are 100% — move to archive.
+    archive_target = errata_dir / "archive" / test_id
+    archive_target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(test_dir), str(archive_target))
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Git helpers
 # ---------------------------------------------------------------------------
 
@@ -134,6 +210,7 @@ def _save_errata(
             "approx_length": sr.spec.approx_length,
             "word_boundaries": sr.spec.word_boundaries,
             "topic": sr.spec.topic,
+            "seed": sr.spec.seed,
         },
         "status": sr.status,
         "char_accuracy": sr.char_accuracy,
@@ -298,6 +375,25 @@ def _format_agent_log(artifact: dict) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def run_suite(args: argparse.Namespace) -> None:
+    errata_dir = Path(args.errata_dir)
+
+    # --list-errata: print active errata and exit.
+    if args.list_errata:
+        active = _list_active_errata(errata_dir)
+        if not active:
+            print("No active errata.")
+        else:
+            print(f"Active errata ({len(active)}):")
+            for test_id in active:
+                run_dirs = sorted((errata_dir / test_id).glob("*/run_info.json"))
+                last = json.loads(run_dirs[-1].read_text(encoding="utf-8")) if run_dirs else {}
+                char = last.get("char_accuracy")
+                char_str = f"{char:.1%}" if char is not None else "?"
+                ts = last.get("timestamp", "?")[:19]
+                runs_count = len(list((errata_dir / test_id).iterdir()))
+                print(f"  {test_id:<35} last={char_str}  runs={runs_count}  ts={ts}")
+        return
+
     api_key = os.environ.get("ANTHROPIC_API_KEY") or _keychain_key()
     if not api_key:
         print("Error: set ANTHROPIC_API_KEY or configure via the GUI.", file=sys.stderr)
@@ -314,7 +410,20 @@ def run_suite(args: argparse.Namespace) -> None:
         n = cache.flush()
         print(f"Flushed {n} cache entries.\n")
 
-    errata_dir = Path(args.errata_dir)
+    # Determine which specs to run and whether we're in rerun mode.
+    rerun_mode = bool(args.rerun or args.rerun_errata)
+    if args.rerun:
+        suite = [_load_spec_from_errata(tid, errata_dir) for tid in args.rerun]
+        print(f"Re-running {len(suite)} errata test(s): {', '.join(args.rerun)}\n")
+    elif args.rerun_errata:
+        test_ids = _list_active_errata(errata_dir)
+        if not test_ids:
+            print("No active errata to re-run.")
+            return
+        suite = [_load_spec_from_errata(tid, errata_dir) for tid in test_ids]
+        print(f"Re-running all {len(suite)} active errata: {', '.join(test_ids)}\n")
+    else:
+        suite = list(SUITE)
 
     crack_api = ClaudeAPI(api_key=api_key, model=args.model)
     runner = BenchmarkRunnerV2(
@@ -326,10 +435,10 @@ def run_suite(args: argparse.Namespace) -> None:
 
     results: list[SuiteResult] = []
 
-    for i, spec in enumerate(SUITE, 1):
+    for i, spec in enumerate(suite, 1):
         preset_name = _preset_name(spec)
         boundary_label = "word-boundary" if spec.word_boundaries else "no-boundary"
-        print(f"[{i}/{len(SUITE)}] {preset_name} — {spec.language}, {boundary_label}, "
+        print(f"[{i}/{len(suite)}] {preset_name} — {spec.language}, {boundary_label}, "
               f"~{spec.approx_length} words")
 
         test_data = build_test_case(spec, cache, api_key)
@@ -366,7 +475,13 @@ def run_suite(args: argparse.Namespace) -> None:
         print(f"  → {sr.status}  char={sr.char_accuracy:.1%}  word={word_str}  "
               f"conf={conf_str}  iter={sr.iterations}  {sr.elapsed:.0f}s")
 
-        if sr.char_accuracy < 1.0:
+        if rerun_mode:
+            # Always record the run so history accumulates, then check for archive.
+            errata_path = _save_errata(sr, git, args.model, errata_dir)
+            print(f"  ↳ run recorded → {errata_path}")
+            if _check_and_maybe_archive(sr.test_id, errata_dir):
+                print(f"  ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
+        elif sr.char_accuracy < 1.0:
             errata_path = _save_errata(sr, git, args.model, errata_dir)
             print(f"  ↳ errata saved → {errata_path}")
         print()
@@ -460,6 +575,12 @@ def main() -> None:
     parser.add_argument("--errata-dir", default="errata")
     parser.add_argument("--flush-cache", action="store_true")
     parser.add_argument("--verbose", "-v", action="store_true")
+    parser.add_argument("--list-errata", action="store_true",
+                        help="List active errata and exit")
+    parser.add_argument("--rerun-errata", action="store_true",
+                        help="Re-run all active errata tests")
+    parser.add_argument("--rerun", nargs="+", metavar="TEST_ID",
+                        help="Re-run specific errata test(s) by ID")
     run_suite(parser.parse_args())
 
 
