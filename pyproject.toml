@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "decipher"
+version = "0.1.0"
+description = "Classical cipher cryptanalysis tool with AI-powered cracking"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.6",
+    "anthropic>=0.40",
+    "keyring>=25",
+    "Pillow>=10",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-qt>=4",
+]
+bundle = [
+    "py2app>=0.28",
+]
+
+[project.scripts]
+decipher = "cli:main"
+decipher-gui = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
