@@ -1,22 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
 
 class DifficultyPreset(str, Enum):
-    TINY   = "tiny"    # ~40 words,  word boundaries  (smoke test)
-    EASY   = "easy"    # ~100 words, word boundaries
-    MEDIUM = "medium"  # ~200 words, word boundaries
-    HARD   = "hard"    # ~250 words, NO word boundaries
+    TINY    = "tiny"     # ~40 words,  word boundaries  (smoke test)
+    MEDIUM  = "medium"   # ~200 words, word boundaries
+    HARD    = "hard"     # ~250 words, NO word boundaries, simple substitution
+    HARDEST = "hardest"  # ~200 words, NO word boundaries, homophonic substitution
 
 
 _PRESET_PARAMS: dict[DifficultyPreset, dict] = {
-    DifficultyPreset.TINY:   {"approx_length": 40,  "word_boundaries": True},
-    DifficultyPreset.EASY:   {"approx_length": 100, "word_boundaries": True},
-    DifficultyPreset.MEDIUM: {"approx_length": 200, "word_boundaries": True},
-    DifficultyPreset.HARD:   {"approx_length": 250, "word_boundaries": False},
+    DifficultyPreset.TINY:    {"approx_length": 40,  "word_boundaries": True,  "homophonic": False},
+    DifficultyPreset.MEDIUM:  {"approx_length": 200, "word_boundaries": True,  "homophonic": False},
+    DifficultyPreset.HARD:    {"approx_length": 250, "word_boundaries": False, "homophonic": False},
+    DifficultyPreset.HARDEST: {"approx_length": 200, "word_boundaries": False, "homophonic": True},
 }
 
 SUPPORTED_LANGUAGES = frozenset({"en", "it", "de", "fr", "la"})
@@ -30,6 +30,7 @@ class TestSpec:
     topic: str = "general"
     seed: int | None = None
     frequency_style: Literal["normal", "unusual"] = "normal"
+    homophonic: bool = False
 
     def __post_init__(self) -> None:
         if self.language not in SUPPORTED_LANGUAGES:

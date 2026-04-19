@@ -40,13 +40,20 @@ def build_test_case(
     if not words:
         raise ValueError("Generated/cached plaintext is empty after normalisation")
 
-    # --- cipher key ---
+    # --- cipher key and encryption ---
     effective_seed = seed if seed is not None else spec.seed
-    key = _make_key(effective_seed)
-    cipher_words = _apply_key(words, key)
+    rng = random.Random(effective_seed)
 
-    # --- canonical transcription ---
-    canonical = _format_canonical(cipher_words, spec.word_boundaries)
+    if spec.homophonic:
+        homo_key = _make_homophonic_key(rng)
+        cipher_token_words = _apply_homophonic_key(words, homo_key, rng)
+        canonical = _format_canonical_tokens(cipher_token_words, spec.word_boundaries)
+        cipher_system = "homophonic_substitution"
+    else:
+        key = _make_key(rng)
+        cipher_words = _apply_key(words, key)
+        canonical = _format_canonical(cipher_words, spec.word_boundaries)
+        cipher_system = "simple_substitution"
 
     # --- plaintext for scorer ---
     # Word-boundary format: "THE QUICK FOX"  (scorer splits on spaces)
@@ -60,19 +67,23 @@ def build_test_case(
     # Seeded runs get a stable, human-readable ID so the same test can be
     # tracked across multiple runs (regression testing).
     if effective_seed is not None:
-        wb_flag = "wb" if spec.word_boundaries else "nb"
-        test_id = f"synth_{spec.language}_{spec.approx_length}{wb_flag}_s{effective_seed}"
+        if spec.homophonic:
+            cipher_flag = "honb"
+        else:
+            cipher_flag = "wb" if spec.word_boundaries else "nb"
+        test_id = f"synth_{spec.language}_{spec.approx_length}{cipher_flag}_s{effective_seed}"
     else:
         test_id = f"synth_{spec.language}_{uuid.uuid4().hex[:8]}"
     boundary_label = "word-boundary" if spec.word_boundaries else "no-boundary"
+    homo_label = ", homophonic" if spec.homophonic else ""
     test = BenchmarkTest(
         test_id=test_id,
         track="transcription2plaintext",
-        cipher_system="simple_substitution",
+        cipher_system=cipher_system,
         target_records=[],
         context_records=[],
         description=(
-            f"Synthetic {spec.language}, {boundary_label}, "
+            f"Synthetic {spec.language}, {boundary_label}{homo_label}, "
             f"~{len(words)} words, topic={spec.topic}"
         ),
     )
@@ -88,9 +99,8 @@ def build_test_case(
 # Internal helpers
 # ------------------------------------------------------------------
 
-def _make_key(seed: int | None) -> dict[str, str]:
+def _make_key(rng: random.Random) -> dict[str, str]:
     """Random A-Z → A-Z substitution key."""
-    rng = random.Random(seed)
     shuffled = list(string.ascii_uppercase)
     rng.shuffle(shuffled)
     return dict(zip(string.ascii_uppercase, shuffled))
@@ -102,8 +112,69 @@ def _apply_key(words: list[str], key: dict[str, str]) -> list[str]:
 
 def _format_canonical(cipher_words: list[str], word_boundaries: bool) -> str:
     if word_boundaries:
-        # "A B C | D E F | G H I"
         return " | ".join(" ".join(w) for w in cipher_words)
     else:
-        # "A B C D E F G H I"
         return " ".join(c for w in cipher_words for c in w)
+
+
+# ---------------------------------------------------------------------------
+# Homophonic cipher helpers
+# ---------------------------------------------------------------------------
+
+# Approximate English letter frequency groups — determines homophone count.
+# HIGH letters (most common) get 4 symbols each, MED get 2, LOW get 1.
+# Total symbols: 8×4 + 8×2 + 10×1 = 58
+_HIGH_FREQ = set("ETAOINSH")   # 8 letters × 4 homophones = 32
+_MED_FREQ  = set("RDLCUMWF")   # 8 letters × 2 homophones = 16
+# remaining 10 letters × 1 homophone = 10  →  total 58
+
+
+def _make_homophonic_key(rng: random.Random) -> dict[str, list[str]]:
+    """Random homophonic key: each A-Z letter → list of 2-digit token strings.
+
+    High-frequency letters receive more homophones (harder to crack by
+    frequency analysis).  Tokens are zero-padded decimal: "01"–"58".
+    """
+    counts = {}
+    for letter in string.ascii_uppercase:
+        if letter in _HIGH_FREQ:
+            counts[letter] = 4
+        elif letter in _MED_FREQ:
+            counts[letter] = 2
+        else:
+            counts[letter] = 1
+
+    total = sum(counts.values())          # 58
+    symbols = [f"{i:02d}" for i in range(1, total + 1)]
+    rng.shuffle(symbols)
+
+    key: dict[str, list[str]] = {}
+    idx = 0
+    for letter in string.ascii_uppercase:
+        n = counts[letter]
+        key[letter] = symbols[idx : idx + n]
+        idx += n
+    return key
+
+
+def _apply_homophonic_key(
+    words: list[str],
+    key: dict[str, list[str]],
+    rng: random.Random,
+) -> list[list[str]]:
+    """Encrypt word list using homophonic key; randomly select a homophone per letter."""
+    return [
+        [rng.choice(key[c]) for c in word]
+        for word in words
+    ]
+
+
+def _format_canonical_tokens(
+    cipher_token_words: list[list[str]],
+    word_boundaries: bool,
+) -> str:
+    """Format a list-of-lists of multi-char tokens into a canonical transcription."""
+    if word_boundaries:
+        return " | ".join(" ".join(w) for w in cipher_token_words)
+    else:
+        return " ".join(t for w in cipher_token_words for t in w)

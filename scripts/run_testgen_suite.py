@@ -60,10 +60,10 @@ from testgen.spec import DifficultyPreset, TestSpec, _PRESET_PARAMS
 # Fixed seeds make the cipher key deterministic, so the exact same ciphertext
 # is produced on every run — enabling apples-to-apples regression comparisons.
 SUITE: list[TestSpec] = [
-    TestSpec.from_preset(DifficultyPreset.TINY,   language="en", seed=1),
-    TestSpec.from_preset(DifficultyPreset.EASY,   language="en", seed=2),
-    TestSpec.from_preset(DifficultyPreset.MEDIUM, language="en", seed=3),
-    TestSpec.from_preset(DifficultyPreset.HARD,   language="en", seed=4),
+    TestSpec.from_preset(DifficultyPreset.TINY,    language="en", seed=1),
+    TestSpec.from_preset(DifficultyPreset.MEDIUM,  language="en", seed=3),
+    TestSpec.from_preset(DifficultyPreset.HARD,    language="en", seed=4),
+    TestSpec.from_preset(DifficultyPreset.HARDEST, language="en", seed=5),
 ]
 
 
@@ -126,6 +126,7 @@ def _load_spec_from_errata(test_id: str, errata_dir: Path) -> TestSpec:
         language=s["language"],
         approx_length=s["approx_length"],
         word_boundaries=s["word_boundaries"],
+        homophonic=s.get("homophonic", False),
         topic=s.get("topic", "general"),
         seed=seed,
     )
@@ -209,6 +210,7 @@ def _save_errata(
             "language": sr.spec.language,
             "approx_length": sr.spec.approx_length,
             "word_boundaries": sr.spec.word_boundaries,
+            "homophonic": sr.spec.homophonic,
             "topic": sr.spec.topic,
             "seed": sr.spec.seed,
         },
@@ -547,7 +549,8 @@ def _preset_name(spec: TestSpec) -> str:
     for preset in DifficultyPreset:
         p = _PRESET_PARAMS[preset]
         if (p["approx_length"] == spec.approx_length
-                and p["word_boundaries"] == spec.word_boundaries):
+                and p["word_boundaries"] == spec.word_boundaries
+                and p.get("homophonic", False) == spec.homophonic):
             return preset.value
     return f"custom-{spec.approx_length}"
 
