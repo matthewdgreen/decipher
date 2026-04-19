@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.loop_v2 import run_v2
-from benchmark.loader import TestData
-from benchmark.runner import parse_canonical_transcription
+from benchmark.loader import TestData, parse_canonical_transcription
 from benchmark.scorer import (
     format_alignment,
     format_char_diff,

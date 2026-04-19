@@ -1,0 +1,27 @@
+Running 3 v2 test(s) with model claude-sonnet-4-6
+Max iterations: 20
+Artifacts → artifacts/panel_borg3d/<test_id>/<run_id>.json
+
+[1/3] borg_single_B_borg_0045v — Track B: borg_0045v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4.....  iter 5......  iter 6......  iter 7.....  iter 8......  iter 9......  iter 10...
+  [rate-limit] waiting 60s before retry 1/4…
+..  iter 11.....  iter 12.....  iter 13.....  iter 14......  iter 15.....  iter 16......  iter 17....  iter 18......  iter 19...
+  [rate-limit] waiting 60s before retry 1/4…
+..  iter 20...... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 0.7%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 1009.7s
+  Artifact: artifacts/panel_borg3d/borg_single_B_borg_0045v/99b3dbafd4df.json
+
+[2/3] borg_single_B_borg_0077v — Track B: borg_0077v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4......  iter 5......  iter 6......  iter 7......  iter 8.....  iter 9.....  iter 10.....  iter 11.....  iter 12......  iter 13.....  iter 14.....  iter 15......  iter 16......  iter 17.....  iter 18......  iter 19......  iter 20..... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 827.7s
+  Artifact: artifacts/panel_borg3d/borg_single_B_borg_0077v/241e305069c8.json
+
+[3/3] borg_single_B_borg_0109v — Track B: borg_0109v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4.....  iter 5.....  iter 6.....  iter 7.....  iter 8.....  iter 9....  iter 10.....  iter 11.....  iter 12....  iter 13....  iter 14....  iter 15....  iter 16.....  iter 17....  iter 18....  iter 19....  iter 20..... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 535.3s
+  Artifact: artifacts/panel_borg3d/borg_single_B_borg_0109v/aef5927d2d8b.json
+
+AVERAGE: 0/3 declared solutions, char=0.2%, word=0.0%

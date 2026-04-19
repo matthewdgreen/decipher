@@ -4,6 +4,9 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from models.alphabet import Alphabet
+from models.cipher_text import CipherText
+
 
 @dataclass
 class BenchmarkRecord:
@@ -153,3 +156,26 @@ class BenchmarkLoader:
 
     def get_record(self, record_id: str) -> BenchmarkRecord | None:
         return self._manifest.get(record_id)
+
+
+def parse_canonical_transcription(canonical_text: str) -> CipherText:
+    """Parse a canonical transcription (space-separated S-tokens, | word separators)
+    into a CipherText object.
+
+    Format: S025 S012 S006 | S003 S007 S012 S019 | S005 S009 S010 S009
+    """
+    lines = canonical_text.strip().split("\n")
+    full = " | ".join(line.strip() for line in lines if line.strip())
+    word_strings = full.split(" | ")
+
+    seen: set[str] = set()
+    symbols: list[str] = []
+    for word_str in word_strings:
+        for token in word_str.split():
+            if token not in seen:
+                seen.add(token)
+                symbols.append(token)
+
+    alphabet = Alphabet(symbols)
+    raw = " | ".join(word_strings)
+    return CipherText(raw=raw, alphabet=alphabet, source="benchmark", separator=" | ")

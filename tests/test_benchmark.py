@@ -7,8 +7,7 @@ import tempfile
 
 import pytest
 
-from benchmark.loader import BenchmarkLoader, BenchmarkTest
-from benchmark.runner import parse_canonical_transcription
+from benchmark.loader import BenchmarkLoader, BenchmarkTest, parse_canonical_transcription
 from benchmark.scorer import (
     ScoreResult,
     _collapse_spaced_letters,

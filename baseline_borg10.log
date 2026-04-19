@@ -1,0 +1,24 @@
+Running 10 v2 test(s) with model claude-sonnet-4-6
+Max iterations: 20
+Artifacts → artifacts/baseline_borg10/<test_id>/<run_id>.json
+
+[1/10] borg_single_B_borg_0045v — Track B: borg_0045v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4......  iter 5......  iter 6......  iter 7.....  iter 8.....  iter 9....  iter 10.....  iter 11....  iter 12....  iter 13.....  iter 14....  iter 15....  iter 16....  iter 17.....  iter 18.....  iter 19.....  iter 20..... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 1.1%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 458.7s
+  Artifact: artifacts/baseline_borg10/borg_single_B_borg_0045v/2eaaf38cbcc9.json
+
+[2/10] borg_single_B_borg_0077v — Track B: borg_0077v with no context
+  iter 1.....  iter 2.....  iter 3....  iter 4....  iter 5.....  iter 6.....  iter 7.....  iter 8.....  iter 9.....  iter 10.....  iter 11.....  iter 12.....  iter 13....  iter 14....  iter 15....  iter 16.....  iter 17.....  iter 18....  iter 19....  iter 20.... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 568.5s
+  Artifact: artifacts/baseline_borg10/borg_single_B_borg_0077v/f1868f88a380.json
+
+[3/10] borg_single_B_borg_0109v — Track B: borg_0109v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4....  iter 5.....  iter 6.....  iter 7.....  iter 8.....  iter 9.....  iter 10.....  iter 11....  iter 12....  iter 13....  iter 14.....  iter 15.....  iter 16....  iter 17....  iter 18....  iter 19....  iter 20.... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 435.1s
+  Artifact: artifacts/baseline_borg10/borg_single_B_borg_0109v/886a53457d15.json
+
+[4/10] borg_single_B_borg_0140v — Track B: borg_0140v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4....  iter 5.....  iter 6.....  iter 7.....  iter 8.....  iter 9.....  iter 10.....  iter 11.....  iter 12.....  iter 13....  iter 14....  iter 15...

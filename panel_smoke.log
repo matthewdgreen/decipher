@@ -1,0 +1,12 @@
+Running 1 v2 test(s) with model claude-sonnet-4-6
+Max iterations: 20
+Artifacts → artifacts/panel_smoke/<test_id>/<run_id>.json
+
+[1/1] borg_single_B_borg_0109v — Track B: borg_0109v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4......  iter 5.....  iter 6....  iter 7.....  iter 8....  iter 9....  iter 10....  iter 11....  iter 12......  iter 13....  iter 14... [error]
+ [run_complete]
+  Status: error, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 13, Time: 638.5s
+  Artifact: artifacts/panel_smoke/borg_single_B_borg_0109v/4e5304610fad.json
+  Error: API error on iteration 14: Connection error.
+
+AVERAGE: 0/1 declared solutions, char=0.0%, word=0.0%

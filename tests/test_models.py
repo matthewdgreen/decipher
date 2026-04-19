@@ -1,4 +1,4 @@
-"""Tests for core models: Alphabet, CipherText, Session."""
+"""Tests for core models: Alphabet, CipherText."""
 import sys
 import os
 
@@ -124,56 +124,3 @@ class TestCipherText:
         assert len(ct.tokens) == 5  # A, B, space, C, D
 
 
-class TestSession:
-    @pytest.fixture
-    def session_with_ct(self):
-        # Need QApplication for Session (it's a QObject)
-        from PySide6.QtWidgets import QApplication
-        app = QApplication.instance()
-        if app is None:
-            app = QApplication([])
-
-        from models.session import Session
-        session = Session()
-        alpha = Alphabet(["X", "Y", "Z", " "])
-        ct = CipherText(raw="XYZ ZYX", alphabet=alpha)
-        session.set_cipher_text(ct)
-        return session
-
-    def test_apply_key_empty(self, session_with_ct):
-        result = session_with_ct.apply_key()
-        assert "?" in result
-
-    def test_set_and_apply_mapping(self, session_with_ct):
-        s = session_with_ct
-        # Map X->A, Y->B, Z->C, space->space (need space in plaintext alphabet)
-        # Standard english doesn't have space, so just map letters
-        s.set_mapping(0, 0)  # X -> A
-        s.set_mapping(1, 1)  # Y -> B
-        s.set_mapping(2, 2)  # Z -> C
-        result = s.apply_key()
-        # Space (id=3) is unmapped, so it's '?'
-        assert result.startswith("ABC")
-
-    def test_is_complete(self, session_with_ct):
-        s = session_with_ct
-        assert s.is_complete is False
-        # Map all symbols used in the ciphertext
-        for ct_id in set(s.cipher_text.tokens):
-            s.set_mapping(ct_id, ct_id % s.plaintext_alphabet.size)
-        assert s.is_complete is True
-
-    def test_clear_mapping(self, session_with_ct):
-        s = session_with_ct
-        s.set_mapping(0, 0)
-        assert 0 in s.key
-        s.clear_mapping(0)
-        assert 0 not in s.key
-
-    def test_invert_key(self, session_with_ct):
-        s = session_with_ct
-        s.set_mapping(0, 5)
-        s.set_mapping(1, 10)
-        inv = s.invert_key()
-        assert inv[5] == 0
-        assert inv[10] == 1

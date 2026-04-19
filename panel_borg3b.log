@@ -1,0 +1,25 @@
+Running 3 v2 test(s) with model claude-sonnet-4-6
+Max iterations: 20
+Artifacts → artifacts/panel_borg3b/<test_id>/<run_id>.json
+
+[1/3] borg_single_B_borg_0045v — Track B: borg_0045v with no context
+  iter 1......  iter 2.....  iter 3......  iter 4........  iter 5........  iter 6....  iter 7........  iter 8........  iter 9....  iter 10......  iter 11.......  iter 12.......  iter 13....  iter 14......  iter 15......  iter 16....  iter 17.....  iter 18.......  iter 19.......  iter 20....... [max_iterations_reached]
+ [run_complete]
+  Status: exhausted, Char: 1.1%, Word: 0.0%, Self-conf: n/a, Iter: 20, Time: 654.2s
+  Artifact: artifacts/panel_borg3b/borg_single_B_borg_0045v/e1b928e5e552.json
+
+[2/3] borg_single_B_borg_0077v — Track B: borg_0077v with no context
+  iter 1.....  iter 2.....  iter 3.....  iter 4......  iter 5......  iter 6......  iter 7......  iter 8......  iter 9.....  iter 10.....  iter 11.....  iter 12.....  iter 13.....  iter 14.....  iter 15.....  iter 16.....  iter 17.....  iter 18.....  iter 19... [error]
+ [run_complete]
+  Status: error, Char: 2.7%, Word: 0.0%, Self-conf: n/a, Iter: 18, Time: 587.9s
+  Artifact: artifacts/panel_borg3b/borg_single_B_borg_0077v/10e5af180c76.json
+  Error: API error on iteration 19: Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': "This request would exceed your organization's rate limit of 30,000 input tokens per minute (org: ea9b1598-2dcd-4b96-88d8-946bc2f0f2a6, model: claude-sonnet-4-6). For details, refer to: https://docs.claude.com/en/api/rate-limits. You can see the response headers for current usage. Please reduce the prompt length or the maximum tokens requested, or try again later. You may also contact sales at https://claude.com/contact-sales to discuss your options for a rate limit increase."}, 'request_id': 'req_011CaBjTU6qJxMcb5WXERa78'}
+
+[3/3] borg_single_B_borg_0109v — Track B: borg_0109v with no context
+  iter 1......  iter 2.....  iter 3......  iter 4......  iter 5.......  iter 6.......  iter 7.......  iter 8.......  iter 9... [error]
+ [run_complete]
+  Status: error, Char: 0.0%, Word: 0.0%, Self-conf: n/a, Iter: 8, Time: 438.1s
+  Artifact: artifacts/panel_borg3b/borg_single_B_borg_0109v/16b1db4fdaa0.json
+  Error: API error on iteration 9: Error code: 429 - {'type': 'error', 'error': {'type': 'rate_limit_error', 'message': "This request would exceed your organization's rate limit of 30,000 input tokens per minute (org: ea9b1598-2dcd-4b96-88d8-946bc2f0f2a6, model: claude-sonnet-4-6). For details, refer to: https://docs.claude.com/en/api/rate-limits. You can see the response headers for current usage. Please reduce the prompt length or the maximum tokens requested, or try again later. You may also contact sales at https://claude.com/contact-sales to discuss your options for a rate limit increase."}, 'request_id': 'req_011CaBk1mEcgbrhoRoSVtKMG'}
+
+AVERAGE: 0/3 declared solutions, char=1.3%, word=0.0%

@@ -34,7 +34,6 @@ decipher crack -f cipher.txt \
   --model claude-sonnet-4-6 \
   --max-iterations 25 \
   --verbose              # show agent reasoning
-  --v2                   # use v2 workspace agent (recommended)
 ```
 
 ### Run against the historical benchmark
@@ -42,15 +41,15 @@ decipher crack -f cipher.txt \
 ```bash
 # Borg Latin manuscript (15 transcription→plaintext tests)
 decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
-  --source borg --v2 --model claude-sonnet-4-6
+  --source borg --model claude-sonnet-4-6
 
 # Single test by ID
 decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
-  --test-id borg_single_B_borg_0045v --v2 --model claude-sonnet-4-6 --verbose
+  --test-id borg_single_B_borg_0045v --model claude-sonnet-4-6 --verbose
 
 # Copiale German cipher
 decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
-  --source copiale --v2 --model claude-sonnet-4-6 --max-iterations 20
+  --source copiale --model claude-sonnet-4-6 --max-iterations 20
 ```
 
 ### Generate and crack a synthetic test (one-off)
