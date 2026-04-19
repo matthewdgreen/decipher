@@ -40,6 +40,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from benchmark.baseline_runner import BaselineResult, run_baseline
 from benchmark.runner_v2 import BenchmarkRunnerV2
 from benchmark.scorer import (
     format_alignment,
@@ -436,14 +437,19 @@ def run_suite(args: argparse.Namespace) -> None:
     )
 
     results: list[SuiteResult] = []
+    baseline_results: list[BaselineResult | None] = []
 
     for i, spec in enumerate(suite, 1):
         preset_name = _preset_name(spec)
         boundary_label = "word-boundary" if spec.word_boundaries else "no-boundary"
-        print(f"[{i}/{len(suite)}] {preset_name} — {spec.language}, {boundary_label}, "
-              f"~{spec.approx_length} words")
+        homo_label = ", homophonic" if spec.homophonic else ""
+        print(f"[{i}/{len(suite)}] {preset_name} — {spec.language}, {boundary_label}"
+              f"{homo_label}, ~{spec.approx_length} words")
 
         test_data = build_test_case(spec, cache, api_key)
+
+        # --- agent run ---
+        print("  [agent]")
         t0 = time.time()
         result = runner.run_test(test_data, language=spec.language)
         elapsed = time.time() - t0
@@ -474,31 +480,55 @@ def run_suite(args: argparse.Namespace) -> None:
 
         conf_str = f"{sr.self_confidence:.2f}" if sr.self_confidence is not None else "n/a"
         word_str = f"{sr.word_accuracy:.1%}" if score.total_words > 1 else "N/A"
-        print(f"  → {sr.status}  char={sr.char_accuracy:.1%}  word={word_str}  "
+        print(f"    → {sr.status}  char={sr.char_accuracy:.1%}  word={word_str}  "
               f"conf={conf_str}  iter={sr.iterations}  {sr.elapsed:.0f}s")
 
         if rerun_mode:
-            # Always record the run so history accumulates, then check for archive.
             errata_path = _save_errata(sr, git, args.model, errata_dir)
-            print(f"  ↳ run recorded → {errata_path}")
+            print(f"    ↳ run recorded → {errata_path}")
             if _check_and_maybe_archive(sr.test_id, errata_dir):
-                print(f"  ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
+                print(f"    ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
         elif sr.char_accuracy < 1.0:
             errata_path = _save_errata(sr, git, args.model, errata_dir)
-            print(f"  ↳ errata saved → {errata_path}")
+            print(f"    ↳ errata saved → {errata_path}")
+
+        # --- baseline run (only when --compare) ---
+        br: BaselineResult | None = None
+        if args.compare:
+            print("  [baseline one-shot + code]")
+            br = run_baseline(
+                test_data,
+                crack_api,
+                language=spec.language,
+                max_iterations=args.max_iterations,
+                verbose=args.verbose,
+            )
+            bword_str = f"{br.word_accuracy:.1%}" if has_word_boundaries(br.ground_truth) else "N/A"
+            print(f"    → char={br.char_accuracy:.1%}  word={bword_str}  "
+                  f"iter={br.iterations}  {br.elapsed:.0f}s")
+            if br.error:
+                print(f"    error: {br.error}")
+        baseline_results.append(br)
+
         print()
 
-    _print_report(results)
+    _print_report(results, baseline_results if args.compare else None)
 
 
 # ---------------------------------------------------------------------------
 # Report
 # ---------------------------------------------------------------------------
 
-def _print_report(results: list[SuiteResult]) -> None:
+def _print_report(
+    results: list[SuiteResult],
+    baseline_results: list[BaselineResult | None] | None = None,
+) -> None:
     sep = "=" * 80
+    compare = baseline_results is not None
+
+    # ------------------------------------------------------------------ agent
     print(sep)
-    print("SUITE RESULTS")
+    print("AGENT RESULTS" if compare else "SUITE RESULTS")
     print(sep)
     print()
 
@@ -520,23 +550,90 @@ def _print_report(results: list[SuiteResult]) -> None:
           f"{avg_char:>5.1%}")
     print()
 
-    for sr in results:
+    # --------------------------------------------------------------- baseline
+    if compare and baseline_results:
+        print(sep)
+        print("BASELINE RESULTS  (one-shot + Python code, same model)")
+        print(sep)
+        print()
+
+        print(f"  {'Preset':<10} {'Char%':>6} {'Word%':>6} {'Iter':>4} {'Time':>6}")
+        print("  " + "-" * 40)
+        b_chars = []
+        for sr, br in zip(results, baseline_results):
+            preset_name = _preset_name(sr.spec)
+            if br is None:
+                print(f"  {preset_name:<10}  (not run)")
+                continue
+            bword_str = f"{br.word_accuracy:>5.1%}" if has_word_boundaries(br.ground_truth) else "  N/A"
+            print(f"  {preset_name:<10} {br.char_accuracy:>5.1%} {bword_str} "
+                  f"{br.iterations:>4} {br.elapsed:>5.0f}s")
+            b_chars.append(br.char_accuracy)
+
+        if b_chars:
+            avg_b = sum(b_chars) / len(b_chars)
+            print("  " + "-" * 40)
+            print(f"  {'AVERAGE':<10} {avg_b:>5.1%}")
+        print()
+
+        # ------------------------------------------------------- comparison
+        print(sep)
+        print("COMPARISON  (agent vs baseline, same model)")
+        print(sep)
+        print()
+
+        print(f"  {'Preset':<10} {'Agent':>7} {'Baseline':>9} {'Delta':>7}  {'Winner'}")
+        print("  " + "-" * 50)
+        for sr, br in zip(results, baseline_results):
+            preset_name = _preset_name(sr.spec)
+            if br is None:
+                continue
+            delta = sr.char_accuracy - br.char_accuracy
+            winner = "agent" if delta > 0.002 else ("baseline" if delta < -0.002 else "tie")
+            delta_str = f"{delta:+.1%}"
+            print(f"  {preset_name:<10} {sr.char_accuracy:>6.1%}  {br.char_accuracy:>8.1%}  "
+                  f"{delta_str:>7}  {winner}")
+
+        agent_avg = sum(r.char_accuracy for r in results) / len(results)
+        b_avg = sum(br.char_accuracy for br in baseline_results if br) / max(1, sum(1 for br in baseline_results if br))
+        delta_avg = agent_avg - b_avg
+        print("  " + "-" * 50)
+        print(f"  {'AVERAGE':<10} {agent_avg:>6.1%}  {b_avg:>8.1%}  {delta_avg:+.1%}")
+        print()
+
+    # ---------------------------------------------------------- per-test diff
+    for i, sr in enumerate(results):
         preset_name = _preset_name(sr.spec)
         print(sep)
-        print(f"  {preset_name}  [{sr.test_id}]")
+        label = f"  {preset_name}  [{sr.test_id}]"
+        if compare and baseline_results and baseline_results[i]:
+            br = baseline_results[i]
+            label += f"  agent={sr.char_accuracy:.1%}  baseline={br.char_accuracy:.1%}"
+        print(label)
         print(sep)
 
         if sr.error:
-            print(f"  Error: {sr.error}")
-            continue
-        if not sr.decryption:
-            print("  (no decryption produced)")
-            continue
-        if has_word_boundaries(sr.ground_truth):
+            print(f"  Agent error: {sr.error}")
+        elif not sr.decryption:
+            print("  (no agent decryption)")
+        elif has_word_boundaries(sr.ground_truth):
             print(format_alignment(sr.decryption, sr.ground_truth, max_words=40))
         else:
             print(format_char_diff(sr.decryption, sr.ground_truth, context=12))
         print()
+
+        if compare and baseline_results and baseline_results[i]:
+            br = baseline_results[i]
+            print(f"  Baseline decryption (char={br.char_accuracy:.1%}):")
+            if br.error:
+                print(f"    Error: {br.error}")
+            elif not br.decryption:
+                print("    (no decryption produced)")
+            elif has_word_boundaries(br.ground_truth):
+                print(format_alignment(br.decryption, br.ground_truth, max_words=40))
+            else:
+                print(format_char_diff(br.decryption, br.ground_truth, context=12))
+            print()
 
     print(sep)
 
@@ -584,6 +681,9 @@ def main() -> None:
                         help="Re-run all active errata tests")
     parser.add_argument("--rerun", nargs="+", metavar="TEST_ID",
                         help="Re-run specific errata test(s) by ID")
+    parser.add_argument("--compare", action="store_true",
+                        help="After each agent run, also run the one-shot + code baseline "
+                             "with the same model and print a side-by-side comparison")
     run_suite(parser.parse_args())
 
 
