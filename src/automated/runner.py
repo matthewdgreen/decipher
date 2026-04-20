@@ -349,10 +349,15 @@ def _run_homophonic(
     word_list = _word_list(language)
     model, model_note = _homophonic_model(language, word_list)
     started = time.time()
-    seeds = [0, 1, 2, 3]
+    short_homophonic = len(cipher_text.tokens) < 600
+    seeds = list(range(8)) if short_homophonic else [0, 1, 2, 3]
+    epochs = 9 if short_homophonic else 7
+    sampler_iterations = 4000 if short_homophonic else 3000
     attempts = []
     result = None
     result_seed = None
+    result_quality = None
+    result_selection_score = float("-inf")
     for seed in seeds:
         candidate = homophonic.homophonic_simulated_anneal(
             tokens=list(cipher_text.tokens),
@@ -360,25 +365,30 @@ def _run_homophonic(
             id_to_letter=id_to_letter,
             letter_to_id=letter_to_id,
             model=model,
-            epochs=7,
-            sampler_iterations=3000,
+            epochs=epochs,
+            sampler_iterations=sampler_iterations,
             distribution_weight=5.0,
+            diversity_weight=3.0 if short_homophonic else 1.5,
             seed=seed,
             top_n=3,
         )
-        collapsed = _is_collapsed_plaintext(candidate.plaintext)
+        quality = _plaintext_quality(candidate.plaintext, candidate.key)
+        selection_score = candidate.normalized_score - quality["penalty"]
         attempts.append({
             "seed": seed,
-            "collapsed": collapsed,
+            "collapsed": quality["collapsed"],
+            "quality_ok": quality["ok"],
+            "selection_score": round(selection_score, 4),
             "anneal_score": round(candidate.normalized_score, 4),
+            "quality": quality,
             "preview": candidate.plaintext[:120],
         })
-        if result is None or candidate.normalized_score > result.normalized_score:
+        if result is None or selection_score > result_selection_score:
             result = candidate
             result_seed = seed
-        if not collapsed:
-            result = candidate
-            result_seed = seed
+            result_quality = quality
+            result_selection_score = selection_score
+        if quality["ok"] and not short_homophonic:
             break
     if result is None:
         raise ValueError("homophonic anneal produced no result")
@@ -388,12 +398,15 @@ def _run_homophonic(
         "model_source": model.source,
         "model_note": model_note,
         "anneal_score": round(result.normalized_score, 4),
+        "selection_score": round(result_selection_score, 4),
+        "quality": result_quality,
         "elapsed_seconds": round(time.time() - started, 3),
         "epochs": result.epochs,
         "sampler_iterations": result.sampler_iterations,
         "seed": result_seed,
         "seed_attempts": attempts,
-        "collapse_retries": max(0, len(attempts) - 1),
+        "collapse_retries": sum(1 for attempt in attempts[:-1] if attempt["collapsed"]),
+        "quality_retries": max(0, len(attempts) - 1),
         "candidates": [
             {
                 "rank": i + 1,
@@ -407,15 +420,81 @@ def _run_homophonic(
 
 
 def _is_collapsed_plaintext(plaintext: str) -> bool:
+    return _plaintext_quality(plaintext, key=None)["collapsed"]
+
+
+def _plaintext_quality(
+    plaintext: str,
+    key: dict[int, int] | None,
+) -> dict[str, Any]:
     letters = [ch for ch in plaintext.upper() if "A" <= ch <= "Z"]
     if len(letters) < 50:
-        return False
+        return {
+            "ok": True,
+            "collapsed": False,
+            "penalty": 0.0,
+            "reasons": [],
+            "letter_count": len(letters),
+            "unique_letters": len(set(letters)),
+            "top_letter_fraction": 0.0,
+            "key_plaintext_letters": len(set(key.values())) if key else None,
+        }
     counts: dict[str, int] = {}
     for letter in letters:
         counts[letter] = counts.get(letter, 0) + 1
     max_fraction = max(counts.values()) / len(letters)
-    unique_fraction = len(counts) / 26
-    return max_fraction >= 0.35 or unique_fraction <= 0.20
+    unique_letters = len(counts)
+    key_plaintext_letters = len(set(key.values())) if key else None
+    if len(letters) >= 350:
+        min_unique = 14
+        max_top_fraction = 0.22
+    elif len(letters) >= 150:
+        min_unique = 12
+        max_top_fraction = 0.26
+    else:
+        min_unique = 10
+        max_top_fraction = 0.32
+
+    reasons: list[str] = []
+    penalty = 0.0
+    if max_fraction >= 0.35:
+        reasons.append("single_letter_dominance")
+        penalty += (max_fraction - 0.34) * 30.0
+    if max_fraction > max_top_fraction:
+        reasons.append("top_letter_too_frequent")
+        penalty += (max_fraction - max_top_fraction) * 18.0
+    if unique_letters < min_unique:
+        reasons.append("low_plaintext_letter_diversity")
+        penalty += (min_unique - unique_letters) * 0.45
+    if key_plaintext_letters is not None and key_plaintext_letters < min_unique:
+        reasons.append("key_maps_to_too_few_plaintext_letters")
+        penalty += (min_unique - key_plaintext_letters) * 0.35
+
+    # A lightweight monogram chi-square catches ETAOIN-ish soup that has enough
+    # distinct letters to evade simple collapse checks.
+    expected_total = sum(homophonic.ENGLISH_FREQUENCIES.values())
+    chi = 0.0
+    for letter, expected_pct in homophonic.ENGLISH_FREQUENCIES.items():
+        expected = expected_pct / expected_total
+        observed = counts.get(letter, 0) / len(letters)
+        chi += ((observed - expected) ** 2) / max(expected, 1e-9)
+    chi_per_letter = chi / 26
+    if chi_per_letter > 0.05:
+        reasons.append("poor_monogram_shape")
+        penalty += min(2.0, (chi_per_letter - 0.05) * 12.0)
+
+    collapsed = bool(reasons)
+    return {
+        "ok": not collapsed,
+        "collapsed": collapsed,
+        "penalty": round(penalty, 4),
+        "reasons": reasons,
+        "letter_count": len(letters),
+        "unique_letters": unique_letters,
+        "top_letter_fraction": round(max_fraction, 4),
+        "key_plaintext_letters": key_plaintext_letters,
+        "monogram_chi_per_letter": round(chi_per_letter, 4),
+    }
 
 
 def _run_substitution(

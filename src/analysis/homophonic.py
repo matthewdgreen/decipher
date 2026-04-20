@@ -204,6 +204,7 @@ def homophonic_simulated_anneal(
     t_start: float = 0.012,
     t_end: float = 0.006,
     distribution_weight: float = 4.0,
+    diversity_weight: float = 0.0,
     seed: int | None = None,
     top_n: int = 1,
 ) -> HomophonicAnnealResult:
@@ -257,11 +258,18 @@ def homophonic_simulated_anneal(
             len(chars),
             plaintext_letters,
         )
+        current_diversity_score = _letter_diversity_score(
+            char_counts,
+            len(chars),
+            plaintext_letters,
+        )
         current_total = _combined_score(
             current_ngram_total,
             current_distribution_score,
+            current_diversity_score,
             ngram_count,
             distribution_weight,
+            diversity_weight,
         )
         epoch_best_total = current_total
         epoch_best_key = dict(key)
@@ -303,11 +311,18 @@ def homophonic_simulated_anneal(
                     len(chars),
                     plaintext_letters,
                 )
+                proposal_diversity_score = _letter_diversity_score(
+                    proposal_counts,
+                    len(chars),
+                    plaintext_letters,
+                )
                 proposal_total = _combined_score(
                     proposal_ngram_total,
                     proposal_distribution_score,
+                    proposal_diversity_score,
                     ngram_count,
                     distribution_weight,
+                    diversity_weight,
                 )
                 delta = proposal_total - current_total
                 delta_normalized = delta / ngram_count
@@ -319,6 +334,7 @@ def homophonic_simulated_anneal(
                     char_counts = proposal_counts
                     current_ngram_total = proposal_ngram_total
                     current_distribution_score = proposal_distribution_score
+                    current_diversity_score = proposal_diversity_score
                     current_total = proposal_total
                     accepted_moves += 1
                     if delta > 0:
@@ -368,6 +384,7 @@ def homophonic_simulated_anneal(
             "mutable_symbols": len(mutable_symbol_ids),
             "cipher_symbols": len(symbol_ids),
             "distribution_weight": distribution_weight,
+            "diversity_weight": diversity_weight,
         },
         candidates=candidates,
     )
@@ -427,6 +444,7 @@ def substitution_simulated_anneal(
         current_total = _combined_score(
             current_ngram_total,
             current_distribution_score,
+            0.0,
             ngram_count,
             distribution_weight,
         )
@@ -492,6 +510,7 @@ def substitution_simulated_anneal(
             proposal_total = _combined_score(
                 proposal_ngram_total,
                 proposal_distribution_score,
+                0.0,
                 ngram_count,
                 distribution_weight,
             )
@@ -648,10 +667,18 @@ def _score_window(chars: list[str], start: int, model: ContinuousNGramModel) -> 
 def _combined_score(
     ngram_total: float,
     distribution_score: float,
+    diversity_score: float,
     ngram_count: int,
     distribution_weight: float,
+    diversity_weight: float = 0.0,
 ) -> float:
-    return ngram_total + (ngram_count * distribution_weight * distribution_score)
+    return ngram_total + (
+        ngram_count
+        * (
+            distribution_weight * distribution_score
+            + diversity_weight * diversity_score
+        )
+    )
 
 
 def _letter_distribution_score(
@@ -671,6 +698,36 @@ def _letter_distribution_score(
         observed = counts.get(letter, 0) / total
         chi += ((observed - expected) ** 2) / max(expected, 1e-9)
     return -chi / len(available)
+
+
+def _letter_diversity_score(
+    counts: Counter[str],
+    total: int,
+    letters: list[str],
+) -> float:
+    if total < 50:
+        return 0.0
+    available = [letter for letter in letters if letter in ENGLISH_FREQUENCIES]
+    if not available:
+        return 0.0
+    unique = sum(1 for letter in available if counts.get(letter, 0) > 0)
+    top_fraction = max(counts.values()) / total if counts else 0.0
+    if total >= 350:
+        target_unique = min(18, len(available))
+        max_top_fraction = 0.18
+    elif total >= 150:
+        target_unique = min(15, len(available))
+        max_top_fraction = 0.22
+    else:
+        target_unique = min(11, len(available))
+        max_top_fraction = 0.30
+
+    penalty = 0.0
+    if unique < target_unique:
+        penalty += ((target_unique - unique) / max(1, target_unique)) ** 2
+    if top_fraction > max_top_fraction:
+        penalty += ((top_fraction - max_top_fraction) / max_top_fraction) ** 2
+    return -penalty
 
 
 def _affected_windows(positions: list[int], text_len: int, order: int) -> list[int]:

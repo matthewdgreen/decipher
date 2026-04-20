@@ -155,6 +155,8 @@ Recent testgen work turned failure logs into tool-design improvements:
 - **Automated-only baseline**: `--automated-only` runs native solvers without LLM API calls and writes comparable zero-cost artifacts
 - **Automated preflight**: LLM runs receive a no-LLM native candidate before iteration 1 and can adopt, repair, or reject it
 - **Simple-substitution parity path**: English simple substitution now uses bijective continuous n-gram annealing, preserving one-to-one mappings while allowing unused plaintext letters to enter the key
+- **Homophonic quality gates**: automated homophonic runs now retry low-diversity/collapsed outputs across seeds and rank candidates by anneal score adjusted for plaintext quality
+- **Diversity-aware homophonic search**: `search_homophonic_anneal` supports a plaintext-diversity objective to reduce ETAOIN-ish collapsed false positives on short no-boundary ciphers
 
 ---
 
@@ -164,7 +166,7 @@ Recent testgen work turned failure logs into tool-design improvements:
 The hardest synthetic preset (`synth_en_200honb_s6`) is the current stress case. The tool now exposes homophonic evidence explicitly, but the next run should confirm whether the agent uses those tools instead of ad hoc Python.
 
 ### 2. 🔄 **Homophonic search quality**
-`search_homophonic_anneal` is now available and should be the first automated search tool for homophonic no-boundary ciphers. Continue seed sweeps against Zenith and zkdecrypto-lite, add top-N candidates, and classify failures as tool weakness vs agent wrong-tool choice.
+`search_homophonic_anneal` is now available and should be the first automated search tool for homophonic no-boundary ciphers. It has quality gates, diversity-aware scoring, top-N candidates, and automated seed retries. Continue seed sweeps against Zenith and zkdecrypto-lite, and classify remaining failures as tool weakness vs agent wrong-tool choice. Zodiac-class short homophonic texts remain below Zenith parity and are the clearest current native-search gap.
 
 ### 3. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress.

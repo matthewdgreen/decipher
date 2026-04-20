@@ -508,6 +508,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "prevents collapsed repeated-letter solutions."
                     ),
                 },
+                "diversity_weight": {
+                    "type": "number",
+                    "default": 1.5,
+                    "description": (
+                        "Weight for plaintext diversity penalty; useful on short "
+                        "homophonic texts where collapsed low-letter solutions can "
+                        "look deceptively good to n-gram scoring."
+                    ),
+                },
                 "seed": {
                     "type": "integer",
                     "description": "Optional deterministic random seed.",
@@ -2419,6 +2428,7 @@ class WorkspaceToolExecutor:
         model_path = args.get("model_path")
         max_ngrams = int(args.get("max_ngrams", 3_000_000))
         distribution_weight = float(args.get("distribution_weight", 4.0))
+        diversity_weight = float(args.get("diversity_weight", 1.5))
         seed = args.get("seed")
         seed = int(seed) if seed is not None else None
         top_n = max(1, int(args.get("top_n", 1)))
@@ -2461,6 +2471,7 @@ class WorkspaceToolExecutor:
             t_start=t_start,
             t_end=t_end,
             distribution_weight=distribution_weight,
+            diversity_weight=diversity_weight,
             seed=seed,
             top_n=top_n,
         )
@@ -2504,6 +2515,7 @@ class WorkspaceToolExecutor:
             "fixed_symbols": result.fixed_symbols,
             "cipher_symbols": result.metadata.get("cipher_symbols"),
             "distribution_weight": result.metadata.get("distribution_weight"),
+            "diversity_weight": result.metadata.get("diversity_weight"),
             "top_n": top_n,
             "candidate_count": len(candidates),
             "candidates": candidates,

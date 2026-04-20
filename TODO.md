@@ -49,6 +49,11 @@ or a benchmark data issue.
 ### Priority 3: Native Tool Parity
 
 - [ ] Harden `search_homophonic_anneal` with seed sweeps against Zenith and zkdecrypto-lite.
+  - [x] Add low-diversity/collapse quality gates for automated homophonic output.
+  - [x] Retry automated homophonic runs across multiple seeds when quality gates fail.
+  - [x] Select homophonic candidates by anneal score adjusted for plaintext quality, not raw n-gram score alone.
+  - [x] Add a diversity objective to homophonic annealing and expose it in the agent tool.
+  - [ ] Close the remaining Zodiac-class gap where native search can produce readable but sub-par candidates.
 - [x] Add top-N candidate support for homophonic annealing.
 - [x] Add an automated-only/no-LLM CLI mode that runs native techniques and writes zero-cost artifacts.
 - [x] Run no-LLM automated preflight before LLM iteration 1 by default, with a branch and prompt summary.
