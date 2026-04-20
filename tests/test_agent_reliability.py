@@ -147,6 +147,43 @@ def test_final_turn_prefight_and_auto_declare_fallback():
     assert artifact.solution.self_confidence == 0.0
 
 
+def test_automated_preflight_context_and_branch_available_on_first_turn():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit",
+        automated_preflight={
+            "enabled": True,
+            "run_mode": "automated_only",
+            "status": "solved",
+            "solver": "fake_native",
+            "summary": "Automated native solver preflight (no LLM access): THE",
+            "key": {"0": 19, "1": 7, "2": 4},
+            "estimated_cost_usd": 0.0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+        },
+    )
+
+    first_content = api.messages_seen[0][0]["content"]
+    first_turn_texts = [first_content] if isinstance(first_content, str) else [
+        c["text"]
+        for c in first_content
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any("Automated native solver preflight" in t for t in first_turn_texts)
+    assert artifact.automated_preflight is not None
+    branch = next(b for b in artifact.branches if b.name == "automated_preflight")
+    assert branch.decryption == "THE"
+    assert "no_llm" in branch.tags
+
+
 class _ToolThenErrorAPI:
     model = "claude-sonnet-4-6"
 

@@ -60,6 +60,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir or "artifacts",
+            automated_preflight=not args.no_automated_preflight,
         )
 
     print(f"Running {len(tests)} test(s) — model={model}, max_iter={args.max_iterations}")
@@ -151,6 +152,24 @@ def cmd_crack(args: argparse.Namespace) -> None:
     model = args.model or "claude-opus-4-7"
     api = ClaudeAPI(api_key=api_key, model=model)
 
+    automated_preflight = None
+    if not args.no_automated_preflight:
+        from automated.runner import format_automated_preflight_for_llm, run_automated
+
+        print("Running automated preflight (no LLM access)...")
+        preflight = run_automated(
+            cipher_text=ct,
+            language=args.language,
+            cipher_id=cipher_id,
+        )
+        automated_preflight = dict(preflight.artifact)
+        automated_preflight["summary"] = format_automated_preflight_for_llm(preflight)
+        automated_preflight["enabled"] = True
+        print(
+            f"  preflight: {preflight.status}, solver={preflight.solver}, "
+            "$0.00 (no LLM access)"
+        )
+
     def on_event(event: str, payload: dict) -> None:
         if event == "iteration_start":
             print(f"  iter {payload['iteration']}...", end="", flush=True)
@@ -165,6 +184,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
         language=args.language,
         max_iterations=args.max_iterations,
         cipher_id=cipher_id,
+        automated_preflight=automated_preflight,
         verbose=args.verbose,
         on_event=on_event,
     )
@@ -285,6 +305,7 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir,
+            automated_preflight=not args.no_automated_preflight,
         )
         print(f"\nRunning agent (model={crack_model}, max_iter={args.max_iterations})...")
         result = runner.run_test(test_data)
@@ -328,6 +349,8 @@ def main() -> None:
     bench.add_argument("--verbose", "-v", action="store_true")
     bench.add_argument("--automated-only", action="store_true",
                        help="Run native automated solvers only; make no LLM API calls.")
+    bench.add_argument("--no-automated-preflight", action="store_true",
+                       help="Disable the default no-LLM automated preflight before LLM runs.")
 
     # crack
     crack = subparsers.add_parser("crack", help="Crack a cipher from file or stdin")
@@ -343,6 +366,8 @@ def main() -> None:
     crack.add_argument("--verbose", "-v", action="store_true")
     crack.add_argument("--automated-only", action="store_true",
                        help="Run native automated solvers only; make no LLM API calls.")
+    crack.add_argument("--no-automated-preflight", action="store_true",
+                       help="Disable the default no-LLM automated preflight before LLM runs.")
 
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
@@ -370,6 +395,8 @@ def main() -> None:
                         "Run native automated solvers only; make no LLM API calls. "
                         "Requires the generated plaintext to already be cached."
                     ))
+    tg.add_argument("--no-automated-preflight", action="store_true",
+                    help="Disable the default no-LLM automated preflight before LLM runs.")
 
     args = parser.parse_args()
 

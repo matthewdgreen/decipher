@@ -90,6 +90,9 @@ All analysis works on `list[int]` token IDs, not strings. `Alphabet` is the bidi
 ### Automated-only mode
 `--automated-only` is a no-LLM path for `benchmark`, `crack`, and cached `testgen` runs. It lives in `src/automated/runner.py` so native parity work can evolve separately from `agent/loop_v2.py`. Artifacts are marked `run_mode: automated_only`, `automated_only: true`, with zero tokens and zero estimated cost. Testgen automated-only requires cached plaintext because generating fresh synthetic prose would require an LLM call.
 
+### Automated preflight for LLM runs
+LLM-enabled `benchmark`, `crack`, and testgen-suite runs now execute the native automated solver before iteration 1 by default. The result is stored in `artifact.automated_preflight`, exposed to the agent as an `automated_preflight` workspace branch, and summarized in the first context message without benchmark ground-truth accuracy. Use `--no-automated-preflight` to disable this when measuring the unaided agent loop.
+
 ### Key representation
 `dict[int, int]` — cipher token ID → plaintext token ID. Partial keys are fine; unmapped tokens show as `?`. `apply_key()` uses the plaintext alphabet's `_multisym` flag to determine output spacing (not the cipher alphabet's flag — important fix).
 
@@ -150,6 +153,7 @@ Recent testgen work turned failure logs into tool-design improvements:
 - **Homophonic diagnostics**: tools identify ambiguous letters, absent letters, and likely split homophones
 - **`run_python` audit trail**: Python remains allowed, but every use records a justification and is highlighted in reports as a tool-design signal
 - **Automated-only baseline**: `--automated-only` runs native solvers without LLM API calls and writes comparable zero-cost artifacts
+- **Automated preflight**: LLM runs receive a no-LLM native candidate before iteration 1 and can adopt, repair, or reject it
 
 ---
 

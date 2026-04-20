@@ -47,12 +47,14 @@ class BenchmarkRunnerV2:
         verbose: bool = False,
         language: str | None = None,
         artifact_dir: str | Path = "artifacts",
+        automated_preflight: bool = True,
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
         self.verbose = verbose
         self.default_language = language
         self.artifact_dir = Path(artifact_dir)
+        self.automated_preflight = automated_preflight
 
     def _resolve_language(self, test_data: TestData) -> str:
         if self.default_language:
@@ -104,6 +106,25 @@ class BenchmarkRunnerV2:
                 f"{len(cipher_text.words)} words, lang={lang}"
             )
 
+        automated_preflight = None
+        if self.automated_preflight:
+            if not self.verbose:
+                print("  preflight(no-LLM)...", end="", flush=True)
+            automated_preflight = _run_automated_preflight(cipher_text, lang, test_id)
+            if self.verbose:
+                solver = automated_preflight.get("solver", "unknown")
+                status = automated_preflight.get("status", "unknown")
+                elapsed = automated_preflight.get("elapsed_seconds", 0.0)
+                print(
+                    f"  [{test_id}] automated preflight: "
+                    f"{status}, solver={solver}, {elapsed:.1f}s, "
+                    "$0.00 (no LLM access)"
+                )
+            else:
+                status = automated_preflight.get("status", "unknown")
+                elapsed = automated_preflight.get("elapsed_seconds", 0.0)
+                print(f" [{status}, {elapsed:.0f}s, $0.00 no LLM]", flush=True)
+
         def on_event(event: str, payload: dict) -> None:
             if not self.verbose:
                 if event == "iteration_start":
@@ -121,6 +142,7 @@ class BenchmarkRunnerV2:
             max_iterations=self.max_iterations,
             cipher_id=test_id,
             prior_context=prior_context or _format_benchmark_context(test_data),
+            automated_preflight=automated_preflight,
             verbose=self.verbose,
             on_event=on_event,
         )
@@ -232,3 +254,18 @@ def _format_benchmark_context(test_data: TestData) -> str | None:
         "Context canonical transcription:\n"
         f"{test_data.context_canonical_transcription}"
     )
+
+
+def _run_automated_preflight(cipher_text, language: str, test_id: str) -> dict[str, Any]:
+    from automated.runner import format_automated_preflight_for_llm, run_automated
+
+    result = run_automated(
+        cipher_text=cipher_text,
+        language=language,
+        cipher_id=test_id,
+        ground_truth=None,
+    )
+    artifact = dict(result.artifact)
+    artifact["summary"] = format_automated_preflight_for_llm(result)
+    artifact["enabled"] = True
+    return artifact

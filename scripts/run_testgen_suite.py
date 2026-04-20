@@ -16,6 +16,8 @@ Options:
     --errata-dir DIR       Errata directory (default: errata)
     --flush-cache          Regenerate all plaintexts before running
     --automated-only       Run native automated solvers only; make no LLM API calls
+    --no-automated-preflight
+                           Disable native preflight before LLM agent runs
     --verbose              Show agent reasoning while running
     --list-errata          List active errata and exit
     --rerun-errata         Re-run all active errata tests
@@ -553,6 +555,7 @@ def run_suite(args: argparse.Namespace) -> None:
             max_iterations=args.max_iterations,
             verbose=args.verbose,
             artifact_dir=args.artifact_dir,
+            automated_preflight=not args.no_automated_preflight,
         )
 
     results: list[SuiteResult] = []
@@ -886,6 +889,8 @@ def main() -> None:
     parser.add_argument("--automated-only", action="store_true",
                         help="Run native automated solvers only; make no LLM API calls. "
                              "Requires generated plaintext to already be cached.")
+    parser.add_argument("--no-automated-preflight", action="store_true",
+                        help="Disable the default no-LLM automated preflight before LLM runs.")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--list-errata", action="store_true",
                         help="List active errata and exit")

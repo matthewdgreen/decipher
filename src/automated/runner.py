@@ -258,6 +258,82 @@ def save_crack_artifact(
     return str(path)
 
 
+def format_automated_preflight_for_llm(
+    result: AutomatedRunResult,
+    max_plaintext_chars: int = 4000,
+) -> str:
+    """Format a no-LLM solver result as LLM-safe run context.
+
+    This deliberately omits benchmark-only fields such as ground truth,
+    character accuracy, and word accuracy. The LLM should treat the native
+    result as a hypothesis to inspect, repair, or reject.
+    """
+    artifact = result.artifact or {}
+    token_count = artifact.get("cipher_token_count", "?")
+    alphabet_size = artifact.get("cipher_alphabet_size", "?")
+    word_count = artifact.get("cipher_word_count", "?")
+    steps = artifact.get("steps", []) or []
+
+    lines = [
+        "## Automated native solver preflight (no LLM access)",
+        "",
+        "A local automated solver ran before iteration 1. This result used no "
+        "LLM calls, no LLM tokens, and no benchmark ground truth. Treat it as "
+        "a hypothesis: if it reads coherently, inspect and repair residual "
+        "errors; if it is incoherent, reject it and proceed independently.",
+        "",
+        f"- Status: {result.status}",
+        f"- Solver: {result.solver or artifact.get('solver', 'unknown')}",
+        "- Run mode: automated no-LLM",
+        "- Cost: $0.00 (no LLM access)",
+        f"- Cipher symbols: {alphabet_size}",
+        f"- Cipher tokens: {token_count}",
+        f"- Cipher word groups: {word_count}",
+        f"- Automated branch available: `automated_preflight`",
+    ]
+    if result.error_message:
+        lines.append(f"- Error: {result.error_message}")
+
+    if steps:
+        first_step = steps[0]
+        lines += [
+            "",
+            "Native solver notes:",
+            f"- Tool equivalent: {first_step.get('name', 'unknown')}",
+            f"- Model source: {first_step.get('model_source', first_step.get('solver', 'unknown'))}",
+        ]
+        if first_step.get("model_note"):
+            lines.append(f"- Model note: {first_step['model_note']}")
+        if "anneal_score" in first_step:
+            lines.append(f"- Anneal score: {first_step['anneal_score']}")
+        if "score" in first_step:
+            lines.append(f"- Score: {first_step['score']}")
+        if "candidates" in first_step:
+            lines.append(f"- Candidate count: {len(first_step['candidates'])}")
+
+    plaintext = result.final_decryption or ""
+    if plaintext:
+        truncated = len(plaintext) > max_plaintext_chars
+        preview = plaintext[:max_plaintext_chars]
+        lines += [
+            "",
+            "Best native candidate plaintext:",
+            "```",
+            preview + ("\n...[truncated]" if truncated else ""),
+            "```",
+        ]
+
+    if steps and steps[0].get("candidates"):
+        lines += ["", "Other native candidate previews:"]
+        for candidate in steps[0]["candidates"][1:4]:
+            rank = candidate.get("rank", "?")
+            score = candidate.get("anneal_score", candidate.get("score", "?"))
+            preview = candidate.get("preview", "")
+            lines.append(f"- Rank {rank}, score {score}: {preview[:240]}")
+
+    return "\n".join(lines)
+
+
 def _should_use_homophonic(cipher_text: CipherText) -> bool:
     return cipher_text.alphabet.size > 26 and len(cipher_text.words) <= 1
 

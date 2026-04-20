@@ -89,6 +89,7 @@ class RunArtifact:
     cipher_token_count: int = 0
     cipher_word_count: int = 0
     max_iterations: int = 0
+    automated_preflight: dict[str, Any] | None = None
 
     # What the agent produced
     plan: str = ""                              # first-turn text (or extended-thinking trace)

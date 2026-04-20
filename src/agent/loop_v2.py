@@ -415,6 +415,7 @@ def run_v2(
     max_iterations: int = 50,
     cipher_id: str = "unknown",
     prior_context: str | None = None,
+    automated_preflight: dict[str, Any] | None = None,
     verbose: bool = False,
     on_event: Any = None,  # optional callback(event_type: str, payload: dict)
 ) -> RunArtifact:
@@ -431,6 +432,7 @@ def run_v2(
         cipher_token_count=len(cipher_text.tokens),
         cipher_word_count=len(cipher_text.words),
         max_iterations=max_iterations,
+        automated_preflight=automated_preflight,
     )
 
     def emit(event: str, payload: dict) -> None:
@@ -450,6 +452,8 @@ def run_v2(
     pattern_dict = pattern.build_pattern_dictionary(word_list)
 
     workspace = Workspace(cipher_text=cipher_text)
+    if automated_preflight:
+        _install_automated_preflight_branch(workspace, automated_preflight)
     executor = WorkspaceToolExecutor(
         workspace=workspace,
         language=language,
@@ -460,6 +464,7 @@ def run_v2(
 
     # --- initial context ---
     ic_value = ic.index_of_coincidence(cipher_text.tokens, cipher_text.alphabet.size)
+    context_parts = [part for part in [prior_context, _preflight_context(automated_preflight)] if part]
     context_msg = initial_context(
         cipher_display=cipher_text.raw,
         alphabet_symbols=cipher_text.alphabet.symbols,
@@ -467,7 +472,7 @@ def run_v2(
         total_words=len(cipher_text.words),
         ic_value=ic_value,
         language=language,
-        prior_context=prior_context,
+        prior_context="\n\n".join(context_parts) if context_parts else None,
     )
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": context_msg}]
@@ -663,6 +668,33 @@ def _branch_snapshot_for(workspace: Workspace, name: str) -> Any:
         signals={},  # panel not computed here; caller can add post-hoc
         tags=list(branch.tags),
     )
+
+
+def _preflight_context(automated_preflight: dict[str, Any] | None) -> str | None:
+    if not automated_preflight:
+        return None
+    summary = automated_preflight.get("summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary
+    return None
+
+
+def _install_automated_preflight_branch(
+    workspace: Workspace,
+    automated_preflight: dict[str, Any],
+) -> None:
+    key = automated_preflight.get("key") or {}
+    if not isinstance(key, dict) or not key:
+        return
+    try:
+        workspace.fork("automated_preflight", from_branch="main")
+        parsed_key = {int(ct_id): int(pt_id) for ct_id, pt_id in key.items()}
+        workspace.set_full_key("automated_preflight", parsed_key)
+        workspace.tag("automated_preflight", "automated_preflight")
+        workspace.tag("automated_preflight", "no_llm")
+    except Exception:  # noqa: BLE001
+        # A malformed native preflight should never prevent the LLM run.
+        return
 
 
 def _best_branch_for_auto_declare(
