@@ -60,7 +60,24 @@ or a benchmark data issue.
 - [x] Upgrade English simple-substitution automated solving with bijective continuous n-gram annealing.
 - [x] Add a chunkable automated-only parity matrix runner for seed, length, family, benchmark split, and external-tool comparisons.
 - [ ] Add model provenance and acquisition docs for continuous n-gram models.
+  - Current high-quality continuous model support relies on a local Zenith English `zenith-model.csv` under `other_tools/`, which is git-ignored and not redistributed with Decipher.
+  - Document that the Zenith model is optional but strongly recommended for English homophonic parity, and that fallback word-list models are weaker.
+  - Record expected model path(s), version/source, order, row count, checksum, and artifact metadata.
+  - Resolve redistribution status before bundling any Zenith model files: confirm whether `zenith-model.csv`/`.array.bin` are covered by Zenith GPLv3 and whether derived n-gram statistics from BNC, Leipzig English 2005, MASC, and Blog Authorship Corpus can be redistributed.
+  - Decide whether Decipher should bundle models, download them, or require users to provide them locally.
+- [ ] Add a model registry/config layer for continuous n-gram models.
+  - Support named models such as `en_zenith_5gram`.
+  - Track language, order, source, license/provenance, path, checksum, row count, and redistribution status.
+  - Ensure run artifacts record exactly which model was used.
 - [ ] Add or train language-specific continuous models for Latin, German, French, and Italian.
+  - Identify corpus sources and licenses for each language.
+  - Normalize corpora consistently with benchmark plaintext rules.
+  - Produce reproducible build configs and metadata sidecars.
+  - Compare trained models against current word-list fallbacks.
+- [ ] Add Decipher-native tooling to train/export continuous n-gram models.
+  - Input: plain-text corpus directory.
+  - Output: supported CSV or compact binary format plus metadata sidecar.
+  - Include tests for loader compatibility and scoring reproducibility.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.
 - [ ] Assess Borg and Copiale failures by tool gap: language model, context loading, nomenclator/codeword behavior, historical spelling, or prompt choice.
 - [ ] Assess external-tool cipher families and explicitly mark unsupported families rather than letting the agent fake confidence.

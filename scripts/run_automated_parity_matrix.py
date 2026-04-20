@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 """Run chunkable no-LLM automated parity matrices.
 
-This harness is intentionally no-LLM by default. Synthetic tests are built only
-from plaintext already present in ``testgen_cache``; cache misses are skipped
-unless ``--fail-on-cache-miss`` is requested.
+This harness keeps solving no-LLM. Synthetic tests are built only from
+plaintext already present in ``testgen_cache`` by default; cache misses are
+skipped unless ``--fail-on-cache-miss`` is requested. If ``--allow-generate``
+is set, cache misses may use an LLM to generate plaintext, but deciphering
+still runs through automated non-agentic solvers only.
 """
 from __future__ import annotations
 
 import argparse
 import csv
 import json
+import os
 import sys
 import time
 from dataclasses import dataclass
@@ -91,6 +94,14 @@ def main() -> None:
         "--fail-on-cache-miss",
         action="store_true",
         help="Fail instead of skipping synthetic specs whose plaintext is not cached.",
+    )
+    parser.add_argument(
+        "--allow-generate",
+        action="store_true",
+        help=(
+            "Allow LLM plaintext generation on synthetic cache miss. "
+            "Solving still runs in automated no-LLM mode."
+        ),
     )
     parser.add_argument(
         "--benchmark-root",
@@ -210,9 +221,17 @@ def build_cases(args: argparse.Namespace) -> list[MatrixCase]:
             msg = f"cache miss for {spec}"
             if args.fail_on_cache_miss:
                 raise SystemExit(msg)
-            print(f"Skipping synthetic spec: {msg}", file=sys.stderr)
-            continue
-        test_data = build_test_case(spec, cache, api_key="")
+            if not args.allow_generate:
+                print(f"Skipping synthetic spec: {msg}", file=sys.stderr)
+                continue
+            print(
+                f"Generating plaintext for synthetic spec: {spec} "
+                "(LLM generation only; solver remains no-LLM)",
+                file=sys.stderr,
+            )
+            test_data = build_test_case(spec, cache, api_key=_generation_api_key())
+        else:
+            test_data = build_test_case(spec, cache, api_key="")
         cases.append(MatrixCase(source="synthetic", family=family, test_data=test_data, spec=spec))
 
     if args.benchmark_split:
@@ -268,6 +287,24 @@ def synthetic_specs(args: argparse.Namespace) -> list[tuple[TestSpec, str]]:
             )
             out.append((spec, f"preset:{preset.value}"))
     return out
+
+
+def _generation_api_key() -> str:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if key:
+        return key
+    try:
+        import keyring
+        key = keyring.get_password("decipher", "anthropic_api_key")
+        if key:
+            return key
+    except Exception:
+        pass
+    raise SystemExit(
+        "Synthetic plaintext generation requires ANTHROPIC_API_KEY or the "
+        "macOS Keychain entry service=decipher account=anthropic_api_key. "
+        "Omit --allow-generate to skip cache misses."
+    )
 
 
 def parse_int_ranges(value: str) -> list[int]:

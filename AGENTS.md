@@ -168,10 +168,15 @@ The hardest synthetic preset (`synth_en_200honb_s6`) is the current stress case.
 ### 2. 🔄 **Homophonic search quality**
 `search_homophonic_anneal` is now available and should be the first automated search tool for homophonic no-boundary ciphers. It has quality gates, diversity-aware scoring, top-N candidates, and automated seed retries. Continue seed sweeps against Zenith and zkdecrypto-lite, and classify remaining failures as tool weakness vs agent wrong-tool choice. Zodiac-class short homophonic texts remain below Zenith parity and are the clearest current native-search gap.
 
-### 3. 🎭 **Historical Copiale/Borg generalization**
+### 3. 📚 **Continuous n-gram model provenance**
+High-quality English homophonic solving currently auto-discovers Zenith's local English `zenith-model.csv` from `other_tools/`, which is git-ignored and not redistributed with Decipher. Treat this as an optional local dependency until provenance is resolved. Before bundling or publishing model files, confirm the license status of the Zenith model itself and of its derived corpus statistics. Zenith documents the English model as trained from BNC XML, Leipzig English 2005, MASC, and Blog Authorship Corpus; those upstream corpus terms must be checked.
+
+Decipher does not currently have comparable continuous corpus n-gram files for Latin, German, French, or Italian. It has word-list fallbacks and dictionaries, but those are weaker than the Zenith-style English model. Future work should add a model registry with language, order, source, checksum, license/provenance, row count, and redistribution status, and should record the selected model in run artifacts.
+
+### 4. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress.
 
-### 4. 🔧 **Model selection**
+### 5. 🔧 **Model selection**
 Sonnet 4.6 performs best on historical manuscript analysis tasks. Opus 4.7 is more
 conservative with encoded historical text. See Model Selection section for guidance.
 
