@@ -512,6 +512,19 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "integer",
                     "description": "Optional deterministic random seed.",
                 },
+                "top_n": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Return the top N distinct epoch candidates.",
+                },
+                "write_candidate_branches": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "If true, write non-best candidates to sibling branches "
+                        "named <branch>_cand2, <branch>_cand3, ..."
+                    ),
+                },
             },
             "required": ["branch"],
         },
@@ -2408,6 +2421,8 @@ class WorkspaceToolExecutor:
         distribution_weight = float(args.get("distribution_weight", 4.0))
         seed = args.get("seed")
         seed = int(seed) if seed is not None else None
+        top_n = max(1, int(args.get("top_n", 1)))
+        write_candidate_branches = bool(args.get("write_candidate_branches", False))
 
         ws = self.workspace
         branch = ws.get_branch(branch_name)
@@ -2447,11 +2462,28 @@ class WorkspaceToolExecutor:
             t_end=t_end,
             distribution_weight=distribution_weight,
             seed=seed,
+            top_n=top_n,
         )
 
         ws.set_full_key(branch_name, result.key)
         after = self._compute_quick_scores(branch_name)
         distribution = self._tool_observe_homophone_distribution({"branch": branch_name})
+        candidates = []
+        for rank, candidate in enumerate(result.candidates, start=1):
+            candidate_branch = branch_name if rank == 1 else None
+            if write_candidate_branches and rank > 1:
+                candidate_branch = f"{branch_name}_cand{rank}"
+                if not ws.has_branch(candidate_branch):
+                    ws.fork(candidate_branch, from_branch=branch_name)
+                ws.set_full_key(candidate_branch, candidate.key)
+            candidates.append({
+                "rank": rank,
+                "branch": candidate_branch,
+                "epoch": candidate.epoch,
+                "anneal_score": round(candidate.normalized_score, 4),
+                "raw_anneal_score": round(candidate.score, 2),
+                "decoded_preview": candidate.plaintext[:1200],
+            })
         return {
             "branch": branch_name,
             "solver": "native_homophonic_anneal",
@@ -2472,6 +2504,9 @@ class WorkspaceToolExecutor:
             "fixed_symbols": result.fixed_symbols,
             "cipher_symbols": result.metadata.get("cipher_symbols"),
             "distribution_weight": result.metadata.get("distribution_weight"),
+            "top_n": top_n,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
             "homophone_warnings": distribution.get("warnings", []),
             "note": (

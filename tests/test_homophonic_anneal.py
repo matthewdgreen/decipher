@@ -44,9 +44,13 @@ def test_homophonic_simulated_anneal_solves_tiny_seeded_cipher():
         epochs=6,
         sampler_iterations=300,
         seed=3,
+        top_n=3,
     )
 
     assert result.plaintext == plaintext
+    assert result.candidates
+    assert result.candidates[0].plaintext == plaintext
+    assert len(result.candidates) <= 3
 
 
 def test_search_homophonic_anneal_tool_writes_complete_branch(monkeypatch):
@@ -75,6 +79,35 @@ def test_search_homophonic_anneal_tool_writes_complete_branch(monkeypatch):
     assert ex.workspace.is_complete("main")
     assert len(ex.workspace.get_branch("main").key) == 3
     assert "decoded_preview" in out
+
+
+def test_search_homophonic_anneal_can_return_candidate_branches():
+    raw = "01 02 03 01 02 03"
+    alphabet = Alphabet(["01", "02", "03"])
+    ct = CipherText(raw=raw, alphabet=alphabet, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"ABC"},
+        word_list=["ABCABCABCABC", "ACBACBACB"],
+        pattern_dict={},
+    )
+
+    out = ex._tool_search_homophonic_anneal({
+        "branch": "main",
+        "epochs": 3,
+        "sampler_iterations": 20,
+        "order": 3,
+        "model_path": "word_list",
+        "seed": 2,
+        "top_n": 3,
+        "write_candidate_branches": True,
+    })
+
+    assert out["candidate_count"] >= 1
+    assert out["candidates"][0]["branch"] == "main"
+    for candidate in out["candidates"][1:]:
+        assert candidate["branch"] in ex.workspace.branch_names()
 
 
 def test_load_zenith_csv_model_reads_requested_order(tmp_path):

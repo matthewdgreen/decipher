@@ -45,6 +45,15 @@ class ContinuousNGramModel:
 
 
 @dataclass
+class HomophonicCandidate:
+    plaintext: str
+    key: dict[int, int]
+    score: float
+    normalized_score: float
+    epoch: int
+
+
+@dataclass
 class HomophonicAnnealResult:
     plaintext: str
     key: dict[int, int]
@@ -57,6 +66,7 @@ class HomophonicAnnealResult:
     elapsed_seconds: float
     fixed_symbols: int = 0
     metadata: dict[str, object] = field(default_factory=dict)
+    candidates: list[HomophonicCandidate] = field(default_factory=list)
 
 
 def build_continuous_ngram_model(
@@ -195,6 +205,7 @@ def homophonic_simulated_anneal(
     t_end: float = 0.006,
     distribution_weight: float = 4.0,
     seed: int | None = None,
+    top_n: int = 1,
 ) -> HomophonicAnnealResult:
     """Run symbol-reassignment simulated annealing for homophonic ciphers.
 
@@ -221,6 +232,7 @@ def homophonic_simulated_anneal(
     accepted_moves = 0
     improved_moves = 0
     ngram_count = max(1, len(tokens) - model.order + 1)
+    candidate_pool: list[HomophonicCandidate] = []
 
     for epoch in range(max(1, epochs)):
         key = _initial_key(
@@ -251,6 +263,9 @@ def homophonic_simulated_anneal(
             ngram_count,
             distribution_weight,
         )
+        epoch_best_total = current_total
+        epoch_best_key = dict(key)
+        epoch_best_chars = list(chars)
 
         if current_total > best_total:
             best_total = current_total
@@ -312,9 +327,30 @@ def homophonic_simulated_anneal(
                         best_total = current_total
                         best_key = dict(key)
                         best_chars = list(chars)
+                    if current_total > epoch_best_total:
+                        epoch_best_total = current_total
+                        epoch_best_key = dict(key)
+                        epoch_best_chars = list(chars)
                 else:
                     for pos in changed_positions:
                         chars[pos] = current_letter
+
+        candidate_pool.append(HomophonicCandidate(
+            plaintext="".join(epoch_best_chars),
+            key=epoch_best_key,
+            score=epoch_best_total,
+            normalized_score=epoch_best_total / ngram_count,
+            epoch=epoch + 1,
+        ))
+
+    candidate_pool.append(HomophonicCandidate(
+        plaintext="".join(best_chars),
+        key=best_key,
+        score=best_total,
+        normalized_score=best_total / ngram_count,
+        epoch=0,
+    ))
+    candidates = _top_candidates(candidate_pool, max(1, top_n))
 
     return HomophonicAnnealResult(
         plaintext="".join(best_chars),
@@ -333,6 +369,7 @@ def homophonic_simulated_anneal(
             "cipher_symbols": len(symbol_ids),
             "distribution_weight": distribution_weight,
         },
+        candidates=candidates,
     )
 
 
@@ -432,3 +469,19 @@ def _affected_windows(positions: list[int], text_len: int, order: int) -> list[i
         hi = min(pos, max_start)
         starts.update(range(lo, hi + 1))
     return sorted(starts)
+
+
+def _top_candidates(
+    candidates: list[HomophonicCandidate],
+    top_n: int,
+) -> list[HomophonicCandidate]:
+    by_plaintext: dict[str, HomophonicCandidate] = {}
+    for candidate in candidates:
+        existing = by_plaintext.get(candidate.plaintext)
+        if existing is None or candidate.score > existing.score:
+            by_plaintext[candidate.plaintext] = candidate
+    return sorted(
+        by_plaintext.values(),
+        key=lambda c: c.score,
+        reverse=True,
+    )[:top_n]

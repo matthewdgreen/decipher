@@ -49,7 +49,7 @@ or a benchmark data issue.
 ### Priority 3: Native Tool Parity
 
 - [ ] Harden `search_homophonic_anneal` with seed sweeps against Zenith and zkdecrypto-lite.
-- [ ] Add top-N candidate support for homophonic annealing.
+- [x] Add top-N candidate support for homophonic annealing.
 - [ ] Add model provenance and acquisition docs for continuous n-gram models.
 - [ ] Add or train language-specific continuous models for Latin, German, French, and Italian.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.
