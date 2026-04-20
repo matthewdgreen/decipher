@@ -76,6 +76,7 @@ SUITE: list[TestSpec] = [
 class SuiteResult:
     spec: TestSpec
     test_id: str
+    run_mode: str
     status: str
     char_accuracy: float
     word_accuracy: float
@@ -261,6 +262,7 @@ def _build_report_text(sr: SuiteResult, run_info: dict) -> str:
         f"Git commit:  {run_info['git_description']}"
         + (" (UNCOMMITTED CHANGES)" if run_info["git_dirty"] else ""),
         f"Model:       {run_info['model']}",
+        f"Run mode:    {sr.run_mode}",
         f"Language:    {sr.spec.language}",
         f"Preset:      ~{sr.spec.approx_length} words, "
         f"{'word-boundary' if sr.spec.word_boundaries else 'no-boundary'}",
@@ -280,7 +282,7 @@ def _build_report_text(sr: SuiteResult, run_info: dict) -> str:
         f"Iterations:  {sr.iterations}",
         f"Elapsed:     {sr.elapsed:.1f}s",
         f"Tokens:      {sr.total_tokens:,}",
-        f"Cost:        ${sr.estimated_cost_usd:.4f}",
+        f"Cost:        {_format_cost(sr)}",
         "",
     ]
 
@@ -591,6 +593,7 @@ def run_suite(args: argparse.Namespace) -> None:
         sr = SuiteResult(
             spec=spec,
             test_id=result.test_id,
+            run_mode="automated no-LLM" if args.automated_only else "agent LLM",
             status=result.status,
             char_accuracy=score.char_accuracy,
             word_accuracy=score.word_accuracy,
@@ -609,11 +612,11 @@ def run_suite(args: argparse.Namespace) -> None:
 
         conf_str = f"{sr.self_confidence:.2f}" if sr.self_confidence is not None else "n/a"
         word_str = f"{sr.word_accuracy:.1%}" if score.total_words > 1 else "N/A"
-        cost_str = f"${sr.estimated_cost_usd:.3f}" if sr.estimated_cost_usd else "$0.000"
+        cost_str = _format_cost(sr)
         tok_str = f"{sr.total_tokens // 1000}K" if sr.total_tokens >= 1000 else str(sr.total_tokens)
         print(f"    → {sr.status}  char={sr.char_accuracy:.1%}  word={word_str}  "
               f"conf={conf_str}  iter={sr.iterations}  {sr.elapsed:.0f}s  "
-              f"tokens={tok_str}  cost={cost_str}")
+              f"tokens={tok_str}  cost={cost_str}  mode={sr.run_mode}")
 
         if sr.tool_requests:
             print(f"    ⚑ {len(sr.tool_requests)} tool request(s) filed:")
@@ -671,28 +674,41 @@ def _print_report(
 
     # ------------------------------------------------------------------ agent
     print(sep)
-    print("AGENT RESULTS" if compare else "SUITE RESULTS")
+    if compare:
+        print("AGENT RESULTS")
+    elif results and all(r.run_mode == "automated no-LLM" for r in results):
+        print("SUITE RESULTS — AUTOMATED NO-LLM")
+    else:
+        print("SUITE RESULTS")
     print(sep)
     print()
 
-    print(f"  {'Preset':<10} {'Lang':>4} {'Bounds':<14} {'Status':<10} "
-          f"{'Char%':>6} {'Word%':>6} {'Conf':>5} {'Iter':>4} {'Time':>6} {'Cost':>8}")
-    print("  " + "-" * 80)
+    print(f"  {'Preset':<10} {'Mode':<16} {'Lang':>4} {'Bounds':<14} {'Status':<10} "
+          f"{'Char%':>6} {'Word%':>6} {'Conf':>5} {'Iter':>4} {'Time':>6} {'Cost':>22}")
+    print("  " + "-" * 108)
     for sr in results:
         preset_name = _preset_name(sr.spec)
         boundary_label = "word-bound" if sr.spec.word_boundaries else "no-bound"
         conf_str = f"{sr.self_confidence:.2f}" if sr.self_confidence is not None else "n/a"
         word_str = f"{sr.word_accuracy:>5.1%}" if has_word_boundaries(sr.ground_truth) else "  N/A"
-        cost_str = f"${sr.estimated_cost_usd:.3f}"
-        print(f"  {preset_name:<10} {sr.spec.language:>4} {boundary_label:<14} {sr.status:<10} "
-              f"{sr.char_accuracy:>5.1%} {word_str} {conf_str:>5} {sr.iterations:>4} {sr.elapsed:>5.0f}s {cost_str:>8}")
+        cost_str = _format_cost(sr)
+        print(f"  {preset_name:<10} {sr.run_mode:<16} {sr.spec.language:>4} "
+              f"{boundary_label:<14} {sr.status:<10} {sr.char_accuracy:>5.1%} "
+              f"{word_str} {conf_str:>5} {sr.iterations:>4} {sr.elapsed:>5.0f}s "
+              f"{cost_str:>22}")
 
     solved = sum(1 for r in results if r.status == "solved")
     avg_char = sum(r.char_accuracy for r in results) / len(results)
     total_cost = sum(r.estimated_cost_usd for r in results)
-    print("  " + "-" * 80)
-    print(f"  {'AVERAGE':<10} {'':>4} {'':14} {f'{solved}/{len(results)} solved':<10} "
-          f"{avg_char:>5.1%}{'':>21} ${total_cost:.3f}")
+    all_automated = all(r.run_mode == "automated no-LLM" for r in results)
+    mode_label = "automated no-LLM" if all_automated else ""
+    total_cost_str = f"${total_cost:.3f}"
+    if all_automated:
+        total_cost_str = "$0.00 (no LLM access)"
+    print("  " + "-" * 108)
+    print(f"  {'AVERAGE':<10} {mode_label:<16} {'':>4} {'':<14} "
+          f"{f'{solved}/{len(results)} solved':<10} {avg_char:>5.1%} "
+          f"{'':>6} {'':>5} {'':>4} {'':>6} {total_cost_str:>22}")
     print()
 
     # --------------------------------------------------------------- baseline
@@ -819,6 +835,13 @@ def _preset_name(spec: TestSpec) -> str:
                 and p.get("homophonic", False) == spec.homophonic):
             return preset.value
     return f"custom-{spec.approx_length}"
+
+
+def _format_cost(sr: SuiteResult) -> str:
+    cost = f"${sr.estimated_cost_usd:.3f}"
+    if sr.run_mode == "automated no-LLM":
+        return "$0.00 (no LLM access)"
+    return cost
 
 
 def _default_seed_for_preset(preset: DifficultyPreset) -> int:
