@@ -27,6 +27,15 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--automated",
+        action="append",
+        default=[],
+        help=(
+            "Automated-only/no-LLM artifact file/dir/glob. Defaults to "
+            "artifacts/automated_only/**/*.json when present."
+        ),
+    )
+    parser.add_argument(
         "--benchmark-root",
         default="../cipher_benchmark/benchmark",
         help="Benchmark root used to attach split metadata.",
@@ -40,9 +49,11 @@ def main() -> None:
 
     agent_paths = args.agent or ["artifacts/**/*.json"]
     external_paths = args.external or ["artifacts/external_baselines/**/artifact.json"]
+    automated_paths = args.automated or ["artifacts/automated_only/**/*.json"]
     rows = build_dashboard(
         agent_paths=agent_paths,
         external_paths=external_paths,
+        automated_paths=automated_paths,
         benchmark_root=args.benchmark_root,
     )
     if args.format == "json":

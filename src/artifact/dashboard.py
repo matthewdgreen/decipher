@@ -30,6 +30,7 @@ class DashboardRow:
     test_id: str
     family: str
     external_best: RunSummary | None = None
+    automated_best: RunSummary | None = None
     native_best: RunSummary | None = None
     full_agent_best: RunSummary | None = None
     gap_labels: dict[str, int] = field(default_factory=dict)
@@ -41,6 +42,7 @@ class DashboardRow:
             "test_id": self.test_id,
             "family": self.family,
             "external_best": _run_to_dict(self.external_best),
+            "automated_best": _run_to_dict(self.automated_best),
             "native_best": _run_to_dict(self.native_best),
             "full_agent_best": _run_to_dict(self.full_agent_best),
             "gap_labels": self.gap_labels,
@@ -52,6 +54,7 @@ class DashboardRow:
 def build_dashboard(
     agent_paths: list[str | Path],
     external_paths: list[str | Path] | None = None,
+    automated_paths: list[str | Path] | None = None,
     benchmark_root: str | Path | None = None,
 ) -> list[DashboardRow]:
     """Build parity rows from artifact files/directories/globs."""
@@ -81,6 +84,17 @@ def build_dashboard(
             ),
         )
         row.external_best = _pick_best(row.external_best, summary)
+
+    for summary in load_automated_summaries(automated_paths or []):
+        row = rows.setdefault(
+            summary.test_id,
+            DashboardRow(
+                test_id=summary.test_id,
+                family=_family_for(summary.test_id, metadata.get(summary.test_id, {})),
+                metadata=metadata.get(summary.test_id, {}),
+            ),
+        )
+        row.automated_best = _pick_best(row.automated_best, summary)
 
     for row in rows.values():
         row.gap_labels = dict(row.full_agent_best.labels) if row.full_agent_best else {}
@@ -138,6 +152,39 @@ def load_external_summaries(paths: list[str | Path]) -> list[RunSummary]:
     return summaries
 
 
+def load_automated_summaries(paths: list[str | Path]) -> list[RunSummary]:
+    """Load future no-LLM/automated-only artifacts.
+
+    The planned automated mode may emit either a small result artifact with
+    ``run_mode: automated_only`` or a RunArtifact-like object with the same
+    marker. Supporting both shapes now keeps the dashboard stable when that
+    CLI flag lands.
+    """
+    summaries: list[RunSummary] = []
+    for path in _expand_paths(paths):
+        try:
+            artifact = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not _looks_like_automated_artifact(artifact):
+            continue
+        summaries.append(RunSummary(
+            test_id=str(artifact.get("test_id") or artifact.get("cipher_id") or path.parent.name),
+            source="automated_only",
+            status=str(artifact.get("status") or ""),
+            char_accuracy=_float_or_none(artifact.get("char_accuracy")),
+            word_accuracy=_float_or_none(artifact.get("word_accuracy")),
+            solver=str(artifact.get("solver") or artifact.get("run_mode") or "automated_only"),
+            path=str(path),
+            elapsed_seconds=_float_or_none(
+                artifact.get("elapsed") or artifact.get("elapsed_seconds")
+            ),
+            iterations=_int_or_none(artifact.get("iterations") or artifact.get("iterations_used")),
+            cost_usd=_float_or_none(artifact.get("estimated_cost_usd")),
+        ))
+    return summaries
+
+
 def load_split_metadata(benchmark_root: str | Path) -> dict[str, dict[str, Any]]:
     root = Path(benchmark_root)
     splits_dir = root / "splits"
@@ -161,8 +208,8 @@ def load_split_metadata(benchmark_root: str | Path) -> dict[str, dict[str, Any]]
 
 def render_markdown(rows: list[DashboardRow]) -> str:
     lines = [
-        "| Test ID | Family | External Best | Native Best | Full Agent | Gap Labels | Next Action |",
-        "|---|---|---:|---:|---:|---|---|",
+        "| Test ID | Family | External Best | Automated Only | Native Best | Full Agent | Gap Labels | Next Action |",
+        "|---|---|---:|---:|---:|---:|---|---|",
     ]
     for row in rows:
         lines.append(
@@ -171,6 +218,7 @@ def render_markdown(rows: list[DashboardRow]) -> str:
                 row.test_id,
                 row.family,
                 _format_run(row.external_best),
+                _format_run(row.automated_best),
                 _format_run(row.native_best),
                 _format_run(row.full_agent_best),
                 _format_labels(row.gap_labels),
@@ -211,6 +259,13 @@ def _looks_like_agent_artifact(artifact: dict[str, Any]) -> bool:
 
 def _looks_like_external_artifact(artifact: dict[str, Any]) -> bool:
     return "test_id" in artifact and "solver" in artifact and "command" in artifact
+
+
+def _looks_like_automated_artifact(artifact: dict[str, Any]) -> bool:
+    run_mode = artifact.get("run_mode") or artifact.get("mode") or artifact.get("source")
+    if run_mode in {"automated_only", "no_llm", "non_llm"}:
+        return True
+    return bool(artifact.get("automated_only") is True)
 
 
 def _is_external_artifact(path: Path) -> bool:
@@ -297,13 +352,20 @@ def _next_action(row: DashboardRow) -> str:
         return "inspect artifact labels"
 
     agent = row.full_agent_best.char_accuracy if row.full_agent_best else None
+    automated = row.automated_best.char_accuracy if row.automated_best else None
     external = row.external_best.char_accuracy if row.external_best else None
-    if agent is None and external is None:
-        return "run external and agent baselines"
+    if agent is None and automated is None and external is None:
+        return "run external, automated, and agent baselines"
+    if automated is None:
+        return "run automated-only baseline"
     if agent is None:
         return "run full agent"
     if external is None:
         return "run external baseline"
+    if automated is not None and automated + 0.01 < external:
+        return "classify automated parity gap"
+    if automated is not None and agent + 0.01 < automated:
+        return "classify agent-vs-automated gap"
     if agent + 0.01 < external:
         return "classify parity gap"
     return "parity ok"
@@ -343,4 +405,10 @@ def _run_to_dict(run: RunSummary | None) -> dict[str, Any] | None:
 def _float_or_none(value: Any) -> float | None:
     if isinstance(value, (int, float)):
         return float(value)
+    return None
+
+
+def _int_or_none(value: Any) -> int | None:
+    if isinstance(value, int):
+        return value
     return None
