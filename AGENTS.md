@@ -234,6 +234,19 @@ PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
 PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
   --preset hardest --automated-only
 
+# Chunkable no-LLM automated parity matrix
+PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
+  --presets tiny medium hard hardest \
+  --artifact-dir artifacts/automated_parity_matrix/default
+
+# Example small chunk: seed sweep, first shard only
+PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
+  --families simple-wb simple-nb homophonic-nb \
+  --lengths 40 200 \
+  --seeds 1-20 \
+  --shard-count 4 --shard-index 0 \
+  --artifact-dir artifacts/automated_parity_matrix/shard0
+
 # No-LLM crack from canonical text
 echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
   --language la --canonical --automated-only
