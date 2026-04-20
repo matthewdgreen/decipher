@@ -52,6 +52,7 @@ or a benchmark data issue.
 - [x] Add top-N candidate support for homophonic annealing.
 - [x] Add an automated-only/no-LLM CLI mode that runs native techniques and writes zero-cost artifacts.
 - [x] Run no-LLM automated preflight before LLM iteration 1 by default, with a branch and prompt summary.
+- [x] Upgrade English simple-substitution automated solving with bijective continuous n-gram annealing.
 - [ ] Add model provenance and acquisition docs for continuous n-gram models.
 - [ ] Add or train language-specific continuous models for Latin, German, French, and Italian.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.

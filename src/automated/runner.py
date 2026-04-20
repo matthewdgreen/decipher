@@ -384,6 +384,9 @@ def _run_substitution(
     cipher_text: CipherText,
     language: str,
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    if language == "en":
+        return _run_substitution_continuous(cipher_text, language)
+
     session = Session()
     session.set_cipher_text(cipher_text)
     session.plaintext_alphabet = Alphabet.standard_english()
@@ -436,6 +439,54 @@ def _run_substitution(
         "elapsed_seconds": round(time.time() - started, 3),
     }
     return "native_substitution_anneal", best_key, best_decryption, step
+
+
+def _run_substitution_continuous(
+    cipher_text: CipherText,
+    language: str,
+) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    pt_alpha = Alphabet.standard_english()
+    plaintext_ids = list(range(pt_alpha.size))
+    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
+    word_list = _word_list(language)
+    model, model_note = _homophonic_model(language, word_list)
+    initial_key = _frequency_key(cipher_text, language, pt_alpha)
+    result = homophonic.substitution_simulated_anneal(
+        tokens=list(cipher_text.tokens),
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        model=model,
+        initial_key=initial_key,
+        epochs=12,
+        sampler_iterations=7000,
+        distribution_weight=1.0,
+        seed=0,
+        top_n=3,
+    )
+    step = {
+        "name": "search_substitution_continuous_anneal",
+        "solver": "native_substitution_continuous_anneal",
+        "model_source": model.source,
+        "model_note": model_note,
+        "anneal_score": round(result.normalized_score, 4),
+        "elapsed_seconds": round(result.elapsed_seconds, 3),
+        "epochs": result.epochs,
+        "sampler_iterations": result.sampler_iterations,
+        "candidates": [
+            {
+                "rank": i + 1,
+                "anneal_score": round(candidate.normalized_score, 4),
+                "preview": candidate.plaintext[:300],
+            }
+            for i, candidate in enumerate(result.candidates)
+        ],
+    }
+    session = Session()
+    session.set_cipher_text(cipher_text)
+    session.plaintext_alphabet = pt_alpha
+    session.set_full_key(result.key)
+    decryption = session.apply_key()
+    return "native_substitution_continuous_anneal", result.key, decryption, step
 
 
 def _frequency_key(

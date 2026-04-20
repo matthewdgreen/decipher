@@ -6,6 +6,7 @@ from analysis.homophonic import (
     build_continuous_ngram_model,
     homophonic_simulated_anneal,
     load_zenith_csv_model,
+    substitution_simulated_anneal,
 )
 from agent.tools_v2 import WorkspaceToolExecutor
 from models.alphabet import Alphabet
@@ -51,6 +52,36 @@ def test_homophonic_simulated_anneal_solves_tiny_seeded_cipher():
     assert result.candidates
     assert result.candidates[0].plaintext == plaintext
     assert len(result.candidates) <= 3
+
+
+def test_substitution_simulated_anneal_keeps_bijective_key():
+    plaintext = "THEOLDTHEOLDTHEOLD"
+    cipher_for_plain = {
+        "T": "X",
+        "H": "Y",
+        "E": "Z",
+        "O": "A",
+        "L": "B",
+        "D": "C",
+    }
+    ciphertext = "".join(cipher_for_plain[ch] for ch in plaintext)
+    alphabet = Alphabet(sorted(set(ciphertext)))
+    tokens = [alphabet.id_for(ch) for ch in ciphertext]
+    pt_alpha = Alphabet(list("DEHLOT"))
+    model = build_continuous_ngram_model([plaintext] * 30, order=3)
+
+    result = substitution_simulated_anneal(
+        tokens=tokens,
+        plaintext_ids=list(range(pt_alpha.size)),
+        id_to_letter={i: pt_alpha.symbol_for(i) for i in range(pt_alpha.size)},
+        model=model,
+        epochs=4,
+        sampler_iterations=300,
+        seed=2,
+    )
+
+    assert result.plaintext == plaintext
+    assert len(set(result.key.values())) == len(result.key)
 
 
 def test_search_homophonic_anneal_tool_writes_complete_branch(monkeypatch):

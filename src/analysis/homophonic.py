@@ -373,6 +373,194 @@ def homophonic_simulated_anneal(
     )
 
 
+def substitution_simulated_anneal(
+    tokens: list[int],
+    plaintext_ids: list[int],
+    id_to_letter: dict[int, str],
+    model: ContinuousNGramModel,
+    initial_key: dict[int, int] | None = None,
+    epochs: int = 20,
+    sampler_iterations: int = 8000,
+    t_start: float = 0.018,
+    t_end: float = 0.003,
+    distribution_weight: float = 1.0,
+    seed: int | None = None,
+    top_n: int = 1,
+) -> HomophonicAnnealResult:
+    """Run bijective substitution annealing over continuous text.
+
+    Unlike ``homophonic_simulated_anneal``, this keeps cipher-symbol mappings
+    one-to-one. Moves either swap two currently assigned plaintext letters or
+    replace one assignment with a currently unused plaintext letter, which is
+    essential when the ciphertext uses fewer than 26 symbols.
+    """
+    rng = random.Random(seed)
+    t0 = time.time()
+    symbol_ids = sorted(set(tokens))
+    occurrences = _occurrence_map(tokens)
+    plaintext_letters = [id_to_letter[pid] for pid in plaintext_ids]
+
+    best_key: dict[int, int] = {}
+    best_chars: list[str] = []
+    best_total = float("-inf")
+    accepted_moves = 0
+    improved_moves = 0
+    ngram_count = max(1, len(tokens) - model.order + 1)
+    candidate_pool: list[HomophonicCandidate] = []
+
+    for epoch in range(max(1, epochs)):
+        key = _initial_bijective_key(
+            symbol_ids,
+            plaintext_ids,
+            rng,
+            initial_key if epoch == 0 else None,
+        )
+        chars = [id_to_letter[key[token]] for token in tokens]
+        window_scores = _initial_window_scores(chars, model)
+        char_counts = Counter(chars)
+        current_ngram_total = sum(window_scores)
+        current_distribution_score = _letter_distribution_score(
+            char_counts,
+            len(chars),
+            plaintext_letters,
+        )
+        current_total = _combined_score(
+            current_ngram_total,
+            current_distribution_score,
+            ngram_count,
+            distribution_weight,
+        )
+        epoch_best_total = current_total
+        epoch_best_key = dict(key)
+        epoch_best_chars = list(chars)
+
+        if current_total > best_total:
+            best_total = current_total
+            best_key = dict(key)
+            best_chars = list(chars)
+
+        temp_span = t_start - t_end
+        for step in range(max(1, sampler_iterations)):
+            ratio = (sampler_iterations - step) / max(1, sampler_iterations)
+            temp = temp_end_safe(t_end + temp_span * ratio)
+
+            if len(symbol_ids) >= 2 and rng.random() < 0.75:
+                sid_a, sid_b = rng.sample(symbol_ids, 2)
+                old_a, old_b = key[sid_a], key[sid_b]
+                proposal = {sid_a: old_b, sid_b: old_a}
+            else:
+                used = set(key.values())
+                unused = [pid for pid in plaintext_ids if pid not in used]
+                if not unused:
+                    continue
+                sid_a = rng.choice(symbol_ids)
+                old_a = key[sid_a]
+                new_a = rng.choice(unused)
+                if new_a == old_a:
+                    continue
+                proposal = {sid_a: new_a}
+
+            affected_positions: list[int] = []
+            old_letters: dict[int, str] = {}
+            for sid in proposal:
+                affected_positions.extend(occurrences[sid])
+                old_letters[sid] = id_to_letter[key[sid]]
+            affected = _affected_windows(affected_positions, len(chars), model.order)
+            old_sum = sum(window_scores[i] for i in affected)
+
+            for sid, new_pt in proposal.items():
+                new_letter = id_to_letter[new_pt]
+                for pos in occurrences[sid]:
+                    chars[pos] = new_letter
+
+            new_scores = {i: _score_window(chars, i, model) for i in affected}
+            new_sum = sum(new_scores.values())
+            proposal_ngram_total = current_ngram_total - old_sum + new_sum
+
+            proposal_counts = char_counts.copy()
+            for sid, new_pt in proposal.items():
+                old_letter = old_letters[sid]
+                new_letter = id_to_letter[new_pt]
+                changed_count = len(occurrences[sid])
+                proposal_counts[old_letter] -= changed_count
+                proposal_counts[new_letter] += changed_count
+            proposal_distribution_score = _letter_distribution_score(
+                proposal_counts,
+                len(chars),
+                plaintext_letters,
+            )
+            proposal_total = _combined_score(
+                proposal_ngram_total,
+                proposal_distribution_score,
+                ngram_count,
+                distribution_weight,
+            )
+            delta = proposal_total - current_total
+            delta_normalized = delta / ngram_count
+
+            if delta >= 0 or rng.random() < math.exp(delta_normalized / temp):
+                for sid, new_pt in proposal.items():
+                    key[sid] = new_pt
+                for i, score in new_scores.items():
+                    window_scores[i] = score
+                char_counts = proposal_counts
+                current_ngram_total = proposal_ngram_total
+                current_distribution_score = proposal_distribution_score
+                current_total = proposal_total
+                accepted_moves += 1
+                if delta > 0:
+                    improved_moves += 1
+                if current_total > best_total:
+                    best_total = current_total
+                    best_key = dict(key)
+                    best_chars = list(chars)
+                if current_total > epoch_best_total:
+                    epoch_best_total = current_total
+                    epoch_best_key = dict(key)
+                    epoch_best_chars = list(chars)
+            else:
+                for sid in proposal:
+                    old_letter = old_letters[sid]
+                    for pos in occurrences[sid]:
+                        chars[pos] = old_letter
+
+        candidate_pool.append(HomophonicCandidate(
+            plaintext="".join(epoch_best_chars),
+            key=epoch_best_key,
+            score=epoch_best_total,
+            normalized_score=epoch_best_total / ngram_count,
+            epoch=epoch + 1,
+        ))
+
+    candidate_pool.append(HomophonicCandidate(
+        plaintext="".join(best_chars),
+        key=best_key,
+        score=best_total,
+        normalized_score=best_total / ngram_count,
+        epoch=0,
+    ))
+    candidates = _top_candidates(candidate_pool, max(1, top_n))
+
+    return HomophonicAnnealResult(
+        plaintext="".join(best_chars),
+        key=best_key,
+        score=best_total,
+        normalized_score=best_total / ngram_count,
+        epochs=max(1, epochs),
+        sampler_iterations=max(1, sampler_iterations),
+        accepted_moves=accepted_moves,
+        improved_moves=improved_moves,
+        elapsed_seconds=time.time() - t0,
+        metadata={
+            "order": model.order,
+            "cipher_symbols": len(symbol_ids),
+            "distribution_weight": distribution_weight,
+            "bijective": True,
+        },
+        candidates=candidates,
+    )
+
+
 def temp_end_safe(temp: float) -> float:
     return max(temp, 1e-9)
 
@@ -418,6 +606,32 @@ def _initial_key(
             continue
         letter = rng.choice(proposal_letters)
         key[sid] = letter_to_id.get(letter, fallback)
+    return key
+
+
+def _initial_bijective_key(
+    symbol_ids: list[int],
+    plaintext_ids: list[int],
+    rng: random.Random,
+    initial_key: dict[int, int] | None,
+) -> dict[int, int]:
+    key: dict[int, int] = {}
+    used: set[int] = set()
+    if initial_key:
+        for sid in symbol_ids:
+            pt_id = initial_key.get(sid)
+            if pt_id in plaintext_ids and pt_id not in used:
+                key[sid] = pt_id
+                used.add(pt_id)
+
+    unused = [pid for pid in plaintext_ids if pid not in used]
+    rng.shuffle(unused)
+    for sid in symbol_ids:
+        if sid in key:
+            continue
+        if not unused:
+            raise ValueError("not enough plaintext ids for bijective key")
+        key[sid] = unused.pop()
     return key
 
 
