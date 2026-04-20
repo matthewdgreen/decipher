@@ -1,0 +1,44 @@
+{
+  "solvers": [
+    {
+      "name": "zenith",
+      "command": [
+        ".venv/bin/python",
+        "external_baselines/wrappers/zenith_graphql.py",
+        "--java",
+        "/path/to/java25/bin/java",
+        "--jar",
+        "/path/to/zenith-ui-2026.2.jar",
+        "--input",
+        "{letters_file}",
+        "--output",
+        "{output_file}",
+        "--epochs",
+        "10"
+      ],
+      "timeout_seconds": 390,
+      "solution_regex": "(?im)^\\s*SOLUTION\\s*:\\s*(?P<plaintext>[A-Z]+)\\s*$",
+      "selection": "first"
+    },
+    {
+      "name": "zkdecrypto-lite",
+      "command": [
+        ".venv/bin/python",
+        "external_baselines/wrappers/zkdecrypto_lite.py",
+        "--binary",
+        "/path/to/zkdecrypto-lite",
+        "--source-dir",
+        "/path/to/zkdecrypto-lite-source",
+        "--input",
+        "{letters_file}",
+        "--output",
+        "{output_file}",
+        "--seconds",
+        "300"
+      ],
+      "timeout_seconds": 330,
+      "solution_regex": "(?im)^\\s*SOLUTION\\s*:\\s*(?P<plaintext>[A-Z]+)\\s*$",
+      "selection": "first"
+    }
+  ]
+}

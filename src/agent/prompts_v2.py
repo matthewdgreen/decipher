@@ -43,15 +43,21 @@ a quantitative reading. No score triggers anything automatically; you \
 consult them.
 - `corpus_*` — query the target-language wordlist and pattern dictionary.
 - `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear.
-- `search_*` — run classical algorithms on a branch. **Search strategy: use \
-`search_anneal` as your first search move.** Simulated annealing escapes \
-local optima and typically achieves 85%+ accuracy on English/Latin in one \
-call. Only run `search_hill_climb` AFTER anneal has produced a readable \
-solution, as a final polish — hill-climbing from random starts often \
-stalls in wrong local optima. If you fork a branch to get a genuinely fresh \
-attempt after a bad full key, call `search_anneal` with \
-`preserve_existing=false`; use `preserve_existing=true` only to polish a key \
-you intentionally want to keep anchored.
+- `search_*` — run classical algorithms on a branch. **Search strategy: if \
+the opening measured facts already show a many-symbol alphabet and no word \
+boundaries, infer the likely cipher family from those facts and use \
+`search_homophonic_anneal` as your first substantive move.** It is built for \
+many-symbol-to-one-letter ciphers and continuous text. You do not need to \
+fork before using it; it can write a complete key onto `main` or any branch \
+you name. Otherwise use \
+`search_anneal` first; simulated annealing escapes local optima and typically \
+achieves 85%+ accuracy on English/Latin in one call. Only run \
+`search_hill_climb` AFTER anneal has produced a readable solution, as a final \
+polish — hill-climbing from random starts often stalls in wrong local optima. \
+If you fork a branch to get a genuinely fresh attempt after a bad full key, \
+call the relevant anneal tool with `preserve_existing=false`; use \
+`preserve_existing=true` only to polish a key you intentionally want to keep \
+anchored.
 - `meta_*` — `declare_solution` terminates the run.
 
 ## How you're expected to work
@@ -60,6 +66,11 @@ There is **no prescribed procedure**. Plan your approach. Explore the space \
 as you see fit — fork branches, try hypotheses, compare, merge the useful \
 mappings and discard the rest. Use `search_hill_climb` when you want to let \
 a local optimizer do the tedious work.
+
+Do not spend early turns re-measuring facts that are already in the opening \
+context, such as symbol count, word count, and IC. Treat those measured facts \
+as authoritative. If they point to a specialized solver, run that solver \
+immediately, then use diagnostics to inspect and repair the result.
 
 ## Your primary judgement instrument: reading the decoded text
 
@@ -267,6 +278,12 @@ You are a digital humanities researcher analyzing a manuscript. {lang_line}
 - Word count: {total_words}
 - Index of coincidence: {ic_value:.4f} (English ~0.0667, random ~0.038)
 {language_hint}{prior_section}
+## Use the measured facts directly
+The measurements above are already computed for you. Do not spend your first \
+turns re-running frequency or IC just to confirm them. If symbol count, word \
+count, and IC give you enough evidence to choose a specialized solver, use \
+that solver immediately and inspect the resulting decode.
+
 ## Your Workspace
 A branch named `main` exists, empty. No mappings are set. Plan your \
 approach and begin. When you're confident in your answer, or when you've \

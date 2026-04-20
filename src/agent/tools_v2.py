@@ -16,12 +16,14 @@ All mutating and reading tools take an explicit branch name.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 from typing import Any
 
-from analysis import dictionary, frequency, ic, ngram, pattern
+from analysis import dictionary, frequency, homophonic, ic, ngram, pattern
 from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import segment_text
@@ -279,7 +281,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "Set a single encoded-symbol → plaintext-letter mapping on a branch. "
             "cipher_symbol must be the name of a symbol from the cipher alphabet "
             "(e.g. 'S001', 'A', 'X') — NOT a letter you see in the decoded output. "
-            "To swap two letters you see in the decoded text, use act_swap_decoded instead."
+            "For homophonic ciphers this is the safest repair primitive: change "
+            "one cipher symbol at a time and inspect score_delta."
         ),
         "input_schema": {
             "type": "object",
@@ -345,7 +348,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "should appear, call act_swap_decoded(branch, 'T', 'F'). This finds "
             "which cipher symbols currently produce each letter and swaps their "
             "plaintext assignments, preserving bijectivity. "
-            "If one letter has no mapping yet, it is simply remapped to the target."
+            "If one letter has no mapping yet, it is simply remapped to the target. "
+            "Avoid this for homophonic repairs unless you really want to move every "
+            "symbol currently mapped to both decoded letters; use act_set_mapping "
+            "for targeted homophonic fixes."
         ),
         "input_schema": {
             "type": "object",
@@ -353,6 +359,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "letter_a": {"type": "string", "description": "Decoded letter to swap (as it appears in the decoded text)."},
                 "letter_b": {"type": "string", "description": "The letter it should become."},
+                "auto_revert_if_worse": {"type": "boolean", "default": True},
             },
             "required": ["branch", "letter_a", "letter_b"],
         },
@@ -433,6 +440,77 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "If omitted, partial keys are preserved but complete "
                         "inherited keys are restarted from scratch."
                     ),
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "search_homophonic_anneal",
+        "description": (
+            "Purpose-built automated solver for homophonic no-boundary ciphers. "
+            "This is the strongest first move when the cipher has more symbols "
+            "than plaintext letters or observe_homophone_distribution says it "
+            "is likely homophonic. It independently maps every cipher symbol "
+            "to a plaintext letter, uses continuous 5-gram scoring plus a "
+            "global letter-distribution objective, and returns a near-complete "
+            "branch for reading/refinement. Prefer this over generic "
+            "search_anneal for hardest/no-boundary homophonic tests. It can "
+            "run directly on `main`; do not spend a turn forking unless you "
+            "need to preserve an existing useful key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "epochs": {
+                    "type": "integer",
+                    "default": 5,
+                    "description": "Independent annealing epochs/restarts.",
+                },
+                "sampler_iterations": {
+                    "type": "integer",
+                    "default": 2000,
+                    "description": "Sampler iterations per epoch; each visits all cipher symbols.",
+                },
+                "t_start": {"type": "number", "default": 0.012},
+                "t_end": {"type": "number", "default": 0.006},
+                "order": {
+                    "type": "integer",
+                    "enum": [3, 4, 5],
+                    "default": 5,
+                    "description": "Continuous-letter n-gram order.",
+                },
+                "preserve_existing": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Treat existing mappings as fixed anchors.",
+                },
+                "model_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional Zenith-style continuous n-gram CSV model. "
+                        "If omitted, the tool auto-discovers "
+                        "other_tools/zenith-2026.2/zenith-model.csv when "
+                        "present; use 'word_list' to force the small fallback."
+                    ),
+                },
+                "max_ngrams": {
+                    "type": "integer",
+                    "default": 3000000,
+                    "description": "Maximum corpus n-grams to load from model_path.",
+                },
+                "distribution_weight": {
+                    "type": "number",
+                    "default": 4.0,
+                    "description": (
+                        "Weight for global plaintext letter-distribution penalty; "
+                        "prevents collapsed repeated-letter solutions."
+                    ),
+                },
+                "seed": {
+                    "type": "integer",
+                    "description": "Optional deterministic random seed.",
                 },
             },
             "required": ["branch"],
@@ -534,13 +612,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "symbols currently producing the wrong letter), culprit_symbol "
             "(the specific symbol most likely causing the errors), and "
             "suggested_call (the exact tool call to make the fix). "
-            "When ambiguous=true, multiple cipher symbols decode to the same "
-            "letter; the suggested_call uses act_set_mapping(cipher_symbol=X, "
-            "plain_letter=Y) on the culprit symbol only — safer than "
-            "act_swap_decoded which would move ALL symbols for that letter and "
-            "break correctly-decoded words. "
+            "For homophonic ciphers, suggested_call always uses "
+            "act_set_mapping(cipher_symbol=X, plain_letter=Y) on the culprit "
+            "symbol only — safer than act_swap_decoded which would move ALL "
+            "symbols for those decoded letters and can break correctly-decoded "
+            "homophones. "
             "Also returns bulk_fix_call: a single decode_diagnose_and_fix call "
-            "that applies ALL top candidates atomically in one iteration. "
+            "that score-checks top candidates in one iteration and skips "
+            "worsening repairs by default. "
             "Call this AFTER search_anneal has converged but a few errors remain."
         ),
         "input_schema": {
@@ -560,9 +639,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "single call — collapsing many fix iterations into one. "
             "Runs the same analysis as decode_diagnose (DP segmentation + "
             "edit-distance-1 corrections + culprit-symbol identification), then "
-            "immediately applies every candidate whose evidence_count >= "
+            "tests every candidate whose evidence_count >= "
             "min_evidence (default 2) using act_set_mapping on the specific "
-            "culprit cipher symbol. Returns a combined before/after score_delta, "
+            "culprit cipher symbol, reverting candidates that make the branch "
+            "worse by default. Returns a combined before/after score_delta, "
             "dict_rate_after, pseudo_words_remaining, and a recommendation "
             "(declare now vs. run again). "
             "Use this immediately after search_anneal when the decoded text is "
@@ -586,6 +666,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "Raise to be conservative; lower to 1 to apply all."
                     ),
                 },
+                "auto_revert_if_worse": {"type": "boolean", "default": True},
             },
             "required": ["branch"],
         },
@@ -1475,6 +1556,7 @@ class WorkspaceToolExecutor:
 
         candidates = []
         any_ambiguous = False
+        homophonic = self._is_homophonic_cipher()
         for (wrong, correct), examples in ranked:
             wrong_id = pt_alpha.id_for(wrong)
             symbols_for_wrong = [
@@ -1483,37 +1565,40 @@ class WorkspaceToolExecutor:
                 if pid == wrong_id
             ]
 
-            if len(symbols_for_wrong) <= 1:
-                culprit = symbols_for_wrong[0] if symbols_for_wrong else None
-                ambiguous = False
-                suggested = (
-                    f"act_swap_decoded(branch='{branch}', "
-                    f"letter_a='{wrong}', letter_b='{correct}')"
-                )
-            else:
-                ambiguous = True
+            ambiguous = len(symbols_for_wrong) > 1
+            if ambiguous:
                 any_ambiguous = True
-                sym_counts: Counter = Counter()
-                for ex in examples:
-                    pw = ex.split("→")[0]
-                    start = 0
-                    while True:
-                        pos = flat_str.find(pw, start)
-                        if pos < 0:
-                            break
-                        for i, ch in enumerate(pw):
-                            if ch == wrong:
-                                ti = pos + i
-                                if ti < len(ct.tokens):
-                                    sym_counts[alpha.symbol_for(ct.tokens[ti])] += 1
-                        start = pos + 1
-                culprit = (
-                    sym_counts.most_common(1)[0][0]
-                    if sym_counts else symbols_for_wrong[0]
-                )
+
+            sym_counts: Counter = Counter()
+            for ex in examples:
+                pw = ex.split("→")[0]
+                start = 0
+                while True:
+                    pos = flat_str.find(pw, start)
+                    if pos < 0:
+                        break
+                    for i, ch in enumerate(pw):
+                        if ch == wrong:
+                            ti = pos + i
+                            if ti < len(ct.tokens):
+                                sym_counts[alpha.symbol_for(ct.tokens[ti])] += 1
+                    start = pos + 1
+
+            culprit = (
+                sym_counts.most_common(1)[0][0]
+                if sym_counts
+                else (symbols_for_wrong[0] if symbols_for_wrong else None)
+            )
+
+            if homophonic:
                 suggested = (
                     f"act_set_mapping(branch='{branch}', "
                     f"cipher_symbol='{culprit}', plain_letter='{correct}')"
+                )
+            else:
+                suggested = (
+                    f"act_swap_decoded(branch='{branch}', "
+                    f"letter_a='{wrong}', letter_b='{correct}')"
                 )
 
             candidates.append({
@@ -1548,17 +1633,17 @@ class WorkspaceToolExecutor:
 
         if candidates:
             note = "Higher evidence_count = more pseudo-words fixed by one change."
-            if any_ambiguous:
+            if self._is_homophonic_cipher():
                 note += (
-                    " ⚠ AMBIGUOUS corrections: multiple cipher symbols currently "
-                    "decode to the same letter. For these, suggested_call uses "
-                    "act_set_mapping on just the culprit_symbol — this is safer "
-                    "than act_swap_decoded, which would move ALL symbols for that "
-                    "letter and silently break the correctly-decoded ones."
+                    " Homophonic repair mode: suggested_call uses act_set_mapping "
+                    "on the culprit_symbol even when only one cipher symbol is "
+                    "currently mapped to the wrong decoded letter. Global decoded "
+                    "letter swaps can move correctly decoded homophones in the "
+                    "opposite direction."
                 )
             note += (
-                " After each change, score_delta confirms whether it helped; "
-                "revert with act_set_mapping if it hurt."
+                " decode_diagnose_and_fix score-checks each candidate and skips "
+                "changes that make the branch worse by default."
             )
             # Bulk fix suggestion — apply all candidates in one tool call.
             bulk_fix_call = (
@@ -1602,6 +1687,7 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         top_k = int(args.get("top_k", 5))
         min_evidence = int(args.get("min_evidence", 2))
+        auto_revert_if_worse = bool(args.get("auto_revert_if_worse", True))
 
         diag = self._diagnose_branch(branch, top_k)
         if "error" in diag:
@@ -1634,22 +1720,44 @@ class WorkspaceToolExecutor:
         before = self._compute_quick_scores(branch)
 
         fixes_applied = []
+        fixes_reverted = []
         for c in to_apply:
             sym = c["culprit_symbol"]
             letter = c["correct"]
             if not alpha.has_symbol(sym) or not pt_alpha.has_symbol(letter):
                 continue
+            cid = alpha.id_for(sym)
+            old_pid = self.workspace.get_branch(branch).key.get(cid)
+            before_candidate = self._compute_quick_scores(branch)
             self.workspace.set_mapping(
                 branch,
-                alpha.id_for(sym),
+                cid,
                 pt_alpha.id_for(letter),
             )
+            after_candidate = self._compute_quick_scores(branch)
+            candidate_delta = self._score_delta(before_candidate, after_candidate)
+            if auto_revert_if_worse and candidate_delta["verdict"] == "worse":
+                if old_pid is None:
+                    self.workspace.clear_mapping(branch, cid)
+                else:
+                    self.workspace.set_mapping(branch, cid, old_pid)
+                fixes_reverted.append({
+                    "cipher_symbol": sym,
+                    "was": c["wrong"],
+                    "attempted": letter,
+                    "evidence_count": c["evidence_count"],
+                    "examples": c["examples"][:3],
+                    "score_delta": candidate_delta,
+                    "reason": "auto_revert_if_worse",
+                })
+                continue
             fixes_applied.append({
                 "cipher_symbol": sym,
                 "was": c["wrong"],
                 "now": letter,
                 "evidence_count": c["evidence_count"],
                 "examples": c["examples"][:3],
+                "score_delta": candidate_delta,
             })
 
         after = self._compute_quick_scores(branch)
@@ -1699,6 +1807,7 @@ class WorkspaceToolExecutor:
         return {
             "branch": branch,
             "fixes_applied": fixes_applied,
+            "fixes_reverted": fixes_reverted,
             "fixes_skipped": [
                 {"wrong": c["wrong"], "correct": c["correct"],
                  "evidence_count": c["evidence_count"]}
@@ -2000,6 +2109,7 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         letter_a = args["letter_a"].upper()
         letter_b = args["letter_b"].upper()
+        auto_revert_if_worse = bool(args.get("auto_revert_if_worse", True))
         pt_alpha = self._pt_alpha()
         if not pt_alpha.has_symbol(letter_a):
             return {"error": f"Unknown plaintext letter: {letter_a}"}
@@ -2020,17 +2130,39 @@ class WorkspaceToolExecutor:
         for cid in cipher_for_b:
             self.workspace.set_mapping(branch, cid, id_a)
         after = self._compute_quick_scores(branch)
+        delta = self._score_delta(before, after)
         alpha = self._alpha()
         swapped_a = [alpha.symbol_for(cid) for cid in cipher_for_a]
         swapped_b = [alpha.symbol_for(cid) for cid in cipher_for_b]
+        trial_preview = self._decoded_preview(branch)
+        if auto_revert_if_worse and delta["verdict"] == "worse":
+            for cid in cipher_for_a:
+                self.workspace.set_mapping(branch, cid, id_a)
+            for cid in cipher_for_b:
+                self.workspace.set_mapping(branch, cid, id_b)
+            return {
+                "status": "reverted",
+                "branch": branch,
+                "attempted_swap": f"{letter_a} ↔ {letter_b}",
+                "cipher_symbols_for_a": swapped_a,
+                "cipher_symbols_for_b": swapped_b,
+                "trial_decoded_preview": trial_preview,
+                "decoded_preview": self._decoded_preview(branch),
+                "score_delta": delta,
+                "note": (
+                    "Swap made the branch score worse and was automatically "
+                    "reverted. For homophonic ciphers, prefer act_set_mapping on "
+                    "one culprit cipher symbol."
+                ),
+            }
         return {
             "status": "ok",
             "branch": branch,
             "swapped": f"{letter_a} ↔ {letter_b}",
             "cipher_symbols_for_a": swapped_a,
             "cipher_symbols_for_b": swapped_b,
-            "decoded_preview": self._decoded_preview(branch),
-            "score_delta": self._score_delta(before, after),
+            "decoded_preview": trial_preview,
+            "score_delta": delta,
         }
 
     # ------------------------------------------------------------------
@@ -2263,6 +2395,128 @@ class WorkspaceToolExecutor:
             "note": self._search_declare_note("anneal"),
         }
 
+    def _tool_search_homophonic_anneal(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        epochs = int(args.get("epochs", 5))
+        sampler_iterations = int(args.get("sampler_iterations", 2000))
+        t_start = float(args.get("t_start", 0.012))
+        t_end = float(args.get("t_end", 0.006))
+        order = int(args.get("order", 5))
+        preserve_existing = bool(args.get("preserve_existing", False))
+        model_path = args.get("model_path")
+        max_ngrams = int(args.get("max_ngrams", 3_000_000))
+        distribution_weight = float(args.get("distribution_weight", 4.0))
+        seed = args.get("seed")
+        seed = int(seed) if seed is not None else None
+
+        ws = self.workspace
+        branch = ws.get_branch(branch_name)
+        tokens = list(ws.cipher_text.tokens)
+        pt_alpha = ws.plaintext_alphabet
+        plaintext_ids = [
+            i for i in range(pt_alpha.size)
+            if len(pt_alpha.symbol_for(i)) == 1 and pt_alpha.symbol_for(i).isalpha()
+        ]
+        if not tokens:
+            return {"error": "cipher text is empty"}
+        if len(plaintext_ids) < 2:
+            return {"error": "plaintext alphabet must contain alphabetic letters"}
+
+        existing_key = dict(branch.key)
+        fixed_cipher_ids = set(existing_key.keys()) if preserve_existing else set()
+        id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
+        letter_to_id = {letter: i for i, letter in id_to_letter.items()}
+        before = self._compute_quick_scores(branch_name)
+
+        model, model_note = self._homophonic_model(
+            model_path=model_path,
+            order=order,
+            max_ngrams=max_ngrams,
+        )
+        result = homophonic.homophonic_simulated_anneal(
+            tokens=tokens,
+            plaintext_ids=plaintext_ids,
+            id_to_letter=id_to_letter,
+            letter_to_id=letter_to_id,
+            model=model,
+            initial_key=existing_key,
+            fixed_cipher_ids=fixed_cipher_ids,
+            epochs=max(1, epochs),
+            sampler_iterations=max(1, sampler_iterations),
+            t_start=t_start,
+            t_end=t_end,
+            distribution_weight=distribution_weight,
+            seed=seed,
+        )
+
+        ws.set_full_key(branch_name, result.key)
+        after = self._compute_quick_scores(branch_name)
+        distribution = self._tool_observe_homophone_distribution({"branch": branch_name})
+        return {
+            "branch": branch_name,
+            "solver": "native_homophonic_anneal",
+            "before_scores": before,
+            "after_scores": after,
+            "score_delta": self._score_delta(before, after),
+            "anneal_score": round(result.normalized_score, 4),
+            "raw_anneal_score": round(result.score, 2),
+            "model_source": model.source,
+            "model_ngrams": len(model.log_probs),
+            "model_note": model_note,
+            "epochs": result.epochs,
+            "sampler_iterations": result.sampler_iterations,
+            "accepted_moves": result.accepted_moves,
+            "improved_moves": result.improved_moves,
+            "elapsed_seconds": round(result.elapsed_seconds, 2),
+            "preserve_existing": preserve_existing,
+            "fixed_symbols": result.fixed_symbols,
+            "cipher_symbols": result.metadata.get("cipher_symbols"),
+            "distribution_weight": result.metadata.get("distribution_weight"),
+            "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+            "homophone_warnings": distribution.get("warnings", []),
+            "note": (
+                "This native homophonic annealer is intended to replace manual "
+                "guesswork on many-symbol no-boundary ciphers. Read the preview; "
+                "if it is mostly correct, use decode_diagnose/decode_ambiguous_letter "
+                "for residual rare-letter fixes or declare the solution."
+            ),
+        }
+
+    def _homophonic_model(
+        self,
+        model_path: str | None,
+        order: int,
+        max_ngrams: int,
+    ) -> tuple[homophonic.ContinuousNGramModel, str]:
+        requested = (model_path or "").strip()
+        if requested.lower() in {"word_list", "wordlist", "none", "fallback"}:
+            return (
+                homophonic.build_continuous_ngram_model(self.word_list, order=order),
+                "Using small word-list fallback by request.",
+            )
+
+        candidate = Path(requested).expanduser() if requested else _default_homophonic_model_path()
+        if candidate and candidate.exists():
+            try:
+                return (
+                    homophonic.load_zenith_csv_model(
+                        candidate,
+                        order=order,
+                        max_ngrams=max(1, max_ngrams),
+                    ),
+                    "Using continuous corpus n-gram model.",
+                )
+            except OSError as exc:
+                return (
+                    homophonic.build_continuous_ngram_model(self.word_list, order=order),
+                    f"Could not load corpus model ({exc}); using word-list fallback.",
+                )
+
+        return (
+            homophonic.build_continuous_ngram_model(self.word_list, order=order),
+            "No corpus model found; using small word-list fallback.",
+        )
+
     # ------------------------------------------------------------------
     # run_python
     # ------------------------------------------------------------------
@@ -2347,6 +2601,22 @@ def _hill_climb_with_score(session: Session, score_fn, max_rounds: int) -> float
     """
     from analysis.solver import hill_climb_reassign
     return hill_climb_reassign(session, score_fn, max_rounds)
+
+
+def _default_homophonic_model_path() -> Path | None:
+    env_path = os.environ.get("DECIPHER_HOMOPHONIC_MODEL")
+    if env_path:
+        return Path(env_path).expanduser()
+
+    repo_root = Path(__file__).resolve().parents[2]
+    candidates = [
+        repo_root / "other_tools" / "zenith-2026.2" / "zenith-model.csv",
+        repo_root / "other_tools" / "zenith" / "zenith-model.csv",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def _execute_python(code: str, timeout: int = 15) -> str:

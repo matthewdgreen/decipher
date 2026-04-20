@@ -42,6 +42,9 @@ class TestData:
     test: BenchmarkTest
     canonical_transcription: str  # full canonical transcription text
     plaintext: str  # ground truth plaintext
+    context_canonical_transcription: str = ""
+    context_plaintext: str = ""
+    context_records: list[BenchmarkRecord] = field(default_factory=list)
     symbol_map: dict | None = None  # optional symbol map metadata
 
 
@@ -113,27 +116,10 @@ class BenchmarkLoader:
 
     def load_test_data(self, test: BenchmarkTest) -> TestData:
         """Load the actual transcription and plaintext data for a test."""
-        # Concatenate data from all target records
-        canonical_parts = []
-        plaintext_parts = []
-
-        for record_id in test.target_records:
-            record = self._manifest.get(record_id)
-            if record is None:
-                raise ValueError(f"Record '{record_id}' not found in manifest")
-
-            # Load canonical transcription
-            canon_path = self.root / record.transcription_canonical_file
-            if canon_path.exists():
-                canonical_parts.append(canon_path.read_text().strip())
-
-            # Load plaintext
-            pt_path = self.root / record.plaintext_file
-            if pt_path.exists():
-                plaintext_parts.append(pt_path.read_text().strip())
-
-        canonical = "\n".join(canonical_parts)
-        plaintext = "\n".join(plaintext_parts)
+        canonical, plaintext, _ = self._load_record_texts(test.target_records)
+        context_canonical, context_plaintext, context_records = self._load_record_texts(
+            test.context_records
+        )
 
         # Try to load symbol map
         source = test.test_id.split("_")[0]  # e.g. "borg" from "borg_single_B_..."
@@ -143,8 +129,37 @@ class BenchmarkLoader:
             test=test,
             canonical_transcription=canonical,
             plaintext=plaintext,
+            context_canonical_transcription=context_canonical,
+            context_plaintext=context_plaintext,
+            context_records=context_records,
             symbol_map=symbol_map,
         )
+
+    def _load_record_texts(
+        self,
+        record_ids: list[str],
+    ) -> tuple[str, str, list[BenchmarkRecord]]:
+        canonical_parts = []
+        plaintext_parts = []
+        records = []
+
+        for record_id in record_ids:
+            record = self._manifest.get(record_id)
+            if record is None:
+                raise ValueError(f"Record '{record_id}' not found in manifest")
+            records.append(record)
+
+            if record.transcription_canonical_file:
+                canon_path = self.root / record.transcription_canonical_file
+                if canon_path.exists():
+                    canonical_parts.append(canon_path.read_text().strip())
+
+            if record.plaintext_file:
+                pt_path = self.root / record.plaintext_file
+                if pt_path.exists():
+                    plaintext_parts.append(pt_path.read_text().strip())
+
+        return "\n".join(canonical_parts), "\n".join(plaintext_parts), records
 
     def _load_symbol_map(self, source: str) -> dict | None:
         """Load symbol map metadata if available."""

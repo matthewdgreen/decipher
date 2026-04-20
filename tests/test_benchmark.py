@@ -144,8 +144,18 @@ def benchmark_dir():
             "plaintext_file": "sources/test/plaintext/page1.txt",
             "has_key": True,
         }
+        context_record = {
+            "id": "test_page2",
+            "source": "test",
+            "cipher_type": ["monoalphabetic_substitution"],
+            "plaintext_language": "en",
+            "transcription_canonical_file": "sources/test/transcriptions/page2.canonical.txt",
+            "plaintext_file": "sources/test/plaintext/page2.txt",
+            "has_key": True,
+        }
         with open(os.path.join(tmpdir, "manifest", "records.jsonl"), "w") as f:
             f.write(json.dumps(record) + "\n")
+            f.write(json.dumps(context_record) + "\n")
 
         # Write split
         test_def = {
@@ -153,7 +163,7 @@ def benchmark_dir():
             "track": "transcription2plaintext",
             "cipher_system": "test_cipher",
             "target_records": ["test_page1"],
-            "context_records": [],
+            "context_records": ["test_page2"],
             "description": "Test B: page1",
         }
         with open(os.path.join(tmpdir, "splits", "test_tests.jsonl"), "w") as f:
@@ -162,10 +172,14 @@ def benchmark_dir():
         # Write canonical transcription
         with open(os.path.join(tmpdir, "sources", "test", "transcriptions", "page1.canonical.txt"), "w") as f:
             f.write("S001 S002 S003 | S004 S005 S006\n")
+        with open(os.path.join(tmpdir, "sources", "test", "transcriptions", "page2.canonical.txt"), "w") as f:
+            f.write("S007 S008 S009\n")
 
         # Write plaintext
         with open(os.path.join(tmpdir, "sources", "test", "plaintext", "page1.txt"), "w") as f:
             f.write("hello world\n")
+        with open(os.path.join(tmpdir, "sources", "test", "plaintext", "page2.txt"), "w") as f:
+            f.write("context page\n")
 
         yield tmpdir
 
@@ -194,3 +208,6 @@ class TestBenchmarkLoader:
         td = loader.load_test_data(tests[0])
         assert "S001" in td.canonical_transcription
         assert "hello" in td.plaintext
+        assert "S007" in td.context_canonical_transcription
+        assert "context" in td.context_plaintext
+        assert [r.id for r in td.context_records] == ["test_page2"]

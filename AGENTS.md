@@ -97,12 +97,16 @@ Benchmark auto-detects: borg→`la`, copiale→`de`.
 
 ### Benchmark dataset
 Located at `~/Dropbox/src2/cipher_benchmark/benchmark/`.
-- `manifest/records.jsonl` — 638 page records
+- `manifest/records.jsonl` — currently 896 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, and tool-bundled parity records
 - `splits/borg_tests.jsonl` — 45 tests (15 Track B: transcription→plaintext)
 - `splits/copiale_tests.jsonl` — 45 tests (15 Track B)
+- `splits/*_ss_synth*_tests.jsonl` — multilingual synthetic simple-substitution Track B tests
 - Track B (transcription2plaintext) = canonical S-token transcription → plaintext
 - Borg: monoalphabetic, 33 symbols, Latin pharmaceutical text
 - Copiale: homophonic, 86 symbols, German Masonic text
+- Use `scripts/validate_benchmark.py` before relying on a benchmark checkout for parity work.
+- Benchmark curation lives in `../cipher_benchmark`; Decipher solver/harness code lives here.
+- Keep parity tests distinct from agentic-advantage tests. Parity asks whether the agent can match non-agentic solvers; advantage asks whether agentic context, OCR, diagnosis, or hypothesis management improves beyond them.
 
 ---
 
@@ -148,7 +152,7 @@ Recent testgen work turned failure logs into tool-design improvements:
 The hardest synthetic preset (`synth_en_200honb_s6`) is the current stress case. The tool now exposes homophonic evidence explicitly, but the next run should confirm whether the agent uses those tools instead of ad hoc Python.
 
 ### 2. 🔄 **Homophonic search quality**
-`search_anneal` and diagnostics are integrated, but homophonic no-boundary ciphers may need stronger objective functions, split/merge homophone moves, or a dedicated constraint solver.
+`search_homophonic_anneal` is now available and should be the first automated search tool for homophonic no-boundary ciphers. Continue seed sweeps against Zenith and zkdecrypto-lite, add top-N candidates, and classify failures as tool weakness vs agent wrong-tool choice.
 
 ### 3. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress.
@@ -177,7 +181,7 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 ✅ **score_* (3 tools)** — panel, quadgram, dictionary
 ✅ **corpus_* (2 tools)** — lookup_word, word_candidates
 ✅ **act_* (5 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded
-✅ **search_* (2 tools)** — hill_climb, anneal
+✅ **search_* (3 tools)** — hill_climb, anneal, homophonic_anneal
 ✅ **run_python (1 tool)** — allowed escape hatch with required justification
 ✅ **meta_* (2 tools)** — request_tool, declare_solution
 
@@ -220,6 +224,10 @@ PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
 
 # Run tests (112 tests pass)
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
+
+# Validate benchmark checkout
+PYTHONPATH=src .venv/bin/python scripts/validate_benchmark.py \
+  ../cipher_benchmark/benchmark
 ```
 
 ---

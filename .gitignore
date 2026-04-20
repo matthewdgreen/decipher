@@ -1,5 +1,6 @@
 .venv/
 .venv311/
+.DS_Store
 __pycache__/
 *.pyc
 *.pyo
@@ -10,3 +11,5 @@ errata/
 *.egg-info/
 dist/
 build/
+other_tools/
+external_baselines/local*.json

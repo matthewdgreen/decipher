@@ -120,7 +120,7 @@ class BenchmarkRunnerV2:
             language=lang,
             max_iterations=self.max_iterations,
             cipher_id=test_id,
-            prior_context=prior_context,
+            prior_context=prior_context or _format_benchmark_context(test_data),
             verbose=self.verbose,
             on_event=on_event,
         )
@@ -216,3 +216,19 @@ class BenchmarkRunnerV2:
             total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
             estimated_cost_usd=artifact.estimated_cost_usd,
         )
+
+
+def _format_benchmark_context(test_data: TestData) -> str | None:
+    if not test_data.context_canonical_transcription:
+        return None
+    record_ids = ", ".join(test_data.test.context_records[:20])
+    if len(test_data.test.context_records) > 20:
+        record_ids += f", ... ({len(test_data.test.context_records)} total)"
+    return (
+        "Additional same-cipher benchmark context is available. "
+        "Use it as auxiliary ciphertext signal, but score/declaration should "
+        "focus on the target record(s).\n\n"
+        f"Context records: {record_ids}\n\n"
+        "Context canonical transcription:\n"
+        f"{test_data.context_canonical_transcription}"
+    )

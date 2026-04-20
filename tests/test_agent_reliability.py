@@ -8,6 +8,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.loop_v2 import FINAL_ITERATION_PREFLIGHT, run_v2
+from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
 from models.alphabet import Alphabet
@@ -80,6 +81,30 @@ def test_decode_ambiguous_letter_groups_contexts_by_cipher_symbol():
     assert out["symbol_count"] == 2
     assert {g["cipher_symbol"] for g in out["groups"]} == {"A", "C"}
     assert "act_set_mapping" in out["groups"][0]["suggested_next_step"]
+
+
+def test_initial_context_discourages_remeasuring_without_leaking_cipher_label():
+    msg = initial_context(
+        cipher_display="01 02 03",
+        alphabet_symbols=[f"{i:02d}" for i in range(57)],
+        total_tokens=1096,
+        total_words=1,
+        ic_value=0.0215,
+        language="en",
+    )
+
+    assert "Do not spend your first turns re-running frequency or IC" in msg
+    assert "use that solver immediately" in msg
+    assert "homophonic" not in msg.lower()
+
+
+def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
+    system = get_system_prompt("en")
+
+    assert "opening measured facts" in system
+    assert "many-symbol alphabet and no word boundaries" in system
+    assert "search_homophonic_anneal" in system
+    assert "Do not spend early turns re-measuring facts" in system
 
 
 class _FakeAPI:
@@ -233,3 +258,63 @@ def test_absent_letter_candidates_rank_symbol_remaps_with_score_delta():
     assert cand["candidate_letter"] == "U"
     assert "score_delta_if_remapped" in cand
     assert "act_set_mapping" in cand["suggested_call"]
+
+
+def test_decode_diagnose_uses_targeted_mapping_for_homophonic_single_symbol(monkeypatch):
+    ex = _homophonic_executor()
+    alpha = ex.workspace.cipher_text.alphabet
+    pt = ex.workspace.plaintext_alphabet
+    for sym, letter in {"S00": "U", "S01": "N", "S02": "B"}.items():
+        ex.workspace.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+
+    import analysis.segment as segment
+
+    monkeypatch.setattr(
+        segment,
+        "segment_text",
+        lambda normalized, word_set, freq_rank: SimpleNamespace(
+            pseudo_words=["UNB"],
+            words=["UNB"],
+            segmented="UNB",
+            dict_rate=0.0,
+        ),
+    )
+    monkeypatch.setattr(
+        segment,
+        "find_one_edit_corrections",
+        lambda word, word_set: [("UND", "B", "D")],
+    )
+
+    out = ex._tool_decode_diagnose({"branch": "main", "top_k": 1})
+
+    cand = out["candidate_corrections"][0]
+    assert cand["ambiguous"] is False
+    assert cand["culprit_symbol"] == "S02"
+    assert "act_set_mapping" in cand["suggested_call"]
+    assert "act_swap_decoded" not in cand["suggested_call"]
+
+
+def test_act_swap_decoded_auto_reverts_worsening_swap(monkeypatch):
+    ex = _executor_for("AB", separator=None)
+    alpha = ex.workspace.cipher_text.alphabet
+    pt = ex.workspace.plaintext_alphabet
+    ex.workspace.set_mapping("main", alpha.id_for("A"), pt.id_for("B"))
+    ex.workspace.set_mapping("main", alpha.id_for("B"), pt.id_for("D"))
+
+    def fake_scores(branch: str) -> dict:
+        decoded = ex.workspace.apply_key(branch)
+        if decoded == "BD":
+            return {"dict_rate": 0.9, "quad": -1.0}
+        return {"dict_rate": 0.5, "quad": -2.0}
+
+    monkeypatch.setattr(ex, "_compute_quick_scores", fake_scores)
+
+    out = ex._tool_act_swap_decoded({
+        "branch": "main",
+        "letter_a": "B",
+        "letter_b": "D",
+    })
+
+    assert out["status"] == "reverted"
+    assert out["score_delta"]["verdict"] == "worse"
+    assert ex.workspace.apply_key("main") == "BD"
