@@ -32,6 +32,9 @@ class RunResultV2:
     word_accuracy: float = 0.0
     artifact_path: str = ""
     error_message: str = ""
+    tool_requests: list[dict] = field(default_factory=list)
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 class BenchmarkRunnerV2:
@@ -209,4 +212,7 @@ class BenchmarkRunnerV2:
             word_accuracy=artifact.word_accuracy or 0.0,
             artifact_path=str(artifact_path),
             error_message=artifact.error_message,
+            tool_requests=list(artifact.tool_requests),
+            total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
+            estimated_cost_usd=artifact.estimated_cost_usd,
         )

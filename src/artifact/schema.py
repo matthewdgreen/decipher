@@ -95,6 +95,7 @@ class RunArtifact:
     notebook: list[NotebookEntry] = field(default_factory=list)
     branches: list[BranchSnapshot] = field(default_factory=list)
     tool_calls: list[ToolCall] = field(default_factory=list)
+    tool_requests: list[dict[str, Any]] = field(default_factory=list)  # meta_request_tool calls
     subagent_runs: list[SubagentRun] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)  # full message history
 
@@ -102,6 +103,12 @@ class RunArtifact:
     solution: SolutionDeclaration | None = None
     status: str = "running"                     # running | solved | exhausted | error | stopped
     error_message: str = ""
+
+    # Token usage (accumulated across all API calls in this run)
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
     # Post-hoc scoring (filled by benchmark runner against ground truth)
     ground_truth: str | None = None

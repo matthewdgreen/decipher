@@ -74,6 +74,7 @@ def compute_panel(
     language: str = "en",
     word_set: set[str] | None = None,
     pattern_dict: dict[str, list[str]] | None = None,
+    freq_rank: dict[str, int] | None = None,
 ) -> SignalPanel:
     """Compute all signals. Callers pass word_set / pattern_dict for caching;
     otherwise they're loaded from the language's dictionary file."""
@@ -83,15 +84,23 @@ def compute_panel(
     if word_set is None:
         word_set = dictionary.load_word_set(dictionary.get_dictionary_path(language))
 
-    words = normalized.split()
-    alpha_words = [w for w in words if _is_scored_word(w)]
-    if alpha_words:
-        hits = sum(1 for w in alpha_words if w in word_set)
-        dict_rate = hits / len(alpha_words)
-        unrecog = [w for w in alpha_words if w not in word_set]
+    if normalized.strip() and not any(c.isspace() for c in normalized.strip()):
+        # No-boundary text: segment with DP Viterbi before scoring.
+        from analysis.segment import segment_text
+        seg = segment_text(normalized, word_set, freq_rank)
+        alpha_words = seg.words
+        dict_rate = seg.dict_rate
+        unrecog = seg.pseudo_words
     else:
-        dict_rate = 0.0
-        unrecog = []
+        words = normalized.split()
+        alpha_words = [w for w in words if _is_scored_word(w)]
+        if alpha_words:
+            hits = sum(1 for w in alpha_words if w in word_set)
+            dict_rate = hits / len(alpha_words)
+            unrecog = [w for w in alpha_words if w not in word_set]
+        else:
+            dict_rate = 0.0
+            unrecog = []
 
     # --- n-gram log-likelihoods ---
     quad_lp = ngram.NGRAM_CACHE.get(language, 4)

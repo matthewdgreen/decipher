@@ -13,6 +13,46 @@ class ClaudeAPIError(Exception):
     pass
 
 
+# Pricing per million tokens (MTok).  Cache-read tokens are billed at ~10% of
+# the standard input rate.  Figures are approximate; update as needed.
+_PRICING: dict[str, tuple[float, float, float]] = {
+    # model_prefix: (input $/MTok, output $/MTok, cache_read $/MTok)
+    "claude-opus-4":     (15.00, 75.00, 1.50),
+    "claude-sonnet-4":   ( 3.00, 15.00, 0.30),
+    "claude-haiku-4":    ( 0.80,  4.00, 0.08),
+    "claude-opus-3":     (15.00, 75.00, 1.50),
+    "claude-sonnet-3":   ( 3.00, 15.00, 0.30),
+    "claude-haiku-3":    ( 0.25,  1.25, 0.03),
+}
+
+
+def estimate_cost(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    cache_read_tokens: int = 0,
+) -> float:
+    """Return estimated USD cost for a set of token counts.
+
+    Matches model name against _PRICING prefixes (longest-first).
+    Returns 0.0 if no matching entry is found.
+    """
+    prefix = ""
+    for p in sorted(_PRICING, key=len, reverse=True):
+        if model.startswith(p):
+            prefix = p
+            break
+    if not prefix:
+        return 0.0
+    inp_rate, out_rate, cache_rate = _PRICING[prefix]
+    billed_input = max(0, input_tokens - cache_read_tokens)
+    return (
+        billed_input * inp_rate / 1_000_000
+        + cache_read_tokens * cache_rate / 1_000_000
+        + output_tokens * out_rate / 1_000_000
+    )
+
+
 class ClaudeAPI:
     """Client for the Anthropic Claude API (messages + vision + tool use)."""
 

@@ -1,6 +1,6 @@
-# Decipher — CLAUDE.md
+# Decipher — AGENTS.md
 
-Project context for Claude Code sessions. Keep this file updated as the project evolves.
+Project context for Codex sessions. Keep this file updated as the project evolves.
 
 ---
 
@@ -9,7 +9,7 @@ Project context for Claude Code sessions. Keep this file updated as the project 
 A CLI research tool for classical cipher cryptanalysis. Primary focus:
 - **Monoalphabetic substitution ciphers** with arbitrary symbol alphabets
 - **Historical manuscripts** (Borg cipher in Latin, Copiale cipher in German)
-- **AI-assisted decipherment** using Claude tool-use API
+- **AI-assisted decipherment** using Codex tool-use API
 - **Benchmark evaluation** against a dataset of solved historical ciphers
 
 ---
@@ -51,7 +51,7 @@ src/
     claude_api.py         — ClaudeAPI: send_message(), estimate_cost(), retry/error helpers
   ocr/
     engine.py             — OCREngine: process_image(), process_text()
-    vision.py             — VisionOCR: Claude Vision for symbol extraction
+    vision.py             — VisionOCR: Codex Vision for symbol extraction
   ciphers/
     substitution.py       — SubstitutionCipher: encrypt/decrypt/random_key
     caesar.py             — CaesarCipher: brute_force()
@@ -121,7 +121,7 @@ Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 Robust preprocessing and framing for reliable API interaction:
 - **Automatic S-token normalization** (src/preprocessing/s_token_converter.py)
 - **Manuscript-analysis framing** for academic historical research tasks
-- **Model selection**: Claude Sonnet 4.6 recommended for decipherment tasks
+- **Model selection**: Codex Sonnet 4.6 recommended for decipherment tasks
 - **Transparent artifact tracking** of preprocessing applied
 
 ### ✅ **Advanced Cryptanalytic Capabilities**

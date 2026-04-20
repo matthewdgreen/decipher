@@ -8,11 +8,14 @@ Used to compare against the full agentic framework.
 """
 from __future__ import annotations
 
+import json
 import re
 import subprocess
 import sys
 import time
+import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from benchmark.loader import TestData
 from benchmark.scorer import has_word_boundaries, score_decryption
@@ -30,6 +33,31 @@ class BaselineResult:
     ground_truth: str
     error: str = ""
     tool_calls_log: list[dict] = field(default_factory=list)
+    messages: list[dict] = field(default_factory=list)  # full conversation history
+    run_id: str = field(default_factory=lambda: uuid.uuid4().hex[:12])
+    model: str = ""
+    artifact_path: str = ""
+
+    def save(self, path: str | Path) -> None:
+        p = Path(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "run_id": self.run_id,
+            "test_id": self.test_id,
+            "model": self.model,
+            "runner": "baseline_one_shot",
+            "char_accuracy": self.char_accuracy,
+            "word_accuracy": self.word_accuracy,
+            "iterations": self.iterations,
+            "elapsed": round(self.elapsed, 1),
+            "decryption": self.decryption,
+            "ground_truth": self.ground_truth,
+            "error": self.error,
+            "tool_calls_log": self.tool_calls_log,
+            "messages": self.messages,
+        }
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
 
 
 _TOOL_DEFINITIONS = [
@@ -82,6 +110,7 @@ def run_baseline(
     language: str = "en",
     max_iterations: int = 10,
     verbose: bool = False,
+    artifact_dir: str | Path | None = None,
 ) -> BaselineResult:
     """Run the one-shot + code baseline on a single test case."""
     ground_truth = test_data.plaintext
@@ -144,7 +173,7 @@ def run_baseline(
                     output = _execute_python(code)
                     if verbose:
                         print(f"    [run_python] → {output[:120]}")
-                    tool_calls_log.append({"iteration": iteration + 1, "code": code[:200], "output": output[:200]})
+                    tool_calls_log.append({"iteration": iteration + 1, "code": code, "output": output})
                     tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tu.id,
@@ -174,7 +203,7 @@ def run_baseline(
         status="solved" if decryption else "failed",
     )
 
-    return BaselineResult(
+    result = BaselineResult(
         test_id=test_data.test.test_id,
         char_accuracy=score.char_accuracy,
         word_accuracy=score.word_accuracy,
@@ -184,7 +213,19 @@ def run_baseline(
         ground_truth=ground_truth,
         error=error,
         tool_calls_log=tool_calls_log,
+        messages=messages,
+        model=api.model,
     )
+
+    if artifact_dir is not None:
+        artifact_path = Path(artifact_dir) / result.test_id / f"baseline_{result.run_id}.json"
+        try:
+            result.save(artifact_path)
+            result.artifact_path = str(artifact_path)
+        except Exception:  # noqa: BLE001
+            pass
+
+    return result
 
 
 def _execute_python(code: str, timeout: int = 15) -> str:

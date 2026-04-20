@@ -10,6 +10,7 @@ Usage:
 Options:
     --model MODEL          Cracking model (default: claude-sonnet-4-6)
     --max-iterations N     Agent iterations per test (default: 20)
+    --preset NAME          Run only selected suite preset(s): tiny, medium, hard, hardest
     --cache-dir DIR        Plaintext cache directory (default: testgen_cache)
     --artifact-dir DIR     Artifact directory (default: artifacts)
     --errata-dir DIR       Errata directory (default: errata)
@@ -32,7 +33,7 @@ import shutil
 import subprocess
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -86,6 +87,9 @@ class SuiteResult:
     ground_truth: str
     artifact_path: str = ""
     error: str = ""
+    tool_requests: list[dict] = field(default_factory=list)
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +195,7 @@ def _save_errata(
     git: dict,
     model: str,
     errata_dir: Path,
+    baseline: "BaselineResult | None" = None,
 ) -> Path:
     """Save errata for a non-perfect test. Returns the errata directory path."""
     timestamp = datetime.utcnow().isoformat(timespec="seconds") + "Z"
@@ -221,6 +226,8 @@ def _save_errata(
         "self_confidence": sr.self_confidence,
         "iterations_used": sr.iterations,
         "elapsed_seconds": round(sr.elapsed, 1),
+        "total_tokens": sr.total_tokens,
+        "estimated_cost_usd": round(sr.estimated_cost_usd, 4),
         "error": sr.error or None,
     }
     (out / "run_info.json").write_text(
@@ -230,6 +237,10 @@ def _save_errata(
     # --- artifact.json (copy) ---
     if sr.artifact_path and Path(sr.artifact_path).exists():
         shutil.copy2(sr.artifact_path, out / "artifact.json")
+
+    # --- baseline_artifact.json (copy if available) ---
+    if baseline and baseline.artifact_path and Path(baseline.artifact_path).exists():
+        shutil.copy2(baseline.artifact_path, out / "baseline_artifact.json")
 
     # --- report.txt ---
     report = _build_report_text(sr, run_info)
@@ -269,6 +280,8 @@ def _build_report_text(sr: SuiteResult, run_info: dict) -> str:
         f"Confidence:  {conf}",
         f"Iterations:  {sr.iterations}",
         f"Elapsed:     {sr.elapsed:.1f}s",
+        f"Tokens:      {sr.total_tokens:,}",
+        f"Cost:        ${sr.estimated_cost_usd:.4f}",
         "",
     ]
 
@@ -287,16 +300,82 @@ def _build_report_text(sr: SuiteResult, run_info: dict) -> str:
     # Agent reasoning log (from artifact if available)
     artifact_path = Path(sr.artifact_path) if sr.artifact_path else None
     if artifact_path and artifact_path.exists():
-        lines += [sep, "AGENT REASONING LOG", sep]
         try:
             artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+            run_python_review = _format_run_python_review(artifact)
+            if run_python_review:
+                lines += [sep, "RUN_PYTHON DESIGN REVIEW", sep]
+                lines += run_python_review
+                lines.append("")
+            lines += [sep, "AGENT REASONING LOG", sep]
             lines += _format_agent_log(artifact)
         except Exception as e:  # noqa: BLE001
+            lines += [sep, "AGENT REASONING LOG", sep]
             lines.append(f"(could not read artifact: {e})")
         lines.append("")
 
     lines.append(sep)
     return "\n".join(lines) + "\n"
+
+
+def _assistant_text_by_iteration(artifact: dict) -> dict[int, str]:
+    """Return assistant text blocks grouped by 1-based iteration number."""
+    out: dict[int, str] = {}
+    current_iter = 0
+    for msg in artifact.get("messages", []):
+        if msg.get("role") != "assistant":
+            continue
+        current_iter += 1
+        text_blocks = [
+            c.get("text", "")
+            for c in msg.get("content", [])
+            if isinstance(c, dict) and c.get("type") == "text"
+        ]
+        if text_blocks:
+            out[current_iter] = "\n".join(t.strip() for t in text_blocks if t.strip())
+    return out
+
+
+def _preview(text: str, limit: int = 500) -> str:
+    text = " ".join(str(text).split())
+    return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _format_run_python_review(artifact: dict) -> list[str]:
+    """Highlight run_python calls as allowed but review-worthy tool-gap signals."""
+    calls = [
+        tc for tc in artifact.get("tool_calls", [])
+        if tc.get("tool_name") == "run_python"
+    ]
+    if not calls:
+        return []
+
+    assistant_text = _assistant_text_by_iteration(artifact)
+    lines = [
+        (
+            f"run_python was used {len(calls)} time(s). This is allowed, but "
+            "each use should be reviewed as evidence that a first-class tool may "
+            "be missing or insufficient."
+        ),
+        "",
+    ]
+    for idx, tc in enumerate(calls, start=1):
+        iteration = tc.get("iteration", "?")
+        args = tc.get("arguments", {}) or {}
+        justification = args.get("justification") or _preview(
+            assistant_text.get(iteration, "(no assistant text found)"),
+            limit=700,
+        )
+        code = args.get("code", "")
+        result = tc.get("result", "")
+        lines += [
+            f"[{idx}] iteration {iteration}",
+            f"  justification: {_preview(justification, limit=900)}",
+            f"  code preview:  {_preview(code, limit=500)}",
+            f"  result preview: {_preview(result, limit=300)}",
+            "",
+        ]
+    return lines
 
 
 def _format_agent_log(artifact: dict) -> list[str]:
@@ -426,7 +505,16 @@ def run_suite(args: argparse.Namespace) -> None:
         suite = [_load_spec_from_errata(tid, errata_dir) for tid in test_ids]
         print(f"Re-running all {len(suite)} active errata: {', '.join(test_ids)}\n")
     else:
-        suite = list(SUITE)
+        if args.preset:
+            selected = [DifficultyPreset(p) for p in args.preset]
+            suite = [
+                TestSpec.from_preset(p, language="en", seed=_default_seed_for_preset(p))
+                for p in selected
+            ]
+            names = ", ".join(p.value for p in selected)
+            print(f"Running selected suite preset(s): {names}\n")
+        else:
+            suite = list(SUITE)
 
     crack_api = ClaudeAPI(api_key=api_key, model=args.model)
     runner = BenchmarkRunnerV2(
@@ -475,24 +563,27 @@ def run_suite(args: argparse.Namespace) -> None:
             ground_truth=test_data.plaintext,
             artifact_path=result.artifact_path,
             error=result.error_message or "",
+            tool_requests=result.tool_requests,
+            total_tokens=result.total_tokens,
+            estimated_cost_usd=result.estimated_cost_usd,
         )
         results.append(sr)
 
         conf_str = f"{sr.self_confidence:.2f}" if sr.self_confidence is not None else "n/a"
         word_str = f"{sr.word_accuracy:.1%}" if score.total_words > 1 else "N/A"
+        cost_str = f"${sr.estimated_cost_usd:.3f}" if sr.estimated_cost_usd else "$0.000"
+        tok_str = f"{sr.total_tokens // 1000}K" if sr.total_tokens >= 1000 else str(sr.total_tokens)
         print(f"    → {sr.status}  char={sr.char_accuracy:.1%}  word={word_str}  "
-              f"conf={conf_str}  iter={sr.iterations}  {sr.elapsed:.0f}s")
+              f"conf={conf_str}  iter={sr.iterations}  {sr.elapsed:.0f}s  "
+              f"tokens={tok_str}  cost={cost_str}")
 
-        if rerun_mode:
-            errata_path = _save_errata(sr, git, args.model, errata_dir)
-            print(f"    ↳ run recorded → {errata_path}")
-            if _check_and_maybe_archive(sr.test_id, errata_dir):
-                print(f"    ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
-        elif sr.char_accuracy < 1.0:
-            errata_path = _save_errata(sr, git, args.model, errata_dir)
-            print(f"    ↳ errata saved → {errata_path}")
+        if sr.tool_requests:
+            print(f"    ⚑ {len(sr.tool_requests)} tool request(s) filed:")
+            for req in sr.tool_requests:
+                print(f"      [iter {req['iteration']}] {req['description'][:80]}")
 
-        # --- baseline run (only when --compare) ---
+        # --- baseline run (only when --compare) — run before saving errata
+        #     so the baseline artifact can be co-located with the agent artifact.
         br: BaselineResult | None = None
         if args.compare:
             print("  [baseline one-shot + code]")
@@ -502,13 +593,25 @@ def run_suite(args: argparse.Namespace) -> None:
                 language=spec.language,
                 max_iterations=args.max_iterations,
                 verbose=args.verbose,
+                artifact_dir=args.artifact_dir,
             )
             bword_str = f"{br.word_accuracy:.1%}" if has_word_boundaries(br.ground_truth) else "N/A"
             print(f"    → char={br.char_accuracy:.1%}  word={bword_str}  "
                   f"iter={br.iterations}  {br.elapsed:.0f}s")
+            if br.artifact_path:
+                print(f"    ↳ baseline artifact → {br.artifact_path}")
             if br.error:
                 print(f"    error: {br.error}")
         baseline_results.append(br)
+
+        if rerun_mode:
+            errata_path = _save_errata(sr, git, args.model, errata_dir, baseline=br)
+            print(f"    ↳ run recorded → {errata_path}")
+            if _check_and_maybe_archive(sr.test_id, errata_dir):
+                print(f"    ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
+        elif sr.char_accuracy < 1.0:
+            errata_path = _save_errata(sr, git, args.model, errata_dir, baseline=br)
+            print(f"    ↳ errata saved → {errata_path}")
 
         print()
 
@@ -533,21 +636,23 @@ def _print_report(
     print()
 
     print(f"  {'Preset':<10} {'Lang':>4} {'Bounds':<14} {'Status':<10} "
-          f"{'Char%':>6} {'Word%':>6} {'Conf':>5} {'Iter':>4} {'Time':>6}")
-    print("  " + "-" * 70)
+          f"{'Char%':>6} {'Word%':>6} {'Conf':>5} {'Iter':>4} {'Time':>6} {'Cost':>8}")
+    print("  " + "-" * 80)
     for sr in results:
         preset_name = _preset_name(sr.spec)
         boundary_label = "word-bound" if sr.spec.word_boundaries else "no-bound"
         conf_str = f"{sr.self_confidence:.2f}" if sr.self_confidence is not None else "n/a"
         word_str = f"{sr.word_accuracy:>5.1%}" if has_word_boundaries(sr.ground_truth) else "  N/A"
+        cost_str = f"${sr.estimated_cost_usd:.3f}"
         print(f"  {preset_name:<10} {sr.spec.language:>4} {boundary_label:<14} {sr.status:<10} "
-              f"{sr.char_accuracy:>5.1%} {word_str} {conf_str:>5} {sr.iterations:>4} {sr.elapsed:>5.0f}s")
+              f"{sr.char_accuracy:>5.1%} {word_str} {conf_str:>5} {sr.iterations:>4} {sr.elapsed:>5.0f}s {cost_str:>8}")
 
     solved = sum(1 for r in results if r.status == "solved")
     avg_char = sum(r.char_accuracy for r in results) / len(results)
-    print("  " + "-" * 70)
+    total_cost = sum(r.estimated_cost_usd for r in results)
+    print("  " + "-" * 80)
     print(f"  {'AVERAGE':<10} {'':>4} {'':14} {f'{solved}/{len(results)} solved':<10} "
-          f"{avg_char:>5.1%}")
+          f"{avg_char:>5.1%}{'':>21} ${total_cost:.3f}")
     print()
 
     # --------------------------------------------------------------- baseline
@@ -635,7 +740,31 @@ def _print_report(
                 print(format_char_diff(br.decryption, br.ground_truth, context=12))
             print()
 
-    print(sep)
+    # --------------------------------------------------- tool requests
+    all_requests = [
+        (sr, req)
+        for sr in results
+        for req in sr.tool_requests
+    ]
+    if all_requests:
+        print(sep)
+        print("TOOL REQUESTS FROM AGENT")
+        print("(capabilities the agent needed but no built-in tool covered)")
+        print(sep)
+        print()
+        for sr, req in all_requests:
+            preset_name = _preset_name(sr.spec)
+            print(f"  [{preset_name} / {sr.test_id}]  iteration {req['iteration']}")
+            print(f"  Description : {req['description']}")
+            print(f"  Rationale   : {req['rationale']}")
+            if req.get("example_input"):
+                print(f"  Example in  : {req['example_input']}")
+            if req.get("example_output"):
+                print(f"  Example out : {req['example_output']}")
+            print()
+        print(sep)
+    else:
+        print(sep)
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +779,17 @@ def _preset_name(spec: TestSpec) -> str:
                 and p.get("homophonic", False) == spec.homophonic):
             return preset.value
     return f"custom-{spec.approx_length}"
+
+
+def _default_seed_for_preset(preset: DifficultyPreset) -> int:
+    """Return the deterministic seed used by the default SUITE for a preset."""
+    defaults = {
+        DifficultyPreset.TINY: 1,
+        DifficultyPreset.MEDIUM: 3,
+        DifficultyPreset.HARD: 4,
+        DifficultyPreset.HARDEST: 5,
+    }
+    return defaults[preset]
 
 
 def _keychain_key() -> str | None:
@@ -670,6 +810,12 @@ def main() -> None:
     )
     parser.add_argument("--model", "-m", default="claude-sonnet-4-6")
     parser.add_argument("--max-iterations", "-i", type=int, default=20)
+    parser.add_argument(
+        "--preset", "-p",
+        nargs="+",
+        choices=[p.value for p in DifficultyPreset],
+        help="Run only the selected default suite preset(s)",
+    )
     parser.add_argument("--cache-dir", default="testgen_cache")
     parser.add_argument("--artifact-dir", default="artifacts")
     parser.add_argument("--errata-dir", default="errata")

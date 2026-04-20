@@ -23,6 +23,7 @@ decipher = "cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = ["-p", "no:pytest-qt"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

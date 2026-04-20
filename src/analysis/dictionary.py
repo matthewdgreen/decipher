@@ -63,8 +63,16 @@ def score_plaintext(text: str, word_set: set[str]) -> float:
 
     Returns 0.0-1.0. Higher is better.
     Ignores separator tokens like '|' and single-char non-alpha tokens.
+    If the text contains no whitespace (no-boundary cipher), runs a
+    Viterbi word segmenter first so the score is meaningful.
     """
-    words = text.upper().split()
+    upper = text.upper()
+    if upper.strip() and not any(c.isspace() for c in upper.strip()):
+        # No whitespace at all — segment first.
+        from analysis.segment import segment_text
+        res = segment_text(upper, word_set)
+        return res.dict_rate
+    words = upper.split()
     # Filter out separator tokens and non-word tokens
     words = [w for w in words if w.isalpha() or "?" in w]
     if not words:

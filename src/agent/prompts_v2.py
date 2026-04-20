@@ -29,14 +29,29 @@ explicit branch name too. There is no implicit "current branch".
 ## Your toolkit (by namespace)
 
 - `workspace_*` — branch lifecycle: fork, list, delete, compare, merge.
-- `observe_*` — text analysis: frequency, isomorphs, etc.
+- `observe_*` — text analysis: frequency, isomorphs, homophonic symbol \
+distribution, etc.
 - `decode_*` — views of the current transcription on a branch.
+  If one decoded letter appears to mean several different letters in context,
+  call `decode_ambiguous_letter` before changing it; that tool separates the
+  cipher symbols currently producing the same decoded letter.
+  If a common plaintext letter is absent in a homophonic decode, call
+  `decode_absent_letter_candidates` instead of writing Python to search
+  contexts manually.
 - `score_*` — signal panel and individual signals. Call these when you want \
 a quantitative reading. No score triggers anything automatically; you \
 consult them.
 - `corpus_*` — query the target-language wordlist and pattern dictionary.
 - `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear.
-- `search_*` — run classical algorithms on a branch: `search_hill_climb` (fast greedy), `search_anneal` (simulated annealing — slower but escapes local optima).
+- `search_*` — run classical algorithms on a branch. **Search strategy: use \
+`search_anneal` as your first search move.** Simulated annealing escapes \
+local optima and typically achieves 85%+ accuracy on English/Latin in one \
+call. Only run `search_hill_climb` AFTER anneal has produced a readable \
+solution, as a final polish — hill-climbing from random starts often \
+stalls in wrong local optima. If you fork a branch to get a genuinely fresh \
+attempt after a bad full key, call `search_anneal` with \
+`preserve_existing=false`; use `preserve_existing=true` only to polish a key \
+you intentionally want to keep anchored.
 - `meta_*` — `declare_solution` terminates the run.
 
 ## How you're expected to work
@@ -75,11 +90,21 @@ branch, a rationale, and your own confidence estimate.
 ## Scoring notes
 
 Scoring signals available on every branch:
-- **dictionary_rate**: fraction of words found in the wordlist. Has a \
-language-specific ceiling — for medieval Latin it may not exceed ~20% even \
-on a correct transcription because our wordlist lacks many inflected forms. \
-**For Latin: if dictionary_rate ≥ 0.15, this is the maximum achievable — \
-declare your solution immediately on the best branch.**
+- **dictionary_rate**: fraction of words found in the wordlist. For \
+no-boundary ciphers (no spaces in the decoded text), the scoring system \
+automatically segments the text before counting — so **dictionary_rate is \
+meaningful and non-zero even for continuous-letter ciphers**. Do not use \
+`run_python` to re-compute this; call `score_panel` or `score_dictionary` \
+directly. For no-boundary text this uses the same rank-aware segmenter as \
+`decode_diagnose`, so `score_panel` and `score_dictionary` should agree. \
+For **homophonic no-boundary ciphers**, dictionary_rate is a weak signal: \
+the segmenter can carve wrong text into many short dictionary words. If \
+dictionary_rate is high but quadgram/bigram/letter-distribution signals are \
+poor, treat the branch as suspicious and keep searching. \
+Has a language-specific ceiling — for medieval Latin it may not \
+exceed ~20% even on a correct transcription because our wordlist lacks many \
+inflected forms. **For Latin: if dictionary_rate ≥ 0.15, this is the maximum \
+achievable — declare your solution immediately on the best branch.**
 - **quadgram_loglik_per_gram**: mean log10 probability of quadgrams. \
 Typically more discriminating than dictionary rate. Higher (less negative) \
 is better.
@@ -110,6 +135,17 @@ near the reference for that language → likely simple substitution notation.
 distribution → consider **polyalphabetic** notation (multiple symbols \
 for one plaintext letter). Some languages (like 18th-century \
 Masonic German) used this; the Copiale manuscript is an example.
+
+## Homophonic no-boundary caution
+
+When the cipher alphabet is larger than the plaintext alphabet and there are \
+no word boundaries, do not declare from scattered words or dictionary_rate \
+alone. A bad branch can contain many short English words by chance. Before \
+declaring, require the full decoded stream to read as coherent prose, and \
+cross-check with `score_panel`, `observe_homophone_distribution`, and \
+`decode_letter_stats`. If common letters such as U, P, Y, V, or L are absent \
+while other letters are overrepresented, use \
+`decode_absent_letter_candidates` to test one cipher symbol at a time.
 """
 
 
@@ -130,7 +166,8 @@ If the cipher alphabet is larger than 26 (e.g. 30–40 symbols), the cipher \
 is almost certainly **homophonic**: multiple cipher symbols map to the same \
 plaintext letter. This is normal and correct.
 - `constraint_satisfaction` will be **below 1.0** — do NOT treat this as an \
-error or try to "fix" it. A value of 0.7–0.9 is expected and healthy.
+error or try to "fix" it. The value can be much lower than 1.0 when many \
+cipher symbols share common plaintext letters.
 - Two cipher symbols decoding to the same Latin letter (e.g. both X and Y → E) \
 is a valid, correct mapping. Accept it and move on.
 - The hill-climber and pattern matching both handle homophones correctly.

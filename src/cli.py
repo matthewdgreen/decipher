@@ -289,7 +289,11 @@ def main() -> None:
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
     tg.add_argument("--language", "-l", choices=["en", "it", "de", "fr", "la"], default="en")
-    tg.add_argument("--preset", "-p", choices=["tiny", "easy", "medium", "hard"], default="easy")
+    tg.add_argument(
+        "--preset", "-p",
+        choices=["tiny", "medium", "hard", "hardest"],
+        default="medium",
+    )
     tg.add_argument("--length", type=int, help="Override approx word count from preset")
     tg.add_argument("--topic", default="general")
     tg.add_argument("--no-boundaries", action="store_true")

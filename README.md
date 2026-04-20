@@ -9,7 +9,7 @@ historical manuscripts. Uses Claude as the decipherment agent.
 cd ~/Dropbox/src2/decipher
 source .venv/bin/activate
 pip install -e .
-export ANTHROPIC_API_KEY=sk-...   # or store via the GUI (macOS Keychain)
+export ANTHROPIC_API_KEY=sk-...   # or store in macOS Keychain (service: decipher)
 ```
 
 ---
@@ -59,9 +59,13 @@ decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
 decipher testgen --preset tiny --language en --dry-run
 
 # Full run
-decipher testgen --preset easy --language en --model claude-sonnet-4-6
+decipher testgen --preset medium --language en --model claude-sonnet-4-6
 
-# Presets: tiny (~40w, word-boundary), easy (~100w), medium (~200w), hard (~250w, no-boundary)
+# Presets:
+#   tiny    (~40w,  word-boundary, simple substitution)
+#   medium  (~200w, word-boundary, simple substitution)
+#   hard    (~250w, no word-boundary, simple substitution)
+#   hardest (~200w, no word-boundary, homophonic substitution — hardest to crack)
 # --seed N  makes the cipher key reproducible across runs
 ```
 
@@ -69,8 +73,8 @@ decipher testgen --preset easy --language en --model claude-sonnet-4-6
 
 ## Regression test suite
 
-Runs four synthetic tests (tiny / easy / medium / hard) with fixed seeds so
-the exact same ciphertext is produced on every run.
+Runs four synthetic tests (tiny / medium / hard / hardest) with fixed seeds
+so the exact same ciphertext is produced on every run.
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
@@ -78,12 +82,40 @@ PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
   --max-iterations 20
 
 # Extra options
+  --preset hardest   # run only one fixed preset: tiny | medium | hard | hardest
   --verbose          # show agent reasoning while running
   --flush-cache      # regenerate all plaintexts before running
+  --compare          # also run a one-shot + code baseline on every test
 ```
+
+The four fixed tests are:
+
+| Preset   | Words | Word boundaries | Cipher type          | Seed |
+|----------|-------|-----------------|----------------------|------|
+| tiny     | ~40   | yes             | simple substitution  | 1    |
+| medium   | ~200  | yes             | simple substitution  | 3    |
+| hard     | ~250  | no              | simple substitution  | 4    |
+| hardest  | ~200  | no              | homophonic (58 syms) | 5    |
+
+The **hardest** test uses a homophonic substitution cipher: each plaintext
+letter maps to one of 1–4 two-digit numeric tokens, with high-frequency
+letters (E, T, A, …) receiving more homophones to defeat frequency analysis.
+
+`run_python` remains an allowed agent tool because it can be useful for novel
+analysis, but each call must include the agent's justification. Suite and errata
+reports highlight those calls so they can be treated as evidence that a better
+first-class tool may be needed.
 
 Tests that score below 100% character accuracy are saved to `errata/` with a
 verbose report, alignment diff, and the full agent reasoning log.
+
+### Baseline comparison
+
+`--compare` runs an additional one-shot baseline on every test immediately
+after the agent. The baseline gives Claude a single `run_python` tool (stdlib
+only, no domain knowledge) and asks it to derive the solution using code.
+The final report shows three tables: agent results, baseline results, and a
+delta comparison (positive = agent outperforms baseline).
 
 ---
 

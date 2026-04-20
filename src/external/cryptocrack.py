@@ -7,7 +7,7 @@ class CryptoCrack(ExternalTool):
     """Wrapper for the CryptoCrack cipher solving tool."""
 
     def is_available(self) -> bool:
-        # TODO: Check for CryptoCrack binary on PATH or configured location
+        # Future integration: check for CryptoCrack on PATH or configured location.
         return False
 
     def solve(self, ciphertext: str, **kwargs: object) -> dict:
