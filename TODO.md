@@ -71,7 +71,7 @@ or a benchmark data issue.
   - `scoring_false_positive`
   - `external_unsolved`
   - `benchmark_data_issue`
-- [ ] Produce a parity dashboard:
+- [x] Produce a parity dashboard:
   - family
   - external best
   - native best
