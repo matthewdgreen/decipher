@@ -24,12 +24,6 @@ def get_api_key() -> str:
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
-    from benchmark.runner_v2 import BenchmarkRunnerV2
-    from services.claude_api import ClaudeAPI
-
-    api_key = get_api_key()
-    model = args.model or "claude-opus-4-7"
-    api = ClaudeAPI(api_key=api_key, model=model)
 
     loader = BenchmarkLoader(args.benchmark_path)
     split_file = args.split or (
@@ -44,13 +38,29 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         print("No matching tests found.", file=sys.stderr)
         sys.exit(1)
 
-    runner = BenchmarkRunnerV2(
-        claude_api=api,
-        max_iterations=args.max_iterations,
-        verbose=args.verbose,
-        language=args.language,
-        artifact_dir=args.artifact_dir or "artifacts",
-    )
+    if args.automated_only:
+        from automated.runner import AutomatedBenchmarkRunner
+
+        runner = AutomatedBenchmarkRunner(
+            verbose=args.verbose,
+            language=args.language,
+            artifact_dir=args.artifact_dir or "artifacts",
+        )
+        model = "automated-only"
+    else:
+        from benchmark.runner_v2 import BenchmarkRunnerV2
+        from services.claude_api import ClaudeAPI
+
+        api_key = get_api_key()
+        model = args.model or "claude-opus-4-7"
+        api = ClaudeAPI(api_key=api_key, model=model)
+        runner = BenchmarkRunnerV2(
+            claude_api=api,
+            max_iterations=args.max_iterations,
+            verbose=args.verbose,
+            language=args.language,
+            artifact_dir=args.artifact_dir or "artifacts",
+        )
 
     print(f"Running {len(tests)} test(s) — model={model}, max_iter={args.max_iterations}")
     print(f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n")
@@ -89,11 +99,6 @@ def cmd_crack(args: argparse.Namespace) -> None:
     from benchmark.loader import parse_canonical_transcription
     from models.alphabet import Alphabet
     from models.cipher_text import CipherText
-    from services.claude_api import ClaudeAPI
-
-    api_key = get_api_key()
-    model = args.model or "claude-opus-4-7"
-    api = ClaudeAPI(api_key=api_key, model=model)
 
     if args.file:
         with open(args.file) as f:
@@ -115,11 +120,36 @@ def cmd_crack(args: argparse.Namespace) -> None:
 
     print(f"Alphabet: {ct.alphabet.size} symbols, {len(ct.tokens)} tokens, {len(ct.words)} words")
 
-    from agent.loop_v2 import run_v2
     from pathlib import Path
 
     cipher_id = args.cipher_id or "cli"
     artifact_dir = args.artifact_dir or "artifacts"
+
+    if args.automated_only:
+        from automated.runner import run_automated, save_crack_artifact
+
+        print("Running automated-only solver (no LLM API calls)...")
+        artifact = run_automated(
+            cipher_text=ct,
+            language=args.language,
+            cipher_id=cipher_id,
+        )
+        path = save_crack_artifact(artifact, ct, args.language, artifact_dir)
+        print(f"\nArtifact saved: {path}")
+        print(f"Status: {artifact.status}")
+        print(f"Solver: {artifact.solver}")
+        print(f"Time: {artifact.elapsed_seconds:.1f}s")
+        if artifact.error_message:
+            print(f"Error: {artifact.error_message}")
+        print(f"\nFinal decryption:\n{artifact.final_decryption}")
+        return
+
+    from agent.loop_v2 import run_v2
+    from services.claude_api import ClaudeAPI
+
+    api_key = get_api_key()
+    model = args.model or "claude-opus-4-7"
+    api = ClaudeAPI(api_key=api_key, model=model)
 
     def on_event(event: str, payload: dict) -> None:
         if event == "iteration_start":
@@ -164,14 +194,11 @@ def cmd_crack(args: argparse.Namespace) -> None:
 
 
 def cmd_testgen(args: argparse.Namespace) -> None:
-    from benchmark.runner_v2 import BenchmarkRunnerV2
     from benchmark.scorer import score_decryption
-    from services.claude_api import ClaudeAPI
     from testgen.builder import build_test_case
     from testgen.cache import PlaintextCache
     from testgen.spec import DifficultyPreset, TestSpec
 
-    api_key = get_api_key()
     cache = PlaintextCache(args.cache_dir)
 
     if args.list_cache:
@@ -209,6 +236,20 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         n = cache.flush(spec)
         print(f"Flushed {n} cache entry for this spec.")
 
+    if args.automated_only:
+        cached = cache.get(spec)
+        if cached is None:
+            print(
+                "Error: --automated-only testgen cannot generate new plaintext, "
+                "because that would require an LLM API call. Run without "
+                "--automated-only once to populate the cache, or choose a cached spec.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        api_key = ""
+    else:
+        api_key = get_api_key()
+
     test_data = build_test_case(spec, cache, api_key, seed=args.seed)
 
     pt_preview = test_data.plaintext[:120] + ("..." if len(test_data.plaintext) > 120 else "")
@@ -222,18 +263,31 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         print("\n[dry-run] Skipping agent.")
         return
 
-    crack_model = args.model or "claude-opus-4-7"
-    crack_api = ClaudeAPI(api_key=api_key, model=crack_model)
-    runner = BenchmarkRunnerV2(
-        claude_api=crack_api,
-        max_iterations=args.max_iterations,
-        verbose=args.verbose,
-        language=args.language,
-        artifact_dir=args.artifact_dir,
-    )
+    if args.automated_only:
+        from automated.runner import AutomatedBenchmarkRunner
 
-    print(f"\nRunning agent (model={crack_model}, max_iter={args.max_iterations})...")
-    result = runner.run_test(test_data)
+        runner = AutomatedBenchmarkRunner(
+            verbose=args.verbose,
+            language=args.language,
+            artifact_dir=args.artifact_dir,
+        )
+        print("\nRunning automated-only solver (no LLM API calls)...")
+        result = runner.run_test(test_data, language=args.language)
+    else:
+        from benchmark.runner_v2 import BenchmarkRunnerV2
+        from services.claude_api import ClaudeAPI
+
+        crack_model = args.model or "claude-opus-4-7"
+        crack_api = ClaudeAPI(api_key=api_key, model=crack_model)
+        runner = BenchmarkRunnerV2(
+            claude_api=crack_api,
+            max_iterations=args.max_iterations,
+            verbose=args.verbose,
+            language=args.language,
+            artifact_dir=args.artifact_dir,
+        )
+        print(f"\nRunning agent (model={crack_model}, max_iter={args.max_iterations})...")
+        result = runner.run_test(test_data)
 
     score = score_decryption(
         test_id=result.test_id,
@@ -272,6 +326,8 @@ def main() -> None:
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")
+    bench.add_argument("--automated-only", action="store_true",
+                       help="Run native automated solvers only; make no LLM API calls.")
 
     # crack
     crack = subparsers.add_parser("crack", help="Crack a cipher from file or stdin")
@@ -285,6 +341,8 @@ def main() -> None:
     crack.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     crack.add_argument("--cipher-id", help="Identifier for this cipher (default: 'cli')")
     crack.add_argument("--verbose", "-v", action="store_true")
+    crack.add_argument("--automated-only", action="store_true",
+                       help="Run native automated solvers only; make no LLM API calls.")
 
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
@@ -307,6 +365,11 @@ def main() -> None:
     tg.add_argument("--artifact-dir", default="artifacts")
     tg.add_argument("--cache-dir", default="testgen_cache")
     tg.add_argument("--verbose", "-v", action="store_true")
+    tg.add_argument("--automated-only", action="store_true",
+                    help=(
+                        "Run native automated solvers only; make no LLM API calls. "
+                        "Requires the generated plaintext to already be cached."
+                    ))
 
     args = parser.parse_args()
 

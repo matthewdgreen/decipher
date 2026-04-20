@@ -50,6 +50,7 @@ or a benchmark data issue.
 
 - [ ] Harden `search_homophonic_anneal` with seed sweeps against Zenith and zkdecrypto-lite.
 - [x] Add top-N candidate support for homophonic annealing.
+- [x] Add an automated-only/no-LLM CLI mode that runs native techniques and writes zero-cost artifacts.
 - [ ] Add model provenance and acquisition docs for continuous n-gram models.
 - [ ] Add or train language-specific continuous models for Latin, German, French, and Italian.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.

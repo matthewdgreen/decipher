@@ -47,6 +47,8 @@ src/
     loader.py             — BenchmarkLoader: reads JSONL manifest + splits + data files
     runner_v2.py          — V2 BenchmarkRunner: with artifacts and preprocessing
     scorer.py             — score_decryption(), format_report() (char/word accuracy)
+  automated/
+    runner.py             — Automated-only/no-LLM runner using native solving techniques
   services/
     claude_api.py         — ClaudeAPI: send_message(), estimate_cost(), retry/error helpers
   ocr/
@@ -71,6 +73,7 @@ tests/
   test_workspace.py       — branch workspace tests
   test_signals.py         — scoring panel tests
   test_segment.py         — no-boundary segmentation tests
+  test_automated_runner.py — no-LLM automated runner and CLI bypass tests
   test_agent_reliability.py — loop fallback and reliability behavior tests
 ```
 
@@ -83,6 +86,9 @@ All analysis works on `list[int]` token IDs, not strings. `Alphabet` is the bidi
 
 ### Session and workspace state
 `Session` is a lightweight headless container used by solver algorithms. V2 agent runs use `Workspace`, which holds the immutable cipher text plus named branch keys for hypothesis exploration. There are no Qt signal dependencies in the active CLI path.
+
+### Automated-only mode
+`--automated-only` is a no-LLM path for `benchmark`, `crack`, and cached `testgen` runs. It lives in `src/automated/runner.py` so native parity work can evolve separately from `agent/loop_v2.py`. Artifacts are marked `run_mode: automated_only`, `automated_only: true`, with zero tokens and zero estimated cost. Testgen automated-only requires cached plaintext because generating fresh synthetic prose would require an LLM call.
 
 ### Key representation
 `dict[int, int]` — cipher token ID → plaintext token ID. Partial keys are fine; unmapped tokens show as `?`. `apply_key()` uses the plaintext alphabet's `_multisym` flag to determine output spacing (not the cipher alphabet's flag — important fix).
@@ -143,6 +149,7 @@ Recent testgen work turned failure logs into tool-design improvements:
 - **Rank-aware segmentation**: no-boundary English is segmented using frequency-ranked dictionary costs
 - **Homophonic diagnostics**: tools identify ambiguous letters, absent letters, and likely split homophones
 - **`run_python` audit trail**: Python remains allowed, but every use records a justification and is highlighted in reports as a tool-design signal
+- **Automated-only baseline**: `--automated-only` runs native solvers without LLM API calls and writes comparable zero-cost artifacts
 
 ---
 
@@ -217,6 +224,14 @@ echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
 # Hardest synthetic regression only
 PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
   --preset hardest --model claude-sonnet-4-6 --max-iterations 25 --verbose
+
+# No-LLM automated baseline on a benchmark split/test
+.venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
+  --test-id synth_en_200honb_s6 --automated-only --language en
+
+# No-LLM crack from canonical text
+echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
+  --language la --canonical --automated-only
 
 # Legacy V1 commands
 .venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source borg -v
