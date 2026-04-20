@@ -225,9 +225,9 @@ echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
 PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
   --preset hardest --model claude-sonnet-4-6 --max-iterations 25 --verbose
 
-# No-LLM automated baseline on a benchmark split/test
-.venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
-  --test-id synth_en_200honb_s6 --automated-only --language en
+# No-LLM automated baseline on the hardest synthetic cached instance
+PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
+  --preset hardest --automated-only
 
 # No-LLM crack from canonical text
 echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \

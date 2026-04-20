@@ -15,6 +15,7 @@ Options:
     --artifact-dir DIR     Artifact directory (default: artifacts)
     --errata-dir DIR       Errata directory (default: errata)
     --flush-cache          Regenerate all plaintexts before running
+    --automated-only       Run native automated solvers only; make no LLM API calls
     --verbose              Show agent reasoning while running
     --list-errata          List active errata and exit
     --rerun-errata         Re-run all active errata tests
@@ -42,14 +43,12 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from benchmark.baseline_runner import BaselineResult, run_baseline
-from benchmark.runner_v2 import BenchmarkRunnerV2
 from benchmark.scorer import (
     format_alignment,
     format_char_diff,
     has_word_boundaries,
     score_decryption,
 )
-from services.claude_api import ClaudeAPI
 from testgen.builder import build_test_case
 from testgen.cache import PlaintextCache
 from testgen.spec import DifficultyPreset, TestSpec, _PRESET_PARAMS
@@ -476,19 +475,32 @@ def run_suite(args: argparse.Namespace) -> None:
                 print(f"  {test_id:<35} last={char_str}  runs={runs_count}  ts={ts}")
         return
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY") or _keychain_key()
-    if not api_key:
-        print("Error: set ANTHROPIC_API_KEY or configure via the GUI.", file=sys.stderr)
+    if args.automated_only and args.compare:
+        print(
+            "Error: --automated-only cannot be combined with --compare because "
+            "--compare uses an LLM baseline.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     git = _git_info()
     print(f"Decipher commit: {git['description']}"
           + (" (dirty)" if git["dirty"] else ""))
-    print(f"Model: {args.model}  max_iter={args.max_iterations}")
+    if args.automated_only:
+        print(f"Mode: automated-only  max_iter={args.max_iterations}")
+    else:
+        print(f"Model: {args.model}  max_iter={args.max_iterations}")
     print()
 
     cache = PlaintextCache(args.cache_dir)
     if args.flush_cache:
+        if args.automated_only:
+            print(
+                "Error: --automated-only cannot be combined with --flush-cache because "
+                "generating replacement plaintext requires an LLM call.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         n = cache.flush()
         print(f"Flushed {n} cache entries.\n")
 
@@ -516,13 +528,30 @@ def run_suite(args: argparse.Namespace) -> None:
         else:
             suite = list(SUITE)
 
-    crack_api = ClaudeAPI(api_key=api_key, model=args.model)
-    runner = BenchmarkRunnerV2(
-        claude_api=crack_api,
-        max_iterations=args.max_iterations,
-        verbose=args.verbose,
-        artifact_dir=args.artifact_dir,
-    )
+    if args.automated_only:
+        from automated.runner import AutomatedBenchmarkRunner
+
+        api_key = ""
+        crack_api = None
+        runner = AutomatedBenchmarkRunner(
+            verbose=args.verbose,
+            artifact_dir=args.artifact_dir,
+        )
+    else:
+        from benchmark.runner_v2 import BenchmarkRunnerV2
+        from services.claude_api import ClaudeAPI
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY") or _keychain_key()
+        if not api_key:
+            print("Error: set ANTHROPIC_API_KEY or configure via the GUI.", file=sys.stderr)
+            sys.exit(1)
+        crack_api = ClaudeAPI(api_key=api_key, model=args.model)
+        runner = BenchmarkRunnerV2(
+            claude_api=crack_api,
+            max_iterations=args.max_iterations,
+            verbose=args.verbose,
+            artifact_dir=args.artifact_dir,
+        )
 
     results: list[SuiteResult] = []
     baseline_results: list[BaselineResult | None] = []
@@ -534,10 +563,19 @@ def run_suite(args: argparse.Namespace) -> None:
         print(f"[{i}/{len(suite)}] {preset_name} — {spec.language}, {boundary_label}"
               f"{homo_label}, ~{spec.approx_length} words")
 
+        if args.automated_only and cache.get(spec) is None:
+            print(
+                "  Error: automated-only mode cannot generate new plaintext for this spec "
+                "because that requires an LLM call. Run once without --automated-only "
+                "to populate the cache, or choose a cached spec.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
         test_data = build_test_case(spec, cache, api_key)
 
-        # --- agent run ---
-        print("  [agent]")
+        # --- solve run ---
+        print("  [automated-only]" if args.automated_only else "  [agent]")
         t0 = time.time()
         result = runner.run_test(test_data, language=spec.language)
         elapsed = time.time() - t0
@@ -563,7 +601,7 @@ def run_suite(args: argparse.Namespace) -> None:
             ground_truth=test_data.plaintext,
             artifact_path=result.artifact_path,
             error=result.error_message or "",
-            tool_requests=result.tool_requests,
+            tool_requests=getattr(result, "tool_requests", []),
             total_tokens=result.total_tokens,
             estimated_cost_usd=result.estimated_cost_usd,
         )
@@ -586,6 +624,7 @@ def run_suite(args: argparse.Namespace) -> None:
         #     so the baseline artifact can be co-located with the agent artifact.
         br: BaselineResult | None = None
         if args.compare:
+            assert crack_api is not None
             print("  [baseline one-shot + code]")
             br = run_baseline(
                 test_data,
@@ -604,13 +643,14 @@ def run_suite(args: argparse.Namespace) -> None:
                 print(f"    error: {br.error}")
         baseline_results.append(br)
 
+        model_label = "automated-only" if args.automated_only else args.model
         if rerun_mode:
-            errata_path = _save_errata(sr, git, args.model, errata_dir, baseline=br)
+            errata_path = _save_errata(sr, git, model_label, errata_dir, baseline=br)
             print(f"    ↳ run recorded → {errata_path}")
             if _check_and_maybe_archive(sr.test_id, errata_dir):
                 print(f"    ↳ solved 2× in a row — archived to errata/archive/{sr.test_id}/")
         elif sr.char_accuracy < 1.0:
-            errata_path = _save_errata(sr, git, args.model, errata_dir, baseline=br)
+            errata_path = _save_errata(sr, git, model_label, errata_dir, baseline=br)
             print(f"    ↳ errata saved → {errata_path}")
 
         print()
@@ -820,6 +860,9 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="artifacts")
     parser.add_argument("--errata-dir", default="errata")
     parser.add_argument("--flush-cache", action="store_true")
+    parser.add_argument("--automated-only", action="store_true",
+                        help="Run native automated solvers only; make no LLM API calls. "
+                             "Requires generated plaintext to already be cached.")
     parser.add_argument("--verbose", "-v", action="store_true")
     parser.add_argument("--list-errata", action="store_true",
                         help="List active errata and exit")
