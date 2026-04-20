@@ -348,26 +348,52 @@ def _run_homophonic(
     letter_to_id = {letter: i for i, letter in id_to_letter.items()}
     word_list = _word_list(language)
     model, model_note = _homophonic_model(language, word_list)
-    result = homophonic.homophonic_simulated_anneal(
-        tokens=list(cipher_text.tokens),
-        plaintext_ids=plaintext_ids,
-        id_to_letter=id_to_letter,
-        letter_to_id=letter_to_id,
-        model=model,
-        epochs=7,
-        sampler_iterations=3000,
-        distribution_weight=5.0,
-        top_n=3,
-    )
+    started = time.time()
+    seeds = [0, 1, 2, 3]
+    attempts = []
+    result = None
+    result_seed = None
+    for seed in seeds:
+        candidate = homophonic.homophonic_simulated_anneal(
+            tokens=list(cipher_text.tokens),
+            plaintext_ids=plaintext_ids,
+            id_to_letter=id_to_letter,
+            letter_to_id=letter_to_id,
+            model=model,
+            epochs=7,
+            sampler_iterations=3000,
+            distribution_weight=5.0,
+            seed=seed,
+            top_n=3,
+        )
+        collapsed = _is_collapsed_plaintext(candidate.plaintext)
+        attempts.append({
+            "seed": seed,
+            "collapsed": collapsed,
+            "anneal_score": round(candidate.normalized_score, 4),
+            "preview": candidate.plaintext[:120],
+        })
+        if result is None or candidate.normalized_score > result.normalized_score:
+            result = candidate
+            result_seed = seed
+        if not collapsed:
+            result = candidate
+            result_seed = seed
+            break
+    if result is None:
+        raise ValueError("homophonic anneal produced no result")
     step = {
         "name": "search_homophonic_anneal",
         "solver": "native_homophonic_anneal",
         "model_source": model.source,
         "model_note": model_note,
         "anneal_score": round(result.normalized_score, 4),
-        "elapsed_seconds": round(result.elapsed_seconds, 3),
+        "elapsed_seconds": round(time.time() - started, 3),
         "epochs": result.epochs,
         "sampler_iterations": result.sampler_iterations,
+        "seed": result_seed,
+        "seed_attempts": attempts,
+        "collapse_retries": max(0, len(attempts) - 1),
         "candidates": [
             {
                 "rank": i + 1,
@@ -378,6 +404,18 @@ def _run_homophonic(
         ],
     }
     return "native_homophonic_anneal", result.key, result.plaintext, step
+
+
+def _is_collapsed_plaintext(plaintext: str) -> bool:
+    letters = [ch for ch in plaintext.upper() if "A" <= ch <= "Z"]
+    if len(letters) < 50:
+        return False
+    counts: dict[str, int] = {}
+    for letter in letters:
+        counts[letter] = counts.get(letter, 0) + 1
+    max_fraction = max(counts.values()) / len(letters)
+    unique_fraction = len(counts) / 26
+    return max_fraction >= 0.35 or unique_fraction <= 0.20
 
 
 def _run_substitution(

@@ -217,3 +217,10 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     assert seen["test_id"] == "auto_demo"
     assert seen["language"] == "en"
     assert seen["automated_preflight"]["summary"] == "preflight summary"
+
+
+def test_collapsed_plaintext_detector_flags_single_letter_failure():
+    assert automated_runner._is_collapsed_plaintext("E" * 100)
+    assert not automated_runner._is_collapsed_plaintext(
+        "THEOLDPHOTOGRAPHHADYELLOWEDATTHEEDGESITSCOLORSFADING"
+    )
