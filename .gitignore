@@ -14,8 +14,8 @@ build/
 models/
 !models/
 models/*
-!models/ngram5_en.bin
-!models/ngram5_en.bin.metadata.json
+!models/ngram5_*.bin
+!models/ngram5_*.bin.metadata.json
 corpus_data/
 other_tools/
 external_baselines/local*.json

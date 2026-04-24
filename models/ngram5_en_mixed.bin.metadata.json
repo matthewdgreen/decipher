@@ -1,0 +1,49 @@
+{
+  "language": "en",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_en_mixed.bin",
+  "sha256": "315266e8c17e855fa32c54d3c50023c9272e4e5e2635bf0daa2f7837d7db2bb3",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.723266,
+  "build_timestamp_utc": "2026-04-24T04:13:33.479360+00:00",
+  "builder_version": 1,
+  "sources": [
+    {
+      "name": "gutenberg",
+      "language": "en",
+      "license": "Project Gutenberg terms",
+      "url": "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv",
+      "redistributable": true,
+      "text_files": 100,
+      "max_books": 100
+    },
+    {
+      "name": "oanc",
+      "language": "en",
+      "license": "Open ANC open-data terms",
+      "url": "https://www.anc.org/OANC/OANC-1.0.1-UTF8.zip",
+      "redistributable": true,
+      "text_files": 8827,
+      "note": "Downloaded with relaxed TLS verification because anc.org currently serves an expired certificate."
+    },
+    {
+      "name": "masc",
+      "language": "en",
+      "license": "CC BY 3.0 US",
+      "url": "https://www.anc.org/MASC/download/masc_500k_texts.tgz",
+      "redistributable": true,
+      "text_files": 405
+    }
+  ],
+  "corpus_stats": {
+    "raw_files": 9832,
+    "normalized_characters": 275984926,
+    "distinct_seen_5grams": 1675463
+  },
+  "normalization": {
+    "lowercase": true,
+    "strip_non_alpha": true
+  },
+  "redistribution_status": "redistributable"
+}
