@@ -7,6 +7,7 @@ artifact marked ``run_mode: automated_only``.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import math
 import os
@@ -1159,7 +1160,7 @@ def _run_homophonic_zenith_native(
     Shannon-entropy counterweight plus un-normalized acceptance criterion.
     Falls back gracefully if the binary model file is not present.
     """
-    from analysis.zenith_solver import ZenithModel, load_zenith_binary_model, zenith_solve
+    from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
 
     bin_path = _zenith_native_model_path(language)
     if bin_path is None:
@@ -1172,29 +1173,57 @@ def _run_homophonic_zenith_native(
             "other_tools/zenith-2026.2/zenith-model.array.bin."
         )
 
-    model: ZenithModel = load_zenith_binary_model(bin_path)
-
     seeds = budget_params["seeds"]
     epochs = budget_params["epochs"]
     sampler_iterations = budget_params["sampler_iterations"]
+    parallel_seed_workers = _homophonic_parallel_seed_workers()
 
     best_result = None
     best_score = float("-inf")
     attempts = []
     word_list = _word_list(language)
 
-    for seed in seeds:
-        candidate = zenith_solve(
-            tokens=list(cipher_text.tokens),
-            plaintext_ids=plaintext_ids,
-            id_to_letter=id_to_letter,
-            letter_to_id=letter_to_id,
-            model=model,
-            epochs=epochs,
-            sampler_iterations=sampler_iterations,
-            seed=seed,
-            top_n=3,
-        )
+    seed_results: list[tuple[int, Any]] = []
+    if parallel_seed_workers > 1 and len(seeds) > 1:
+        max_workers = min(parallel_seed_workers, len(seeds))
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {
+                executor.submit(
+                    _zenith_native_seed_worker,
+                    tokens=list(cipher_text.tokens),
+                    plaintext_ids=plaintext_ids,
+                    id_to_letter=id_to_letter,
+                    letter_to_id=letter_to_id,
+                    model_path=str(bin_path),
+                    epochs=epochs,
+                    sampler_iterations=sampler_iterations,
+                    seed=seed,
+                ): seed
+                for seed in seeds
+            }
+            for future in concurrent.futures.as_completed(future_map):
+                seed = future_map[future]
+                seed_results.append((seed, future.result()))
+        seed_results.sort(key=lambda item: seeds.index(item[0]))
+    else:
+        model = load_zenith_binary_model(bin_path)
+        for seed in seeds:
+            seed_results.append((
+                seed,
+                zenith_solve(
+                    tokens=list(cipher_text.tokens),
+                    plaintext_ids=plaintext_ids,
+                    id_to_letter=id_to_letter,
+                    letter_to_id=letter_to_id,
+                    model=model,
+                    epochs=epochs,
+                    sampler_iterations=sampler_iterations,
+                    seed=seed,
+                    top_n=3,
+                ),
+            ))
+
+    for seed, candidate in seed_results:
         quality = _plaintext_quality(candidate.plaintext, candidate.key)
         diagnostics = _automated_candidate_diagnostics(
             candidate.plaintext,
@@ -1243,6 +1272,7 @@ def _run_homophonic_zenith_native(
         "elapsed_seconds": round(time.time() - started, 3),
         "epochs": best_result.epochs,
         "sampler_iterations": best_result.sampler_iterations,
+        "parallel_seed_workers": parallel_seed_workers,
         "seed_attempts": attempts,
     }
     return "zenith_native", selected_key, selected_plaintext, step
@@ -1295,6 +1325,48 @@ def _homophonic_repair_profile() -> str:
         .strip()
         .lower()
         or "full"
+    )
+
+
+def _homophonic_parallel_seed_workers() -> int:
+    raw = (
+        os.environ.get("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", "1")
+        .strip()
+        or "1"
+    )
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            "DECIPHER_HOMOPHONIC_PARALLEL_SEEDS must be an integer >= 1"
+        ) from exc
+    return max(1, value)
+
+
+def _zenith_native_seed_worker(
+    *,
+    tokens: list[int],
+    plaintext_ids: list[int],
+    id_to_letter: dict[int, str],
+    letter_to_id: dict[str, int],
+    model_path: str,
+    epochs: int,
+    sampler_iterations: int,
+    seed: int,
+):
+    from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
+
+    model = load_zenith_binary_model(model_path)
+    return zenith_solve(
+        tokens=tokens,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        model=model,
+        epochs=epochs,
+        sampler_iterations=sampler_iterations,
+        seed=seed,
+        top_n=3,
     )
 
 

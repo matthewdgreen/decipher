@@ -374,6 +374,12 @@ def test_homophonic_repair_profile_reads_env(monkeypatch):
     assert automated_runner._homophonic_repair_profile() == "dev"
 
 
+def test_homophonic_parallel_seed_workers_reads_env(monkeypatch):
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", "4")
+
+    assert automated_runner._homophonic_parallel_seed_workers() == 4
+
+
 def test_homophonic_budget_screen_reduces_search_parameters():
     full_short = automated_runner._homophonic_budget_params("full", short_homophonic=True)
     screen_short = automated_runner._homophonic_budget_params("screen", short_homophonic=True)
@@ -733,6 +739,103 @@ def test_run_homophonic_move_profile_is_passed_to_annealer(monkeypatch):
 
     assert seen["move_profile"] == "mixed_v1"
     assert step["move_profile"] == "mixed_v1"
+
+
+def test_run_homophonic_zenith_native_can_parallelize_across_seeds(monkeypatch):
+    ct = automated_runner.parse_canonical_transcription("01 02 03 01 02 03")
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", "2")
+    monkeypatch.setattr(automated_runner, "_zenith_native_model_path", lambda language: "fake-model.bin")
+
+    class FakeCandidate(SimpleNamespace):
+        pass
+
+    def make_candidate(seed):
+        return FakeCandidate(
+            plaintext=f"THERE{seed}",
+            key={0: 19, 1: 7, 2: 4},
+            normalized_score=-1.0 + (0.1 * seed),
+            epochs=5,
+            sampler_iterations=1500,
+        )
+
+    class FakeFuture:
+        def __init__(self, seed):
+            self.seed = seed
+
+        def result(self):
+            return make_candidate(self.seed)
+
+    class FakeExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, **kwargs):
+            return FakeFuture(kwargs["seed"])
+
+    monkeypatch.setattr(automated_runner.concurrent.futures, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(
+        automated_runner.concurrent.futures,
+        "as_completed",
+        lambda futures: list(reversed(list(futures))),
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_word_list",
+        lambda language: ["THERE"],
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_plaintext_quality",
+        lambda plaintext, key: {
+            "ok": True,
+            "collapsed": False,
+            "penalty": 0.0,
+            "reasons": [],
+            "letter_count": len(plaintext),
+            "unique_letters": len(set(plaintext)),
+            "top_letter_fraction": 0.2,
+            "key_plaintext_letters": len(set(key.values())),
+            "monogram_chi_per_letter": 0.1,
+        },
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_automated_candidate_diagnostics",
+        lambda plaintext, language, word_list: {
+            "letter_count": len(plaintext),
+            "unique_letters": len(set(plaintext)),
+            "top_letter_fraction": 0.2,
+            "index_of_coincidence": 0.07,
+            "dict_rate": 0.9,
+            "segmentation_cost": 20.0,
+            "segmented_preview": plaintext,
+            "pseudo_word_count": 1,
+        },
+    )
+
+    _solver, _key, text, step = automated_runner._run_homophonic_zenith_native(
+        cipher_text=ct,
+        language="en",
+        budget="screen",
+        ground_truth=None,
+        pt_alpha=automated_runner._plaintext_alphabet("en"),
+        plaintext_ids=list(range(automated_runner._plaintext_alphabet("en").size)),
+        id_to_letter={i: automated_runner._plaintext_alphabet("en").symbol_for(i).upper() for i in range(automated_runner._plaintext_alphabet("en").size)},
+        letter_to_id={automated_runner._plaintext_alphabet("en").symbol_for(i).upper(): i for i in range(automated_runner._plaintext_alphabet("en").size)},
+        short_homophonic=True,
+        budget_params={"seeds": [0, 1], "epochs": 5, "sampler_iterations": 1500, "budget": "screen"},
+        started=0.0,
+    )
+
+    assert text == "THERE1"
+    assert step["parallel_seed_workers"] == 2
+    assert [attempt["seed"] for attempt in step["seed_attempts"]] == [0, 1]
 
 
 def test_run_homophonic_two_stage_refinement_adopts_only_better_candidate(monkeypatch):
