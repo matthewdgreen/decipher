@@ -1,8 +1,16 @@
 """Zenith-parity homophonic solver for Zodiac-style ciphers.
 
-This module is a faithful Python port of Zenith's simulated annealing algorithm.
-It is kept isolated from the existing homophonic.py so that no existing functionality
-is disturbed.
+This module is a faithful Python port/adaptation of the Zenith homophonic
+simulated annealing solver from the Zenith project by beldenge:
+https://github.com/beldenge/Zenith
+
+Decipher is distributed under GPLv3 so this derived implementation can be
+redistributed ethically and with clear attribution. Please preserve this
+attribution when moving or modifying this file.
+
+The implementation is kept isolated from the existing ``homophonic.py`` so no
+existing functionality is disturbed while we maintain a direct, auditable link
+between the Zenith-derived algorithm and the rest of Decipher.
 
 Key differences from the ``zenith_exact`` score profile in homophonic.py (which
 scored 7.8% on Zodiac 408):

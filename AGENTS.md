@@ -12,6 +12,14 @@ A CLI research tool for classical cipher cryptanalysis. Primary focus:
 - **AI-assisted decipherment** using Codex tool-use API
 - **Benchmark evaluation** against a dataset of solved historical ciphers
 
+Licensing note:
+- Decipher is now GPLv3-licensed.
+- `src/analysis/zenith_solver.py` is derived from the Zenith project by
+  beldenge and must retain explicit attribution in code comments and docs.
+- The proprietary Zenith English binary model is still not redistributed in
+  this repo; replacing it with Decipher-built redistributable models is active
+  work.
+
 ---
 
 ## Key Files

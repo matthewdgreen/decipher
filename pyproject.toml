@@ -7,6 +7,10 @@ name = "decipher"
 version = "0.1.0"
 description = "Classical cipher cryptanalysis tool with AI-powered cracking"
 requires-python = ">=3.11"
+license = {file = "LICENSE"}
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
 dependencies = [
     "anthropic>=0.40",
     "keyring>=25",

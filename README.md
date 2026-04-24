@@ -3,6 +3,27 @@
 AI-assisted cryptanalysis of classical substitution ciphers, with a focus on
 historical manuscripts. Uses Claude as the decipherment agent.
 
+## License
+
+Decipher is licensed under the GNU General Public License, version 3. See
+[LICENSE](/Users/mgreen/Dropbox/src2/decipher/LICENSE).
+
+## Attribution
+
+The `zenith_native` homophonic solver in
+[src/analysis/zenith_solver.py](/Users/mgreen/Dropbox/src2/decipher/src/analysis/zenith_solver.py)
+is derived from the Zenith project by beldenge:
+
+- [Zenith](https://github.com/beldenge/Zenith)
+
+That code path was brought into Decipher because it materially outperformed the
+earlier native homophonic search. The project has therefore been relicensed
+under GPLv3 so that this derived solver can be redistributed with appropriate
+license compatibility and explicit credit.
+
+The proprietary Zenith English binary model is not redistributed here. Model
+provenance and replacement corpus-building tooling remain active work.
+
 ## Setup
 
 ```bash
