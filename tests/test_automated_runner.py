@@ -380,6 +380,26 @@ def test_homophonic_parallel_seed_workers_reads_env(monkeypatch):
     assert automated_runner._homophonic_parallel_seed_workers() == 4
 
 
+def test_homophonic_parallel_seed_workers_defaults_from_cpu_count(monkeypatch):
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", raising=False)
+    monkeypatch.setattr(automated_runner.os, "cpu_count", lambda: 8)
+
+    assert automated_runner._homophonic_parallel_seed_workers() == 7
+
+
+def test_homophonic_parallel_seed_workers_caps_to_seed_count(monkeypatch):
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", raising=False)
+    monkeypatch.setattr(automated_runner.os, "cpu_count", lambda: 8)
+
+    assert automated_runner._homophonic_parallel_seed_workers(seed_count=4) == 4
+
+
+def test_homophonic_parallel_seed_workers_env_caps_to_seed_count(monkeypatch):
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", "8")
+
+    assert automated_runner._homophonic_parallel_seed_workers(seed_count=3) == 3
+
+
 def test_homophonic_budget_screen_reduces_search_parameters():
     full_short = automated_runner._homophonic_budget_params("full", short_homophonic=True)
     screen_short = automated_runner._homophonic_budget_params("screen", short_homophonic=True)

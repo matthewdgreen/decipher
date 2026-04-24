@@ -1176,7 +1176,7 @@ def _run_homophonic_zenith_native(
     seeds = budget_params["seeds"]
     epochs = budget_params["epochs"]
     sampler_iterations = budget_params["sampler_iterations"]
-    parallel_seed_workers = _homophonic_parallel_seed_workers()
+    parallel_seed_workers = _homophonic_parallel_seed_workers(len(seeds))
 
     best_result = None
     best_score = float("-inf")
@@ -1328,19 +1328,25 @@ def _homophonic_repair_profile() -> str:
     )
 
 
-def _homophonic_parallel_seed_workers() -> int:
-    raw = (
-        os.environ.get("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", "1")
-        .strip()
-        or "1"
-    )
+def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
+    raw = os.environ.get("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS")
+    if raw is None:
+        cpu_count = os.cpu_count() or 1
+        value = max(1, cpu_count - 1)
+        if seed_count is not None:
+            value = min(value, max(1, seed_count))
+        return value
+    raw = raw.strip() or "1"
     try:
         value = int(raw)
     except ValueError as exc:
         raise ValueError(
             "DECIPHER_HOMOPHONIC_PARALLEL_SEEDS must be an integer >= 1"
         ) from exc
-    return max(1, value)
+    value = max(1, value)
+    if seed_count is not None:
+        value = min(value, max(1, seed_count))
+    return value
 
 
 def _zenith_native_seed_worker(
