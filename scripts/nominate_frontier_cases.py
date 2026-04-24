@@ -34,7 +34,7 @@ def main() -> None:
     for nomination in nominations:
         grouped[str(nomination["frontier_class"])].append(nomination)
 
-    for frontier_class in ("known_good", "bad_result", "slow_result"):
+    for frontier_class in ("known_good", "shared_hard", "bad_result", "slow_result"):
         items = grouped.get(frontier_class, [])
         print(f"## {frontier_class}")
         if not items:

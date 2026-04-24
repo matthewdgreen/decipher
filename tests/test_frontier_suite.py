@@ -124,6 +124,21 @@ def test_english_model_comparison_suite_loads():
     assert cases[-1].synthetic_spec is None
 
 
+def test_automated_solver_frontier_suite_loads_shared_hard_cases():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "automated_solver_frontier.jsonl"
+
+    cases = load_frontier_suite(suite)
+    by_test = {case.test.test_id: case for case in cases}
+
+    assert "synth_en_80honb_s2" in by_test
+    assert "synth_en_200honb_s3" in by_test
+    assert "synth_en_200honb_s6" in by_test
+    assert by_test["synth_en_80honb_s2"].frontier_class == "shared_hard"
+    assert by_test["synth_en_200honb_s3"].frontier_class == "shared_hard"
+    assert by_test["synth_en_200honb_s6"].frontier_class == "shared_hard"
+    assert "shared_hard" in by_test["synth_en_80honb_s2"].frontier_tags
+
+
 def test_evaluate_frontier_rows_applies_thresholds_and_gap_checks():
     rows = [
         {
@@ -203,6 +218,33 @@ def test_nominate_frontier_candidates_deduplicates_and_classifies():
     assert by_test["synth_en_80honb_s1"]["decipher_elapsed_seconds"] == 480.0
 
 
+def test_nominate_frontier_candidates_marks_shared_hard_band():
+    rows = [
+        {
+            "test_id": "synth_en_200honb_s3",
+            "solver": "decipher-automated",
+            "status": "completed",
+            "char_accuracy": 0.992063,
+            "elapsed_seconds": 70.0,
+            "family": "homophonic_substitution",
+        },
+        {
+            "test_id": "synth_en_200honb_s3",
+            "solver": "zenith",
+            "status": "completed",
+            "char_accuracy": 0.989087,
+            "elapsed_seconds": 13.1,
+            "family": "homophonic_substitution",
+        },
+    ]
+
+    nominations = nominate_frontier_candidates(rows)
+
+    assert nominations[0]["test_id"] == "synth_en_200honb_s3"
+    assert nominations[0]["frontier_class"] == "shared_hard"
+    assert "shared_hard" in nominations[0]["frontier_tags"]
+
+
 def test_frontier_runner_writes_summary_and_continues_after_external_exception(monkeypatch, tmp_path):
     suite = tmp_path / "frontier.jsonl"
     suite.write_text(
@@ -254,7 +296,7 @@ def test_frontier_runner_writes_summary_and_continues_after_external_exception(m
         def __init__(self, name):
             self.name = name
 
-    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
         seen["homophonic_budget"] = homophonic_budget
         return FakeRunner()
 
@@ -277,6 +319,8 @@ def test_frontier_runner_writes_summary_and_continues_after_external_exception(m
         )
 
     monkeypatch.setattr(frontier_runner, "run_external_baseline", fake_external)
+    dummy_config = tmp_path / "dummy.json"
+    dummy_config.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
         sys,
         "argv",
@@ -286,7 +330,7 @@ def test_frontier_runner_writes_summary_and_continues_after_external_exception(m
             "--solvers", "decipher", "external",
             "--benchmark-root", str(benchmark_root),
             "--cache-dir", str(tmp_path / "cache"),
-            "--external-config", "dummy.json",
+            "--external-config", str(dummy_config),
             "--artifact-dir", str(tmp_path / "artifacts"),
             "--summary-jsonl", str(tmp_path / "summary.jsonl"),
             "--summary-csv", str(tmp_path / "summary.csv"),
@@ -405,7 +449,7 @@ def test_frontier_runner_passes_manifest_language_for_benchmark_backed_case(monk
         monkeypatch.setattr(
             frontier_runner,
             "AutomatedBenchmarkRunner",
-            lambda artifact_dir, homophonic_budget="full", homophonic_refinement="none": FakeRunner(),
+            lambda artifact_dir, homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native": FakeRunner(),
         )
     monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
     monkeypatch.setattr(
@@ -474,7 +518,7 @@ def test_frontier_runner_passes_homophonic_budget(monkeypatch, tmp_path):
                 error_message="",
             )
 
-    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
         seen["homophonic_budget"] = homophonic_budget
         return FakeRunner()
 
@@ -548,7 +592,7 @@ def test_frontier_runner_passes_homophonic_refinement(monkeypatch, tmp_path):
                 error_message="",
             )
 
-    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
         seen["homophonic_refinement"] = homophonic_refinement
         return FakeRunner()
 
@@ -573,3 +617,158 @@ def test_frontier_runner_passes_homophonic_refinement(monkeypatch, tmp_path):
     frontier_runner.main()
 
     assert seen["homophonic_refinement"] == "targeted_repair"
+
+
+def test_frontier_runner_passes_legacy_homophonic_flag(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "synth_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "homophonic_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic demo",
+            "frontier_class": "known_good",
+            "expected_solvers": ["decipher-automated"],
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": False,
+                "homophonic": True,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(language="en", approx_length=80, word_boundaries=False, homophonic=True, seed=1),
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+    )
+
+    seen: dict[str, str] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            return SimpleNamespace(
+                status="completed",
+                char_accuracy=1.0,
+                word_accuracy=0.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
+        seen["homophonic_solver"] = homophonic_solver
+        return FakeRunner()
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", fake_automated_runner)
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+            "--legacy-homophonic",
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["homophonic_solver"] == "legacy"
+
+
+def test_frontier_runner_defaults_external_config_to_zenith_only(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "synth_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "simple_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic demo",
+            "frontier_class": "known_good",
+            "expected_solvers": ["zenith"],
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": True,
+                "homophonic": False,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(language="en", approx_length=80, word_boundaries=True, homophonic=False, seed=1),
+        "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG",
+    )
+
+    seen: dict[str, str] = {}
+
+    class FakeConfig:
+        def __init__(self, name):
+            self.name = name
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", lambda *args, **kwargs: SimpleNamespace())
+
+    def fake_load_external_configs(path, oracle):
+        seen["external_config"] = path
+        return [FakeConfig("zenith")]
+
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", fake_load_external_configs)
+    monkeypatch.setattr(
+        frontier_runner,
+        "run_external_baseline",
+        lambda test_data, config, artifact_dir: SimpleNamespace(
+            status="completed",
+            char_accuracy=1.0,
+            word_accuracy=1.0,
+            elapsed=1.0,
+            artifact_path="zenith.json",
+            error="",
+            candidates_considered=1,
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "external",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["external_config"].endswith("external_baselines/zenith_only.json")

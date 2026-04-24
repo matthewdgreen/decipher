@@ -66,6 +66,13 @@ This repository currently ships with a bundled English
 5-gram model at `models/ngram5_en.bin`,
 so a fresh clone can use the automated homophonic solver immediately. You can
 override it with `DECIPHER_NGRAM_MODEL_EN=/path/to/other.bin`.
+Automated homophonic runs now default to the `zenith_native` solver path with
+that bundled parity model. To exercise the older pre-`zenith_native`
+homophonic code for comparison, pass `--legacy-homophonic`.
+
+On multi-core machines, `zenith_native` now auto-sizes parallel seed workers
+by default. You can still override that explicitly with
+`DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`.
 
 ## Automated Solving
 
@@ -93,6 +100,14 @@ decipher crack -f cipher.txt \
   --homophonic-refinement family_repair \
   --verbose
 ```
+
+Experimental homophonic tuning knobs:
+
+- `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`: override the auto-sized seed worker count
+- `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full`: shrink broad search for local iteration
+- `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full`: shrink repair breadth for local iteration
+- `DECIPHER_HOMOPHONIC_POLISH=1`: opt into the current experimental post-`zenith_native`
+  segmentation/repair pass for no-boundary output
 
 ### Run the historical benchmark
 
@@ -151,6 +166,25 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher
 ```
 
+For the main automated frontier suite, external runs now default to Zenith
+only, which keeps routine comparisons much faster:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/automated_solver_frontier.jsonl \
+  --solvers external
+```
+
+To include slower external wrappers such as `zkdecrypto-lite`, pass the full
+external config explicitly:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/automated_solver_frontier.jsonl \
+  --solvers external \
+  --external-config external_baselines/local_tools.json
+```
+
 ### Build Redistributable Language Models
 
 Decipher can build Zenith-compatible binary n-gram models from public-domain
@@ -183,6 +217,12 @@ PYTHONPATH=src .venv/bin/python -m tools.corpus run de --output models/ngram5_de
 PYTHONPATH=src .venv/bin/python -m tools.corpus run fr --output models/ngram5_fr.bin --max-books 100
 PYTHONPATH=src .venv/bin/python -m tools.corpus run it --output models/ngram5_it.bin --max-books 100
 PYTHONPATH=src .venv/bin/python -m tools.corpus run la --output models/ngram5_la.bin --max-books 100
+
+# Larger Latin experiment
+PYTHONPATH=src .venv/bin/python -m tools.corpus run la \
+  --corpus-dir corpus_data/la_500 \
+  --output models/ngram5_la_500.bin \
+  --max-books 500
 
 # Build from a licensed local BNC copy
 PYTHONPATH=src .venv/bin/python -m tools.corpus run en \

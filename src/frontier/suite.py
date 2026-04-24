@@ -12,7 +12,7 @@ from testgen.cache import PlaintextCache
 from testgen.spec import TestSpec
 
 
-FRONTIER_CLASSES = frozenset({"known_good", "bad_result", "slow_result"})
+FRONTIER_CLASSES = frozenset({"known_good", "bad_result", "slow_result", "shared_hard"})
 
 
 @dataclass
@@ -260,6 +260,22 @@ def nominate_frontier_candidates(rows: list[dict[str, Any]]) -> list[dict[str, A
             if "borg" in test_id.lower() or "copiale" in test_id.lower():
                 tags.add("historical")
             reason = _bad_result_reason(decipher, best_external)
+        elif (
+            decipher_char >= 0.97
+            and best_external is not None
+            and float(best_external.get("char_accuracy") or 0.0) >= 0.97
+            and (
+                decipher_char < 0.999
+                or float(best_external.get("char_accuracy") or 0.0) < 0.999
+            )
+        ):
+            frontier_class = "shared_hard"
+            if "honb" in test_id.lower() or "homophonic" in family.lower():
+                tags.update({"homophonic", "shared_hard"})
+            reason = (
+                f"Decipher and the best external solver both land in the hard-but-solvable band "
+                f"({decipher_char:.1%} vs {float(best_external.get('char_accuracy') or 0.0):.1%})"
+            )
         elif decipher_char >= 0.95 and decipher_elapsed >= 300:
             frontier_class = "slow_result"
             if "honb" in test_id.lower() or "homophonic" in family.lower():

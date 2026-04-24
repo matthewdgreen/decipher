@@ -51,6 +51,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir or "artifacts",
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
         )
         mode_label = "automated"
     else:
@@ -147,6 +148,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             cipher_id=cipher_id,
             homophonic_budget=homophonic_budget,
             homophonic_refinement=homophonic_refinement,
+            homophonic_solver="legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
         )
         path = save_crack_artifact(artifact, ct, args.language, artifact_dir)
         print(f"\nArtifact saved: {path}")
@@ -178,6 +180,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             cipher_id=cipher_id,
             homophonic_budget=homophonic_budget,
             homophonic_refinement=homophonic_refinement,
+            homophonic_solver="legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
         )
         automated_preflight = dict(preflight.artifact)
         automated_preflight["summary"] = format_automated_preflight_for_llm(preflight)
@@ -310,6 +313,7 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir,
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
         )
         print("\nRunning automated solver (no LLM API calls)...")
         result = runner.run_test(test_data, language=args.language)
@@ -391,6 +395,11 @@ def main() -> None:
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
+    bench.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for comparison.",
+    )
 
     # crack
     crack = subparsers.add_parser("crack", help="Crack a cipher from file or stdin")
@@ -423,6 +432,11 @@ def main() -> None:
         choices=["none", "two_stage", "targeted_repair", "family_repair"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
+    )
+    crack.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for comparison.",
     )
 
     # testgen
@@ -468,6 +482,11 @@ def main() -> None:
         choices=["none", "two_stage", "targeted_repair", "family_repair"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
+    )
+    tg.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for comparison.",
     )
 
     args = parser.parse_args()

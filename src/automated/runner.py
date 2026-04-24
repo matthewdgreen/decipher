@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from analysis import dictionary, homophonic, ic, ngram, pattern
-from analysis.segment import segment_text
+from analysis.segment import find_one_edit_corrections, segment_text
 from analysis.solver import simulated_anneal
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
@@ -59,12 +59,14 @@ class AutomatedBenchmarkRunner:
         verbose: bool = False,
         homophonic_budget: str = "full",
         homophonic_refinement: str = "none",
+        homophonic_solver: str = "zenith_native",
     ) -> None:
         self.artifact_dir = Path(artifact_dir)
         self.default_language = language
         self.verbose = verbose
         self.homophonic_budget = homophonic_budget
         self.homophonic_refinement = homophonic_refinement
+        self.homophonic_solver = homophonic_solver
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -93,6 +95,7 @@ class AutomatedBenchmarkRunner:
             cipher_system=test_data.test.cipher_system,
             homophonic_budget=self.homophonic_budget,
             homophonic_refinement=self.homophonic_refinement,
+            homophonic_solver=self.homophonic_solver,
         )
         artifact = dict(result.artifact)
         artifact["description"] = test_data.test.description
@@ -187,6 +190,7 @@ def run_automated(
     cipher_system: str = "",
     homophonic_budget: str = "full",
     homophonic_refinement: str = "none",
+    homophonic_solver: str = "zenith_native",
 ) -> AutomatedRunResult:
     """Run the best available local techniques without any LLM call."""
     started = time.time()
@@ -209,6 +213,7 @@ def run_automated(
             "language": language,
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
+            "homophonic_solver": homophonic_solver,
         })
         if routing["route"] == "homophonic":
             solver, key, decryption, step = _run_homophonic(
@@ -216,6 +221,7 @@ def run_automated(
                 language,
                 budget=homophonic_budget,
                 refinement=homophonic_refinement,
+                solver_profile=homophonic_solver,
                 ground_truth=ground_truth,
             )
             steps.append(step)
@@ -420,6 +426,7 @@ def _run_homophonic(
     language: str,
     budget: str = "full",
     refinement: str = "none",
+    solver_profile: str = "zenith_native",
     ground_truth: str | None = None,
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     pt_alpha = _plaintext_alphabet(language)
@@ -447,7 +454,7 @@ def _run_homophonic(
     selection_profile = _homophonic_selection_profile()
     move_profile = _homophonic_move_profile()
     aggregated_candidates: list[dict[str, Any]] = []
-    score_profile = _homophonic_score_profile()
+    score_profile = _homophonic_score_profile(solver_profile)
 
     # Dispatch to the Zenith-parity solver when score_profile == "zenith_native"
     if score_profile == "zenith_native":
@@ -1248,6 +1255,13 @@ def _run_homophonic_zenith_native(
 
     selected_plaintext = best_result.plaintext
     selected_key = best_result.key
+    polish_info = _maybe_polish_zenith_native_plaintext(
+        selected_plaintext,
+        language=language,
+        word_list=word_list,
+    )
+    if polish_info["applied"]:
+        selected_plaintext = polish_info["plaintext"]
 
     step: dict[str, Any] = {
         "name": "search_homophonic_anneal",
@@ -1269,6 +1283,7 @@ def _run_homophonic_zenith_native(
             language=language,
             word_list=word_list,
         ),
+        "postprocess": polish_info,
         "elapsed_seconds": round(time.time() - started, 3),
         "epochs": best_result.epochs,
         "sampler_iterations": best_result.sampler_iterations,
@@ -1278,12 +1293,155 @@ def _run_homophonic_zenith_native(
     return "zenith_native", selected_key, selected_plaintext, step
 
 
-def _homophonic_score_profile() -> str:
+def _homophonic_polish_enabled() -> bool:
+    return os.environ.get("DECIPHER_HOMOPHONIC_POLISH", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _maybe_polish_zenith_native_plaintext(
+    plaintext: str,
+    *,
+    language: str,
+    word_list: list[str],
+) -> dict[str, Any]:
+    """Optionally segment and lightly repair no-boundary zenith-native output.
+
+    This is intentionally conservative and currently opt-in via
+    ``DECIPHER_HOMOPHONIC_POLISH`` so we can evaluate it without changing the
+    frontier baseline. The repair loop operates on segmented words rather than
+    mutating the underlying key, so the artifact records it as a postprocess
+    step and keeps the original anneal telemetry intact.
+    """
+    info: dict[str, Any] = {
+        "enabled": _homophonic_polish_enabled(),
+        "applied": False,
+        "mode": "segment_one_edit_local",
+        "rounds": 0,
+        "corrections": [],
+        "plaintext": plaintext,
+    }
+    if not info["enabled"]:
+        return info
+    if any(ch.isspace() for ch in plaintext):
+        info["reason"] = "plaintext_already_segmented"
+        return info
+
+    path = dictionary.get_dictionary_path(language)
+    word_set = dictionary.load_word_set(path) if path else set()
+    if not word_set:
+        info["reason"] = "no_dictionary_available"
+        return info
+
+    freq_rank = {word.upper(): idx for idx, word in enumerate(word_list)}
+    alpha_only = "".join(ch for ch in plaintext.upper() if "A" <= ch <= "Z")
+    if not alpha_only:
+        info["reason"] = "no_alpha_text"
+        return info
+
+    before = segment_text(alpha_only, word_set, freq_rank=freq_rank)
+    info["before"] = {
+        "dict_rate": round(before.dict_rate, 4),
+        "segmentation_cost": round(before.cost, 3),
+        "pseudo_word_count": len(before.pseudo_words),
+        "segmented_preview": before.segmented[:160],
+    }
+
+    words = list(before.words)
+    corrections: list[dict[str, Any]] = []
+    max_rounds = 3
+    for round_index in range(max_rounds):
+        changed = False
+        new_words = list(words)
+        for idx, word in enumerate(words):
+            if word in word_set or len(word) < 4:
+                continue
+            candidates = find_one_edit_corrections(word, word_set)
+            if not candidates:
+                continue
+            ranked = sorted(
+                candidates,
+                key=lambda item: (
+                    freq_rank.get(item[0].upper(), 10**9),
+                    item[0],
+                ),
+            )
+            best = ranked[0]
+            if len(ranked) > 1:
+                best_rank = freq_rank.get(best[0].upper(), 10**9)
+                next_rank = freq_rank.get(ranked[1][0].upper(), 10**9)
+                if next_rank - best_rank < 25:
+                    continue
+            cand, wrong, correct = best
+            new_words[idx] = cand
+            corrections.append({
+                "round": round_index + 1,
+                "from": word,
+                "to": cand,
+                "wrong_letter": wrong,
+                "correct_letter": correct,
+                "position": idx,
+            })
+            changed = True
+        words = new_words
+        info["rounds"] = round_index + 1
+        if not changed:
+            break
+
+    candidate_text = " ".join(words)
+    after = segment_text("".join(words), word_set, freq_rank=freq_rank)
+    info["after"] = {
+        "dict_rate": round(after.dict_rate, 4),
+        "segmentation_cost": round(after.cost, 3),
+        "pseudo_word_count": len(after.pseudo_words),
+        "segmented_preview": after.segmented[:160],
+    }
+    improved = (
+        after.dict_rate > before.dict_rate
+        or (
+            after.dict_rate == before.dict_rate
+            and (
+                after.cost < before.cost
+                or len(after.pseudo_words) < len(before.pseudo_words)
+            )
+        )
+    )
+    if not corrections:
+        info["reason"] = "no_confident_local_repairs"
+        return info
+    if not improved:
+        info["reason"] = "repairs_did_not_improve_segmentation"
+        info["corrections"] = corrections
+        return info
+
+    info["applied"] = True
+    info["plaintext"] = candidate_text
+    info["corrections"] = corrections
+    info["key_consistent_with_output"] = False
+    return info
+
+
+def _homophonic_score_profile_for(default_profile: str) -> str:
     return (
-        os.environ.get("DECIPHER_HOMOPHONIC_SCORE_PROFILE", "balanced")
+        os.environ.get("DECIPHER_HOMOPHONIC_SCORE_PROFILE", default_profile)
         .strip()
         .lower()
-        or "balanced"
+        or default_profile
+    )
+
+
+def _homophonic_score_profile(solver_profile: str = "zenith_native") -> str:
+    normalized = (solver_profile or "zenith_native").strip().lower()
+    if normalized in {"zenith_native", "default"}:
+        return _homophonic_score_profile_for("zenith_native")
+    if normalized == "legacy":
+        return _homophonic_score_profile_for("balanced")
+    raise ValueError(
+        "unsupported homophonic solver profile "
+        f"'{solver_profile}' (expected one of: zenith_native, legacy)"
     )
 
 

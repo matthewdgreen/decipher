@@ -15,6 +15,7 @@ from automated.runner import (
     format_automated_preflight_for_llm,
 )
 import automated.runner as automated_runner
+import analysis.zenith_solver as zenith_solver
 import benchmark.runner_v2 as runner_v2
 from benchmark.runner_v2 import BenchmarkRunnerV2
 from benchmark.loader import BenchmarkTest, TestData as BenchmarkTestData
@@ -37,7 +38,7 @@ def _test_data() -> BenchmarkTestData:
 
 
 def test_automated_benchmark_runner_writes_no_llm_artifact(tmp_path, monkeypatch):
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none"):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",
@@ -87,7 +88,7 @@ def test_cli_crack_defaults_to_automated_solver_and_bypasses_api_key(tmp_path, m
     def forbidden_api_key():
         raise AssertionError("get_api_key must not be called")
 
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none"):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",
@@ -298,6 +299,18 @@ def test_homophonic_score_profile_reads_env_and_exposes_weights(monkeypatch):
         "diversity_weight": 0.0,
         "ioc_weight": 1.0,
     }
+
+
+def test_homophonic_score_profile_defaults_to_zenith_native_without_env(monkeypatch):
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_SCORE_PROFILE", raising=False)
+
+    assert automated_runner._homophonic_score_profile() == "zenith_native"
+
+
+def test_homophonic_score_profile_can_default_to_legacy_balanced(monkeypatch):
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_SCORE_PROFILE", raising=False)
+
+    assert automated_runner._homophonic_score_profile("legacy") == "balanced"
 
 
 def test_homophonic_score_config_supports_zenith_like_profile(monkeypatch):
@@ -511,7 +524,7 @@ def test_run_homophonic_records_candidate_diagnostics_and_epoch_traces(monkeypat
         lambda **kwargs: fake_result,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", solver_profile="legacy")
 
     assert step["homophonic_budget"] == "full"
     assert step["score_profile"] == "balanced"
@@ -559,7 +572,7 @@ def test_run_homophonic_screen_budget_passes_reduced_params(monkeypatch):
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", budget="screen")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", budget="screen", solver_profile="legacy")
 
     assert seen["epochs"] == 5
     assert seen["sampler_iterations"] == 1500
@@ -601,7 +614,7 @@ def test_run_homophonic_passes_epoch_callback_when_early_stop_enabled(monkeypatc
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", solver_profile="legacy")
 
     assert callable(seen["epoch_callback"])
     assert step["early_stop_enabled"] is True
@@ -651,7 +664,7 @@ def test_run_homophonic_zenith_like_profile_passes_structural_scoring_args(
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", solver_profile="legacy")
 
     assert seen["score_formula"] == "multiplicative_ioc"
     assert seen["window_step"] == 2
@@ -707,7 +720,7 @@ def test_run_homophonic_zenith_exact_profile_passes_exact_ioc_exponent(
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", solver_profile="legacy")
 
     assert seen["score_formula"] == "multiplicative_ioc"
     assert seen["window_step"] == 2
@@ -755,7 +768,7 @@ def test_run_homophonic_move_profile_is_passed_to_annealer(monkeypatch):
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en")
+    _solver, _key, _text, step = automated_runner._run_homophonic(ct, "en", solver_profile="legacy")
 
     assert seen["move_profile"] == "mixed_v1"
     assert step["move_profile"] == "mixed_v1"
@@ -858,6 +871,107 @@ def test_run_homophonic_zenith_native_can_parallelize_across_seeds(monkeypatch):
     assert [attempt["seed"] for attempt in step["seed_attempts"]] == [0, 1]
 
 
+def test_maybe_polish_zenith_native_plaintext_repairs_segmented_words(monkeypatch):
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_POLISH", "1")
+    monkeypatch.setattr(automated_runner.dictionary, "get_dictionary_path", lambda language: "fake-dict")
+    monkeypatch.setattr(
+        automated_runner.dictionary,
+        "load_word_set",
+        lambda path: {"THERE", "CAT"},
+    )
+
+    info = automated_runner._maybe_polish_zenith_native_plaintext(
+        "THERQCAT",
+        language="en",
+        word_list=["THERE", "CAT"],
+    )
+
+    assert info["applied"] is True
+    assert info["plaintext"] == "THERE CAT"
+    assert info["before"]["pseudo_word_count"] >= 1
+    assert info["after"]["dict_rate"] == 1.0
+    assert info["corrections"][0]["from"] == "THERQ"
+    assert info["corrections"][0]["to"] == "THERE"
+
+
+def test_run_homophonic_zenith_native_can_adopt_polished_plaintext(monkeypatch):
+    ct = automated_runner.parse_canonical_transcription("01 02 03 01 02 03")
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", raising=False)
+    monkeypatch.setattr(automated_runner, "_zenith_native_model_path", lambda language: "fake-model.bin")
+
+    candidate = SimpleNamespace(
+        plaintext="THERQCAT",
+        key={0: 19, 1: 7, 2: 4},
+        normalized_score=-1.0,
+        epochs=5,
+        sampler_iterations=1500,
+    )
+
+    monkeypatch.setattr(zenith_solver, "load_zenith_binary_model", lambda path: object())
+    monkeypatch.setattr(zenith_solver, "zenith_solve", lambda **kwargs: candidate)
+    monkeypatch.setattr(automated_runner, "_word_list", lambda language: ["THERE", "CAT"])
+    monkeypatch.setattr(
+        automated_runner,
+        "_plaintext_quality",
+        lambda plaintext, key: {
+            "ok": True,
+            "collapsed": False,
+            "penalty": 0.0,
+            "reasons": [],
+            "letter_count": len(plaintext),
+            "unique_letters": len(set(plaintext)),
+            "top_letter_fraction": 0.2,
+            "key_plaintext_letters": len(set(key.values())),
+            "monogram_chi_per_letter": 0.1,
+        },
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_automated_candidate_diagnostics",
+        lambda plaintext, language, word_list: {
+            "letter_count": len(plaintext),
+            "unique_letters": len(set(plaintext)),
+            "top_letter_fraction": 0.2,
+            "index_of_coincidence": 0.07,
+            "dict_rate": 1.0 if plaintext == "THERE CAT" else 0.5,
+            "segmentation_cost": 10.0 if plaintext == "THERE CAT" else 20.0,
+            "segmented_preview": plaintext,
+            "pseudo_word_count": 0 if plaintext == "THERE CAT" else 1,
+        },
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_maybe_polish_zenith_native_plaintext",
+        lambda plaintext, language, word_list: {
+            "enabled": True,
+            "applied": True,
+            "mode": "segment_one_edit_local",
+            "rounds": 1,
+            "corrections": [{"from": "THERQ", "to": "THERE"}],
+            "plaintext": "THERE CAT",
+            "key_consistent_with_output": False,
+        },
+    )
+
+    _solver, _key, text, step = automated_runner._run_homophonic_zenith_native(
+        cipher_text=ct,
+        language="en",
+        budget="screen",
+        ground_truth=None,
+        pt_alpha=automated_runner._plaintext_alphabet("en"),
+        plaintext_ids=list(range(automated_runner._plaintext_alphabet("en").size)),
+        id_to_letter={i: automated_runner._plaintext_alphabet("en").symbol_for(i).upper() for i in range(automated_runner._plaintext_alphabet("en").size)},
+        letter_to_id={automated_runner._plaintext_alphabet("en").symbol_for(i).upper(): i for i in range(automated_runner._plaintext_alphabet("en").size)},
+        short_homophonic=True,
+        budget_params={"seeds": [0], "epochs": 5, "sampler_iterations": 1500, "budget": "screen"},
+        started=0.0,
+    )
+
+    assert text == "THERE CAT"
+    assert step["postprocess"]["applied"] is True
+    assert step["diagnostics"]["dict_rate"] == 1.0
+
+
 def test_run_homophonic_two_stage_refinement_adopts_only_better_candidate(monkeypatch):
     ct = automated_runner.parse_canonical_transcription("01 02 03 01 02 03")
     calls = []
@@ -919,6 +1033,7 @@ def test_run_homophonic_two_stage_refinement_adopts_only_better_candidate(monkey
         "en",
         budget="screen",
         refinement="two_stage",
+    solver_profile="legacy",
     )
 
     assert len(calls) == 5
@@ -993,6 +1108,7 @@ def test_run_homophonic_targeted_repair_freezes_non_suspicious_symbols(monkeypat
         "en",
         budget="screen",
         refinement="targeted_repair",
+    solver_profile="legacy",
     )
 
     assert calls[-1]["fixed_cipher_ids"] == {0, 1}
@@ -1048,6 +1164,7 @@ def test_run_homophonic_family_repair_skips_unreadable_candidates(monkeypatch):
         "en",
         budget="screen",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert step["refinement"]["mode"] == "family_repair"
@@ -1156,6 +1273,7 @@ def test_run_homophonic_family_repair_freezes_non_family_symbols(monkeypatch):
         "en",
         budget="screen",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert calls[-1]["fixed_cipher_ids"] == {0, 1}
@@ -1262,6 +1380,7 @@ def test_run_homophonic_family_repair_requires_epsilon_to_adopt(monkeypatch):
         "en",
         budget="screen",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert step["refinement"]["adoption_epsilon"] == 1e-4
@@ -1518,6 +1637,7 @@ def test_run_homophonic_family_repair_can_select_non_primary_elite(monkeypatch):
         "en",
         budget="screen",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert len(step["elite_candidates"]) >= 2
@@ -1623,6 +1743,7 @@ def test_run_homophonic_dev_repair_profile_limits_elite_pool(monkeypatch):
         "en",
         budget="full",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert step["repair_profile"] == "dev"
@@ -1739,6 +1860,7 @@ def test_run_homophonic_dev_repair_profile_screens_weak_branches(monkeypatch):
         "en",
         budget="full",
         refinement="family_repair",
+    solver_profile="legacy",
     )
 
     assert len(step["elite_candidates"]) == 2
@@ -1811,6 +1933,7 @@ def test_run_homophonic_dev_search_profile_reduces_seed_budget(monkeypatch):
         "en",
         budget="full",
         refinement="none",
+    solver_profile="legacy",
     )
 
     assert step["search_profile"] == "dev"
@@ -1916,7 +2039,7 @@ def test_run_homophonic_pool_rerank_can_override_best_anneal_seed(monkeypatch):
         fake_homophonic_simulated_anneal,
     )
 
-    _solver, _key, text, step = automated_runner._run_homophonic(ct, "en", budget="screen")
+    _solver, _key, text, step = automated_runner._run_homophonic(ct, "en", budget="screen", solver_profile="legacy")
 
     assert text == "THERETHERETHERE"
     assert step["selection_profile"] == "pool_rerank_v1"

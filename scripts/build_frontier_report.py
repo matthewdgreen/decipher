@@ -65,7 +65,7 @@ def main() -> None:
     moved = [
         row for row in rows
         if row.get("solver") == "decipher-automated"
-        and row.get("frontier_class") in {"bad_result", "slow_result"}
+        and row.get("frontier_class") in {"bad_result", "slow_result", "shared_hard"}
         and row.get("meets_expectations")
     ]
     if not moved:

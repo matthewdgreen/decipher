@@ -136,6 +136,11 @@ def main() -> None:
         default="none",
         help="Optional second-stage local refinement for Decipher automated homophonic runs.",
     )
+    parser.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for Decipher runs.",
+    )
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -177,6 +182,7 @@ def main() -> None:
         artifact_dir=artifact_dir / "decipher",
         homophonic_budget=args.homophonic_budget,
         homophonic_refinement=args.homophonic_refinement,
+        homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
     )
 
     try:

@@ -542,6 +542,7 @@ def run_suite(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir,
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
         )
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
@@ -900,6 +901,11 @@ def main() -> None:
         choices=["none", "two_stage", "targeted_repair", "family_repair"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
+    )
+    parser.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for automated runs.",
     )
     parser.add_argument("--flush-cache", action="store_true")
     parser.add_argument("--automated-only", action="store_true",

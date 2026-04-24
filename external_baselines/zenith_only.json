@@ -1,0 +1,26 @@
+{
+  "solvers": [
+    {
+      "name": "zenith",
+      "command": [
+        ".venv/bin/python",
+        "external_baselines/wrappers/zenith_graphql.py",
+        "--java",
+        "/opt/homebrew/opt/openjdk/bin/java",
+        "--jar",
+        "other_tools/zenith-2026.2/zenith-ui-2026.2.jar",
+        "--input",
+        "{letters_file}",
+        "--output",
+        "{output_file}",
+        "--epochs",
+        "10",
+        "--timeout-seconds",
+        "300"
+      ],
+      "timeout_seconds": 390,
+      "solution_regex": "(?im)^\\s*SOLUTION\\s*:\\s*(?P<plaintext>[A-Z]+)\\s*$",
+      "selection": "first"
+    }
+  ]
+}

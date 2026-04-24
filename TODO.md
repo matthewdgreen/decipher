@@ -138,12 +138,28 @@ or a benchmark data issue.
   - Normalize corpora consistently with benchmark plaintext rules.
   - Produce reproducible build configs and metadata sidecars.
   - Compare trained models against current word-list fallbacks.
+  - Current Latin status:
+    - [x] Build `models/ngram5_la.bin` from 100 Gutenberg books.
+    - [x] Build a larger probe model `models/ngram5_la_500.bin` from 500 Gutenberg books.
+    - [ ] Compare the 500-book Latin model against the default Latin model on a small Borg packet, not just `0109v`.
+    - Finding so far: on `parity_borg_latin_borg_0109v`, the 500-book model slightly improves `zenith_native` anneal score but does not improve headline char/word accuracy over the 100-book Latin model.
 - [ ] Add Decipher-native tooling to train/export continuous n-gram models.
   - Input: plain-text corpus directory.
   - Output: supported CSV or compact binary format plus metadata sidecar.
   - Include tests for loader compatibility and scoring reproducibility.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.
 - [ ] Assess Borg and Copiale failures by tool gap: language model, context loading, nomenclator/codeword behavior, historical spelling, or prompt choice.
+- [ ] Borg focused follow-up: `parity_borg_latin_borg_0109v`.
+  - Current state:
+    - Default routing sends `0109v` down the substitution path because its symbol inventory does not exceed the Latin plaintext alphabet size.
+    - Forcing `zenith_native` with the full 8-seed budget is reproducible and reaches a distinct no-boundary Latin basin at about `13.9%` character accuracy and `0.0%` word accuracy.
+    - With only one seed, the forced `zenith_native` basin is much worse (~`9.0%`), so this case is notably multi-seed-sensitive.
+    - The substitution path lands in a different partial-Latin basin with similar character accuracy but slightly better word-level structure.
+    - The first conservative post-`zenith_native` polish loop (segmentation + one-edit local repair) did not improve the forced `zenith_native` output.
+  - Next likely useful experiments:
+    - [ ] Try a stronger Latin cleanup pass on `zenith_native` output: segmentation plus phrase-level split/merge and repair, not just one-edit local corrections.
+    - [ ] Compare default substitution vs forced `zenith_native` on a second small Borg subset to see whether `0109v` is representative or a special case.
+    - [ ] Revisit routing later if a cleanup step starts making the `zenith_native` basin consistently more useful.
 - [x] Fix automated historical language propagation for benchmark-backed parity/frontier runs.
   - Benchmark target-record `plaintext_language` now overrides brittle `test_id` prefix heuristics.
   - This closes the accidental `parity_borg_*`/`parity_copiale_*` → English fallback in automated-only and automated preflight paths.
@@ -171,6 +187,10 @@ or a benchmark data issue.
   - `scripts/run_frontier_suite.py` runs the suite with the same automated/external solver lanes as parity.
   - `scripts/nominate_frontier_cases.py` proposes candidate cases from parity summaries/artifacts.
   - `scripts/build_frontier_report.py` summarizes pass/fail, regressions, slow cases, unsupported wrappers, and frontier movement.
+  - Current April 2026 state:
+    - [x] Add a `shared_hard` class so the suite tracks cases that are meaningfully challenging for both Decipher and Zenith, not just regressions and one Zodiac row.
+    - [x] Make external frontier runs default to Zenith-only via `external_baselines/zenith_only.json`.
+    - [ ] Revisit thresholds for a few rows now that `zenith_native` is the default automated homophonic path (`synth_en_80nb_s1` timing, multilingual simple-substitution expectations, etc.).
 
 ### Priority 4: Full-Agent Parity
 

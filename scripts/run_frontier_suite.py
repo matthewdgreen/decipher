@@ -15,6 +15,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+DEFAULT_EXTERNAL_CONFIG = REPO_ROOT / "external_baselines" / "zenith_only.json"
+
 from automated.runner import AutomatedBenchmarkRunner
 from benchmark.loader import BenchmarkLoader
 from benchmark.scorer import has_word_boundaries
@@ -51,7 +53,14 @@ def main() -> None:
     parser.add_argument("--benchmark-root", default="../cipher_benchmark/benchmark")
     parser.add_argument("--cache-dir", default="testgen_cache")
     parser.add_argument("--allow-generate", action="store_true")
-    parser.add_argument("--external-config")
+    parser.add_argument(
+        "--external-config",
+        default=str(DEFAULT_EXTERNAL_CONFIG),
+        help=(
+            "External baseline config JSON. Defaults to the Zenith-only config; "
+            "pass external_baselines/local_tools.json to include slower wrappers such as zkdecrypto-lite."
+        ),
+    )
     parser.add_argument("--oracle-select", action="store_true")
     parser.add_argument("--artifact-dir", default="artifacts/frontier_suite")
     parser.add_argument("--summary-jsonl")
@@ -68,10 +77,15 @@ def main() -> None:
         default="none",
         help="Optional second-stage local refinement for Decipher automated homophonic runs.",
     )
+    parser.add_argument(
+        "--legacy-homophonic",
+        action="store_true",
+        help="Use the older pre-zenith_native homophonic solver path for Decipher runs.",
+    )
     args = parser.parse_args()
 
-    if "external" in args.solvers and not args.external_config:
-        parser.error("--external-config is required when --solvers includes external")
+    if "external" in args.solvers and not Path(args.external_config).exists():
+        parser.error(f"--external-config not found: {args.external_config}")
 
     artifact_dir = Path(args.artifact_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -98,6 +112,7 @@ def main() -> None:
         artifact_dir=artifact_dir / "decipher",
         homophonic_budget=args.homophonic_budget,
         homophonic_refinement=args.homophonic_refinement,
+        homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
     )
     external_configs = _load_external_configs(args.external_config, args.oracle_select) if "external" in args.solvers else []
 

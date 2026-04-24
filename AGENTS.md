@@ -106,6 +106,9 @@ All analysis works on `list[int]` token IDs, not strings. `Alphabet` is the bidi
 Automated homophonic runs now also support `--homophonic-budget {full,screen}`.
 Use `screen` for comparative scorer/strategy sweeps and `full` for headline
 parity claims. The budget choice is recorded in automated artifacts.
+The default automated homophonic solver path is now `zenith_native` with the
+bundled parity model when available. Use `--legacy-homophonic` on CLI/scripts
+to force the older pre-`zenith_native` homophonic path for comparison runs.
 For iterative native-solver work, the automated homophonic path also supports
 two opt-in env profiles:
 - `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full`
@@ -120,6 +123,18 @@ also be parallelized across local CPU cores with
 same seed set/budget, but it evaluates multiple seeds concurrently instead of
 serially. Use it for faster wall-clock experimentation; artifacts record the
 parallel worker count.
+If `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` is not set, the solver now auto-sizes
+to `max(1, os.cpu_count() - 1)` capped by the seed count, so modern
+`zenith_native` runs will usually parallelize by default on multi-core local
+machines.
+There is also an experimental opt-in postprocess for raw no-boundary
+`zenith_native` output:
+- `DECIPHER_HOMOPHONIC_POLISH=1`
+
+This currently runs a conservative segmentation + one-edit local repair pass
+after `zenith_native` and records a `postprocess` block in the artifact. Keep
+it off for headline parity/frontier claims until it has been evaluated more
+thoroughly.
 
 Benchmark-backed automated runs should use the benchmark manifest's
 `plaintext_language` when available. Do not rely on `test_id` prefixes alone
@@ -155,7 +170,11 @@ path like `/path/to/cipher_benchmark/benchmark/`.
 - Use `scripts/validate_benchmark.py` before relying on a benchmark checkout for parity work.
 - Benchmark curation lives in `../cipher_benchmark`; Decipher solver/harness code lives here.
 - Keep parity tests distinct from agentic-advantage tests. Parity asks whether the agent can match non-agentic solvers; advantage asks whether agentic context, OCR, diagnosis, or hypothesis management improves beyond them.
-- Decipher also keeps a local frontier automated suite in `frontier/automated_solver_frontier.jsonl`. This is intentionally separate from benchmark parity splits: it is a compact regression/frontier pack for automated-only runs, with explicit classes (`known_good`, `bad_result`, `slow_result`) and optional synthetic case definitions.
+- Decipher also keeps a local frontier automated suite in `frontier/automated_solver_frontier.jsonl`. This is intentionally separate from benchmark parity splits: it is a compact regression/frontier pack for automated-only runs, with explicit classes (`known_good`, `shared_hard`, `bad_result`, `slow_result`) and optional synthetic case definitions.
+- The frontier suite now also includes a `shared_hard` class for synthetic
+  cases that are meaningfully challenging for both Decipher and Zenith without
+  being collapse cases. Current anchors are `synth_en_80honb_s2`,
+  `synth_en_200honb_s3`, and `synth_en_200honb_s6`.
 - There is now also a small English model evaluation packet in
   `frontier/english_model_eval.jsonl`. Use this when comparing
   `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native` across different English
@@ -170,6 +189,10 @@ path like `/path/to/cipher_benchmark/benchmark/`.
   no-boundary homophonic cases plus Zodiac 408 and is meant for paired A/B
   runs with the same `zenith_native` solver settings and only the model path
   changed.
+- The main automated frontier suite now defaults external runs to Zenith only
+  through `external_baselines/zenith_only.json`. This keeps routine frontier
+  runs fast and avoids dragging `zkdecrypto-lite` through every comparison
+  unless explicitly requested with `--external-config external_baselines/local_tools.json`.
 
 ### Parity evaluation modes
 When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
@@ -308,8 +331,31 @@ High-quality English homophonic solving can still auto-discover Zenith's local E
 
 Decipher does not currently have comparable continuous corpus n-gram files for Latin, German, French, or Italian. It has word-list fallbacks and dictionaries, but those are weaker than the Zenith-style English model. Future work should add a model registry with language, order, source, checksum, license/provenance, row count, and redistribution status, and should record the selected model in run artifacts.
 
+Current April 2026 state for non-English bundled models:
+- Latin now has both `models/ngram5_la.bin` (100 Gutenberg books) and
+  `models/ngram5_la_500.bin` (500 Gutenberg books) available locally for
+  focused experiments.
+- On the focused Borg `parity_borg_latin_borg_0109v` probe, forcing
+  `zenith_native` with the Latin binary model reaches a reproducible
+  no-boundary partial-Latin basin at about `13.9%` character accuracy with the
+  full 8-seed budget, but still `0.0%` word accuracy.
+- The 500-book Latin model slightly improves the anneal score on that case
+  versus the 100-book model but does not yet move headline accuracy.
+- The first conservative post-`zenith_native` polish loop does not yet improve
+  `0109v`; its local one-edit repairs were too weak to change the candidate.
+
 ### 4. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
+
+Additional current read:
+- Borg `0077v` routes to `zenith_native` because its symbol inventory exceeds
+  the Latin plaintext alphabet size.
+- Borg `0109v` still routes to the substitution path by default because its
+  symbol inventory does not trip the current overcomplete/homophonic heuristic.
+- Focused probes show that forcing `zenith_native` on `0109v` produces a more
+  fluent no-boundary Latin stream than the substitution path, but not a clear
+  win yet. This now looks like a cleanup/segmentation problem at least as much
+  as a raw search problem.
 
 ### 5. 🧭 **Context capability audit**
 Blind vs. context-aware parity is now the intended evaluation framework.
@@ -397,8 +443,14 @@ PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --suite-file frontier/automated_solver_frontier.jsonl \
   --solvers decipher external \
-  --external-config external_baselines/local_tools.json \
   --artifact-dir artifacts/frontier_suite/default
+
+# To include slower external wrappers such as zkdecrypto-lite explicitly:
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/automated_solver_frontier.jsonl \
+  --solvers decipher external \
+  --external-config external_baselines/local_tools.json \
+  --artifact-dir artifacts/frontier_suite/all_external
 
 # Homophonic ablation packet, quick screening budget
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \

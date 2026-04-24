@@ -1,0 +1,60 @@
+{
+  "language": "en",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_en_parity.bin",
+  "sha256": "bfb8e7278668caa3be8f3486dcbbcd88fa15484a75d186704bd63d6d0d54b919",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.723266,
+  "build_timestamp_utc": "2026-04-24T12:31:13.052693+00:00",
+  "builder_version": 1,
+  "sources": [
+    {
+      "name": "bnc",
+      "language": "en",
+      "license": "Licensed local BNC source; derived models only",
+      "redistributable": false,
+      "derived_products_redistributable": true,
+      "text_files": 4061,
+      "source_path": "corpus_data/en/bnc_source",
+      "attribution": "British National Corpus (licensed local copy).",
+      "licensing_note": "Corpus text is not redistributed. This source is used to build derived statistical models only."
+    },
+    {
+      "name": "oanc",
+      "language": "en",
+      "license": "Open ANC open-data terms",
+      "url": "https://www.anc.org/OANC/OANC-1.0.1-UTF8.zip",
+      "redistributable": true,
+      "text_files": 8827,
+      "note": "Downloaded with relaxed TLS verification because anc.org currently serves an expired certificate."
+    },
+    {
+      "name": "masc",
+      "language": "en",
+      "license": "CC BY 3.0 US",
+      "url": "https://www.anc.org/MASC/download/masc_500k_texts.tgz",
+      "redistributable": true,
+      "text_files": 405
+    },
+    {
+      "name": "gutenberg",
+      "language": "en",
+      "license": "Project Gutenberg terms",
+      "url": "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv",
+      "redistributable": true,
+      "text_files": 100,
+      "max_books": 100
+    }
+  ],
+  "corpus_stats": {
+    "raw_files": 13393,
+    "normalized_characters": 564997887,
+    "distinct_seen_5grams": 2255510
+  },
+  "normalization": {
+    "lowercase": true,
+    "strip_non_alpha": true
+  },
+  "redistribution_status": "redistributable"
+}
