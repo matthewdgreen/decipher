@@ -262,9 +262,10 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher
 ```
 
-By default, `zenith_native` first looks for a repo-local bundled model such as
-`models/ngram5_en.bin`, and only then falls back to explicit environment
-overrides or legacy Zenith locations.
+By default, `zenith_native` first honors any explicit environment override such
+as `DECIPHER_NGRAM_MODEL_EN=/path/to/model.bin`. If no override is set, it then
+looks for a repo-local bundled model such as `models/ngram5_en.bin`, and only
+after that falls back to English-specific legacy Zenith locations.
 
 Notes on source access:
 
