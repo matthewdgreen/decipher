@@ -23,7 +23,7 @@ Decipher is licensed under the GNU General Public License, version 3. See
 ## Attribution
 
 The `zenith_native` homophonic solver in
-[src/analysis/zenith_solver.py](/Users/mgreen/Dropbox/src2/decipher/src/analysis/zenith_solver.py)
+`src/analysis/zenith_solver.py`
 is derived from the Zenith project by beldenge:
 
 - [Zenith](https://github.com/beldenge/Zenith)
@@ -55,7 +55,7 @@ ships Decipher-built replacement models.
 ## Setup
 
 ```bash
-cd ~/Dropbox/src2/decipher
+cd /path/to/decipher
 source .venv/bin/activate
 pip install -e .
 ```
