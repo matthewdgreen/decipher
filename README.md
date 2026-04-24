@@ -1,11 +1,19 @@
 # Decipher
 
-Automated cryptanalysis for classical substitution ciphers, with a focus on
-historical manuscripts and no-LLM solving flows.
+Decipher is a tool for performing automated cryptanalysis for classical substitution 
+ciphers, with a focus on historical manuscripts. The goal of this tool is to achieve
+parity, and then improve on the state-of-the-art in automated cipher solver tools.
+As a second and more experimental goal, decipher is intended to (optionally) integrate 
+with an agentic LLM, enabling the LLM to perform manual solving steps that improve our
+ability to cryptanalyze challenging ciphertexts.
 
-Decipher's primary mode is now its native automated solver stack: fast,
-reproducible, and usable without any API key. The experimental agentic solver
-is still available, but it is opt-in and documented separately below.
+Decipher's primary mode is its native automated solver stack: fast, reproducible, and
+usable with only local computation. The experimental agentic solver requires an API key
+and is documented separately below.
+
+Decipher borrows solving algorithms (with attribution and license compliance) from the 
+Zenith solving tool. For licensing reasons we do not redistribute Zenith's ngram models,
+and instead provide our own (as well as tooling to generate additional models.)
 
 ## License
 
