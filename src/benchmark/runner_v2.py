@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.loop_v2 import run_v2
-from benchmark.loader import TestData, parse_canonical_transcription
+from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import (
     format_alignment,
     format_char_diff,
@@ -57,10 +57,7 @@ class BenchmarkRunnerV2:
         self.automated_preflight = automated_preflight
 
     def _resolve_language(self, test_data: TestData) -> str:
-        if self.default_language:
-            return self.default_language
-        source = test_data.test.test_id.split("_")[0]
-        return {"borg": "la", "copiale": "de", "it": "it", "fr": "fr"}.get(source, "en")
+        return resolve_test_language(test_data, self.default_language)
 
     def run_test(
         self,
@@ -110,7 +107,12 @@ class BenchmarkRunnerV2:
         if self.automated_preflight:
             if not self.verbose:
                 print("  preflight(no-LLM)...", end="", flush=True)
-            automated_preflight = _run_automated_preflight(cipher_text, lang, test_id)
+            automated_preflight = _run_automated_preflight(
+                cipher_text,
+                lang,
+                test_id,
+                test_data.test.cipher_system,
+            )
             if self.verbose:
                 solver = automated_preflight.get("solver", "unknown")
                 status = automated_preflight.get("status", "unknown")
@@ -256,7 +258,12 @@ def _format_benchmark_context(test_data: TestData) -> str | None:
     )
 
 
-def _run_automated_preflight(cipher_text, language: str, test_id: str) -> dict[str, Any]:
+def _run_automated_preflight(
+    cipher_text,
+    language: str,
+    test_id: str,
+    cipher_system: str,
+) -> dict[str, Any]:
     from automated.runner import format_automated_preflight_for_llm, run_automated
 
     result = run_automated(
@@ -264,6 +271,7 @@ def _run_automated_preflight(cipher_text, language: str, test_id: str) -> dict[s
         language=language,
         cipher_id=test_id,
         ground_truth=None,
+        cipher_system=cipher_system,
     )
     artifact = dict(result.artifact)
     artifact["summary"] = format_automated_preflight_for_llm(result)

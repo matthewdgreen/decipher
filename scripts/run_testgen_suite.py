@@ -540,6 +540,8 @@ def run_suite(args: argparse.Namespace) -> None:
         runner = AutomatedBenchmarkRunner(
             verbose=args.verbose,
             artifact_dir=args.artifact_dir,
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
         )
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
@@ -700,7 +702,9 @@ def _print_report(
               f"{word_str} {conf_str:>5} {sr.iterations:>4} {sr.elapsed:>5.0f}s "
               f"{cost_str:>22}")
 
-    solved = sum(1 for r in results if r.status == "solved")
+    success_status = "completed" if all(r.run_mode == "automated no-LLM" for r in results) else "solved"
+    success_label = "completed" if success_status == "completed" else "solved"
+    solved = sum(1 for r in results if r.status == success_status)
     avg_char = sum(r.char_accuracy for r in results) / len(results)
     total_cost = sum(r.estimated_cost_usd for r in results)
     all_automated = all(r.run_mode == "automated no-LLM" for r in results)
@@ -710,7 +714,7 @@ def _print_report(
         total_cost_str = "$0.00 (no LLM access)"
     print("  " + "-" * 108)
     print(f"  {'AVERAGE':<10} {mode_label:<16} {'':>4} {'':<14} "
-          f"{f'{solved}/{len(results)} solved':<10} {avg_char:>5.1%} "
+          f"{f'{solved}/{len(results)} {success_label}':<10} {avg_char:>5.1%} "
           f"{'':>6} {'':>5} {'':>4} {'':>6} {total_cost_str:>22}")
     print()
 
@@ -885,6 +889,18 @@ def main() -> None:
     parser.add_argument("--cache-dir", default="testgen_cache")
     parser.add_argument("--artifact-dir", default="artifacts")
     parser.add_argument("--errata-dir", default="errata")
+    parser.add_argument(
+        "--homophonic-budget",
+        choices=["full", "screen"],
+        default="full",
+        help="Search budget for automated homophonic runs.",
+    )
+    parser.add_argument(
+        "--homophonic-refinement",
+        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        default="none",
+        help="Optional second-stage local refinement for automated homophonic runs.",
+    )
     parser.add_argument("--flush-cache", action="store_true")
     parser.add_argument("--automated-only", action="store_true",
                         help="Run native automated solvers only; make no LLM API calls. "

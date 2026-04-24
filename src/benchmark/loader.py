@@ -42,6 +42,7 @@ class TestData:
     test: BenchmarkTest
     canonical_transcription: str  # full canonical transcription text
     plaintext: str  # ground truth plaintext
+    plaintext_language: str = ""
     context_canonical_transcription: str = ""
     context_plaintext: str = ""
     context_records: list[BenchmarkRecord] = field(default_factory=list)
@@ -116,7 +117,7 @@ class BenchmarkLoader:
 
     def load_test_data(self, test: BenchmarkTest) -> TestData:
         """Load the actual transcription and plaintext data for a test."""
-        canonical, plaintext, _ = self._load_record_texts(test.target_records)
+        canonical, plaintext, target_records = self._load_record_texts(test.target_records)
         context_canonical, context_plaintext, context_records = self._load_record_texts(
             test.context_records
         )
@@ -129,6 +130,7 @@ class BenchmarkLoader:
             test=test,
             canonical_transcription=canonical,
             plaintext=plaintext,
+            plaintext_language=_resolve_plaintext_language(target_records),
             context_canonical_transcription=context_canonical,
             context_plaintext=context_plaintext,
             context_records=context_records,
@@ -194,3 +196,34 @@ def parse_canonical_transcription(canonical_text: str) -> CipherText:
     alphabet = Alphabet(symbols)
     raw = " | ".join(word_strings)
     return CipherText(raw=raw, alphabet=alphabet, source="benchmark", separator=" | ")
+
+
+def resolve_test_language(test_data: TestData, default_language: str | None = None) -> str:
+    """Resolve the intended plaintext language for a test.
+
+    Preference order:
+    1. Explicit caller override
+    2. Benchmark manifest language on target records
+    3. Legacy test-id/source heuristic
+    """
+    if default_language:
+        return default_language
+    if test_data.plaintext_language:
+        return test_data.plaintext_language
+    source = test_data.test.test_id.split("_")[0]
+    return {
+        "borg": "la",
+        "copiale": "de",
+        "it": "it",
+        "fr": "fr",
+    }.get(source, "en")
+
+
+def _resolve_plaintext_language(records: list[BenchmarkRecord]) -> str:
+    languages = [record.plaintext_language for record in records if record.plaintext_language]
+    if not languages:
+        return ""
+    counts: dict[str, int] = {}
+    for language in languages:
+        counts[language] = counts.get(language, 0) + 1
+    return max(sorted(counts), key=lambda language: counts[language])

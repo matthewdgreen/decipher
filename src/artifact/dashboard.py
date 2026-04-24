@@ -56,9 +56,10 @@ def build_dashboard(
     external_paths: list[str | Path] | None = None,
     automated_paths: list[str | Path] | None = None,
     benchmark_root: str | Path | None = None,
+    metadata_paths: list[str | Path] | None = None,
 ) -> list[DashboardRow]:
     """Build parity rows from artifact files/directories/globs."""
-    metadata = load_split_metadata(benchmark_root) if benchmark_root else {}
+    metadata = load_split_metadata(benchmark_root, metadata_paths=metadata_paths)
     rows: dict[str, DashboardRow] = {}
 
     for summary in load_agent_summaries(agent_paths):
@@ -185,11 +186,25 @@ def load_automated_summaries(paths: list[str | Path]) -> list[RunSummary]:
     return summaries
 
 
-def load_split_metadata(benchmark_root: str | Path) -> dict[str, dict[str, Any]]:
-    root = Path(benchmark_root)
-    splits_dir = root / "splits"
+def load_split_metadata(
+    benchmark_root: str | Path | None = None,
+    metadata_paths: list[str | Path] | None = None,
+) -> dict[str, dict[str, Any]]:
     metadata: dict[str, dict[str, Any]] = {}
-    for split_path in sorted(splits_dir.glob("*.jsonl")):
+    split_paths: list[Path] = []
+    if benchmark_root:
+        root = Path(benchmark_root)
+        split_paths.extend(sorted((root / "splits").glob("*.jsonl")))
+    for item in metadata_paths or []:
+        path = Path(item)
+        if path.is_dir():
+            split_paths.extend(sorted(path.glob("*.jsonl")))
+        elif path.exists():
+            split_paths.append(path)
+        else:
+            split_paths.extend(sorted(Path(p) for p in glob.glob(str(item), recursive=True)))
+
+    for split_path in split_paths:
         with open(split_path, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -323,6 +338,8 @@ def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
 
 
 def _family_for(test_id: str, metadata: dict[str, Any]) -> str:
+    if metadata.get("frontier_class"):
+        return str(metadata["frontier_class"])
     if metadata.get("parity_family"):
         return str(metadata["parity_family"])
     if metadata.get("cipher_system"):

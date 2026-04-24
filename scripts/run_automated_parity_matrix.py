@@ -124,6 +124,18 @@ def main() -> None:
     parser.add_argument("--artifact-dir", default="artifacts/automated_parity_matrix")
     parser.add_argument("--summary-jsonl", help="Summary JSONL output path.")
     parser.add_argument("--summary-csv", help="Summary CSV output path.")
+    parser.add_argument(
+        "--homophonic-budget",
+        choices=["full", "screen"],
+        default="full",
+        help="Search budget for Decipher automated homophonic runs.",
+    )
+    parser.add_argument(
+        "--homophonic-refinement",
+        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        default="none",
+        help="Optional second-stage local refinement for Decipher automated homophonic runs.",
+    )
     parser.add_argument("--offset", type=int, default=0)
     parser.add_argument("--limit", type=int)
     parser.add_argument("--shard-index", type=int, default=0)
@@ -161,54 +173,83 @@ def main() -> None:
 
     rows: list[dict[str, Any]] = []
     external_configs = load_external_configs(args.external_config, args.oracle_select) if "external" in args.solvers else []
-    decipher_runner = AutomatedBenchmarkRunner(artifact_dir=artifact_dir / "decipher")
+    decipher_runner = AutomatedBenchmarkRunner(
+        artifact_dir=artifact_dir / "decipher",
+        homophonic_budget=args.homophonic_budget,
+        homophonic_refinement=args.homophonic_refinement,
+    )
 
-    for idx, case in enumerate(selected, start=1):
-        td = case.test_data
-        print(f"[{idx}/{len(selected)}] {td.test.test_id} — {case.family}")
-        if "decipher" in args.solvers:
-            print("  [decipher-automated] running...")
-            t0 = time.time()
-            result = decipher_runner.run_test(td, language=case.spec.language if case.spec else None)
-            elapsed = time.time() - t0
-            row = row_for_result(
-                case=case,
-                solver="decipher-automated",
-                status=result.status,
-                char_accuracy=result.char_accuracy,
-                word_accuracy=result.word_accuracy,
-                elapsed=elapsed,
-                artifact_path=result.artifact_path,
-                error=result.error_message,
-                candidates=1,
-            )
-            rows.append(row)
-            print_result(row)
+    try:
+        for idx, case in enumerate(selected, start=1):
+            td = case.test_data
+            print(f"[{idx}/{len(selected)}] {td.test.test_id} — {case.family}")
+            if "decipher" in args.solvers:
+                print("  [decipher-automated] running...")
+                t0 = time.time()
+                try:
+                    result = decipher_runner.run_test(td, language=case.spec.language if case.spec else None)
+                    elapsed = time.time() - t0
+                    row = row_for_result(
+                        case=case,
+                        solver="decipher-automated",
+                        status=result.status,
+                        char_accuracy=result.char_accuracy,
+                        word_accuracy=result.word_accuracy,
+                        elapsed=elapsed,
+                        artifact_path=getattr(result, "artifact_path", ""),
+                        error=getattr(result, "error_message", ""),
+                        candidates=1,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    elapsed = time.time() - t0
+                    row = row_for_exception(
+                        case=case,
+                        solver="decipher-automated",
+                        elapsed=elapsed,
+                        error=exc,
+                    )
+                rows.append(row)
+                print_result(row)
+                write_jsonl(summary_jsonl, rows)
+                write_csv(summary_csv, rows)
 
-        for config in external_configs:
-            print(f"  [{config.name}] running...")
-            result = run_external_baseline(
-                td,
-                config,
-                artifact_dir=artifact_dir / "external",
-            )
-            row = row_for_result(
-                case=case,
-                solver=config.name,
-                status=result.status,
-                char_accuracy=result.char_accuracy,
-                word_accuracy=result.word_accuracy,
-                elapsed=result.elapsed,
-                artifact_path=result.artifact_path,
-                error=result.error,
-                candidates=result.candidates_considered,
-            )
-            rows.append(row)
-            print_result(row)
-        print()
+            for config in external_configs:
+                print(f"  [{config.name}] running...")
+                t0 = time.time()
+                try:
+                    result = run_external_baseline(
+                        td,
+                        config,
+                        artifact_dir=artifact_dir / "external",
+                    )
+                    row = row_for_result(
+                        case=case,
+                        solver=config.name,
+                        status=result.status,
+                        char_accuracy=result.char_accuracy,
+                        word_accuracy=result.word_accuracy,
+                        elapsed=result.elapsed,
+                        artifact_path=result.artifact_path,
+                        error=result.error,
+                        candidates=result.candidates_considered,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    elapsed = time.time() - t0
+                    row = row_for_exception(
+                        case=case,
+                        solver=config.name,
+                        elapsed=elapsed,
+                        error=exc,
+                    )
+                rows.append(row)
+                print_result(row)
+                write_jsonl(summary_jsonl, rows)
+                write_csv(summary_csv, rows)
+            print()
+    finally:
+        write_jsonl(summary_jsonl, rows)
+        write_csv(summary_csv, rows)
 
-    write_jsonl(summary_jsonl, rows)
-    write_csv(summary_csv, rows)
     print_summary(rows)
 
 
@@ -392,6 +433,25 @@ def row_for_result(
         "artifact_path": artifact_path,
         "error": error,
     }
+
+
+def row_for_exception(
+    case: MatrixCase,
+    solver: str,
+    elapsed: float,
+    error: Exception,
+) -> dict[str, Any]:
+    return row_for_result(
+        case=case,
+        solver=solver,
+        status="failed",
+        char_accuracy=0.0,
+        word_accuracy=0.0,
+        elapsed=elapsed,
+        artifact_path="",
+        error=f"{type(error).__name__}: {error}",
+        candidates=0,
+    )
 
 
 def print_result(row: dict[str, Any]) -> None:

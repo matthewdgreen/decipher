@@ -41,6 +41,12 @@ def main() -> None:
         help="Benchmark root used to attach split metadata.",
     )
     parser.add_argument(
+        "--metadata",
+        action="append",
+        default=[],
+        help="Additional local split/JSONL metadata file or directory.",
+    )
+    parser.add_argument(
         "--format",
         choices=["markdown", "json"],
         default="markdown",
@@ -55,6 +61,7 @@ def main() -> None:
         external_paths=external_paths,
         automated_paths=automated_paths,
         benchmark_root=args.benchmark_root,
+        metadata_paths=args.metadata,
     )
     if args.format == "json":
         print(render_json(rows))
