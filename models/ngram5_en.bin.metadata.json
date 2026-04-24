@@ -1,0 +1,22 @@
+{
+  "language": "en",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_en.bin",
+  "sha256": "d22e12c970ff7389c3eefd51a28c3225ea7fec5db1b5b827cc762c8619abd11e",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.723266,
+  "build_timestamp_utc": "2026-04-24T03:46:22.656203+00:00",
+  "builder_version": 1,
+  "sources": [],
+  "corpus_stats": {
+    "raw_files": 501,
+    "normalized_characters": 178097596,
+    "distinct_seen_5grams": 1402934
+  },
+  "normalization": {
+    "lowercase": true,
+    "strip_non_alpha": true
+  },
+  "redistribution_status": "redistributable"
+}

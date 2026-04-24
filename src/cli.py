@@ -7,6 +7,10 @@ import os
 import sys
 
 
+def _use_agentic_mode(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "agentic", False))
+
+
 def get_api_key() -> str:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
@@ -38,7 +42,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         print("No matching tests found.", file=sys.stderr)
         sys.exit(1)
 
-    if args.automated_only:
+    if not _use_agentic_mode(args):
         from automated.runner import AutomatedBenchmarkRunner
 
         runner = AutomatedBenchmarkRunner(
@@ -48,7 +52,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
         )
-        model = "automated-only"
+        mode_label = "automated"
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
         from services.claude_api import ClaudeAPI
@@ -64,8 +68,9 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir or "artifacts",
             automated_preflight=not args.no_automated_preflight,
         )
+        mode_label = f"agentic ({model})"
 
-    print(f"Running {len(tests)} test(s) — model={model}, max_iter={args.max_iterations}")
+    print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
     print(f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n")
 
     results = []
@@ -94,8 +99,8 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         n = len(results)
         avg_char = sum(r.char_accuracy for r in results) / n
         avg_word = sum(r.word_accuracy for r in results) / n
-        success_status = "completed" if args.automated_only else "solved"
-        success_label = "completed runs" if args.automated_only else "declared solutions"
+        success_status = "completed" if not _use_agentic_mode(args) else "solved"
+        success_label = "completed runs" if not _use_agentic_mode(args) else "declared solutions"
         successful = sum(1 for r in results if r.status == success_status)
         print(f"AVERAGE: {successful}/{n} {success_label}, char={avg_char:.1%}, word={avg_word:.1%}")
 
@@ -130,10 +135,10 @@ def cmd_crack(args: argparse.Namespace) -> None:
     cipher_id = args.cipher_id or "cli"
     artifact_dir = args.artifact_dir or "artifacts"
 
-    if args.automated_only:
+    if not _use_agentic_mode(args):
         from automated.runner import run_automated, save_crack_artifact
 
-        print("Running automated-only solver (no LLM API calls)...")
+        print("Running automated solver (no LLM API calls)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
         artifact = run_automated(
@@ -268,17 +273,18 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         n = cache.flush(spec)
         print(f"Flushed {n} cache entry for this spec.")
 
-    if args.automated_only:
+    if not _use_agentic_mode(args):
         cached = cache.get(spec)
-        if cached is None:
+        if cached is None and not args.dry_run:
             print(
-                "Error: --automated-only testgen cannot generate new plaintext, "
-                "because that would require an LLM API call. Run without "
-                "--automated-only once to populate the cache, or choose a cached spec.",
+                "Error: default automated testgen mode cannot generate new plaintext, "
+                "because that would require an LLM API call. Use --agentic to "
+                "generate and solve in one command, use --dry-run to populate the "
+                "cache, or choose a cached spec.",
                 file=sys.stderr,
             )
             sys.exit(1)
-        api_key = ""
+        api_key = "" if cached is not None else get_api_key()
     else:
         api_key = get_api_key()
 
@@ -295,7 +301,7 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         print("\n[dry-run] Skipping agent.")
         return
 
-    if args.automated_only:
+    if not _use_agentic_mode(args):
         from automated.runner import AutomatedBenchmarkRunner
 
         runner = AutomatedBenchmarkRunner(
@@ -305,7 +311,7 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
         )
-        print("\nRunning automated-only solver (no LLM API calls)...")
+        print("\nRunning automated solver (no LLM API calls)...")
         result = runner.run_test(test_data, language=args.language)
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
@@ -361,10 +367,18 @@ def main() -> None:
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")
-    bench.add_argument("--automated-only", action="store_true",
-                       help="Run native automated solvers only; make no LLM API calls.")
+    bench.add_argument(
+        "--agentic",
+        action="store_true",
+        help="Use the experimental LLM agent instead of the default automated solver.",
+    )
+    bench.add_argument(
+        "--automated-only",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     bench.add_argument("--no-automated-preflight", action="store_true",
-                       help="Disable the default no-LLM automated preflight before LLM runs.")
+                       help="Disable the default no-LLM automated preflight before agentic runs.")
     bench.add_argument(
         "--homophonic-budget",
         choices=["full", "screen"],
@@ -390,10 +404,14 @@ def main() -> None:
     crack.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     crack.add_argument("--cipher-id", help="Identifier for this cipher (default: 'cli')")
     crack.add_argument("--verbose", "-v", action="store_true")
-    crack.add_argument("--automated-only", action="store_true",
-                       help="Run native automated solvers only; make no LLM API calls.")
+    crack.add_argument(
+        "--agentic",
+        action="store_true",
+        help="Use the experimental LLM agent instead of the default automated solver.",
+    )
+    crack.add_argument("--automated-only", action="store_true", help=argparse.SUPPRESS)
     crack.add_argument("--no-automated-preflight", action="store_true",
-                       help="Disable the default no-LLM automated preflight before LLM runs.")
+                       help="Disable the default no-LLM automated preflight before agentic runs.")
     crack.add_argument(
         "--homophonic-budget",
         choices=["full", "screen"],
@@ -428,13 +446,17 @@ def main() -> None:
     tg.add_argument("--artifact-dir", default="artifacts")
     tg.add_argument("--cache-dir", default="testgen_cache")
     tg.add_argument("--verbose", "-v", action="store_true")
-    tg.add_argument("--automated-only", action="store_true",
-                    help=(
-                        "Run native automated solvers only; make no LLM API calls. "
-                        "Requires the generated plaintext to already be cached."
-                    ))
+    tg.add_argument(
+        "--agentic",
+        action="store_true",
+        help=(
+            "Use the experimental LLM agent for solving and allow uncached synthetic "
+            "plaintext generation."
+        ),
+    )
+    tg.add_argument("--automated-only", action="store_true", help=argparse.SUPPRESS)
     tg.add_argument("--no-automated-preflight", action="store_true",
-                    help="Disable the default no-LLM automated preflight before LLM runs.")
+                    help="Disable the default no-LLM automated preflight before agentic runs.")
     tg.add_argument(
         "--homophonic-budget",
         choices=["full", "screen"],

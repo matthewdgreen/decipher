@@ -146,6 +146,12 @@ Located at `~/Dropbox/src2/cipher_benchmark/benchmark/`.
 - Benchmark curation lives in `../cipher_benchmark`; Decipher solver/harness code lives here.
 - Keep parity tests distinct from agentic-advantage tests. Parity asks whether the agent can match non-agentic solvers; advantage asks whether agentic context, OCR, diagnosis, or hypothesis management improves beyond them.
 - Decipher also keeps a local frontier automated suite in `frontier/automated_solver_frontier.jsonl`. This is intentionally separate from benchmark parity splits: it is a compact regression/frontier pack for automated-only runs, with explicit classes (`known_good`, `bad_result`, `slow_result`) and optional synthetic case definitions.
+- There is now also a small English model evaluation packet in
+  `frontier/english_model_eval.jsonl`. Use this when comparing
+  `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native` across different English
+  binary models (for example, proprietary Zenith vs Decipher-built Gutenberg
+  models). It is intentionally narrow: two known-good English homophonic
+  cases, two short runtime/frontier cases, and Zodiac 408.
 
 ### Parity evaluation modes
 When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
@@ -246,9 +252,13 @@ gap vs. Zenith. See the "Zenith-Parity Homophonic Solver" achievement above for 
 root-cause bugs that were fixed.
 
 Remaining open questions in this area:
-- **Broader cipher class coverage**: `zenith_native` depends on the English binary model
-  (`zenith-model.array.bin`). Non-English homophonic ciphers (Copiale/German) still
-  fall back to `homophonic.py` profiles. A German equivalent binary model does not yet exist.
+- **Bundled redistributable model**: the repo now ships a redistributable English binary
+  model at `models/ngram5_en.bin`, and `zenith_native` should prefer it by default unless
+  `DECIPHER_NGRAM_MODEL_EN` overrides it. This removes the immediate clone-and-run blocker,
+  but the bundled model is still a work in progress and should be improved with broader corpora.
+- **Broader cipher class coverage**: non-English homophonic ciphers (Copiale/German) still
+  fall back to `homophonic.py` profiles unless a corresponding `models/ngram5_<lang>.bin`
+  exists. A German equivalent binary model does not yet exist.
 - **Agent tool exposure**: `search_homophonic_anneal` in the agentic tool set still uses
   the old `homophonic.py` profiles. The `zenith_native` path is automated-runner-only for
   now; exposing it as an agent tool is future work.

@@ -1114,13 +1114,23 @@ def _default_homophonic_model_path() -> Path | None:
     return None
 
 
-def _zenith_native_model_path() -> Path | None:
-    """Locate the Zenith binary model file for the ``zenith_native`` profile."""
-    env_path = os.environ.get("DECIPHER_ZENITH_BINARY_MODEL")
+def _zenith_native_model_path(language: str = "en") -> Path | None:
+    """Locate the binary model file for the ``zenith_native`` profile."""
+    lang_key = (language or "en").strip().lower()
+    env_path = os.environ.get(f"DECIPHER_NGRAM_MODEL_{lang_key.upper()}")
     if env_path:
         p = Path(env_path).expanduser()
         return p if p.exists() else None
     repo_root = Path(__file__).resolve().parents[2]
+    candidate = repo_root / "models" / f"ngram5_{lang_key}.bin"
+    if candidate.exists():
+        return candidate
+    if lang_key != "en":
+        return None
+    env_path = os.environ.get("DECIPHER_ZENITH_BINARY_MODEL")
+    if env_path:
+        p = Path(env_path).expanduser()
+        return p if p.exists() else None
     for candidate in [
         repo_root / "other_tools" / "zenith-2026.2" / "zenith-model.array.bin",
         repo_root / "other_tools" / "zenith" / "zenith-model.array.bin",
@@ -1145,19 +1155,21 @@ def _run_homophonic_zenith_native(
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     """Run the Zenith-parity homophonic solver (``zenith_native`` score profile).
 
-    Uses the exact Zenith SA algorithm: Shannon-entropy counterweight and
-    un-normalized acceptance criterion.  Falls back gracefully if the binary
-    model file is not present.
+    Uses the Zenith-derived solver implemented in ``analysis.zenith_solver``:
+    Shannon-entropy counterweight plus un-normalized acceptance criterion.
+    Falls back gracefully if the binary model file is not present.
     """
     from analysis.zenith_solver import ZenithModel, load_zenith_binary_model, zenith_solve
 
-    bin_path = _zenith_native_model_path()
+    bin_path = _zenith_native_model_path(language)
     if bin_path is None:
         raise FileNotFoundError(
-            "zenith_native profile requires the Zenith binary model file "
-            "(zenith-model.array.bin).  Set the DECIPHER_ZENITH_BINARY_MODEL "
-            "env var or place the file at "
-            "other_tools/zenith-2026.2/zenith-model.array.bin"
+            "zenith_native profile requires a binary language model file. "
+            f"For language={language!r}, set DECIPHER_NGRAM_MODEL_{language.upper()} "
+            f"or place a model at models/ngram5_{language}.bin. "
+            "English also supports the proprietary Zenith fallback via "
+            "DECIPHER_ZENITH_BINARY_MODEL or "
+            "other_tools/zenith-2026.2/zenith-model.array.bin."
         )
 
     model: ZenithModel = load_zenith_binary_model(bin_path)

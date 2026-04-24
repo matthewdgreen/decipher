@@ -80,7 +80,7 @@ def test_automated_benchmark_runner_writes_no_llm_artifact(tmp_path, monkeypatch
     assert artifact["total_input_tokens"] == 0
 
 
-def test_cli_crack_automated_only_bypasses_api_key(tmp_path, monkeypatch, capsys):
+def test_cli_crack_defaults_to_automated_solver_and_bypasses_api_key(tmp_path, monkeypatch, capsys):
     input_file = tmp_path / "cipher.txt"
     input_file.write_text("A B C\n", encoding="utf-8")
 
@@ -123,11 +123,11 @@ def test_cli_crack_automated_only_bypasses_api_key(tmp_path, monkeypatch, capsys
         artifact_dir=str(tmp_path / "artifacts"),
         cipher_id="auto_cli",
         verbose=False,
-        automated_only=True,
+        agentic=False,
     ))
 
     out = capsys.readouterr().out
-    assert "Running automated-only solver" in out
+    assert "Running automated solver" in out
     assert "THE" in out
 
 
