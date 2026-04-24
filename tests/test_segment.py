@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from analysis.segment import find_one_edit_corrections, segment_text
+from analysis.segment import find_one_edit_corrections, repair_no_boundary_text, segment_text
 
 
 # A small, plausibly-English fixture vocabulary.
@@ -85,3 +85,26 @@ def test_freq_rank_tiebreaks_segmentations():
     freq_rank = {"AND": 1, "A": 2, "ND": 500}
     result = segment_text("AND", vocab, freq_rank=freq_rank)
     assert result.words == ["AND"]
+
+
+def test_repair_no_boundary_text_can_fix_one_edit_word():
+    vocab = {"THERE", "CAT"}
+    freq_rank = {"THERE": 1, "CAT": 2}
+
+    result = repair_no_boundary_text("THERQ CAT", vocab, freq_rank=freq_rank)
+
+    assert result.applied is True
+    assert result.repaired_text == "THERE CAT"
+    assert result.after.dict_rate == 1.0
+    assert any(c["kind"] == "one_edit" for c in result.corrections)
+
+
+def test_repair_no_boundary_text_can_resegment_local_window():
+    vocab = {"THERE", "CAT"}
+    freq_rank = {"THERE": 1, "CAT": 2}
+
+    result = repair_no_boundary_text("THE RECAT", vocab, freq_rank=freq_rank)
+
+    assert result.applied is True
+    assert result.repaired_text == "THERE CAT"
+    assert any(c["kind"] == "resegment" for c in result.corrections)

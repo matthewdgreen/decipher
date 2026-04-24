@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from analysis import dictionary, homophonic, ic, ngram, pattern
-from analysis.segment import find_one_edit_corrections, segment_text
+from analysis.segment import repair_no_boundary_text, segment_text
 from analysis.solver import simulated_anneal
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
@@ -1341,85 +1341,27 @@ def _maybe_polish_zenith_native_plaintext(
     if not alpha_only:
         info["reason"] = "no_alpha_text"
         return info
-
-    before = segment_text(alpha_only, word_set, freq_rank=freq_rank)
+    repair = repair_no_boundary_text(alpha_only, word_set, freq_rank=freq_rank)
+    info["rounds"] = repair.rounds
+    info["corrections"] = repair.corrections
     info["before"] = {
-        "dict_rate": round(before.dict_rate, 4),
-        "segmentation_cost": round(before.cost, 3),
-        "pseudo_word_count": len(before.pseudo_words),
-        "segmented_preview": before.segmented[:160],
+        "dict_rate": round(repair.before.dict_rate, 4),
+        "segmentation_cost": round(repair.before.cost, 3),
+        "pseudo_word_count": len(repair.before.pseudo_words),
+        "segmented_preview": repair.before.segmented[:160],
     }
-
-    words = list(before.words)
-    corrections: list[dict[str, Any]] = []
-    max_rounds = 3
-    for round_index in range(max_rounds):
-        changed = False
-        new_words = list(words)
-        for idx, word in enumerate(words):
-            if word in word_set or len(word) < 4:
-                continue
-            candidates = find_one_edit_corrections(word, word_set)
-            if not candidates:
-                continue
-            ranked = sorted(
-                candidates,
-                key=lambda item: (
-                    freq_rank.get(item[0].upper(), 10**9),
-                    item[0],
-                ),
-            )
-            best = ranked[0]
-            if len(ranked) > 1:
-                best_rank = freq_rank.get(best[0].upper(), 10**9)
-                next_rank = freq_rank.get(ranked[1][0].upper(), 10**9)
-                if next_rank - best_rank < 25:
-                    continue
-            cand, wrong, correct = best
-            new_words[idx] = cand
-            corrections.append({
-                "round": round_index + 1,
-                "from": word,
-                "to": cand,
-                "wrong_letter": wrong,
-                "correct_letter": correct,
-                "position": idx,
-            })
-            changed = True
-        words = new_words
-        info["rounds"] = round_index + 1
-        if not changed:
-            break
-
-    candidate_text = " ".join(words)
-    after = segment_text("".join(words), word_set, freq_rank=freq_rank)
     info["after"] = {
-        "dict_rate": round(after.dict_rate, 4),
-        "segmentation_cost": round(after.cost, 3),
-        "pseudo_word_count": len(after.pseudo_words),
-        "segmented_preview": after.segmented[:160],
+        "dict_rate": round(repair.after.dict_rate, 4),
+        "segmentation_cost": round(repair.after.cost, 3),
+        "pseudo_word_count": len(repair.after.pseudo_words),
+        "segmented_preview": repair.after.segmented[:160],
     }
-    improved = (
-        after.dict_rate > before.dict_rate
-        or (
-            after.dict_rate == before.dict_rate
-            and (
-                after.cost < before.cost
-                or len(after.pseudo_words) < len(before.pseudo_words)
-            )
-        )
-    )
-    if not corrections:
-        info["reason"] = "no_confident_local_repairs"
-        return info
-    if not improved:
-        info["reason"] = "repairs_did_not_improve_segmentation"
-        info["corrections"] = corrections
+    if not repair.applied:
+        info["reason"] = repair.reason
         return info
 
     info["applied"] = True
-    info["plaintext"] = candidate_text
-    info["corrections"] = corrections
+    info["plaintext"] = repair.repaired_text
     info["key_consistent_with_output"] = False
     return info
 

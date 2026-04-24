@@ -26,7 +26,7 @@ from typing import Any
 from analysis import dictionary, frequency, homophonic, ic, ngram, pattern
 from analysis import signals as sig
 from analysis.frequency import unigram_chi2
-from analysis.segment import segment_text
+from analysis.segment import repair_no_boundary_text, segment_text
 from analysis.solver import hill_climb_swaps, simulated_anneal
 from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
@@ -728,6 +728,35 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     ),
                 },
                 "auto_revert_if_worse": {"type": "boolean", "default": True},
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "decode_repair_no_boundary",
+        "description": (
+            "Run a conservative text-only repair pass over a branch's decoded "
+            "plaintext for no-boundary or drifted output. It segments the "
+            "current plaintext, applies confident one-edit word repairs, and "
+            "tries local re-segmentation over suspicious windows. This does "
+            "not mutate the branch key; it returns a repaired plaintext "
+            "candidate and before/after segmentation metrics so you can judge "
+            "whether the branch is close-but-drifted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "max_rounds": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Maximum repair rounds.",
+                },
+                "max_window_words": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "Largest adjacent word window to re-segment.",
+                },
             },
             "required": ["branch"],
         },
@@ -1883,6 +1912,49 @@ class WorkspaceToolExecutor:
                 branch, dict_rate_after, after.get("quad")
             ),
             "recommendation": recommendation,
+        }
+
+    def _tool_decode_repair_no_boundary(self, args: dict) -> Any:
+        branch = args["branch"]
+        max_rounds = int(args.get("max_rounds", 3))
+        max_window_words = int(args.get("max_window_words", 3))
+        decrypted = self.workspace.apply_key(branch)
+        normalized = sig.normalize_for_scoring(decrypted)
+        if not normalized.strip():
+            return {"branch": branch, "error": "empty decoded text"}
+
+        repair = repair_no_boundary_text(
+            normalized,
+            self.word_set,
+            self._freq_rank,
+            max_rounds=max_rounds,
+            max_window_words=max_window_words,
+        )
+        return {
+            "branch": branch,
+            "applied": repair.applied,
+            "reason": repair.reason,
+            "rounds": repair.rounds,
+            "before": {
+                "dict_rate": round(repair.before.dict_rate, 4),
+                "segmentation_cost": round(repair.before.cost, 3),
+                "pseudo_word_count": len(repair.before.pseudo_words),
+                "segmented_text": repair.before.segmented[:600],
+            },
+            "after": {
+                "dict_rate": round(repair.after.dict_rate, 4),
+                "segmentation_cost": round(repair.after.cost, 3),
+                "pseudo_word_count": len(repair.after.pseudo_words),
+                "segmented_text": repair.after.segmented[:600],
+            },
+            "corrections": repair.corrections[:40],
+            "repaired_text": repair.repaired_text[:1200],
+            "note": (
+                "This is a text-only repair preview; it does not mutate the "
+                "branch key. Use it to judge whether a no-boundary branch is "
+                "close but drifted, especially after search_automated_solver or "
+                "search_homophonic_anneal."
+            ),
         }
 
     # ------------------------------------------------------------------

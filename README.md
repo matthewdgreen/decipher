@@ -106,8 +106,9 @@ Experimental homophonic tuning knobs:
 - `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`: override the auto-sized seed worker count
 - `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full`: shrink broad search for local iteration
 - `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full`: shrink repair breadth for local iteration
-- `DECIPHER_HOMOPHONIC_POLISH=1`: opt into the current experimental post-`zenith_native`
-  segmentation/repair pass for no-boundary output
+- `DECIPHER_HOMOPHONIC_POLISH=1`: opt into the current experimental shared
+  no-boundary segmentation/repair pass for post-`zenith_native` continuous
+  output
 
 ### Run the historical benchmark
 
@@ -368,7 +369,10 @@ Agentic runs now receive the same automated preflight branch by default, and
 the v2 tool loop can also invoke the modern local automated stack directly via
 its `search_automated_solver` tool. For homophonic work, the agent's
 `search_homophonic_anneal` tool now supports the modern
-`solver_profile='zenith_native'` path as well as the legacy path.
+`solver_profile='zenith_native'` path as well as the legacy path. There is
+also a shared `decode_repair_no_boundary` repair tool for locally-correct but
+globally drifted continuous plaintext candidates; it returns a text-only
+repair preview without mutating the branch key.
 
 ### Crack with the agent
 

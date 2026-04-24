@@ -27,6 +27,18 @@ class SegmentResult:
     cost: float                 # total Viterbi log-cost (lower = better)
 
 
+@dataclass
+class TextRepairResult:
+    original_text: str
+    repaired_text: str
+    before: SegmentResult
+    after: SegmentResult
+    rounds: int
+    corrections: list[dict[str, str | int]]
+    applied: bool
+    reason: str | None = None
+
+
 # Per-emitted-word constant. Discourages over-splitting — without it, the
 # segmenter prefers many short dictionary hits ("MAR PA FOUND") over one
 # long unknown pseudo-word ("MARPA FOUND"). Keeping long unknowns intact is
@@ -52,6 +64,16 @@ def _word_cost(word: str, freq_rank: dict[str, int] | None) -> float:
     if rank is None:
         return 0.0
     return math.log(rank + 1)
+
+
+def _sequence_cost(words: list[str], word_set: set[str], freq_rank: dict[str, int] | None) -> float:
+    total = 0.0
+    for word in words:
+        if word in word_set:
+            total += _WORD_PENALTY + _word_cost(word, freq_rank)
+        else:
+            total += _WORD_PENALTY + _UNKNOWN_PER_CHAR * len(word)
+    return total
 
 
 def segment_text(
@@ -186,3 +208,158 @@ def find_one_edit_corrections(
             if candidate in word_set:
                 out.append((candidate, wrong, correct))
     return out
+
+
+def repair_no_boundary_text(
+    text: str,
+    word_set: set[str],
+    freq_rank: dict[str, int] | None = None,
+    *,
+    max_rounds: int = 3,
+    min_confidence_gap: int = 25,
+    max_window_words: int = 3,
+) -> TextRepairResult:
+    """Try to improve a spaced or unspaced plaintext candidate.
+
+    Strategy:
+    1. segment the current text (or respect existing spacing)
+    2. apply confident one-edit repairs on pseudo-words
+    3. locally re-segment windows of 2-3 words when that reduces cost or
+       pseudo-word count
+
+    This is intentionally conservative: it only applies repairs that clearly
+    improve the segmentation objective, so callers can use it in both
+    automated and agentic paths without the repair becoming a source of noisy
+    hallucinations.
+    """
+    normalized = text.upper().strip()
+    if not normalized:
+        empty = SegmentResult(text="", segmented="", words=[], dict_rate=0.0, pseudo_words=[], cost=0.0)
+        return TextRepairResult(
+            original_text=text,
+            repaired_text=text,
+            before=empty,
+            after=empty,
+            rounds=0,
+            corrections=[],
+            applied=False,
+            reason="empty_text",
+        )
+
+    if any(ch.isspace() for ch in normalized):
+        initial_words = [w for w in normalized.split() if w]
+        before = SegmentResult(
+            text=text,
+            segmented=" ".join(initial_words),
+            words=initial_words,
+            dict_rate=(sum(1 for w in initial_words if w in word_set) / len(initial_words)) if initial_words else 0.0,
+            pseudo_words=[w for w in initial_words if w not in word_set],
+            cost=_sequence_cost(initial_words, word_set, freq_rank),
+        )
+    else:
+        before = segment_text(normalized, word_set, freq_rank=freq_rank)
+        initial_words = list(before.words)
+
+    words = list(initial_words)
+    corrections: list[dict[str, str | int]] = []
+    rounds_used = 0
+
+    for round_index in range(max_rounds):
+        changed = False
+
+        # First pass: conservative one-edit repairs on pseudo-words.
+        for idx, word in enumerate(list(words)):
+            if word in word_set or len(word) < 3:
+                continue
+            candidates = sorted(
+                find_one_edit_corrections(word, word_set),
+                key=lambda item: (freq_rank.get(item[0], 10**9) if freq_rank else 0, item[0]),
+            )
+            if not candidates:
+                continue
+            best = candidates[0]
+            if len(candidates) > 1 and freq_rank is not None:
+                best_rank = freq_rank.get(best[0], 10**9)
+                next_rank = freq_rank.get(candidates[1][0], 10**9)
+                if next_rank - best_rank < min_confidence_gap:
+                    continue
+            cand, wrong, correct = best
+            words[idx] = cand
+            corrections.append({
+                "kind": "one_edit",
+                "round": round_index + 1,
+                "position": idx,
+                "from": word,
+                "to": cand,
+                "wrong_letter": wrong,
+                "correct_letter": correct,
+            })
+            changed = True
+
+        # Second pass: local re-segmentation over suspicious windows.
+        i = 0
+        while i < len(words):
+            window_replaced = False
+            for window_size in range(min(max_window_words, len(words) - i), 1, -1):
+                window = words[i : i + window_size]
+                if all(w in word_set and len(w) > 2 for w in window):
+                    continue
+                joined = "".join(window)
+                candidate = segment_text(joined, word_set, freq_rank=freq_rank)
+                current_cost = _sequence_cost(window, word_set, freq_rank)
+                current_pseudo = sum(1 for w in window if w not in word_set)
+                candidate_pseudo = len(candidate.pseudo_words)
+                better = (
+                    candidate.cost + 1e-9 < current_cost
+                    or (
+                        math.isclose(candidate.cost, current_cost)
+                        and candidate_pseudo < current_pseudo
+                    )
+                )
+                if not better or candidate.words == window:
+                    continue
+                words[i : i + window_size] = candidate.words
+                corrections.append({
+                    "kind": "resegment",
+                    "round": round_index + 1,
+                    "position": i,
+                    "from": " ".join(window),
+                    "to": candidate.segmented,
+                })
+                changed = True
+                window_replaced = True
+                break
+            if window_replaced:
+                continue
+            i += 1
+
+        rounds_used = round_index + 1
+        if not changed:
+            break
+
+    repaired_text = " ".join(words)
+    after = segment_text("".join(words), word_set, freq_rank=freq_rank) if words else before
+    applied = repaired_text != before.segmented and (
+        after.dict_rate > before.dict_rate
+        or (
+            math.isclose(after.dict_rate, before.dict_rate)
+            and (
+                after.cost < before.cost
+                or len(after.pseudo_words) < len(before.pseudo_words)
+            )
+        )
+    )
+    if not applied:
+        repaired_text = before.segmented
+        after = before
+
+    return TextRepairResult(
+        original_text=text,
+        repaired_text=repaired_text,
+        before=before,
+        after=after,
+        rounds=rounds_used,
+        corrections=corrections,
+        applied=applied,
+        reason=None if applied else ("no_improving_repairs" if corrections else "no_confident_repairs"),
+    )

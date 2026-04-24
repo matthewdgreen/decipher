@@ -38,6 +38,9 @@ distribution, etc.
   If a common plaintext letter is absent in a homophonic decode, call
   `decode_absent_letter_candidates` instead of writing Python to search
   contexts manually.
+  If a no-boundary branch reads as locally correct but globally drifted or
+  mis-segmented, call `decode_repair_no_boundary` to get a text-only repair
+  preview before deciding whether to keep repairing the key itself.
 - `score_*` — signal panel and individual signals. Call these when you want \
 a quantitative reading. No score triggers anything automatically; you \
 consult them.

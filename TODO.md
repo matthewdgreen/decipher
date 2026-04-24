@@ -155,9 +155,9 @@ or a benchmark data issue.
     - Forcing `zenith_native` with the full 8-seed budget is reproducible and reaches a distinct no-boundary Latin basin at about `13.9%` character accuracy and `0.0%` word accuracy.
     - With only one seed, the forced `zenith_native` basin is much worse (~`9.0%`), so this case is notably multi-seed-sensitive.
     - The substitution path lands in a different partial-Latin basin with similar character accuracy but slightly better word-level structure.
-    - The first conservative post-`zenith_native` polish loop (segmentation + one-edit local repair) did not improve the forced `zenith_native` output.
+    - The new shared no-boundary repair helper now gives a small lift on the forced `zenith_native` path with `models/ngram5_la_500.bin` (about `13.9%` char / `3.9%` word), but the repaired plaintext is still only a text-level preview and is not yet key-consistent.
   - Next likely useful experiments:
-    - [ ] Try a stronger Latin cleanup pass on `zenith_native` output: segmentation plus phrase-level split/merge and repair, not just one-edit local corrections.
+    - [ ] Try a stronger Latin cleanup pass on `zenith_native` output: segmentation plus phrase-level split/merge and repair, beyond the current conservative shared helper.
     - [ ] Compare default substitution vs forced `zenith_native` on a second small Borg subset to see whether `0109v` is representative or a special case.
     - [ ] Revisit routing later if a cleanup step starts making the `zenith_native` basin consistently more useful.
 - [x] Fix automated historical language propagation for benchmark-backed parity/frontier runs.

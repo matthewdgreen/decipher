@@ -150,6 +150,10 @@ directly:
 - `search_automated_solver` runs the same local no-LLM solver stack used by
   frontier/parity evaluation and installs the result on a branch.
 - `search_homophonic_anneal` now supports `solver_profile=zenith_native|legacy`.
+- `decode_repair_no_boundary` exposes the shared text-repair helper used by
+  automated postprocessing: segmentation, one-edit local repairs, and local
+  re-segmentation over suspicious windows. It is text-only and does not mutate
+  branch keys.
 
 This closes the earlier gap where the agent had automated preflight context
 but could only actively invoke the older homophonic annealer from inside the
@@ -351,8 +355,12 @@ Current April 2026 state for non-English bundled models:
   full 8-seed budget, but still `0.0%` word accuracy.
 - The 500-book Latin model slightly improves the anneal score on that case
   versus the 100-book model but does not yet move headline accuracy.
-- The first conservative post-`zenith_native` polish loop does not yet improve
-  `0109v`; its local one-edit repairs were too weak to change the candidate.
+- The shared no-boundary repair helper is now available to both automated and
+  agentic paths. On a focused forced-`zenith_native` probe of `0109v` using
+  `models/ngram5_la_500.bin`, the repair pass now applies a few conservative
+  local edits and lifts the result to about `13.9%` character accuracy and
+  `3.9%` word accuracy. That is a modest but real gain, though the repaired
+  text is still only a text-level preview and is not yet key-consistent.
 
 ### 4. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
@@ -364,8 +372,9 @@ Additional current read:
   symbol inventory does not trip the current overcomplete/homophonic heuristic.
 - Focused probes show that forcing `zenith_native` on `0109v` produces a more
   fluent no-boundary Latin stream than the substitution path, but not a clear
-  win yet. This now looks like a cleanup/segmentation problem at least as much
-  as a raw search problem.
+  win yet. The new shared repair helper improves that stream a little, which
+  strengthens the case that this is a cleanup/segmentation problem at least as
+  much as a raw search problem.
 
 ### 5. 🧭 **Context capability audit**
 Blind vs. context-aware parity is now the intended evaluation framework.

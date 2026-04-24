@@ -83,6 +83,30 @@ def test_decode_ambiguous_letter_groups_contexts_by_cipher_symbol():
     assert "act_set_mapping" in out["groups"][0]["suggested_next_step"]
 
 
+def test_decode_repair_no_boundary_returns_text_only_repair_preview():
+    alpha = Alphabet.from_text("THERQ CAT", ignore_chars=set())
+    ct = CipherText(raw="THERQ CAT", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THERE", "CAT"},
+        word_list=["THERE", "CAT"],
+        pattern_dict={},
+    )
+    alpha = ex.workspace.cipher_text.alphabet
+    pt = ex.workspace.plaintext_alphabet
+    for letter in ["T", "H", "E", "R", "Q", "C", "A"]:
+        ex.workspace.set_mapping("main", alpha.id_for(letter), pt.id_for(letter))
+
+    out = ex._tool_decode_repair_no_boundary({
+        "branch": "main",
+    })
+
+    assert out["applied"] is True
+    assert out["repaired_text"] == "THERE CAT"
+    assert out["after"]["dict_rate"] == 1.0
+
+
 def test_initial_context_discourages_remeasuring_without_leaking_cipher_label():
     msg = initial_context(
         cipher_display="01 02 03",
