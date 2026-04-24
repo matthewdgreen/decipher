@@ -3,32 +3,16 @@ from __future__ import annotations
 import csv
 import time
 from pathlib import Path
-from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
 
+from .common import fetch_bytes, update_manifest
 
 CATALOG_URL = "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv"
-
-
-def _fetch(url: str, *, retries: int = 3, delay_seconds: float = 1.0) -> bytes:
-    last_error: Exception | None = None
-    for attempt in range(retries):
-        try:
-            with urlopen(url) as response:  # noqa: S310
-                return response.read()
-        except (HTTPError, URLError) as exc:
-            last_error = exc
-            if attempt + 1 == retries:
-                break
-            time.sleep(delay_seconds)
-    assert last_error is not None
-    raise last_error
 
 
 def download_catalog(output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     target = output_dir / "pg_catalog.csv"
-    target.write_bytes(_fetch(CATALOG_URL))
+    target.write_bytes(fetch_bytes(CATALOG_URL))
     return target
 
 
@@ -76,8 +60,8 @@ def download_book(book_id: int, output_dir: Path) -> Path | None:
     output_dir.mkdir(parents=True, exist_ok=True)
     url = f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt"
     try:
-        raw = _fetch(url)
-    except HTTPError:
+        raw = fetch_bytes(url)
+    except Exception:
         return None
     text = _strip_gutenberg_boilerplate(raw.decode("utf-8", errors="ignore"))
     if not text:
@@ -103,3 +87,31 @@ def download_books(
         if path is not None:
             downloaded.append(path)
     return downloaded
+
+
+def download_gutenberg_books(
+    *,
+    corpus_dir: Path,
+    language: str = "en",
+    max_books: int = 100,
+) -> dict:
+    source_dir = corpus_dir / "gutenberg"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    catalog_path = download_catalog(source_dir)
+    paths = download_books(
+        catalog_path=catalog_path,
+        output_dir=source_dir,
+        language=language,
+        max_books=max_books,
+    )
+    entry = {
+        "name": "gutenberg",
+        "language": language,
+        "license": "Project Gutenberg terms",
+        "url": CATALOG_URL,
+        "redistributable": True,
+        "text_files": len(paths),
+        "max_books": max_books,
+    }
+    update_manifest(corpus_dir, language=language, source_entry=entry)
+    return entry

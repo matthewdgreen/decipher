@@ -10,7 +10,7 @@ is still available, but it is opt-in and documented separately below.
 ## License
 
 Decipher is licensed under the GNU General Public License, version 3. See
-[LICENSE](/Users/mgreen/Dropbox/src2/decipher/LICENSE).
+`LICENSE`.
 
 ## Attribution
 
@@ -25,9 +25,24 @@ native homophonic search. Decipher was therefore relicensed under GPLv3 so
 this derived solver can be redistributed with explicit attribution and license
 compatibility.
 
-The original proprietary Zenith English binary model is not redistributed here.
-Decipher includes tooling to build redistributable replacement language models
-from public-domain corpora.
+The original Zenith English binary model is not redistributed here.
+Decipher includes tooling to build replacement language models from open and
+licensed corpora.
+
+Current provenance understanding:
+
+- The `zenith_native` solver code path is redistributable under GPLv3 with
+  attribution.
+- The Zenith English binary model is still treated as **legally unresolved**
+  for redistribution in Decipher.
+- Earlier concern that **BNC** alone blocked redistribution turned out to be
+  too pessimistic; BNC-derived products appear to be allowed.
+- The main remaining uncertainty is the **Blog Authorship Corpus**, which
+  Zenith documents as part of its training mix and which appears to be limited
+  to **non-commercial research use**.
+
+So for now, Decipher does **not** bundle the original Zenith model and instead
+ships Decipher-built replacement models.
 
 ## Setup
 
@@ -39,8 +54,8 @@ pip install -e .
 
 No API key is required for the default automated workflows.
 
-This repository currently ships with a bundled redistributable English
-5-gram model at [models/ngram5_en.bin](/Users/mgreen/Dropbox/src2/decipher/models/ngram5_en.bin),
+This repository currently ships with a bundled English
+5-gram model at `models/ngram5_en.bin`,
 so a fresh clone can use the automated homophonic solver immediately. You can
 override it with `DECIPHER_NGRAM_MODEL_EN=/path/to/other.bin`.
 
@@ -75,15 +90,22 @@ decipher crack -f cipher.txt \
 
 `decipher benchmark` also uses the automated solver by default.
 
+The benchmark data lives in a separate repository:
+
+- [cipher_benchmark](https://github.com/matthewdgreen/cipher_benchmark)
+
+Clone it locally and substitute your checkout path below anywhere you see
+`/path/to/cipher_benchmark/benchmark`.
+
 ```bash
 # Borg Latin manuscript
-decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source borg
+decipher benchmark /path/to/cipher_benchmark/benchmark --source borg
 
 # Copiale German manuscript
-decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source copiale
+decipher benchmark /path/to/cipher_benchmark/benchmark --source copiale
 
 # Single test by ID
-decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
+decipher benchmark /path/to/cipher_benchmark/benchmark \
   --test-id borg_single_B_borg_0045v --verbose
 ```
 
@@ -124,12 +146,103 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 ### Build Redistributable Language Models
 
 Decipher can build Zenith-compatible binary n-gram models from public-domain
-corpora:
+corpora and licensed local sources.
+
+Source summary:
+
+| Source | Languages | Tooling path | Notes |
+|---|---|---|---|
+| Project Gutenberg | `en`, `de`, `fr`, `it`, `la` | automatic download | Good bootstrap source, but literary-skewed |
+| OANC | `en` | automatic download | Official ANC archive; tooling handles current TLS issue |
+| MASC | `en` | automatic download | Official ANC archive; small but balanced |
+| BNC | `en` | local licensed import | Raw corpus not redistributed; derive models only |
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
   --output models/ngram5_en.bin \
   --max-books 100
+
+# Mix Gutenberg with OANC and MASC
+PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
+  --source gutenberg \
+  --source oanc \
+  --source masc \
+  --output models/ngram5_en.bin \
+  --max-books 100
+
+# Build non-English Gutenberg-backed models
+PYTHONPATH=src .venv/bin/python -m tools.corpus run de --output models/ngram5_de.bin --max-books 100
+PYTHONPATH=src .venv/bin/python -m tools.corpus run fr --output models/ngram5_fr.bin --max-books 100
+PYTHONPATH=src .venv/bin/python -m tools.corpus run it --output models/ngram5_it.bin --max-books 100
+PYTHONPATH=src .venv/bin/python -m tools.corpus run la --output models/ngram5_la.bin --max-books 100
+
+# Build from a licensed local BNC copy
+PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
+  --source bnc \
+  --bnc-source-dir /path/to/licensed/bnc \
+  --output models/ngram5_en_bnc.bin
+```
+
+#### Source-specific instructions
+
+##### Gutenberg
+
+Fully automatic through `tools.corpus` for all currently supported languages.
+
+##### OANC
+
+Fully automatic through `tools.corpus`.
+
+Official source pages:
+- [Open ANC overview](https://anc.org/data/oanc/)
+- [Open ANC download page](https://anc.org/data/oanc/download/)
+
+The current tooling caches the downloaded archive under
+`corpus_data/<lang>/_archives/` and relaxes TLS verification only for the
+official `anc.org` hosts because the site currently serves an expired
+certificate.
+
+##### MASC
+
+Fully automatic through `tools.corpus`.
+
+Official source pages:
+- [MASC overview](https://anc.org/data/masc/)
+- [MASC data downloads](https://anc.org/data/masc/downloads/data-download/)
+
+As with OANC, the tooling caches the archive locally and handles the current
+ANC TLS issue automatically.
+
+##### BNC
+
+BNC is supported as a **licensed local import**, not a direct public downloader.
+Decipher does not redistribute BNC corpus text; it only imports from your local
+licensed copy and emits derived statistical models with explicit provenance.
+
+Official source pages and mirrors we found:
+- [OTA / Bodleian BNC XML Edition page](https://ota.bodleian.ox.ac.uk/repository/xmlui/handle/20.500.12024/2554)
+- [Direct OTA `2554.zip` bitstream](https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2554/2554.zip?isAllowed=y&sequence=3)
+- [Oxford LLDS mirror](https://llds.ling-phil.ox.ac.uk/llds/xmlui/handle/20.500.14106/2554)
+- [Oxford LLDS mirror (phonetics)](https://llds.phon.ox.ac.uk/llds/xmlui/handle/20.500.14106/2554)
+
+Suggested resumable fetch command:
+
+```bash
+mkdir -p corpus_data/en/_archives && \
+curl -L -C - --fail --output corpus_data/en/_archives/BNC-2554.zip \
+  "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2554/2554.zip?isAllowed=y&sequence=3"
+```
+
+Then extract it somewhere local and point the corpus tool at that directory:
+
+```bash
+mkdir -p corpus_data/en/bnc_source && \
+unzip -q corpus_data/en/_archives/BNC-2554.zip -d corpus_data/en/bnc_source
+
+PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
+  --source bnc \
+  --bnc-source-dir corpus_data/en/bnc_source \
+  --output models/ngram5_en_bnc.bin
 ```
 
 To force the automated solver to use that model:
@@ -144,6 +257,19 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 By default, `zenith_native` first looks for a repo-local bundled model such as
 `models/ngram5_en.bin`, and only then falls back to explicit environment
 overrides or legacy Zenith locations.
+
+Notes on source access:
+
+- Gutenberg is fetched as plain text files.
+- OANC and MASC are fetched from the official ANC site as archives.
+- BNC is supported as a licensed local source via `--source bnc --bnc-source-dir ...`;
+  Decipher records attribution/provenance and emits only derived models, not corpus text.
+- Non-English models currently use Gutenberg-backed downloads through the same tooling.
+- The ANC site currently serves an expired TLS certificate, so the corpus
+  tooling relaxes certificate verification only for `anc.org` / `www.anc.org`
+  in order to automate those downloads.
+- Model metadata automatically records the source list and provenance carried in
+  the corpus manifest.
 
 ## Regression Suite
 
@@ -198,7 +324,7 @@ decipher crack -f cipher.txt --language en --agentic
 ### Benchmark with the agent
 
 ```bash
-decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
+decipher benchmark /path/to/cipher_benchmark/benchmark \
   --source borg \
   --agentic \
   --model claude-sonnet-4-6 \

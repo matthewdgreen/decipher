@@ -36,7 +36,7 @@ class BuildStats:
 
 def _iter_text_files(corpus_dir: Path) -> Iterator[Path]:
     for path in sorted(corpus_dir.rglob("*")):
-        if path.is_file():
+        if path.is_file() and path.suffix.lower() == ".txt":
             yield path
 
 

@@ -104,6 +104,26 @@ def test_homophonic_profile_ablation_suite_loads():
     assert cases[-1].synthetic_spec is None
 
 
+def test_english_model_comparison_suite_loads():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "english_model_comparison.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "synth_en_150honb_s1",
+        "synth_en_150honb_s3",
+        "synth_en_80honb_s1",
+        "synth_en_80honb_s2",
+        "synth_en_80honb_s3",
+        "synth_en_80honb_s5",
+        "synth_en_80honb_s6",
+        "parity_tool_zenith_zodiac408",
+    ]
+    assert all("english_model_comparison" in case.frontier_tags for case in cases)
+    assert sum(1 for case in cases if case.synthetic_spec is not None) == 7
+    assert cases[-1].synthetic_spec is None
+
+
 def test_evaluate_frontier_rows_applies_thresholds_and_gap_checks():
     rows = [
         {

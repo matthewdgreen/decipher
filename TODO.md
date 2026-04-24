@@ -126,7 +126,8 @@ or a benchmark data issue.
   - Current high-quality continuous model support relies on a local Zenith English `zenith-model.csv` under `other_tools/`, which is git-ignored and not redistributed with Decipher.
   - Document that the Zenith model is optional but strongly recommended for English homophonic parity, and that fallback word-list models are weaker.
   - Record expected model path(s), version/source, order, row count, checksum, and artifact metadata.
-  - Resolve redistribution status before bundling any Zenith model files: confirm whether `zenith-model.csv`/`.array.bin` are covered by Zenith GPLv3 and whether derived n-gram statistics from BNC, Leipzig English 2005, MASC, and Blog Authorship Corpus can be redistributed.
+  - Update the Zenith-model redistribution note: BNC no longer appears to be the blocking issue, but Zenith's documented use of the Blog Authorship Corpus still leaves redistribution legally unresolved for Decipher.
+  - Resolve redistribution status before bundling any Zenith model files: confirm whether `zenith-model.csv`/`.array.bin` are covered by Zenith GPLv3 and whether the Blog Authorship Corpus training component permits redistributing a derived commercial/open-source model.
   - Decide whether Decipher should bundle models, download them, or require users to provide them locally.
 - [ ] Add a model registry/config layer for continuous n-gram models.
   - Support named models such as `en_zenith_5gram`.

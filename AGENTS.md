@@ -16,9 +16,11 @@ Licensing note:
 - Decipher is now GPLv3-licensed.
 - `src/analysis/zenith_solver.py` is derived from the Zenith project by
   beldenge and must retain explicit attribution in code comments and docs.
-- The proprietary Zenith English binary model is still not redistributed in
-  this repo; replacing it with Decipher-built redistributable models is active
-  work.
+- The original Zenith English binary model is still not redistributed in this
+  repo. Current understanding is that BNC itself is probably not the blocking
+  issue; the remaining redistribution uncertainty is primarily the Blog
+  Authorship Corpus, which Zenith documents as part of its training mix.
+  Replacing that model with Decipher-built models remains active work.
 
 ---
 
@@ -112,6 +114,12 @@ two opt-in env profiles:
 Both default to `full`. `dev` is for faster local experimentation only and
 should not be used for parity claims; artifacts record both values so runs are
 not silently mixed together.
+For `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`, seed exploration can
+also be parallelized across local CPU cores with
+`DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`. This is opt-in and preserves the
+same seed set/budget, but it evaluates multiple seeds concurrently instead of
+serially. Use it for faster wall-clock experimentation; artifacts record the
+parallel worker count.
 
 Benchmark-backed automated runs should use the benchmark manifest's
 `plaintext_language` when available. Do not rely on `test_id` prefixes alone
@@ -134,7 +142,9 @@ Canonical benchmark transcriptions use space-separated S-tokens (S001 S002 ...) 
 Benchmark auto-detects: borg→`la`, copiale→`de`.
 
 ### Benchmark dataset
-Located at `~/Dropbox/src2/cipher_benchmark/benchmark/`.
+Decipher expects a local checkout of the benchmark repository, typically at a
+path like `/path/to/cipher_benchmark/benchmark/`.
+- Benchmark repo: `https://github.com/matthewdgreen/cipher_benchmark`
 - `manifest/records.jsonl` — currently 896 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, and tool-bundled parity records
 - `splits/borg_tests.jsonl` — 45 tests (15 Track B: transcription→plaintext)
 - `splits/copiale_tests.jsonl` — 45 tests (15 Track B)
@@ -152,6 +162,14 @@ Located at `~/Dropbox/src2/cipher_benchmark/benchmark/`.
   binary models (for example, proprietary Zenith vs Decipher-built Gutenberg
   models). It is intentionally narrow: two known-good English homophonic
   cases, two short runtime/frontier cases, and Zodiac 408.
+- There is also a broader English model comparison packet in
+  `frontier/english_model_comparison.jsonl`. Use this when checking whether a
+  proprietary or newly built English binary model is broadly stronger on
+  Zodiac-like English homophonic ciphers, rather than merely better on Zodiac
+  408 itself. It expands the synthetic side of the packet to seven English
+  no-boundary homophonic cases plus Zodiac 408 and is meant for paired A/B
+  runs with the same `zenith_native` solver settings and only the model path
+  changed.
 
 ### Parity evaluation modes
 When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
@@ -256,6 +274,16 @@ Remaining open questions in this area:
   model at `models/ngram5_en.bin`, and `zenith_native` should prefer it by default unless
   `DECIPHER_NGRAM_MODEL_EN` overrides it. This removes the immediate clone-and-run blocker,
   but the bundled model is still a work in progress and should be improved with broader corpora.
+- **Corpus tooling expansion**: `python -m tools.corpus` now supports mixed English-source
+  downloads from Gutenberg, OANC, and MASC, with a corpus manifest recording provenance.
+  OANC/MASC access works around the current expired TLS certificate on `anc.org`; keep that
+  exception scoped to ANC hosts only.
+- **BNC planning and attribution**: corpus tooling now also supports BNC as a local licensed
+  import path for English (`--source bnc --bnc-source-dir ...`). Decipher must never
+  redistribute raw BNC text; only derived models plus explicit provenance/attribution.
+- **Non-English model builds**: corpus tooling now supports Gutenberg-backed automated model
+  builds for `de`, `fr`, `it`, and `la` as well as `en`. Additional non-English sources and
+  better corpus mixes remain future work.
 - **Broader cipher class coverage**: non-English homophonic ciphers (Copiale/German) still
   fall back to `homophonic.py` profiles unless a corresponding `models/ngram5_<lang>.bin`
   exists. A German equivalent binary model does not yet exist.
@@ -276,7 +304,7 @@ Historical ablation record (kept for reference — superseded by `zenith_native`
   The decisive fix was correcting the acceptance temperature, not just the score.
 
 ### 3. 📚 **Continuous n-gram model provenance**
-High-quality English homophonic solving currently auto-discovers Zenith's local English `zenith-model.csv` from `other_tools/`, which is git-ignored and not redistributed with Decipher. Treat this as an optional local dependency until provenance is resolved. Before bundling or publishing model files, confirm the license status of the Zenith model itself and of its derived corpus statistics. Zenith documents the English model as trained from BNC XML, Leipzig English 2005, MASC, and Blog Authorship Corpus; those upstream corpus terms must be checked.
+High-quality English homophonic solving can still auto-discover Zenith's local English model from `other_tools/`, but treat it as an optional local dependency until provenance is fully resolved. Current understanding: BNC-derived products appear acceptable, Leipzig downloadable corpora appear permissive, and OANC/MASC are open; the main remaining redistribution uncertainty is the Blog Authorship Corpus, which Zenith documents as part of its training mix and which appears to be limited to non-commercial research use. Do not bundle or publish Zenith model files from this repo until that remaining issue is resolved.
 
 Decipher does not currently have comparable continuous corpus n-gram files for Latin, German, French, or Italian. It has word-list fallbacks and dictionaries, but those are weaker than the Zenith-style English model. Future work should add a model registry with language, order, source, checksum, license/provenance, row count, and redistribution status, and should record the selected model in run artifacts.
 
@@ -341,11 +369,11 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 
 ```bash
 # V2 Benchmark (recommended)
-.venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
+.venv/bin/decipher benchmark /path/to/cipher_benchmark/benchmark \
   --source borg --model claude-sonnet-4-6 --verbose
 
 # V2 Single test with full analysis
-.venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark \
+.venv/bin/decipher benchmark /path/to/cipher_benchmark/benchmark \
   --test-id borg_single_B_borg_0045v --model claude-sonnet-4-6 --max-iterations 15
 
 # V2 crack from text (automatic S-token preprocessing)
@@ -383,8 +411,8 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
   PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
   --solvers decipher \
-  --benchmark-split ~/Dropbox/src2/cipher_benchmark/benchmark/splits/parity_zodiac.jsonl \
-  --benchmark-root ~/Dropbox/src2/cipher_benchmark/benchmark \
+  --benchmark-split /path/to/cipher_benchmark/benchmark/splits/parity_zodiac.jsonl \
+  --benchmark-root /path/to/cipher_benchmark/benchmark \
   --artifact-dir artifacts/zenith_native \
   --summary-jsonl artifacts/zenith_native/summary.jsonl \
   --summary-csv artifacts/zenith_native/summary.csv
@@ -402,7 +430,7 @@ echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
   --language la --canonical --automated-only
 
 # Legacy V1 commands
-.venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source borg -v
+.venv/bin/decipher benchmark /path/to/cipher_benchmark/benchmark --source borg -v
 .venv/bin/decipher crack -f input.txt --language la
 
 # Run tests
@@ -410,7 +438,7 @@ PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 
 # Validate benchmark checkout
 PYTHONPATH=src .venv/bin/python scripts/validate_benchmark.py \
-  ../cipher_benchmark/benchmark
+  /path/to/cipher_benchmark/benchmark
 ```
 
 ---
