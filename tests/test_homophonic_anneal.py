@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+from pathlib import Path
+from types import SimpleNamespace
 
 from analysis.homophonic import (
     _propose_homophonic_move,
@@ -11,6 +13,7 @@ from analysis.homophonic import (
     substitution_simulated_anneal,
 )
 from agent.tools_v2 import WorkspaceToolExecutor
+import agent.tools_v2 as tools_v2
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
 from workspace import Workspace
@@ -498,6 +501,97 @@ def test_search_homophonic_anneal_can_return_candidate_branches():
     assert out["candidates"][0]["branch"] == "main"
     for candidate in out["candidates"][1:]:
         assert candidate["branch"] in ex.workspace.branch_names()
+
+
+def test_search_automated_solver_tool_installs_key_from_automated_runner(monkeypatch):
+    raw = "01 02 03"
+    alphabet = Alphabet(["01", "02", "03"])
+    ct = CipherText(raw=raw, alphabet=alphabet, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE"},
+        word_list=["THE"],
+        pattern_dict={},
+    )
+
+    def fake_run_automated(**kwargs):
+        result = SimpleNamespace(
+            status="completed",
+            solver="zenith_native",
+            elapsed_seconds=1.25,
+            error_message="",
+            artifact={
+                "key": {"0": 19, "1": 7, "2": 4},
+                "steps": [
+                    {"name": "route_automated_solver", "route": "homophonic", "solver": "zenith_native"},
+                    {"name": "search_homophonic_anneal", "solver": "zenith_native", "model_source": "models/ngram5_en.bin"},
+                ],
+            },
+        )
+        return result
+
+    monkeypatch.setattr(tools_v2, "run_automated", fake_run_automated)
+
+    out = ex._tool_search_automated_solver({
+        "branch": "main",
+        "homophonic_solver": "zenith_native",
+    })
+
+    assert out["solver"] == "zenith_native"
+    assert out["route_step"]["route"] == "homophonic"
+    assert out["primary_step"]["solver"] == "zenith_native"
+    assert ex.workspace.is_complete("main")
+    assert len(ex.workspace.get_branch("main").key) == 3
+
+
+def test_search_homophonic_anneal_can_use_zenith_native_profile(monkeypatch):
+    raw = "01 02 03 01 02 03"
+    alphabet = Alphabet(["01", "02", "03"])
+    ct = CipherText(raw=raw, alphabet=alphabet, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"ABC"},
+        word_list=["ABCABCABCABC"],
+        pattern_dict={},
+    )
+
+    monkeypatch.setenv("DECIPHER_NGRAM_MODEL_EN", "models/ngram5_en.bin")
+
+    class FakeModel:
+        log_probs = [0.0] * 10
+
+    result = SimpleNamespace(
+        plaintext="ABCABC",
+        key={0: 0, 1: 1, 2: 2},
+        score=-1.23,
+        normalized_score=-1.23,
+        epochs=2,
+        sampler_iterations=50,
+        accepted_moves=7,
+        improved_moves=3,
+        elapsed_seconds=0.4,
+        fixed_symbols=0,
+        metadata={"cipher_symbols": 3},
+        candidates=[SimpleNamespace(epoch=1, score=-1.23, normalized_score=-1.23, plaintext="ABCABC", key={0: 0, 1: 1, 2: 2})],
+    )
+
+    monkeypatch.setattr("analysis.zenith_solver.load_zenith_binary_model", lambda path: FakeModel())
+    monkeypatch.setattr("analysis.zenith_solver.zenith_solve", lambda **kwargs: result)
+    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language: Path("models/ngram5_en.bin"))
+
+    out = ex._tool_search_homophonic_anneal({
+        "branch": "main",
+        "solver_profile": "zenith_native",
+        "epochs": 2,
+        "sampler_iterations": 50,
+        "seed": 1,
+    })
+
+    assert out["solver"] == "zenith_native"
+    assert out["solver_profile"] == "zenith_native"
+    assert out["model_source"].endswith("models/ngram5_en.bin")
 
 
 def test_load_zenith_csv_model_reads_requested_order(tmp_path):

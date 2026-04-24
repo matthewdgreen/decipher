@@ -28,6 +28,7 @@ from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import segment_text
 from analysis.solver import hill_climb_swaps, simulated_anneal
+from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
 from models.session import Session  # only used for search tools that take a Session
 from workspace import Workspace, WorkspaceError
@@ -446,6 +447,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_automated_solver",
+        "description": (
+            "Run Decipher's current best automated local solver stack on the "
+            "current ciphertext and install the resulting full key onto the "
+            "named branch. This mirrors the no-LLM automated runner used by "
+            "frontier/parity evaluation, including the modern `zenith_native` "
+            "homophonic path when the routing logic selects it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "homophonic_budget": {
+                    "type": "string",
+                    "enum": ["full", "screen"],
+                    "default": "full",
+                },
+                "homophonic_refinement": {
+                    "type": "string",
+                    "enum": ["none", "two_stage", "targeted_repair", "family_repair"],
+                    "default": "none",
+                },
+                "homophonic_solver": {
+                    "type": "string",
+                    "enum": ["zenith_native", "legacy"],
+                    "default": "zenith_native",
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
         "name": "search_homophonic_anneal",
         "description": (
             "Purpose-built automated solver for homophonic no-boundary ciphers. "
@@ -463,6 +496,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
+                "solver_profile": {
+                    "type": "string",
+                    "enum": ["zenith_native", "legacy"],
+                    "default": "zenith_native",
+                    "description": "Select the modern or legacy homophonic solver path.",
+                },
                 "epochs": {
                     "type": "integer",
                     "default": 5,
@@ -2419,6 +2458,7 @@ class WorkspaceToolExecutor:
 
     def _tool_search_homophonic_anneal(self, args: dict) -> Any:
         branch_name = args["branch"]
+        solver_profile = str(args.get("solver_profile", "zenith_native")).strip().lower()
         epochs = int(args.get("epochs", 5))
         sampler_iterations = int(args.get("sampler_iterations", 2000))
         t_start = float(args.get("t_start", 0.012))
@@ -2452,29 +2492,71 @@ class WorkspaceToolExecutor:
         id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
         letter_to_id = {letter: i for i, letter in id_to_letter.items()}
         before = self._compute_quick_scores(branch_name)
+        requested_model = str(model_path or "").strip().lower()
+        if solver_profile == "zenith_native" and requested_model in {"word_list", "wordlist", "none", "fallback"}:
+            solver_profile = "legacy"
 
-        model, model_note = self._homophonic_model(
-            model_path=model_path,
-            order=order,
-            max_ngrams=max_ngrams,
-        )
-        result = homophonic.homophonic_simulated_anneal(
-            tokens=tokens,
-            plaintext_ids=plaintext_ids,
-            id_to_letter=id_to_letter,
-            letter_to_id=letter_to_id,
-            model=model,
-            initial_key=existing_key,
-            fixed_cipher_ids=fixed_cipher_ids,
-            epochs=max(1, epochs),
-            sampler_iterations=max(1, sampler_iterations),
-            t_start=t_start,
-            t_end=t_end,
-            distribution_weight=distribution_weight,
-            diversity_weight=diversity_weight,
-            seed=seed,
-            top_n=top_n,
-        )
+        if solver_profile == "zenith_native":
+            from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
+            from automated.runner import _zenith_native_model_path
+
+            if model_path and str(model_path).strip().lower() != "word_list":
+                bin_path = Path(str(model_path)).expanduser()
+            else:
+                bin_path = _zenith_native_model_path(self.language)
+            if bin_path is None:
+                return {
+                    "error": (
+                        "zenith_native requires a binary language model; set "
+                        f"DECIPHER_NGRAM_MODEL_{self.language.upper()} or pass model_path."
+                    )
+                }
+            model = load_zenith_binary_model(bin_path)
+            result = zenith_solve(
+                tokens=tokens,
+                plaintext_ids=plaintext_ids,
+                id_to_letter=id_to_letter,
+                letter_to_id=letter_to_id,
+                model=model,
+                initial_key=existing_key,
+                fixed_cipher_ids=fixed_cipher_ids,
+                epochs=max(1, epochs),
+                sampler_iterations=max(1, sampler_iterations),
+                t_start=t_start,
+                t_end=t_end,
+                seed=seed,
+                top_n=top_n,
+            )
+            model_source = str(bin_path)
+            model_ngrams = len(model.log_probs)
+            model_note = "zenith_binary"
+            solver_name = "zenith_native"
+        else:
+            model, model_note = self._homophonic_model(
+                model_path=model_path,
+                order=order,
+                max_ngrams=max_ngrams,
+            )
+            result = homophonic.homophonic_simulated_anneal(
+                tokens=tokens,
+                plaintext_ids=plaintext_ids,
+                id_to_letter=id_to_letter,
+                letter_to_id=letter_to_id,
+                model=model,
+                initial_key=existing_key,
+                fixed_cipher_ids=fixed_cipher_ids,
+                epochs=max(1, epochs),
+                sampler_iterations=max(1, sampler_iterations),
+                t_start=t_start,
+                t_end=t_end,
+                distribution_weight=distribution_weight,
+                diversity_weight=diversity_weight,
+                seed=seed,
+                top_n=top_n,
+            )
+            model_source = model.source
+            model_ngrams = len(model.log_probs)
+            solver_name = "native_homophonic_anneal"
 
         ws.set_full_key(branch_name, result.key)
         after = self._compute_quick_scores(branch_name)
@@ -2497,14 +2579,15 @@ class WorkspaceToolExecutor:
             })
         return {
             "branch": branch_name,
-            "solver": "native_homophonic_anneal",
+            "solver": solver_name,
+            "solver_profile": solver_profile,
             "before_scores": before,
             "after_scores": after,
             "score_delta": self._score_delta(before, after),
             "anneal_score": round(result.normalized_score, 4),
             "raw_anneal_score": round(result.score, 2),
-            "model_source": model.source,
-            "model_ngrams": len(model.log_probs),
+            "model_source": model_source,
+            "model_ngrams": model_ngrams,
             "model_note": model_note,
             "epochs": result.epochs,
             "sampler_iterations": result.sampler_iterations,
@@ -2526,6 +2609,63 @@ class WorkspaceToolExecutor:
                 "guesswork on many-symbol no-boundary ciphers. Read the preview; "
                 "if it is mostly correct, use decode_diagnose/decode_ambiguous_letter "
                 "for residual rare-letter fixes or declare the solution."
+            ),
+        }
+
+    def _tool_search_automated_solver(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        homophonic_budget = str(args.get("homophonic_budget", "full"))
+        homophonic_refinement = str(args.get("homophonic_refinement", "none"))
+        homophonic_solver = str(args.get("homophonic_solver", "zenith_native"))
+
+        before = self._compute_quick_scores(branch_name)
+        result = run_automated(
+            cipher_text=self.workspace.cipher_text,
+            language=self.language,
+            cipher_id="agent_search",
+            ground_truth=None,
+            cipher_system="",
+            homophonic_budget=homophonic_budget,
+            homophonic_refinement=homophonic_refinement,
+            homophonic_solver=homophonic_solver,
+        )
+        if result.error_message:
+            return {
+                "branch": branch_name,
+                "status": result.status,
+                "solver": result.solver,
+                "error": result.error_message,
+            }
+
+        artifact = result.artifact or {}
+        raw_key = artifact.get("key") or {}
+        parsed_key = {int(k): int(v) for k, v in raw_key.items()}
+        self.workspace.set_full_key(branch_name, parsed_key)
+        after = self._compute_quick_scores(branch_name)
+        steps = artifact.get("steps", []) or []
+        route_step = steps[0] if steps else None
+        primary_step = next(
+            (step for step in steps if step.get("name") != "route_automated_solver"),
+            route_step,
+        )
+        return {
+            "branch": branch_name,
+            "status": result.status,
+            "solver": result.solver,
+            "homophonic_budget": homophonic_budget,
+            "homophonic_refinement": homophonic_refinement,
+            "homophonic_solver": homophonic_solver,
+            "before_scores": before,
+            "after_scores": after,
+            "score_delta": self._score_delta(before, after),
+            "elapsed_seconds": round(result.elapsed_seconds, 3),
+            "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+            "route_step": route_step,
+            "primary_step": primary_step,
+            "note": (
+                "This runs the same local automated stack used by the "
+                "no-LLM frontier/parity harness and installs the resulting key "
+                "onto the requested branch."
             ),
         }
 

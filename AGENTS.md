@@ -145,6 +145,16 @@ accident.
 ### Automated preflight for LLM runs
 LLM-enabled `benchmark`, `crack`, and testgen-suite runs now execute the native automated solver before iteration 1 by default. The result is stored in `artifact.automated_preflight`, exposed to the agent as an `automated_preflight` workspace branch, and summarized in the first context message without benchmark ground-truth accuracy. Use `--no-automated-preflight` to disable this when measuring the unaided agent loop.
 
+The v2 agent tool surface now also exposes the modern automated stack
+directly:
+- `search_automated_solver` runs the same local no-LLM solver stack used by
+  frontier/parity evaluation and installs the result on a branch.
+- `search_homophonic_anneal` now supports `solver_profile=zenith_native|legacy`.
+
+This closes the earlier gap where the agent had automated preflight context
+but could only actively invoke the older homophonic annealer from inside the
+tool loop.
+
 ### Key representation
 `dict[int, int]` — cipher token ID → plaintext token ID. Partial keys are fine; unmapped tokens show as `?`. `apply_key()` uses the plaintext alphabet's `_multisym` flag to determine output spacing (not the cipher alphabet's flag — important fix).
 

@@ -364,6 +364,12 @@ The agentic solver is still available for research workflows where we want
 branching hypotheses, tool use, and LLM-guided reasoning. It is now an
 explicit opt-in mode via `--agentic`.
 
+Agentic runs now receive the same automated preflight branch by default, and
+the v2 tool loop can also invoke the modern local automated stack directly via
+its `search_automated_solver` tool. For homophonic work, the agent's
+`search_homophonic_anneal` tool now supports the modern
+`solver_profile='zenith_native'` path as well as the legacy path.
+
 ### Crack with the agent
 
 ```bash

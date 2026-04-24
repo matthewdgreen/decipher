@@ -45,11 +45,15 @@ consult them.
 - `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear.
 - `search_*` — run classical algorithms on a branch. **Search strategy: if \
 the opening measured facts already show a many-symbol alphabet and no word \
-boundaries, infer the likely cipher family from those facts and use \
-`search_homophonic_anneal` as your first substantive move.** It is built for \
-many-symbol-to-one-letter ciphers and continuous text. You do not need to \
-fork before using it; it can write a complete key onto `main` or any branch \
-you name. Otherwise use \
+boundaries, prefer `search_automated_solver` as your first substantive move, \
+or inspect the existing `automated_preflight` branch if one is already \
+available.** That automated path uses the same modern local solver stack as \
+the no-LLM frontier/parity harness, including `zenith_native` for homophonic \
+ciphers when routing selects it. If you need a more targeted branch-local \
+homophonic solve, use `search_homophonic_anneal` with \
+`solver_profile='zenith_native'`. You do not need to fork before using these \
+tools; they can write a complete key onto `main` or any branch you name. \
+Otherwise use \
 `search_anneal` first; simulated annealing escapes local optima and typically \
 achieves 85%+ accuracy on English/Latin in one call. Only run \
 `search_hill_climb` AFTER anneal has produced a readable solution, as a final \

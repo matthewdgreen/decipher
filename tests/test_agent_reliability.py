@@ -104,6 +104,8 @@ def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
     assert "opening measured facts" in system
     assert "many-symbol alphabet and no word boundaries" in system
     assert "search_homophonic_anneal" in system
+    assert "search_automated_solver" in system
+    assert "automated_preflight" in system
     assert "Do not spend early turns re-measuring facts" in system
 
 
