@@ -1,0 +1,555 @@
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+
+from benchmark.loader import BenchmarkTest
+from frontier.suite import evaluate_frontier_rows, load_frontier_suite, nominate_frontier_candidates
+from testgen.cache import PlaintextCache
+from testgen.spec import TestSpec as SyntheticSpec
+
+
+RUNNER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_frontier_suite.py"
+runner_spec = importlib.util.spec_from_file_location("run_frontier_suite", RUNNER_PATH)
+assert runner_spec is not None and runner_spec.loader is not None
+frontier_runner = importlib.util.module_from_spec(runner_spec)
+sys.modules[runner_spec.name] = frontier_runner
+runner_spec.loader.exec_module(frontier_runner)
+
+
+def test_load_frontier_suite_accepts_benchmark_and_synthetic_cases(tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "bench_case",
+            "track": "transcription2plaintext",
+            "cipher_system": "simple_substitution",
+            "target_records": ["rec1"],
+            "context_records": [],
+            "description": "benchmark-backed",
+            "frontier_class": "known_good",
+        })
+        + "\n"
+        + json.dumps({
+            "test_id": "synth_case",
+            "track": "transcription2plaintext",
+            "cipher_system": "homophonic_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic",
+            "frontier_class": "slow_result",
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": False,
+                "homophonic": True,
+                "seed": 2,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cases = load_frontier_suite(suite)
+
+    assert len(cases) == 2
+    assert cases[0].synthetic_spec is None
+    assert cases[1].synthetic_spec is not None
+    assert cases[1].synthetic_spec.seed == 2
+
+
+def test_load_frontier_suite_rejects_invalid_entries(tmp_path):
+    suite = tmp_path / "bad.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "bad_case",
+            "track": "transcription2plaintext",
+            "cipher_system": "simple_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "invalid",
+            "frontier_class": "unknown",
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    try:
+        load_frontier_suite(suite)
+    except ValueError as exc:
+        assert "invalid frontier_class" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_homophonic_profile_ablation_suite_loads():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "homophonic_profile_ablation.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "synth_en_150honb_s1",
+        "synth_en_150honb_s3",
+        "synth_en_80honb_s1",
+        "synth_en_80honb_s6",
+        "parity_tool_zenith_zodiac408",
+    ]
+    assert all("ablation_packet" in case.frontier_tags for case in cases)
+    assert sum(1 for case in cases if case.synthetic_spec is not None) == 4
+    assert cases[-1].synthetic_spec is None
+
+
+def test_evaluate_frontier_rows_applies_thresholds_and_gap_checks():
+    rows = [
+        {
+            "test_id": "case1",
+            "solver": "decipher-automated",
+            "status": "solved",
+            "char_accuracy": 0.7,
+            "elapsed_seconds": 40.0,
+            "expected_status_by_solver": {},
+            "min_char_accuracy_by_solver": {"decipher-automated": 0.9},
+            "max_elapsed_seconds_by_solver": {"decipher-automated": 20.0},
+            "max_gap_vs_solver": {"zenith": 0.05},
+        },
+        {
+            "test_id": "case1",
+            "solver": "zenith",
+            "status": "completed",
+            "char_accuracy": 0.95,
+            "elapsed_seconds": 10.0,
+            "expected_status_by_solver": {},
+            "min_char_accuracy_by_solver": {},
+            "max_elapsed_seconds_by_solver": {},
+            "max_gap_vs_solver": {},
+        },
+    ]
+
+    evaluated = evaluate_frontier_rows(rows)
+    decipher = next(row for row in evaluated if row["solver"] == "decipher-automated")
+
+    assert decipher["meets_expectations"] is False
+    assert any("below" in item for item in decipher["expectation_failures"])
+    assert any("above" in item for item in decipher["expectation_failures"])
+    assert any("gap_vs_zenith" in item for item in decipher["expectation_failures"])
+
+
+def test_nominate_frontier_candidates_deduplicates_and_classifies():
+    rows = [
+        {
+            "test_id": "parity_tool_zenith_zodiac408",
+            "solver": "decipher-automated",
+            "status": "solved",
+            "char_accuracy": 0.66,
+            "elapsed_seconds": 460.0,
+            "family": "zodiac408",
+        },
+        {
+            "test_id": "parity_tool_zenith_zodiac408",
+            "solver": "zenith",
+            "status": "completed",
+            "char_accuracy": 0.99,
+            "elapsed_seconds": 10.0,
+            "family": "zodiac408",
+        },
+        {
+            "test_id": "synth_en_80honb_s1",
+            "solver": "decipher-automated",
+            "status": "solved",
+            "char_accuracy": 0.98,
+            "elapsed_seconds": 480.0,
+            "family": "homophonic_substitution",
+        },
+        {
+            "test_id": "synth_en_80honb_s1",
+            "solver": "decipher-automated",
+            "status": "solved",
+            "char_accuracy": 0.97,
+            "elapsed_seconds": 800.0,
+            "family": "homophonic_substitution",
+        },
+    ]
+
+    nominations = nominate_frontier_candidates(rows)
+    by_test = {item["test_id"]: item for item in nominations}
+
+    assert by_test["parity_tool_zenith_zodiac408"]["frontier_class"] == "bad_result"
+    assert by_test["synth_en_80honb_s1"]["frontier_class"] == "slow_result"
+    assert by_test["synth_en_80honb_s1"]["decipher_elapsed_seconds"] == 480.0
+
+
+def test_frontier_runner_writes_summary_and_continues_after_external_exception(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "synth_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "simple_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic demo",
+            "frontier_class": "known_good",
+            "expected_solvers": ["decipher-automated", "zkdecrypto-lite", "zenith"],
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": True,
+                "homophonic": False,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(language="en", approx_length=80, word_boundaries=True, homophonic=False, seed=1),
+        "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG",
+    )
+
+    seen: dict[str, str] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            return SimpleNamespace(
+                status="solved",
+                char_accuracy=1.0,
+                word_accuracy=1.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+    class FakeConfig:
+        def __init__(self, name):
+            self.name = name
+
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+        seen["homophonic_budget"] = homophonic_budget
+        return FakeRunner()
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", fake_automated_runner)
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [FakeConfig("zkdecrypto-lite-quick"), FakeConfig("zenith-quick")])
+
+    def fake_external(test_data, config, artifact_dir):
+        if config.name == "zkdecrypto-lite":
+            raise AssertionError("canonical name should not reach wrapper")
+        if config.name == "zkdecrypto-lite-quick":
+            raise ValueError("symbol alphabet overflow")
+        return SimpleNamespace(
+            status="completed",
+            char_accuracy=0.9,
+            word_accuracy=0.0,
+            elapsed=1.5,
+            artifact_path="zenith.json",
+            error="",
+            candidates_considered=1,
+        )
+
+    monkeypatch.setattr(frontier_runner, "run_external_baseline", fake_external)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher", "external",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--external-config", "dummy.json",
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+        ],
+    )
+
+    frontier_runner.main()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "summary.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 3
+    by_solver = {row["solver"]: row for row in rows}
+    assert by_solver["decipher-automated"]["status"] == "solved"
+    assert by_solver["zkdecrypto-lite-quick"]["status"] == "failed"
+    assert by_solver["zenith-quick"]["status"] == "completed"
+    assert by_solver["zkdecrypto-lite-quick"]["solver_key"] == "zkdecrypto-lite"
+    assert by_solver["zenith-quick"]["solver_key"] == "zenith"
+    assert seen["homophonic_budget"] == "full"
+
+
+def test_dashboard_accepts_local_metadata_paths(tmp_path):
+    benchmark = tmp_path / "benchmark"
+    (benchmark / "splits").mkdir(parents=True)
+    (benchmark / "splits" / "parity.jsonl").write_text("", encoding="utf-8")
+
+    frontier = tmp_path / "frontier.jsonl"
+    frontier.write_text(
+        json.dumps({
+            "test_id": "case1",
+            "track": "transcription2plaintext",
+            "cipher_system": "simple_substitution",
+            "target_records": ["rec1"],
+            "context_records": [],
+            "description": "frontier",
+            "frontier_class": "known_good",
+            "frontier_tags": ["quick"],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    artifact = tmp_path / "artifact.json"
+    artifact.write_text(
+        json.dumps({
+            "cipher_id": "case1",
+            "cipher_alphabet_size": 26,
+            "cipher_word_count": 1,
+            "status": "solved",
+            "char_accuracy": 1.0,
+            "branches": [{"name": "main", "char_accuracy": 1.0}],
+            "solution": {"branch": "main", "declared_at_iteration": 1},
+            "tool_calls": [],
+        }),
+        encoding="utf-8",
+    )
+
+    from artifact.dashboard import build_dashboard
+
+    rows = build_dashboard([artifact], benchmark_root=benchmark, metadata_paths=[frontier])
+    assert rows[0].family == "known_good"
+    assert rows[0].metadata["frontier_tags"] == ["quick"]
+
+
+def test_frontier_runner_passes_manifest_language_for_benchmark_backed_case(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "parity_borg_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "borg_lat_898",
+            "target_records": ["rec1"],
+            "context_records": [],
+            "description": "historical benchmark-backed case",
+            "frontier_class": "bad_result",
+            "expected_solvers": ["decipher-automated"],
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark = tmp_path / "benchmark"
+    (benchmark / "manifest").mkdir(parents=True)
+    (benchmark / "data").mkdir(parents=True)
+    (benchmark / "manifest" / "records.jsonl").write_text(
+        json.dumps({
+            "id": "rec1",
+            "source": "borg",
+            "cipher_type": ["substitution"],
+            "plaintext_language": "la",
+            "transcription_canonical_file": "data/rec1.txt",
+            "plaintext_file": "data/rec1_plain.txt",
+            "has_key": False,
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    (benchmark / "data" / "rec1.txt").write_text("S001 S002 S003", encoding="utf-8")
+    (benchmark / "data" / "rec1_plain.txt").write_text("EST", encoding="utf-8")
+
+    seen: dict[str, str | None] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            seen["language"] = language
+            return SimpleNamespace(
+                status="completed",
+                char_accuracy=0.1,
+                word_accuracy=0.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+        monkeypatch.setattr(
+            frontier_runner,
+            "AutomatedBenchmarkRunner",
+            lambda artifact_dir, homophonic_budget="full", homophonic_refinement="none": FakeRunner(),
+        )
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher",
+            "--benchmark-root", str(benchmark),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["language"] == "la"
+
+
+def test_frontier_runner_passes_homophonic_budget(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "synth_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "homophonic_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic demo",
+            "frontier_class": "known_good",
+            "expected_solvers": ["decipher-automated"],
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": False,
+                "homophonic": True,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(language="en", approx_length=80, word_boundaries=False, homophonic=True, seed=1),
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+    )
+
+    seen: dict[str, str] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            return SimpleNamespace(
+                status="completed",
+                char_accuracy=1.0,
+                word_accuracy=0.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+        seen["homophonic_budget"] = homophonic_budget
+        return FakeRunner()
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", fake_automated_runner)
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+            "--homophonic-budget", "screen",
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["homophonic_budget"] == "screen"
+
+
+def test_frontier_runner_passes_homophonic_refinement(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "synth_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "homophonic_substitution",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic demo",
+            "frontier_class": "known_good",
+            "expected_solvers": ["decipher-automated"],
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": False,
+                "homophonic": True,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(language="en", approx_length=80, word_boundaries=False, homophonic=True, seed=1),
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+    )
+
+    seen: dict[str, str] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            return SimpleNamespace(
+                status="completed",
+                char_accuracy=1.0,
+                word_accuracy=0.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+    def fake_automated_runner(artifact_dir, homophonic_budget="full", homophonic_refinement="none"):
+        seen["homophonic_refinement"] = homophonic_refinement
+        return FakeRunner()
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", fake_automated_runner)
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+            "--homophonic-refinement", "targeted_repair",
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["homophonic_refinement"] == "targeted_repair"

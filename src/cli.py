@@ -45,6 +45,8 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir or "artifacts",
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
         )
         model = "automated-only"
     else:
@@ -92,8 +94,10 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         n = len(results)
         avg_char = sum(r.char_accuracy for r in results) / n
         avg_word = sum(r.word_accuracy for r in results) / n
-        solved = sum(1 for r in results if r.status == "solved")
-        print(f"AVERAGE: {solved}/{n} declared solutions, char={avg_char:.1%}, word={avg_word:.1%}")
+        success_status = "completed" if args.automated_only else "solved"
+        success_label = "completed runs" if args.automated_only else "declared solutions"
+        successful = sum(1 for r in results if r.status == success_status)
+        print(f"AVERAGE: {successful}/{n} {success_label}, char={avg_char:.1%}, word={avg_word:.1%}")
 
 
 def cmd_crack(args: argparse.Namespace) -> None:
@@ -130,10 +134,14 @@ def cmd_crack(args: argparse.Namespace) -> None:
         from automated.runner import run_automated, save_crack_artifact
 
         print("Running automated-only solver (no LLM API calls)...")
+        homophonic_budget = getattr(args, "homophonic_budget", "full")
+        homophonic_refinement = getattr(args, "homophonic_refinement", "none")
         artifact = run_automated(
             cipher_text=ct,
             language=args.language,
             cipher_id=cipher_id,
+            homophonic_budget=homophonic_budget,
+            homophonic_refinement=homophonic_refinement,
         )
         path = save_crack_artifact(artifact, ct, args.language, artifact_dir)
         print(f"\nArtifact saved: {path}")
@@ -157,10 +165,14 @@ def cmd_crack(args: argparse.Namespace) -> None:
         from automated.runner import format_automated_preflight_for_llm, run_automated
 
         print("Running automated preflight (no LLM access)...")
+        homophonic_budget = getattr(args, "homophonic_budget", "full")
+        homophonic_refinement = getattr(args, "homophonic_refinement", "none")
         preflight = run_automated(
             cipher_text=ct,
             language=args.language,
             cipher_id=cipher_id,
+            homophonic_budget=homophonic_budget,
+            homophonic_refinement=homophonic_refinement,
         )
         automated_preflight = dict(preflight.artifact)
         automated_preflight["summary"] = format_automated_preflight_for_llm(preflight)
@@ -290,6 +302,8 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir,
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
         )
         print("\nRunning automated-only solver (no LLM API calls)...")
         result = runner.run_test(test_data, language=args.language)
@@ -351,6 +365,18 @@ def main() -> None:
                        help="Run native automated solvers only; make no LLM API calls.")
     bench.add_argument("--no-automated-preflight", action="store_true",
                        help="Disable the default no-LLM automated preflight before LLM runs.")
+    bench.add_argument(
+        "--homophonic-budget",
+        choices=["full", "screen"],
+        default="full",
+        help="Search budget for automated homophonic runs.",
+    )
+    bench.add_argument(
+        "--homophonic-refinement",
+        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        default="none",
+        help="Optional second-stage local refinement for automated homophonic runs.",
+    )
 
     # crack
     crack = subparsers.add_parser("crack", help="Crack a cipher from file or stdin")
@@ -368,6 +394,18 @@ def main() -> None:
                        help="Run native automated solvers only; make no LLM API calls.")
     crack.add_argument("--no-automated-preflight", action="store_true",
                        help="Disable the default no-LLM automated preflight before LLM runs.")
+    crack.add_argument(
+        "--homophonic-budget",
+        choices=["full", "screen"],
+        default="full",
+        help="Search budget for automated homophonic runs.",
+    )
+    crack.add_argument(
+        "--homophonic-refinement",
+        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        default="none",
+        help="Optional second-stage local refinement for automated homophonic runs.",
+    )
 
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
@@ -397,6 +435,18 @@ def main() -> None:
                     ))
     tg.add_argument("--no-automated-preflight", action="store_true",
                     help="Disable the default no-LLM automated preflight before LLM runs.")
+    tg.add_argument(
+        "--homophonic-budget",
+        choices=["full", "screen"],
+        default="full",
+        help="Search budget for automated homophonic runs.",
+    )
+    tg.add_argument(
+        "--homophonic-refinement",
+        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        default="none",
+        help="Optional second-stage local refinement for automated homophonic runs.",
+    )
 
     args = parser.parse_args()
 

@@ -32,6 +32,8 @@ src/
     ngram.py              — N-gram language models with lazy caching
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
+    zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
+                            un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
     tools_v2.py           — V2: 32 tools across 9 namespaces + WorkspaceToolExecutor
@@ -75,6 +77,7 @@ tests/
   test_segment.py         — no-boundary segmentation tests
   test_automated_runner.py — no-LLM automated runner and CLI bypass tests
   test_agent_reliability.py — loop fallback and reliability behavior tests
+  test_zenith_solver.py   — binary model loading, entropy/score formula, SA recovery (23 tests)
 ```
 
 ---
@@ -89,6 +92,24 @@ All analysis works on `list[int]` token IDs, not strings. `Alphabet` is the bidi
 
 ### Automated-only mode
 `--automated-only` is a no-LLM path for `benchmark`, `crack`, and cached `testgen` runs. It lives in `src/automated/runner.py` so native parity work can evolve separately from `agent/loop_v2.py`. Artifacts are marked `run_mode: automated_only`, `automated_only: true`, with zero tokens and zero estimated cost. Testgen automated-only requires cached plaintext because generating fresh synthetic prose would require an LLM call.
+
+Automated homophonic runs now also support `--homophonic-budget {full,screen}`.
+Use `screen` for comparative scorer/strategy sweeps and `full` for headline
+parity claims. The budget choice is recorded in automated artifacts.
+For iterative native-solver work, the automated homophonic path also supports
+two opt-in env profiles:
+- `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full`
+- `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full`
+
+Both default to `full`. `dev` is for faster local experimentation only and
+should not be used for parity claims; artifacts record both values so runs are
+not silently mixed together.
+
+Benchmark-backed automated runs should use the benchmark manifest's
+`plaintext_language` when available. Do not rely on `test_id` prefixes alone
+for parity/frontier cases such as `parity_borg_*` or `parity_copiale_*`;
+those prefixes previously caused historical runs to fall back to English by
+accident.
 
 ### Automated preflight for LLM runs
 LLM-enabled `benchmark`, `crack`, and testgen-suite runs now execute the native automated solver before iteration 1 by default. The result is stored in `artifact.automated_preflight`, exposed to the agent as an `automated_preflight` workspace branch, and summarized in the first context message without benchmark ground-truth accuracy. Use `--no-automated-preflight` to disable this when measuring the unaided agent loop.
@@ -116,6 +137,21 @@ Located at `~/Dropbox/src2/cipher_benchmark/benchmark/`.
 - Use `scripts/validate_benchmark.py` before relying on a benchmark checkout for parity work.
 - Benchmark curation lives in `../cipher_benchmark`; Decipher solver/harness code lives here.
 - Keep parity tests distinct from agentic-advantage tests. Parity asks whether the agent can match non-agentic solvers; advantage asks whether agentic context, OCR, diagnosis, or hypothesis management improves beyond them.
+- Decipher also keeps a local frontier automated suite in `frontier/automated_solver_frontier.jsonl`. This is intentionally separate from benchmark parity splits: it is a compact regression/frontier pack for automated-only runs, with explicit classes (`known_good`, `bad_result`, `slow_result`) and optional synthetic case definitions.
+
+### Parity evaluation modes
+When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
+distinguish two evaluation modes:
+
+- **Blind parity**: ciphertext-derived routing only. No benchmark metadata such
+  as language or source family is passed to any solver.
+- **Context-aware parity**: benign metadata such as language or source family
+  may be used, but artifacts and summary rows must record which solvers
+  actually received and consumed that context.
+
+Do not silently compare Decipher in a context-aware mode against external
+wrappers that only received raw ciphertext. If wrapper capabilities differ,
+make that asymmetry explicit in reporting.
 
 ---
 
@@ -157,6 +193,36 @@ Recent testgen work turned failure logs into tool-design improvements:
 - **Simple-substitution parity path**: English simple substitution now uses bijective continuous n-gram annealing, preserving one-to-one mappings while allowing unused plaintext letters to enter the key
 - **Homophonic quality gates**: automated homophonic runs now retry low-diversity/collapsed outputs across seeds and rank candidates by anneal score adjusted for plaintext quality
 - **Diversity-aware homophonic search**: `search_homophonic_anneal` supports a plaintext-diversity objective to reduce ETAOIN-ish collapsed false positives on short no-boundary ciphers
+- **Historical routing fix**: automated-only and automated preflight runs now honor benchmark plaintext language metadata and route overcomplete symbol alphabets to non-bijective/homophonic search instead of failing immediately on bijective assumptions
+- **Status semantics fix**: automated-only successful runs report `completed` rather than `solved`, so garbage-looking plaintext is not implicitly treated as a declared solution
+
+### ✅ **Zenith-Parity Homophonic Solver — 99.3% on Zodiac 408**
+Implemented `src/analysis/zenith_solver.py`: a faithful Python port of Zenith's SA
+algorithm for Zodiac-style homophonic ciphers. Achieves **99.3% character accuracy**
+on the Zodiac 408 in ~160 s, closing the gap from the previous best of 83.6%.
+
+Root cause of the former ceiling — two independent bugs in the old `zenith_exact` profile:
+
+1. **Wrong counterweight metric**: used `IoC^(1/6)` as a multiplier.
+   Zenith uses **Shannon entropy** as a divisor:
+   `score = mean_5gram_log_prob / entropy^(1/2.75)`.
+   IoC and entropy are correlated but have very different gradient shapes.
+
+2. **Over-normalized acceptance**: used `exp(delta / (ngram_count * temp))`.
+   Zenith uses `exp(delta / temp)` — **no** `ngram_count` normalization.
+   With `ngram_count ≈ 202`, the effective temperature was ~202× too cold, so
+   nearly all downhill moves were rejected.
+
+Key implementation details:
+- Binary model loader: Java `DataOutputStream` big-endian format, magic `0x5A4D4D43`,
+  26^5 float32 array → numpy for O(1) lookup (~47 MB RAM).
+- Entropy table precomputed once per cipher length; updated incrementally per proposal.
+- Biased proposal bucket: 80% flat + 20% corpus letter frequencies from binary model.
+- `zenith_native` score profile dispatched from `automated/runner.py` via
+  `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`.
+- No modifications to `homophonic.py`; imports `HomophonicAnnealResult` for compatibility.
+- Requires numpy (already used in `signals.py`); binary model at
+  `other_tools/zenith-2026.2/zenith-model.array.bin` (git-ignored, see provenance note).
 
 ---
 
@@ -165,8 +231,31 @@ Recent testgen work turned failure logs into tool-design improvements:
 ### 1. ⏳ **Hardest homophonic/no-boundary tests**
 The hardest synthetic preset (`synth_en_200honb_s6`) is the current stress case. The tool now exposes homophonic evidence explicitly, but the next run should confirm whether the agent uses those tools instead of ad hoc Python.
 
-### 2. 🔄 **Homophonic search quality**
-`search_homophonic_anneal` is now available and should be the first automated search tool for homophonic no-boundary ciphers. It has quality gates, diversity-aware scoring, top-N candidates, and automated seed retries. Continue seed sweeps against Zenith and zkdecrypto-lite, and classify remaining failures as tool weakness vs agent wrong-tool choice. Zodiac-class short homophonic texts remain below Zenith parity and are the clearest current native-search gap.
+### 2. ✅ **Homophonic search quality — Zodiac 408 solved (99.3%)**
+The `zenith_native` score profile (`DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`) now
+achieves **99.3% character accuracy** on the Zodiac 408 in ~160 s. This closes the main
+gap vs. Zenith. See the "Zenith-Parity Homophonic Solver" achievement above for the two
+root-cause bugs that were fixed.
+
+Remaining open questions in this area:
+- **Broader cipher class coverage**: `zenith_native` depends on the English binary model
+  (`zenith-model.array.bin`). Non-English homophonic ciphers (Copiale/German) still
+  fall back to `homophonic.py` profiles. A German equivalent binary model does not yet exist.
+- **Agent tool exposure**: `search_homophonic_anneal` in the agentic tool set still uses
+  the old `homophonic.py` profiles. The `zenith_native` path is automated-runner-only for
+  now; exposing it as an agent tool is future work.
+- **No-boundary homophonic ciphers**: `synth_en_200honb_s6` (English, no word boundaries)
+  is still the hardest stress case. The `zenith_native` path runs on no-boundary ciphers
+  but has not been benchmarked against these yet.
+
+Historical ablation record (kept for reference — superseded by `zenith_native`):
+- `balanced + mixed_v1`: best prior result, ~83.6% Zodiac.
+- `zenith_exact` (old): ~7.8% with `single_symbol`; ~2.5% with `mixed_v1`. The score
+  formula was correct but the acceptance normalization bug (~202× too cold) destroyed it.
+- `ioc_ngram`: ~34.1%; collapsed into high-IoC garbage.
+- `ngram_distribution`: ~30.1%; over-compressed repetitive text.
+- All these failures were search-dynamics failures, not just score-function failures.
+  The decisive fix was correcting the acceptance temperature, not just the score.
 
 ### 3. 📚 **Continuous n-gram model provenance**
 High-quality English homophonic solving currently auto-discovers Zenith's local English `zenith-model.csv` from `other_tools/`, which is git-ignored and not redistributed with Decipher. Treat this as an optional local dependency until provenance is resolved. Before bundling or publishing model files, confirm the license status of the Zenith model itself and of its derived corpus statistics. Zenith documents the English model as trained from BNC XML, Leipzig English 2005, MASC, and Blog Authorship Corpus; those upstream corpus terms must be checked.
@@ -174,7 +263,19 @@ High-quality English homophonic solving currently auto-discovers Zenith's local 
 Decipher does not currently have comparable continuous corpus n-gram files for Latin, German, French, or Italian. It has word-list fallbacks and dictionaries, but those are weaker than the Zenith-style English model. Future work should add a model registry with language, order, source, checksum, license/provenance, row count, and redistribution status, and should record the selected model in run artifacts.
 
 ### 4. 🎭 **Historical Copiale/Borg generalization**
-Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress.
+Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
+
+### 5. 🧭 **Context capability audit**
+Blind vs. context-aware parity is now the intended evaluation framework.
+Current local evidence suggests:
+- **zkdecrypto-lite**: likely English-only with a very thin CLI surface; it may
+  genuinely lack practical context-awareness hooks.
+- **Zenith**: richer API surface than our current wrapper uses. It clearly
+  supports optimizer settings and transformation steps, and it may support some
+  context-adjacent capabilities that should be audited before claiming parity
+  comparisons are fully fair.
+
+Treat "wrapper omission" and "upstream tool limitation" as separate findings.
 
 ### 5. 🔧 **Model selection**
 Sonnet 4.6 performs best on historical manuscript analysis tasks. Opus 4.7 is more
@@ -246,6 +347,30 @@ PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
   --presets tiny medium hard hardest \
   --artifact-dir artifacts/automated_parity_matrix/default
 
+# Frontier automated suite
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/automated_solver_frontier.jsonl \
+  --solvers decipher external \
+  --external-config external_baselines/local_tools.json \
+  --artifact-dir artifacts/frontier_suite/default
+
+# Homophonic ablation packet, quick screening budget
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/homophonic_profile_ablation.jsonl \
+  --solvers decipher \
+  --homophonic-budget screen \
+  --artifact-dir artifacts/homophonic_ablation/balanced_screen
+
+# Zenith-parity native solver on Zodiac 408 (99.3% in ~160s)
+DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
+  PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
+  --solvers decipher \
+  --benchmark-split ~/Dropbox/src2/cipher_benchmark/benchmark/splits/parity_zodiac.jsonl \
+  --benchmark-root ~/Dropbox/src2/cipher_benchmark/benchmark \
+  --artifact-dir artifacts/zenith_native \
+  --summary-jsonl artifacts/zenith_native/summary.jsonl \
+  --summary-csv artifacts/zenith_native/summary.csv
+
 # Example small chunk: seed sweep, first shard only
 PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
   --families simple-wb simple-nb homophonic-nb \
@@ -262,7 +387,7 @@ echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
 .venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source borg -v
 .venv/bin/decipher crack -f input.txt --language la
 
-# Run tests (112 tests pass)
+# Run tests
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 
 # Validate benchmark checkout

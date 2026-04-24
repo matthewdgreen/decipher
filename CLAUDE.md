@@ -32,6 +32,10 @@ src/
     ngram.py              — N-gram language models with lazy caching
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
+    zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
+                            un-normalized acceptance, binary model loader (26^5 float32)
+  automated/
+    runner.py             — Automated-only/no-LLM runner; zenith_native profile dispatch
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
     tools_v2.py           — V2: 32 tools across 9 namespaces + WorkspaceToolExecutor
@@ -72,6 +76,7 @@ tests/
   test_signals.py         — scoring panel tests
   test_segment.py         — no-boundary segmentation tests
   test_agent_reliability.py — loop fallback and reliability behavior tests
+  test_zenith_solver.py   — binary model loading, entropy/score formula, SA recovery (23 tests)
 ```
 
 ---
@@ -140,6 +145,14 @@ Recent testgen work turned failure logs into tool-design improvements:
 - **Homophonic diagnostics**: tools identify ambiguous letters, absent letters, and likely split homophones
 - **`run_python` audit trail**: Python remains allowed, but every use records a justification and is highlighted in reports as a tool-design signal
 
+### ✅ **Zenith-Parity Homophonic Solver — 99.3% on Zodiac 408**
+`src/analysis/zenith_solver.py` is a faithful Python port of Zenith's SA algorithm.
+Activated via `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`. Closes the gap from
+83.6% to 99.3% in ~160 s. Two root-cause bugs fixed vs. old `zenith_exact` profile:
+1. **Score**: `mean_log_prob / entropy^(1/2.75)` (Shannon entropy divisor), not `mean * IoC^(1/6)`.
+2. **Acceptance**: `exp(delta / temp)` with no `ngram_count` normalization — the old
+   normalization made the effective temperature ~202× too cold.
+
 ---
 
 ## Remaining Challenges
@@ -148,7 +161,10 @@ Recent testgen work turned failure logs into tool-design improvements:
 The hardest synthetic preset (`synth_en_200honb_s6`) is the current stress case. The tool now exposes homophonic evidence explicitly, but the next run should confirm whether the agent uses those tools instead of ad hoc Python.
 
 ### 2. 🔄 **Homophonic search quality**
-`search_anneal` and diagnostics are integrated, but homophonic no-boundary ciphers may need stronger objective functions, split/merge homophone moves, or a dedicated constraint solver.
+`zenith_native` solves English boundary-separated homophonic ciphers (99.3% Zodiac 408).
+Remaining gaps: non-English homophonic ciphers (Copiale/German, no binary model yet),
+no-boundary homophonic ciphers (`synth_en_200honb_s6`), and agent-tool exposure
+(the `zenith_native` path is automated-runner-only for now).
 
 ### 3. 🎭 **Historical Copiale/Borg generalization**
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress.
@@ -177,7 +193,7 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 ✅ **score_* (3 tools)** — panel, quadgram, dictionary
 ✅ **corpus_* (2 tools)** — lookup_word, word_candidates
 ✅ **act_* (5 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded
-✅ **search_* (2 tools)** — hill_climb, anneal
+✅ **search_* (3 tools)** — hill_climb, anneal, homophonic_anneal
 ✅ **run_python (1 tool)** — allowed escape hatch with required justification
 ✅ **meta_* (2 tools)** — request_tool, declare_solution
 
@@ -214,11 +230,21 @@ echo "S025 S012 S006 | S003 S007" | .venv/bin/decipher crack \
 PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py \
   --preset hardest --model claude-sonnet-4-6 --max-iterations 25 --verbose
 
+# Zenith-parity native solver on Zodiac 408 (99.3% in ~160s)
+DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
+  PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
+  --solvers decipher \
+  --benchmark-split ~/Dropbox/src2/cipher_benchmark/benchmark/splits/parity_zodiac.jsonl \
+  --benchmark-root ~/Dropbox/src2/cipher_benchmark/benchmark \
+  --artifact-dir artifacts/zenith_native \
+  --summary-jsonl artifacts/zenith_native/summary.jsonl \
+  --summary-csv artifacts/zenith_native/summary.csv
+
 # Legacy V1 commands
 .venv/bin/decipher benchmark ~/Dropbox/src2/cipher_benchmark/benchmark --source borg -v
 .venv/bin/decipher crack -f input.txt --language la
 
-# Run tests (112 tests pass)
+# Run tests
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 ```
 
