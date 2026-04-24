@@ -126,12 +126,18 @@ def simulated_anneal(
     t_start: float = 1.0,
     t_end: float = 0.005,
     swap_fraction: float = 0.3,
+    fixed_cipher_ids: set[int] | None = None,
 ) -> float:
     """Simulated annealing for substitution ciphers.
 
     Mixes single-symbol reassignment (1-opt) and 2-symbol swaps (2-opt).
     Accepts worse moves with Boltzmann probability exp(Δ/T), cooling
     geometrically from t_start to t_end over max_steps.
+
+    When ``fixed_cipher_ids`` is supplied, those cipher symbols retain their
+    current key mapping throughout the anneal; the search explores only the
+    remaining symbols. This is how anchor-constrained refinement is wired
+    from the automated runner.
 
     Always restores the best key seen — SA may end below its peak.
     Returns the best score achieved.
@@ -143,8 +149,12 @@ def simulated_anneal(
         return score_fn()
 
     pt_size = session.plaintext_alphabet.size
-    cipher_ids = sorted(key.keys())
+    frozen = set(fixed_cipher_ids or ())
+    cipher_ids = [cid for cid in sorted(key.keys()) if cid not in frozen]
     n = len(cipher_ids)
+    if n == 0:
+        session.set_full_key(key)
+        return score_fn()
 
     session.set_full_key(key)
     current_score = score_fn()

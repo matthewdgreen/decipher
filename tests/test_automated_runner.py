@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -869,6 +870,142 @@ def test_run_homophonic_zenith_native_can_parallelize_across_seeds(monkeypatch):
     assert text == "THERE1"
     assert step["parallel_seed_workers"] == 2
     assert [attempt["seed"] for attempt in step["seed_attempts"]] == [0, 1]
+
+
+def test_collect_anchor_symbols_returns_symbols_of_matching_words():
+    # CAT = [100, 101, 102], DOG = [103, 104, 105], XYZ = [200, 201, 202]
+    cipher_words = [[100, 101, 102], [103, 104, 105], [200, 201, 202]]
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    # CAT=2,0,19; DOG=3,14,6; XYZ=23,24,25
+    key = {
+        100: 2, 101: 0, 102: 19,
+        103: 3, 104: 14, 105: 6,
+        200: 23, 201: 24, 202: 25,
+    }
+    anchors, words = automated_runner._collect_anchor_symbols(
+        cipher_words, key, id_to_letter, word_set={"CAT", "DOG"}
+    )
+    assert anchors == {100, 101, 102, 103, 104, 105}
+    assert sorted(words) == ["CAT", "DOG"]
+
+
+def test_collect_anchor_symbols_skips_short_words():
+    cipher_words = [[100, 101]]  # length 2 — ignored by default min_word_len=3
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    key = {100: 8, 101: 13}  # IN
+    anchors, words = automated_runner._collect_anchor_symbols(
+        cipher_words, key, id_to_letter, word_set={"IN"}
+    )
+    assert anchors == set()
+    assert words == []
+
+
+def test_maybe_repair_zenith_native_key_no_op_without_word_boundaries(monkeypatch):
+    # Single word group (no '|') means repair is skipped.
+    ct = automated_runner.parse_canonical_transcription("01 02 03 01 02 03")
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+    info = automated_runner._maybe_repair_zenith_native_key(
+        cipher_text=ct,
+        bin_path=Path("/nonexistent-bin"),
+        key={0: 0, 1: 1, 2: 2},
+        plaintext="ABCABC",
+        language="en",
+        word_list=[],
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+    )
+    assert info["applied"] is False
+    assert info["reason"] == "no_word_boundaries"
+
+
+def test_maybe_repair_zenith_native_key_fixes_wrong_symbol_mapping(monkeypatch):
+    # Word-delimited ciphertext: two words "CAT" and "DOG".
+    ct = automated_runner.parse_canonical_transcription("01 02 03 | 04 05 06")
+    # Token ids in ct.alphabet: 01→0, 02→1, 03→2, 04→3, 05→4, 06→5
+    monkeypatch.setattr(
+        automated_runner.dictionary, "get_dictionary_path", lambda language: "fake"
+    )
+    monkeypatch.setattr(
+        automated_runner.dictionary, "load_word_set", lambda path: {"CAT", "DOG"}
+    )
+
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+    # Start with a wrong mapping for the middle of "CAT": symbol 1 → 'X' (should be 'A')
+    key = {
+        0: letter_to_id["C"],
+        1: letter_to_id["X"],
+        2: letter_to_id["T"],
+        3: letter_to_id["D"],
+        4: letter_to_id["O"],
+        5: letter_to_id["G"],
+    }
+    info = automated_runner._maybe_repair_zenith_native_key(
+        cipher_text=ct,
+        bin_path=Path("/nonexistent-bin"),  # forces score_fn guard to no-op
+        key=key,
+        plaintext="CXTDOG",
+        language="en",
+        word_list=["CAT", "DOG"],
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        min_word_len=3,  # test uses 3-char words; production default is 5
+    )
+    assert info["applied"] is True
+    assert info["key"][1] == letter_to_id["A"]
+    assert info["plaintext"] == "CATDOG"
+    assert info["after_dict_hits"] > info["before_dict_hits"]
+
+
+def test_run_key_consistent_repair_rejects_fix_that_drops_model_score(monkeypatch):
+    """The language-model guard should block greedy dict-only fixes.
+
+    Regression scenario from Borg 0109v: a candidate repair raises dict-hit
+    count but cuts the n-gram score. Without the guard the repair was applied
+    and the final decryption got worse. With the guard, it is rejected.
+    """
+    ct = automated_runner.parse_canonical_transcription("01 02 03 04 05 | 06 07 08 09 10")
+    monkeypatch.setattr(
+        automated_runner.dictionary, "get_dictionary_path", lambda language: "fake"
+    )
+    # LATER is in the dict; current key decodes word 1 as "LATEE" (1-edit away).
+    monkeypatch.setattr(
+        automated_runner.dictionary, "load_word_set", lambda path: {"LATER", "WORLD"}
+    )
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+    # Initial key: first word decodes "LATEE" (pseudo), second decodes "WORLD" (dict).
+    key = {
+        0: letter_to_id["L"],
+        1: letter_to_id["A"],
+        2: letter_to_id["T"],
+        3: letter_to_id["E"],
+        4: letter_to_id["E"],  # shared cipher symbol 4 → E
+        5: letter_to_id["W"],
+        6: letter_to_id["O"],
+        7: letter_to_id["R"],
+        8: letter_to_id["L"],
+        9: letter_to_id["D"],
+    }
+
+    def falling_score_fn(k: dict[int, int]) -> float:
+        # Any deviation from initial key scores worse than baseline.
+        return 0.0 if k == key else -10.0
+
+    info = automated_runner._run_key_consistent_repair(
+        cipher_text=ct,
+        key=key,
+        language="en",
+        word_list=["LATER", "WORLD"],
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        score_fn=falling_score_fn,
+        min_word_len=3,
+    )
+    # Dict-only, LATEE → LATER would remap symbol 4 (E→R), but that tanks the
+    # model score — the guard rejects it and the repair is a no-op overall.
+    assert info["applied"] is False
 
 
 def test_maybe_polish_zenith_native_plaintext_repairs_segmented_words(monkeypatch):

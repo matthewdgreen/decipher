@@ -17,10 +17,14 @@ import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from analysis import dictionary, homophonic, ic, ngram, pattern
-from analysis.segment import repair_no_boundary_text, segment_text
+from analysis.segment import (
+    repair_key_with_dictionary,
+    repair_no_boundary_text,
+    segment_text,
+)
 from analysis.solver import simulated_anneal
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
@@ -956,7 +960,8 @@ def _run_substitution(
 
     session = Session()
     session.set_cipher_text(cipher_text)
-    session.plaintext_alphabet = Alphabet.standard_english()
+    pt_alpha = Alphabet.standard_english()
+    session.plaintext_alphabet = pt_alpha
     initial_key = _frequency_key(cipher_text, language, session.plaintext_alphabet)
     if not initial_key:
         raise ValueError("could not build initial key")
@@ -998,13 +1003,61 @@ def _run_substitution(
             best_key = dict(session.key)
             best_decryption = session.apply_key()
 
+    # --- Post-processing: key-consistent dictionary repair + anchor re-anneal ---
+    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+
+    key_repair_info = _run_key_consistent_repair(
+        cipher_text=cipher_text,
+        key=best_key,
+        language=language,
+        word_list=words,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        score_fn=_quadgram_key_score_fn(
+            list(cipher_text.tokens), id_to_letter, quadgrams
+        ),
+    )
+    anchor_refine_info: dict[str, Any] | None = None
+    if key_repair_info["applied"]:
+        best_key = key_repair_info["key"]
+        session.set_full_key(best_key)
+
+        def score_fn_repaired() -> float:
+            return ngram.normalized_ngram_score(session.apply_key(), quadgrams, n=4)
+
+        repaired_base_score = score_fn_repaired()
+        best_score_after_repair = repaired_base_score
+
+        # Anchor-constrained re-anneal: freeze all symbols in words that now
+        # decode to dictionary entries and re-search the remainder.
+        anchor_refine_info = _maybe_anchor_refine_substitution(
+            cipher_text=cipher_text,
+            session=session,
+            key=best_key,
+            language=language,
+            id_to_letter=id_to_letter,
+            score_fn=score_fn_repaired,
+        )
+        if anchor_refine_info["applied"]:
+            best_key = anchor_refine_info["key"]
+            session.set_full_key(best_key)
+            best_score_after_repair = anchor_refine_info["score"]
+
+        best_decryption = session.apply_key()
+        if best_score_after_repair > best_score:
+            best_score = best_score_after_repair
+
     step = {
         "name": "search_anneal",
         "solver": "native_substitution_anneal",
         "score": round(best_score, 4),
         "restarts": restarts,
         "elapsed_seconds": round(time.time() - started, 3),
+        "key_repair": key_repair_info,
     }
+    if anchor_refine_info is not None:
+        step["anchor_refine"] = anchor_refine_info
     return "native_substitution_anneal", best_key, best_decryption, step
 
 
@@ -1015,6 +1068,7 @@ def _run_substitution_continuous(
     pt_alpha = _plaintext_alphabet(language)
     plaintext_ids = list(range(pt_alpha.size))
     id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
     word_list = _word_list(language)
     model, model_note = _homophonic_model(language, word_list)
     initial_key = _frequency_key(cipher_text, language, pt_alpha)
@@ -1030,6 +1084,20 @@ def _run_substitution_continuous(
         seed=0,
         top_n=3,
     )
+    final_key = result.key
+
+    # Key-consistent dictionary repair (word-boundary only).
+    key_repair_info = _run_key_consistent_repair(
+        cipher_text=cipher_text,
+        key=final_key,
+        language=language,
+        word_list=word_list,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+    )
+    if key_repair_info["applied"]:
+        final_key = key_repair_info["key"]
+
     step = {
         "name": "search_substitution_continuous_anneal",
         "solver": "native_substitution_continuous_anneal",
@@ -1039,6 +1107,7 @@ def _run_substitution_continuous(
         "elapsed_seconds": round(result.elapsed_seconds, 3),
         "epochs": result.epochs,
         "sampler_iterations": result.sampler_iterations,
+        "key_repair": key_repair_info,
         "candidates": [
             {
                 "rank": i + 1,
@@ -1051,9 +1120,9 @@ def _run_substitution_continuous(
     session = Session()
     session.set_cipher_text(cipher_text)
     session.plaintext_alphabet = pt_alpha
-    session.set_full_key(result.key)
+    session.set_full_key(final_key)
     decryption = session.apply_key()
-    return "native_substitution_continuous_anneal", result.key, decryption, step
+    return "native_substitution_continuous_anneal", final_key, decryption, step
 
 
 def _frequency_key(
@@ -1255,6 +1324,39 @@ def _run_homophonic_zenith_native(
 
     selected_plaintext = best_result.plaintext
     selected_key = best_result.key
+
+    key_repair_info = _maybe_repair_zenith_native_key(
+        cipher_text=cipher_text,
+        bin_path=bin_path,
+        key=selected_key,
+        plaintext=selected_plaintext,
+        language=language,
+        word_list=word_list,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+    )
+    if key_repair_info["applied"]:
+        selected_key = key_repair_info["key"]
+        selected_plaintext = key_repair_info["plaintext"]
+
+    anchor_refine_info = _maybe_anchor_refine_zenith_native(
+        cipher_text=cipher_text,
+        bin_path=bin_path,
+        key=selected_key,
+        plaintext=selected_plaintext,
+        anneal_score=best_score,
+        language=language,
+        word_list=word_list,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        budget_params=budget_params,
+    )
+    if anchor_refine_info["applied"]:
+        selected_key = anchor_refine_info["key"]
+        selected_plaintext = anchor_refine_info["plaintext"]
+        best_score = anchor_refine_info["score"]
+
     polish_info = _maybe_polish_zenith_native_plaintext(
         selected_plaintext,
         language=language,
@@ -1283,6 +1385,8 @@ def _run_homophonic_zenith_native(
             language=language,
             word_list=word_list,
         ),
+        "key_repair": key_repair_info,
+        "anchor_refine": anchor_refine_info,
         "postprocess": polish_info,
         "elapsed_seconds": round(time.time() - started, 3),
         "epochs": best_result.epochs,
@@ -1291,6 +1395,463 @@ def _run_homophonic_zenith_native(
         "seed_attempts": attempts,
     }
     return "zenith_native", selected_key, selected_plaintext, step
+
+
+_KEY_REPAIR_DISABLED_VALUES = {"0", "false", "no", "off"}
+
+
+def _homophonic_key_repair_enabled() -> bool:
+    """Key-consistent dictionary repair is on by default.
+
+    Set ``DECIPHER_HOMOPHONIC_KEY_REPAIR=0`` to disable for bisection.
+    """
+    raw = os.environ.get("DECIPHER_HOMOPHONIC_KEY_REPAIR", "").strip().lower()
+    if raw in _KEY_REPAIR_DISABLED_VALUES:
+        return False
+    return True
+
+
+def _run_key_consistent_repair(
+    *,
+    cipher_text: CipherText,
+    key: dict[int, int],
+    language: str,
+    word_list: list[str],
+    id_to_letter: dict[int, str],
+    letter_to_id: dict[str, int],
+    score_fn: Callable[[dict[int, int]], float] | None = None,
+    max_score_drop: float = 0.0,
+    min_word_len: int = 5,
+) -> dict[str, Any]:
+    """Run the key-consistent dictionary repair and return a telemetry dict.
+
+    Shared by both the zenith_native homophonic path and the substitution
+    paths. Does **not** render a plaintext — callers decide how they want
+    to present the repaired key (no-boundary flat string, ``|``-separated,
+    etc.) because the two families use different conventions.
+
+    ``score_fn`` is a language-model guard: when provided, a repair is
+    rejected if its score drops by more than ``max_score_drop`` relative to
+    the current key. This prevents greedy short-word "fixes" (e.g. PELLA →
+    BELLA) that improve dictionary hit count locally but destroy the global
+    n-gram structure — the failure mode observed on Borg 0109v when the
+    repair ran dict-only. ``min_word_len`` defaults to 5 for the same
+    reason: short Latin and English words are too dense to yield
+    confident one-edit candidates.
+    """
+    info: dict[str, Any] = {
+        "enabled": _homophonic_key_repair_enabled(),
+        "applied": False,
+        "word_boundary_count": len(cipher_text.words),
+        "rounds": 0,
+        "corrections": [],
+        "before_dict_hits": None,
+        "after_dict_hits": None,
+        "min_word_len": min_word_len,
+        "score_fn_guard": score_fn is not None,
+        "key": dict(key),
+    }
+
+    if not info["enabled"]:
+        info["reason"] = "disabled"
+        return info
+
+    # Single word group = the solver is running in true no-boundary mode; the
+    # existing text-polish step already handles that case.
+    if len(cipher_text.words) <= 1:
+        info["reason"] = "no_word_boundaries"
+        return info
+
+    path = dictionary.get_dictionary_path(language)
+    word_set = dictionary.load_word_set(path) if path else set()
+    if not word_set:
+        info["reason"] = "no_dictionary_available"
+        return info
+
+    freq_rank = {word.upper(): idx for idx, word in enumerate(word_list)} if word_list else None
+
+    result = repair_key_with_dictionary(
+        cipher_words=cipher_text.words,
+        key=key,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        word_set=word_set,
+        freq_rank=freq_rank,
+        min_word_len=min_word_len,
+        score_fn=score_fn,
+        max_score_drop=max_score_drop,
+    )
+
+    info["rounds"] = result.rounds
+    info["corrections"] = result.corrections
+    info["before_dict_hits"] = result.before_hits
+    info["after_dict_hits"] = result.after_hits
+    info["before_total_words"] = result.before_words
+    info["after_total_words"] = result.after_words
+    info["before_preview"] = result.before_plaintext[:200]
+    info["after_preview"] = result.after_plaintext[:200]
+
+    if not result.applied:
+        info["reason"] = result.reason or "no_improvement"
+        return info
+
+    info["applied"] = True
+    info["key"] = result.repaired_key
+    return info
+
+
+def _zenith_model_score_fn(
+    cipher_tokens: list[int],
+    id_to_letter: dict[int, str],
+    bin_path: Path,
+) -> Callable[[dict[int, int]], float] | None:
+    """Build a key → 5-gram log-prob sum score_fn using the zenith binary model.
+
+    Returns ``None`` if the model cannot be loaded. The score is a plain sum
+    of 5-gram log-probs across the decoded plaintext — sufficient as a
+    monotonic guard for detecting whether a candidate repair makes the
+    language-model fit worse. Not equivalent to zenith_solve's Shannon-
+    entropy-normalized objective, but the repair only needs a sign check.
+    """
+    try:
+        from analysis.zenith_solver import load_zenith_binary_model
+
+        model = load_zenith_binary_model(bin_path)
+    except Exception:  # noqa: BLE001 — no model means no guard; caller decides
+        return None
+
+    tokens = list(cipher_tokens)
+
+    def score(candidate_key: dict[int, int]) -> float:
+        letters: list[int] = []
+        for tok in tokens:
+            pt_id = candidate_key.get(tok)
+            if pt_id is None:
+                return float("-inf")
+            letter = id_to_letter.get(pt_id, "A")
+            code = ord(letter.lower()) - 97
+            if not (0 <= code < 26):
+                return float("-inf")
+            letters.append(code)
+        if len(letters) < 5:
+            return 0.0
+        total = 0.0
+        for i in range(len(letters) - 4):
+            total += model.lookup_lo(
+                letters[i], letters[i + 1], letters[i + 2], letters[i + 3], letters[i + 4]
+            )
+        return total
+
+    return score
+
+
+def _quadgram_key_score_fn(
+    cipher_tokens: list[int],
+    id_to_letter: dict[int, str],
+    quadgrams: dict[str, float],
+) -> Callable[[dict[int, int]], float]:
+    """Build a key → normalized-quadgram score_fn for the substitution path."""
+    tokens = list(cipher_tokens)
+
+    def score(candidate_key: dict[int, int]) -> float:
+        letters: list[str] = []
+        for tok in tokens:
+            pt_id = candidate_key.get(tok)
+            if pt_id is None:
+                letters.append("?")
+                continue
+            letters.append(id_to_letter.get(pt_id, "?"))
+        text = "".join(letters)
+        return ngram.normalized_ngram_score(text, quadgrams, n=4)
+
+    return score
+
+
+def _maybe_repair_zenith_native_key(
+    *,
+    cipher_text: CipherText,
+    bin_path: Path,
+    key: dict[int, int],
+    plaintext: str,
+    language: str,
+    word_list: list[str],
+    id_to_letter: dict[int, str],
+    letter_to_id: dict[str, int],
+    min_word_len: int = 5,
+) -> dict[str, Any]:
+    """Apply key-consistent dictionary repair after the zenith SA converges.
+
+    Only meaningful when the ciphertext preserves word boundaries. Returns
+    a telemetry dict; when ``applied`` is True the caller should swap in the
+    new ``key`` and ``plaintext``.
+
+    The repair is guarded by a 5-gram log-prob score_fn: a candidate fix is
+    rejected if the zenith model score drops relative to the current key.
+    This closes the loop that caused greedy short-word false positives to
+    regress Borg 0109v on the dict-only version.
+    """
+    score_fn = _zenith_model_score_fn(
+        list(cipher_text.tokens), id_to_letter, bin_path
+    )
+    info = _run_key_consistent_repair(
+        cipher_text=cipher_text,
+        key=key,
+        language=language,
+        word_list=word_list,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        score_fn=score_fn,
+        min_word_len=min_word_len,
+    )
+    info["plaintext"] = plaintext
+    if not info["applied"]:
+        return info
+    repaired_plaintext = "".join(
+        id_to_letter.get(info["key"].get(tok, -1), "?")
+        for tok in cipher_text.tokens
+    ).upper()
+    info["plaintext"] = repaired_plaintext
+    return info
+
+
+_ANCHOR_REFINE_DISABLED_VALUES = {"0", "false", "no", "off"}
+
+
+def _homophonic_anchor_refine_enabled() -> bool:
+    """Anchor-constrained re-anneal is on by default.
+
+    Set ``DECIPHER_HOMOPHONIC_ANCHOR_REFINE=0`` to disable for bisection.
+    """
+    raw = os.environ.get("DECIPHER_HOMOPHONIC_ANCHOR_REFINE", "").strip().lower()
+    if raw in _ANCHOR_REFINE_DISABLED_VALUES:
+        return False
+    return True
+
+
+def _collect_anchor_symbols(
+    cipher_words: list[list[int]],
+    key: dict[int, int],
+    id_to_letter: dict[int, str],
+    word_set: set[str],
+    *,
+    min_word_len: int = 3,
+) -> tuple[set[int], list[str]]:
+    """Return cipher symbols whose decoded word appears in ``word_set``.
+
+    Longer anchor words give stronger evidence; we require length >= 3 to
+    keep function words like "A"/"IN" from over-constraining the search
+    basin on short filler matches.
+    """
+    anchors: set[int] = set()
+    anchor_words: list[str] = []
+    for tokens in cipher_words:
+        if len(tokens) < min_word_len:
+            continue
+        letters = "".join(
+            id_to_letter.get(key.get(t, -1), "?") for t in tokens
+        ).upper()
+        if "?" in letters:
+            continue
+        if letters in word_set:
+            anchors.update(tokens)
+            anchor_words.append(letters)
+    return anchors, anchor_words
+
+
+def _maybe_anchor_refine_zenith_native(
+    *,
+    cipher_text: CipherText,
+    bin_path: Path,
+    key: dict[int, int],
+    plaintext: str,
+    anneal_score: float,
+    language: str,
+    word_list: list[str],
+    plaintext_ids: list[int],
+    id_to_letter: dict[int, str],
+    letter_to_id: dict[str, int],
+    budget_params: dict[str, Any],
+) -> dict[str, Any]:
+    """Short zenith_solve pass with anchor symbols frozen, restarted from ``key``.
+
+    Only meaningful when the ciphertext preserves word boundaries, because
+    anchor extraction relies on whole-word dictionary matches. The refinement
+    is gated on a strict score improvement so a degenerate anneal cannot
+    displace the primary result.
+    """
+    info: dict[str, Any] = {
+        "enabled": _homophonic_anchor_refine_enabled(),
+        "applied": False,
+        "anchor_symbol_count": 0,
+        "anchor_words": [],
+        "base_score": round(anneal_score, 4),
+        "refined_score": None,
+        "key": dict(key),
+        "plaintext": plaintext,
+        "score": anneal_score,
+    }
+
+    if not info["enabled"]:
+        info["reason"] = "disabled"
+        return info
+    if len(cipher_text.words) <= 1:
+        info["reason"] = "no_word_boundaries"
+        return info
+
+    path = dictionary.get_dictionary_path(language)
+    word_set = dictionary.load_word_set(path) if path else set()
+    if not word_set:
+        info["reason"] = "no_dictionary_available"
+        return info
+
+    anchors, anchor_words = _collect_anchor_symbols(
+        cipher_text.words,
+        key,
+        id_to_letter,
+        word_set,
+    )
+    info["anchor_symbol_count"] = len(anchors)
+    info["anchor_words"] = sorted(set(anchor_words))[:20]
+
+    # Need at least a few anchors to be worth the extra pass, and we must
+    # leave some mutable symbols to actually explore.
+    total_symbols = len(set(cipher_text.tokens))
+    if len(anchors) < 3 or (total_symbols - len(anchors)) < 3:
+        info["reason"] = "insufficient_anchors"
+        return info
+
+    try:
+        from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
+    except Exception as exc:  # noqa: BLE001
+        info["reason"] = f"import_failed:{exc}"
+        return info
+
+    try:
+        model = load_zenith_binary_model(bin_path)
+    except Exception as exc:  # noqa: BLE001
+        info["reason"] = f"model_load_failed:{exc}"
+        return info
+
+    base_epochs = max(1, int(budget_params.get("epochs", 3)))
+    base_iters = max(500, int(budget_params.get("sampler_iterations", 5000)))
+    refine_epochs = max(1, min(3, base_epochs))
+    refine_iters = max(500, base_iters // 2)
+
+    try:
+        refined = zenith_solve(
+            tokens=list(cipher_text.tokens),
+            plaintext_ids=plaintext_ids,
+            id_to_letter=id_to_letter,
+            letter_to_id=letter_to_id,
+            model=model,
+            initial_key=dict(key),
+            fixed_cipher_ids=anchors,
+            epochs=refine_epochs,
+            sampler_iterations=refine_iters,
+            seed=budget_params.get("seeds", [1])[0] + 10_000,
+            top_n=1,
+        )
+    except Exception as exc:  # noqa: BLE001
+        info["reason"] = f"refine_failed:{exc}"
+        return info
+
+    info["refined_score"] = round(refined.normalized_score, 4)
+    info["refine_epochs"] = refine_epochs
+    info["refine_iterations"] = refine_iters
+
+    improvement_eps = 1e-4
+    if refined.normalized_score <= anneal_score + improvement_eps:
+        info["reason"] = "no_score_improvement"
+        return info
+
+    info["applied"] = True
+    info["key"] = refined.key
+    info["plaintext"] = refined.plaintext
+    info["score"] = refined.normalized_score
+    return info
+
+
+def _maybe_anchor_refine_substitution(
+    *,
+    cipher_text: CipherText,
+    session: Session,
+    key: dict[int, int],
+    language: str,
+    id_to_letter: dict[int, str],
+    score_fn: Callable[[], float],
+    max_steps: int = 3000,
+) -> dict[str, Any]:
+    """Short hill-climb with dictionary anchors frozen, restarted from ``key``.
+
+    Used by the ``_run_substitution`` non-English path after the key-consistent
+    repair stage. Returns the same shape of telemetry dict as the zenith
+    variant, including ``key``/``plaintext``/``score`` fields the caller
+    can splice in when ``applied`` is True.
+    """
+    info: dict[str, Any] = {
+        "enabled": _homophonic_anchor_refine_enabled(),
+        "applied": False,
+        "anchor_symbol_count": 0,
+        "anchor_words": [],
+        "base_score": None,
+        "refined_score": None,
+        "key": dict(key),
+        "score": None,
+    }
+
+    if not info["enabled"]:
+        info["reason"] = "disabled"
+        return info
+    if len(cipher_text.words) <= 1:
+        info["reason"] = "no_word_boundaries"
+        return info
+
+    path = dictionary.get_dictionary_path(language)
+    word_set = dictionary.load_word_set(path) if path else set()
+    if not word_set:
+        info["reason"] = "no_dictionary_available"
+        return info
+
+    anchors, anchor_words = _collect_anchor_symbols(
+        cipher_text.words,
+        key,
+        id_to_letter,
+        word_set,
+    )
+    info["anchor_symbol_count"] = len(anchors)
+    info["anchor_words"] = sorted(set(anchor_words))[:20]
+
+    total_symbols = len(set(cipher_text.tokens))
+    if len(anchors) < 3 or (total_symbols - len(anchors)) < 3:
+        info["reason"] = "insufficient_anchors"
+        return info
+
+    base_score = score_fn()
+    info["base_score"] = round(base_score, 4)
+
+    # Run a fresh, shorter SA pass with anchors frozen.
+    session.set_full_key(dict(key))
+    refined_score = simulated_anneal(
+        session,
+        score_fn,
+        max_steps=max_steps,
+        t_start=0.5,
+        t_end=0.005,
+        swap_fraction=0.55,
+        fixed_cipher_ids=anchors,
+    )
+    info["refined_score"] = round(refined_score, 4)
+
+    if refined_score <= base_score + 1e-4:
+        # Revert; nothing better than where we started.
+        session.set_full_key(dict(key))
+        info["reason"] = "no_score_improvement"
+        return info
+
+    info["applied"] = True
+    info["key"] = dict(session.key)
+    info["score"] = refined_score
+    return info
 
 
 def _homophonic_polish_enabled() -> bool:

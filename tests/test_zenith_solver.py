@@ -385,6 +385,48 @@ def test_full_anneal_tiny_cipher_seeded():
     assert result.metadata.get("step") == 2
 
 
+def test_zenith_solve_respects_fixed_cipher_ids():
+    """Symbols listed in ``fixed_cipher_ids`` must retain their ``initial_key`` mapping
+    through the entire anneal, even when the solver would otherwise swap them.
+    """
+    from models.alphabet import Alphabet
+
+    # Build a tiny cipher with 4 distinct symbols.
+    cipher_tokens_str = ["01", "02", "03", "04"] * 5
+    ct_alpha = Alphabet(["01", "02", "03", "04"])
+    tokens = [ct_alpha.id_for(t) for t in cipher_tokens_str]
+
+    pt_alpha = Alphabet(list("ABCD"))
+    plaintext_ids = list(range(pt_alpha.size))
+    id_to_letter = {i: pt_alpha.symbol_for(i) for i in plaintext_ids}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+
+    model = _small_model()
+    # Pin symbols 0 and 1 to specific plaintext ids.
+    initial_key = {0: letter_to_id["A"], 1: letter_to_id["B"],
+                   2: letter_to_id["C"], 3: letter_to_id["D"]}
+    frozen = {0, 1}
+
+    result = zenith_solve(
+        tokens=tokens,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        model=model,
+        initial_key=initial_key,
+        fixed_cipher_ids=frozen,
+        epochs=2,
+        sampler_iterations=100,
+        seed=7,
+        top_n=1,
+    )
+
+    assert result.key[0] == letter_to_id["A"]
+    assert result.key[1] == letter_to_id["B"]
+    assert result.metadata["mutable_symbols"] == 2
+    assert result.fixed_symbols == 2
+
+
 # ---------------------------------------------------------------------------
 # 7. Biased bucket
 # ---------------------------------------------------------------------------

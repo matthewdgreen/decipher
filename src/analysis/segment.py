@@ -14,7 +14,8 @@ Used by:
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Callable
 
 
 @dataclass
@@ -36,6 +37,30 @@ class TextRepairResult:
     rounds: int
     corrections: list[dict[str, str | int]]
     applied: bool
+    reason: str | None = None
+
+
+@dataclass
+class KeyRepairResult:
+    """Outcome of a key-consistent (symbol-level) dictionary repair pass.
+
+    Unlike :class:`TextRepairResult`, which only rewrites the decoded string,
+    this result reports changes that have been propagated back through the
+    cipher key, so every occurrence of the corrected cipher symbol reflects
+    the new letter assignment.
+    """
+
+    original_key: dict[int, int]
+    repaired_key: dict[int, int]
+    before_plaintext: str
+    after_plaintext: str
+    before_hits: int
+    after_hits: int
+    before_words: int
+    after_words: int
+    rounds: int
+    corrections: list[dict[str, object]] = field(default_factory=list)
+    applied: bool = False
     reason: str | None = None
 
 
@@ -362,4 +387,244 @@ def repair_no_boundary_text(
         corrections=corrections,
         applied=applied,
         reason=None if applied else ("no_improving_repairs" if corrections else "no_confident_repairs"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Key-consistent repair
+# ---------------------------------------------------------------------------
+
+def _decode_words(
+    cipher_words: list[list[int]],
+    key: dict[int, int],
+    id_to_letter: dict[int, str],
+) -> list[str]:
+    """Return the list of upper-cased plaintext words for the given key.
+
+    Unknown mappings render as ``?`` so they don't accidentally collide with
+    dictionary entries.
+    """
+    out: list[str] = []
+    for word_tokens in cipher_words:
+        if not word_tokens:
+            continue
+        letters: list[str] = []
+        for tok in word_tokens:
+            pt_id = key.get(tok)
+            if pt_id is None:
+                letters.append("?")
+                continue
+            letter = id_to_letter.get(pt_id, "?")
+            letters.append(letter if letter else "?")
+        out.append("".join(letters).upper())
+    return out
+
+
+def _dict_hits(words: list[str], word_set: set[str]) -> int:
+    return sum(1 for w in words if w in word_set)
+
+
+def repair_key_with_dictionary(
+    cipher_words: list[list[int]],
+    key: dict[int, int],
+    id_to_letter: dict[int, str],
+    letter_to_id: dict[str, int],
+    word_set: set[str],
+    *,
+    freq_rank: dict[str, int] | None = None,
+    max_rounds: int = 6,
+    min_word_len: int = 3,
+    require_strict_improvement: bool = True,
+    protected_symbols: set[int] | None = None,
+    score_fn: Callable[[dict[int, int]], float] | None = None,
+    max_score_drop: float = 0.0,
+) -> KeyRepairResult:
+    """Improve a homophonic key by propagating one-edit dictionary repairs.
+
+    The existing :func:`repair_no_boundary_text` operates on the decoded string
+    and cannot exploit the fact that fixing one wrong letter usually fixes
+    **every** occurrence of the underlying cipher symbol. This helper does the
+    opposite: it proposes one-letter substitutions on pseudo-words, projects
+    each candidate back onto the cipher key, re-decodes the whole ciphertext,
+    and keeps the change only if it strictly increases dictionary coverage
+    (and, optionally, doesn't crater an external 5-gram score).
+
+    Parameters
+    ----------
+    cipher_words:
+        Tokens grouped by ciphertext word boundaries (``CipherText.words``).
+        The cipher is assumed to already be word-delimited; feeding flat
+        no-boundary tokens here would degrade to a single pseudo-word.
+    key:
+        Current cipher-symbol → plaintext-id mapping. Not mutated.
+    id_to_letter / letter_to_id:
+        Plaintext alphabet mappings. Letters are A–Z uppercase.
+    word_set:
+        Dictionary to check word membership against. Must be uppercase.
+    freq_rank:
+        Optional Zipf-style rank table for tie-breaking between correction
+        candidates. When provided, lower rank (more common) wins.
+    max_rounds:
+        Upper bound on passes through the word list.
+    min_word_len:
+        Skip pseudo-words shorter than this — too many spurious matches.
+    require_strict_improvement:
+        When True (default), a candidate is only accepted when dictionary
+        hit count strictly increases. Setting False allows equal-hit
+        alternatives that might unlock future rounds, at the cost of risk.
+    protected_symbols:
+        Cipher symbols whose mappings must not change — useful for anchor
+        words the caller trusts.
+    score_fn:
+        Optional callable returning a language-model score for a given key.
+        Used as a guard: a repair is rejected if its score drops by more than
+        ``max_score_drop`` relative to the current key, even when dictionary
+        hits improve.
+    max_score_drop:
+        Tolerance for ``score_fn`` drops. 0.0 requires the score to be
+        non-decreasing; set higher (e.g. 0.02) to allow small trade-offs.
+    """
+    protected = set(protected_symbols or ())
+
+    current_key = dict(key)
+    before_words = _decode_words(cipher_words, current_key, id_to_letter)
+    before_hits = _dict_hits(before_words, word_set)
+    before_plaintext = " ".join(before_words)
+
+    corrections: list[dict[str, object]] = []
+
+    current_score: float | None = None
+    if score_fn is not None:
+        try:
+            current_score = float(score_fn(current_key))
+        except Exception:  # noqa: BLE001 - treat scorer failure as "no guard"
+            current_score = None
+
+    rounds_used = 0
+    for round_index in range(max_rounds):
+        words_now = _decode_words(cipher_words, current_key, id_to_letter)
+        hits_now = _dict_hits(words_now, word_set)
+
+        changed = False
+        for word_index, word in enumerate(words_now):
+            if len(word) < min_word_len or word in word_set:
+                continue
+            # Candidate list: every single-substitution that lands in the dict.
+            candidates = find_one_edit_corrections(word, word_set)
+            if not candidates:
+                continue
+            # Deterministic ordering: prefer more common words first.
+            candidates.sort(
+                key=lambda item: (
+                    freq_rank.get(item[0], 10**9) if freq_rank else 0,
+                    item[0],
+                )
+            )
+
+            accepted_candidate: tuple[str, str, str, int] | None = None
+            for cand_word, wrong_letter, correct_letter in candidates:
+                # Find the position within the cipher word where the
+                # substitution applies.
+                try:
+                    pos = word.index(wrong_letter)
+                except ValueError:
+                    continue
+                cipher_word = cipher_words[word_index]
+                if pos >= len(cipher_word):
+                    continue
+                cipher_sym = cipher_word[pos]
+                if cipher_sym in protected:
+                    continue
+                new_letter_id = letter_to_id.get(correct_letter.upper())
+                if new_letter_id is None:
+                    continue
+                if current_key.get(cipher_sym) == new_letter_id:
+                    continue
+
+                trial_key = dict(current_key)
+                trial_key[cipher_sym] = new_letter_id
+
+                trial_words = _decode_words(cipher_words, trial_key, id_to_letter)
+                trial_hits = _dict_hits(trial_words, word_set)
+
+                if require_strict_improvement:
+                    if trial_hits <= hits_now:
+                        continue
+                else:
+                    if trial_hits < hits_now:
+                        continue
+
+                if score_fn is not None:
+                    try:
+                        trial_score = float(score_fn(trial_key))
+                    except Exception:  # noqa: BLE001
+                        trial_score = None
+                    if trial_score is not None and current_score is not None:
+                        if trial_score < current_score - max_score_drop:
+                            continue
+                        tentative_score = trial_score
+                    else:
+                        tentative_score = current_score
+                else:
+                    tentative_score = current_score
+
+                # Accept.
+                current_key = trial_key
+                current_score = tentative_score
+                hits_now = trial_hits
+                words_now = trial_words
+                corrections.append({
+                    "kind": "symbol_remap",
+                    "round": round_index + 1,
+                    "word_index": word_index,
+                    "from_word": word,
+                    "to_word": cand_word,
+                    "wrong_letter": wrong_letter,
+                    "correct_letter": correct_letter,
+                    "cipher_symbol": cipher_sym,
+                    "dict_hits_after": trial_hits,
+                })
+                accepted_candidate = (cand_word, wrong_letter, correct_letter, cipher_sym)
+                changed = True
+                break
+
+            if accepted_candidate is not None:
+                # Re-decode is done; continue scanning words in this round so
+                # other pseudo-words can also be fixed.
+                continue
+
+        rounds_used = round_index + 1
+        if not changed:
+            break
+
+    after_words = _decode_words(cipher_words, current_key, id_to_letter)
+    after_hits = _dict_hits(after_words, word_set)
+    after_plaintext = " ".join(after_words)
+
+    applied = after_hits > before_hits and current_key != key
+    reason: str | None = None
+    if not applied:
+        if not corrections:
+            reason = "no_confident_repairs"
+        else:
+            # Corrections happened but net dict_hits didn't improve — revert.
+            reason = "no_net_dict_gain"
+            current_key = dict(key)
+            after_words = before_words
+            after_hits = before_hits
+            after_plaintext = before_plaintext
+
+    return KeyRepairResult(
+        original_key=dict(key),
+        repaired_key=current_key,
+        before_plaintext=before_plaintext,
+        after_plaintext=after_plaintext,
+        before_hits=before_hits,
+        after_hits=after_hits,
+        before_words=len(before_words),
+        after_words=len(after_words),
+        rounds=rounds_used,
+        corrections=corrections,
+        applied=applied,
+        reason=reason,
     )

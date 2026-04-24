@@ -3,7 +3,12 @@ from __future__ import annotations
 
 import pytest
 
-from analysis.segment import find_one_edit_corrections, repair_no_boundary_text, segment_text
+from analysis.segment import (
+    find_one_edit_corrections,
+    repair_key_with_dictionary,
+    repair_no_boundary_text,
+    segment_text,
+)
 
 
 # A small, plausibly-English fixture vocabulary.
@@ -108,3 +113,129 @@ def test_repair_no_boundary_text_can_resegment_local_window():
     assert result.applied is True
     assert result.repaired_text == "THERE CAT"
     assert any(c["kind"] == "resegment" for c in result.corrections)
+
+
+# ---------------------------------------------------------------------------
+# Key-consistent repair tests
+# ---------------------------------------------------------------------------
+
+
+def _letter_maps():
+    """Build id_to_letter / letter_to_id for a toy A-Z plaintext alphabet."""
+    id_to_letter = {i: chr(ord("A") + i) for i in range(26)}
+    letter_to_id = {v: k for k, v in id_to_letter.items()}
+    return id_to_letter, letter_to_id
+
+
+def test_repair_key_with_dictionary_single_symbol_fix():
+    # Cipher symbols: 100, 101, 102, 103, 104.
+    # Words: "CAT" = [100, 101, 102];  "DOG" = [103, 104, 102]
+    # Ground truth: symbol 101 should map to 'A', symbol 104 to 'O'.
+    # We start with 101 mapped to 'X' (so "CAT" decodes as "CXT") —
+    # a single symbol remap to 'A' fixes CAT across every occurrence.
+    id_to_letter, letter_to_id = _letter_maps()
+    cipher_words = [[100, 101, 102], [103, 104, 102], [100, 101, 102]]
+    # 100→C, 101→X(wrong, should be A), 102→T, 103→D, 104→O
+    key = {
+        100: letter_to_id["C"],
+        101: letter_to_id["X"],
+        102: letter_to_id["T"],
+        103: letter_to_id["D"],
+        104: letter_to_id["O"],
+    }
+    word_set = {"CAT", "DOG"}
+
+    result = repair_key_with_dictionary(
+        cipher_words=cipher_words,
+        key=key,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        word_set=word_set,
+    )
+
+    assert result.applied is True
+    # Every occurrence of symbol 101 is now 'A'.
+    assert result.repaired_key[101] == letter_to_id["A"]
+    assert result.after_hits > result.before_hits
+    assert any(c["cipher_symbol"] == 101 for c in result.corrections)
+
+
+def test_repair_key_with_dictionary_respects_protected_symbols():
+    id_to_letter, letter_to_id = _letter_maps()
+    cipher_words = [[100, 101, 102]]
+    key = {
+        100: letter_to_id["C"],
+        101: letter_to_id["X"],  # would want to become 'A'
+        102: letter_to_id["T"],
+    }
+    word_set = {"CAT"}
+
+    result = repair_key_with_dictionary(
+        cipher_words=cipher_words,
+        key=key,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        word_set=word_set,
+        protected_symbols={101},
+    )
+
+    # The only candidate fix touches a protected symbol; nothing should change.
+    assert result.applied is False
+    assert result.repaired_key[101] == letter_to_id["X"]
+
+
+def test_repair_key_with_dictionary_rejects_score_regression():
+    id_to_letter, letter_to_id = _letter_maps()
+    cipher_words = [[100, 101, 102]]
+    key = {
+        100: letter_to_id["C"],
+        101: letter_to_id["X"],
+        102: letter_to_id["T"],
+    }
+    word_set = {"CAT"}
+
+    # Pathological scorer that always reports a lower score after any change.
+    def scorer(k):
+        return 0.0 if k == key else -999.0
+
+    result = repair_key_with_dictionary(
+        cipher_words=cipher_words,
+        key=key,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        word_set=word_set,
+        score_fn=scorer,
+        max_score_drop=0.0,
+    )
+
+    assert result.applied is False
+    assert result.repaired_key == key
+
+
+def test_repair_key_with_dictionary_multi_round_compounds_fixes():
+    # Two distinct symbol errors; each round of repair should catch one.
+    id_to_letter, letter_to_id = _letter_maps()
+    # "CAT" = [100, 101, 102]; "DOG" = [103, 104, 105]
+    cipher_words = [[100, 101, 102], [103, 104, 105]]
+    key = {
+        100: letter_to_id["C"],
+        101: letter_to_id["X"],  # should be 'A'
+        102: letter_to_id["T"],
+        103: letter_to_id["D"],
+        104: letter_to_id["Y"],  # should be 'O'
+        105: letter_to_id["G"],
+    }
+    word_set = {"CAT", "DOG"}
+
+    result = repair_key_with_dictionary(
+        cipher_words=cipher_words,
+        key=key,
+        id_to_letter=id_to_letter,
+        letter_to_id=letter_to_id,
+        word_set=word_set,
+    )
+
+    assert result.applied is True
+    assert result.repaired_key[101] == letter_to_id["A"]
+    assert result.repaired_key[104] == letter_to_id["O"]
+    assert result.after_hits == 2  # both CAT and DOG now hit
