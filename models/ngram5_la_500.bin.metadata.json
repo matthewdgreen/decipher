@@ -3,10 +3,10 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_la_500.bin",
-  "sha256": "71d36e5ad9a04f567c5faa6feba40d1094641113cbee6f533591093fd06556e4",
+  "sha256": "d45c6d5c069b956a09eb2f1553d1f3bc9ab0112a558a895b485b0bade3ecb595",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,
-  "build_timestamp_utc": "2026-04-24T17:19:05.114681+00:00",
+  "build_timestamp_utc": "2026-04-24T18:34:25.820451+00:00",
   "builder_version": 1,
   "sources": [
     {
@@ -21,8 +21,8 @@
   ],
   "corpus_stats": {
     "raw_files": 101,
-    "normalized_characters": 28294445,
-    "distinct_seen_5grams": 863970
+    "normalized_characters": 28286387,
+    "distinct_seen_5grams": 863765
   },
   "normalization": {
     "lowercase": true,

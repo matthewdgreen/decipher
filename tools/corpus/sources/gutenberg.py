@@ -1,12 +1,79 @@
 from __future__ import annotations
 
 import csv
+import re
 import time
 from pathlib import Path
 
 from .common import fetch_bytes, update_manifest
 
 CATALOG_URL = "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv"
+
+_LEADING_BOILERPLATE_PATTERNS = (
+    re.compile(r"^\s*produced by\b", re.IGNORECASE),
+    re.compile(r"^\s*thanks to\b", re.IGNORECASE),
+    re.compile(r"^\s*this file was produced from images\b", re.IGNORECASE),
+    re.compile(r"^\s*this e-?text is in\b", re.IGNORECASE),
+    re.compile(r"^\s*this e-?text was produced\b", re.IGNORECASE),
+    re.compile(r"^\s*we are releasing two versions of this e-?text\b", re.IGNORECASE),
+    re.compile(r"^\s*this is the \d+-bit version\b", re.IGNORECASE),
+    re.compile(r"^\s*this book content was graciously contributed\b", re.IGNORECASE),
+    re.compile(r"^\s*project gutenberg\b", re.IGNORECASE),
+    re.compile(r"^\s*project runeberg\b", re.IGNORECASE),
+    re.compile(r"^\s*projekt-?de\b", re.IGNORECASE),
+    re.compile(r"^\s*dieses buch wurde uns freundlicherweise\b", re.IGNORECASE),
+    re.compile(r"^\s*this text was originally produced in html\b", re.IGNORECASE),
+    re.compile(r"^\s*this text has been derived from html files\b", re.IGNORECASE),
+    re.compile(r"^\s*(online )?distributed proofreading team\b", re.IGNORECASE),
+    re.compile(r"^\s*transcriber[’']?s note\b", re.IGNORECASE),
+    re.compile(r"^\s*[\{\[]?transcriber[’']?s note", re.IGNORECASE),
+    re.compile(r"^\s*all material in\b", re.IGNORECASE),
+    re.compile(r"^\s*material added by the transcriber\b", re.IGNORECASE),
+    re.compile(r"^\s*dies ist ein zwischenstand\b", re.IGNORECASE),
+    re.compile(r"^\s*die digitalisierung wird unter\b", re.IGNORECASE),
+    re.compile(r"^\s*erarbeitet; dort kann man\b", re.IGNORECASE),
+    re.compile(r"^\s*wenn korrekturen vornehmen wollen\b", re.IGNORECASE),
+    re.compile(r"^\s*die html-formatierung ist bislang\b", re.IGNORECASE),
+    re.compile(r"^\s*we need more volunteers like you\b", re.IGNORECASE),
+    re.compile(r"^\s*learn more at https?://", re.IGNORECASE),
+    re.compile(r"^\s*available at https?://", re.IGNORECASE),
+    re.compile(r"^\s*this is a plain text file\b", re.IGNORECASE),
+    re.compile(r'^\s*".+"\s+is\s+a\s+', re.IGNORECASE),
+)
+
+_LEADING_METADATA_CONTINUATION_PATTERNS = (
+    re.compile(r"^\s*https?://", re.IGNORECASE),
+    re.compile(r".+@.+"),
+    re.compile(r"^\s*\(https?://", re.IGNORECASE),
+    re.compile(r"^\s*\[in [^\]]+\]\s*$", re.IGNORECASE),
+    re.compile(r"^\s*proofreaders\.?$", re.IGNORECASE),
+    re.compile(r"^\s*biblioth[eè]que nationale de france\b", re.IGNORECASE),
+    re.compile(r"^\s*prepared by\b", re.IGNORECASE),
+    re.compile(r"^\s*from pages\b", re.IGNORECASE),
+    re.compile(r"^\s*of Goethe's works published in\b", re.IGNORECASE),
+    re.compile(r"^\s*hamburger ausgabe\b", re.IGNORECASE),
+    re.compile(r"^\s*verlagshandlung\b", re.IGNORECASE),
+    re.compile(r"^\s*isbn\b", re.IGNORECASE),
+    re.compile(r'^\s*".+"\s+by\s+.+', re.IGNORECASE),
+    re.compile(r"^\s*[A-Z][a-z]+(?: [A-Z][a-z]+){1,3}\.\s*$"),
+    re.compile(r"^\s*die digitalisierung\b", re.IGNORECASE),
+    re.compile(r"^\s*digitalisierung wird unter\b", re.IGNORECASE),
+    re.compile(r"^\s*selbst an der arbeit teilnehmen\b", re.IGNORECASE),
+    re.compile(r"^\s*ein korrigierten eintrag\b", re.IGNORECASE),
+    re.compile(r"^\s*einarbeitung\b", re.IGNORECASE),
+    re.compile(r"^\s*beachten sie\b", re.IGNORECASE),
+    re.compile(r"^\s*rechtschreibung beibehalten!?$", re.IGNORECASE),
+    re.compile(r"^\s*die html-formatierung ist bislang\b", re.IGNORECASE),
+    re.compile(r"^\s*korrigieren nicht unn[oö]tig\b", re.IGNORECASE),
+    re.compile(r"^\s*karl eichwalder\b", re.IGNORECASE),
+    re.compile(r"^\s*contents\s*$", re.IGNORECASE),
+)
+
+_CONTENT_START_PATTERNS = (
+    re.compile(r"^[A-ZÆŒ][A-ZÆŒ\s\.,;:!\?'’\"()\-\[\]&]{8,}$"),
+    re.compile(r"^[A-ZÆŒ][a-zA-ZÆŒæœ\s\.,;:!\?'’\"()\-\[\]&]{12,}$"),
+    re.compile(r"^(?:\s{2,})?[A-ZÆŒ][a-zA-ZÆŒæœ]+"),
+)
 
 
 def download_catalog(output_dir: Path) -> Path:
@@ -53,7 +120,56 @@ def _strip_gutenberg_boilerplate(text: str) -> str:
         if any(marker in lines[i] for marker in end_markers):
             end_idx = i
             break
-    return "\n".join(lines[start_idx:end_idx]).strip()
+    body_lines = lines[start_idx:end_idx]
+
+    # Older Gutenberg and Runeberg exports often prepend a short English
+    # descriptive block or transcriber note without standard START markers.
+    # Drop those leading lines until the first plausible content/title line.
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+
+    dropped_any = False
+    while body_lines:
+        line = body_lines[0].strip()
+        if not line:
+            body_lines.pop(0)
+            continue
+        if any(pattern.search(line) for pattern in _LEADING_BOILERPLATE_PATTERNS):
+            dropped_any = True
+            body_lines.pop(0)
+            continue
+        if dropped_any and any(pattern.search(line) for pattern in _LEADING_METADATA_CONTINUATION_PATTERNS):
+            body_lines.pop(0)
+            continue
+        if dropped_any and any(pattern.search(line) for pattern in _CONTENT_START_PATTERNS):
+            break
+        if dropped_any:
+            body_lines.pop(0)
+            continue
+        break
+
+    while body_lines and not body_lines[0].strip():
+        body_lines.pop(0)
+
+    # Some multilingual Gutenberg files keep a lone English "Contents" line
+    # immediately after the title block. Remove that narrow case without trying
+    # to strip genuine language-native tables of contents.
+    for i, line in enumerate(body_lines[:40]):
+        if line.strip().lower() != "contents":
+            continue
+        next_nonempty: list[str] = []
+        for candidate in body_lines[i + 1 : i + 8]:
+            stripped = candidate.strip()
+            if stripped:
+                next_nonempty.append(stripped)
+        if next_nonempty and any(
+            stripped.lower().startswith("canto") or stripped.isupper()
+            for stripped in next_nonempty
+        ):
+            del body_lines[i]
+        break
+
+    return "\n".join(body_lines).strip()
 
 
 def download_book(book_id: int, output_dir: Path) -> Path | None:

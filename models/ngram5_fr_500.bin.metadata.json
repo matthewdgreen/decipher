@@ -1,0 +1,32 @@
+{
+  "language": "fr",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_fr_500.bin",
+  "sha256": "8294171cebaf330c7cfb4b5381cf24f7ae74024226699ed1a677e78c05943574",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.723266,
+  "build_timestamp_utc": "2026-04-24T19:59:07.779421+00:00",
+  "builder_version": 1,
+  "sources": [
+    {
+      "name": "gutenberg",
+      "language": "fr",
+      "license": "Project Gutenberg terms",
+      "url": "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv",
+      "redistributable": true,
+      "text_files": 500,
+      "max_books": 500
+    }
+  ],
+  "corpus_stats": {
+    "raw_files": 500,
+    "normalized_characters": 153836690,
+    "distinct_seen_5grams": 851507
+  },
+  "normalization": {
+    "lowercase": true,
+    "strip_non_alpha": true
+  },
+  "redistribution_status": "redistributable"
+}

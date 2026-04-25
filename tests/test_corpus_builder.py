@@ -42,6 +42,146 @@ def test_strip_gutenberg_boilerplate():
     assert _strip_gutenberg_boilerplate(raw) == "Body text here"
 
 
+def test_strip_gutenberg_boilerplate_removes_english_preface_without_markers():
+    raw = (
+        '"Nova analysis aquarum Medeviensium" is a scientific paper in Latin\n'
+        "about water quality.\n"
+        "\n"
+        "This e-text was produced for Project Gutenberg from Project Runeberg's\n"
+        "digital facsimile edition, available at http://runeberg.org/example/\n"
+        "\n"
+        "Project Runeberg publishes free digital editions.\n"
+        "We need more volunteers like you. Learn more at http://runeberg.org/\n"
+        "\n"
+        "REGIO COLLEGIO MEDICO\n"
+        "SACRUM.\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "REGIO COLLEGIO MEDICO\nSACRUM."
+
+
+def test_strip_gutenberg_boilerplate_removes_transcriber_note_block():
+    raw = (
+        "Produced by Someone and the Online Distributed Proofreading Team\n"
+        "\n"
+        "{Transcriber's Note:\n"
+        "Material added by the transcriber is in braces.}\n"
+        "\n"
+        "De\n"
+        "M. TERENTI VARRONIS\n"
+        "LIBRIS GRAMMATICIS\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "De\nM. TERENTI VARRONIS\nLIBRIS GRAMMATICIS"
+
+
+def test_strip_gutenberg_boilerplate_removes_projekt_de_english_preface():
+    raw = (
+        "This Etext is in German.\n"
+        "\n"
+        "We are releasing two versions of this Etext, one in 7-bit format,\n"
+        "known as Plain Vanilla ASCII.\n"
+        "This is the 8-bit version.\n"
+        "\n"
+        "This book content was graciously contributed by the Gutenberg\n"
+        "Projekt-DE. That project is reachable at the web site\n"
+        "http://gutenberg.spiegel.de/.\n"
+        "\n"
+        "Dieses Buch wurde uns freundlicherweise vom \"Gutenberg Projekt-DE\"\n"
+        "zur Verfugung gestellt.\n"
+        "\n"
+        "HAMBURGISCHE DRAMATURGIE\n"
+        "von GOTTHOLD EPHRAIM LESSING\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "HAMBURGISCHE DRAMATURGIE\nvon GOTTHOLD EPHRAIM LESSING"
+
+
+def test_strip_gutenberg_boilerplate_removes_derived_from_html_notice():
+    raw = (
+        "Produced by Gunther Olesch\n"
+        "\n"
+        "This text has been derived from HTML files at \"Projekt Gutenberg - DE\"\n"
+        "(http://www.gutenberg2000.de/example), prepared by\n"
+        "Gerd Bouillon.\n"
+        "\n"
+        "Johanna Spyri\n"
+        "\n"
+        "Heidi kann brauchen, was es gelernt hat\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "Johanna Spyri\n\nHeidi kann brauchen, was es gelernt hat"
+
+
+def test_strip_gutenberg_boilerplate_removes_digitization_notice():
+    raw = (
+        "Dies ist ein Zwischenstand (Oktober 2003) der Digitalisierung von\n"
+        "\"Meyers Konversationslexikon\".\n"
+        "Die Digitalisierung wird unter\n"
+        "http://www.meyers-konversationslexikon.de\n"
+        "erarbeitet; dort kann man auch den jeweils aktuellen Stand einsehen.\n"
+        "Wenn Korrekturen vornehmen wollen, melden Sie sich bitte.\n"
+        "Die HTML-Formatierung ist bislang bewusst einfach gehalten.\n"
+        "\n"
+        "S.\n"
+        "\n"
+        "Das im laufenden Alphabet nicht Verzeichnete ist im Register des\n"
+        "Schlußbandes aufzusuchen.\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == (
+        "Das im laufenden Alphabet nicht Verzeichnete ist im Register des\nSchlußbandes aufzusuchen."
+    )
+
+
+def test_strip_gutenberg_boilerplate_removes_html_edition_block():
+    raw = (
+        "Thanks to Andrew Sly.\n"
+        "\n"
+        "\"Satyros oder Der vergötterte Waldteufel\" by Johann Wolfgang Goethe\n"
+        "[in German]\n"
+        "\n"
+        "This text was originally produced in HTML for Projekt-Gutenberg-DE by\n"
+        "belmekhira@hotmail.com from pages 188 to 202 of \"Goethes Werke,\n"
+        "Hamburger Ausgabe, Band 4 Dramen II\", the fourth volume of an edition\n"
+        "of Goethe's works published in 1982 by \"C.H. Beck'sche\n"
+        "Verlagshandlung, München\", ISBN 3-406-08484-2.\n"
+        "\n"
+        "Johann Wolfgang Goethe\n"
+        "\n"
+        "Satyros\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "Johann Wolfgang Goethe\n\nSatyros"
+
+
+def test_strip_gutenberg_boilerplate_removes_gallica_image_preface():
+    raw = (
+        "This file was produced from images generously made available by the\n"
+        "Bibliothèque nationale de France (BnF/Gallica) at http://gallica.bnf.fr.\n"
+        "\n"
+        "Produced by Carlo Traverso, Anne Dreze and the PG Online Distributed\n"
+        "Proofreaders.\n"
+        "\n"
+        "LA VAMPIRE\n"
+        "\n"
+        "par\n"
+        "\n"
+        "PAUL FÉVAL\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == "LA VAMPIRE\n\npar\n\nPAUL FÉVAL"
+
+
+def test_strip_gutenberg_boilerplate_removes_english_contents_header():
+    raw = (
+        "LA DIVINA COMMEDIA\n"
+        "\n"
+        "di Dante Alighieri\n"
+        "\n"
+        "Contents\n"
+        "\n"
+        "INFERNO\n"
+        "Canto I.\n"
+    )
+    assert _strip_gutenberg_boilerplate(raw) == (
+        "LA DIVINA COMMEDIA\n\ndi Dante Alighieri\n\n\nINFERNO\nCanto I."
+    )
+
+
 def test_build_model_roundtrip_and_metadata(tmp_path: Path):
     corpus_dir = tmp_path / "corpus"
     corpus_dir.mkdir()
