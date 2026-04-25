@@ -77,3 +77,163 @@ def test_analyzer_flags_declared_branch_that_is_not_best_final_branch():
     summary = summarize_findings(analyze_artifact(artifact))
 
     assert summary["labels"] == {"premature_declaration": 1}
+
+
+def test_analyzer_flags_score_overrode_reading():
+    """Reading-driven fix touched 2+ words and dropped dict_rate; the run
+    then declared a different branch. This is the central failure pattern
+    the label exists to catch."""
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "solution": {"branch": "polish", "declared_at_iteration": 15},
+        "branches": [
+            {"name": "polish", "char_accuracy": 0.14},
+            {"name": "test_swap", "char_accuracy": 0.13},
+        ],
+        "tool_calls": [
+            {
+                "iteration": 13,
+                "tool_name": "act_set_mapping",
+                "arguments": {"branch": "test_swap", "cipher_symbol": "P", "plain_letter": "B"},
+                "result": {
+                    "status": "ok",
+                    "branch": "test_swap",
+                    "mapping": "P -> B",
+                    "score_delta": {"dict_rate_delta": -0.012, "quad_delta": -0.08},
+                    "changed_words": [
+                        {"index": 11, "before": "TREUITER", "after": "BREUITER"},
+                        {"index": 27, "before": "MORIETANTUR", "after": "MORIEBANTUR"},
+                        {"index": 21, "before": "LITE", "after": "LIBE"},
+                        {"index": 22, "before": "TITUR", "after": "BITUR"},
+                    ],
+                },
+            },
+            {"iteration": 15, "tool_name": "meta_declare_solution", "result": "{}"},
+        ],
+        "messages": [],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"].get("score_overrode_reading") == 1
+
+
+def test_analyzer_does_not_flag_score_overrode_when_change_is_kept():
+    """Same negative-delta + multi-word change, but the declared branch IS
+    the branch the change was applied to — no override happened."""
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "solution": {"branch": "repair", "declared_at_iteration": 10},
+        "branches": [{"name": "repair", "char_accuracy": 0.20}],
+        "tool_calls": [
+            {
+                "iteration": 5,
+                "tool_name": "act_set_mapping",
+                "arguments": {"branch": "repair", "cipher_symbol": "P", "plain_letter": "B"},
+                "result": {
+                    "status": "ok",
+                    "branch": "repair",
+                    "score_delta": {"dict_rate_delta": -0.01},
+                    "changed_words": [
+                        {"index": 1, "before": "FOO", "after": "BAR"},
+                        {"index": 2, "before": "BAZ", "after": "QUX"},
+                    ],
+                },
+            },
+            {"iteration": 10, "tool_name": "meta_declare_solution", "result": "{}"},
+        ],
+        "messages": [],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "score_overrode_reading" not in summary["labels"]
+
+
+def test_analyzer_flags_unattempted_reading_fix():
+    """Assistant text proposes a cipher-symbol → letter fix; no mutation
+    primitive follows within two iterations."""
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "decode_show", "result": "{}"},
+            {"iteration": 2, "tool_name": "decode_letter_stats", "result": "{}"},
+            {"iteration": 3, "tool_name": "search_anneal", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "system + initial context"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Looking at the decode."},
+                    {"type": "tool_use", "name": "decode_show", "input": {}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "TREUITER → BREUITER: cipher P should be B. "
+                            "I will run an anneal to polish."
+                        ),
+                    },
+                    {"type": "tool_use", "name": "decode_letter_stats", "input": {}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Running anneal."},
+                    {"type": "tool_use", "name": "search_anneal", "input": {}},
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"].get("unattempted_reading_fix") == 1
+
+
+def test_analyzer_does_not_flag_unattempted_when_mutation_follows():
+    """Same hypothesis, but act_set_mapping is called next iteration."""
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "decode_show", "result": "{}"},
+            {"iteration": 2, "tool_name": "act_set_mapping", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "TREUITER should be BREUITER — cipher P → B.",
+                    },
+                    {"type": "tool_use", "name": "decode_show", "input": {}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Applying the fix."},
+                    {"type": "tool_use", "name": "act_set_mapping", "input": {}},
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]

@@ -238,6 +238,12 @@ PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
 
 Fully automatic through `tools.corpus` for all currently supported languages.
 
+One wrinkle for Latin: the current Project Gutenberg catalog only yields about
+101 texts tagged `la` under the tool's `Type=text` filter, so the
+`ngram5_la_500.bin` experiment is best read as "all currently available
+Gutenberg Latin texts with a `max_books=500` cap", not literally 500 Latin
+books.
+
 ##### OANC
 
 Fully automatic through `tools.corpus`.
@@ -372,7 +378,22 @@ its `search_automated_solver` tool. For homophonic work, the agent's
 `solver_profile='zenith_native'` path as well as the legacy path. There is
 also a shared `decode_repair_no_boundary` repair tool for locally-correct but
 globally drifted continuous plaintext candidates; it returns a text-only
-repair preview without mutating the branch key.
+repair preview without mutating the branch key. For boundary-drift cases where
+the decoded character stream reads correctly but the word breaks are wrong,
+the agent can validate a proposed whole-text reading with
+`decode_validate_reading_repair` and apply character-preserving word-boundary
+overlays with `act_resegment_by_reading`. If the proposed reading also changes
+some letters but preserves the character count, the agent can apply only the
+reading's word-boundary pattern with `act_resegment_from_reading_repair`, then
+use the reported mismatch spans as targets for key repairs. As a guardrail,
+`meta_declare_solution` will block a pre-final declaration whose rationale
+still mentions boundary/alignment problems unless that branch has gone through
+the full-reading validation/resegmentation workflow. The loop also issues a
+penultimate-turn warning so the agent sees this requirement while there is
+still one turn left to declare.
+
+Current Borg follow-up is paused pending a more modern agent loop design. See
+`docs/agent_loop_redesign_plan.md` for the no-code design plan.
 
 ### Crack with the agent
 

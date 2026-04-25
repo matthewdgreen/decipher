@@ -45,7 +45,16 @@ distribution, etc.
 a quantitative reading. No score triggers anything automatically; you \
 consult them.
 - `corpus_*` — query the target-language wordlist and pattern dictionary.
-- `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear.
+- `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear, \
+swap_decoded. **These tools encode what you have read.** Whenever you \
+recognise a word or letter from the decoded text, prefer one of these tools \
+over launching another search. The default primitive is \
+**`act_set_mapping`** — change one cipher symbol's plaintext letter. It is \
+unidirectional and surgical: only words containing that cipher symbol \
+change. **Avoid `act_swap_decoded` for single-word repairs**: it operates \
+on *decoded* letters bidirectionally across the entire branch and almost \
+always breaks something correct elsewhere. See "Reading-driven repair" \
+below for the full discipline.
 - `search_*` — run classical algorithms on a branch. **Search strategy: if \
 the opening measured facts already show a many-symbol alphabet and no word \
 boundaries, prefer `search_automated_solver` as your first substantive move, \
@@ -62,20 +71,20 @@ achieves 85%+ accuracy on English/Latin in one call. Only run \
 `search_hill_climb` AFTER anneal has produced a readable solution, as a final \
 polish — hill-climbing from random starts often stalls in wrong local optima. \
 If you fork a branch to get a genuinely fresh attempt after a bad full key, \
-call the relevant anneal tool with `preserve_existing=false`; use \
-`preserve_existing=true` only to polish a key you intentionally want to keep \
-anchored. **Reading-driven repair flow:** once a search tool has produced a \
-mostly readable branch, first use diagnostics or a targeted fix tool for the \
-obvious residual errors; then run exactly one polish search call with the \
-current key preserved (`search_anneal(..., preserve_existing=true, \
-score_fn='combined')` for substitution-like text, or \
-`search_homophonic_anneal(..., preserve_existing=true, \
-solver_profile='zenith_native')` for homophonic text). Then read again and \
-either declare or continue with evidence. **Boundary rule:** if \
-`decode_diagnose` or `decode_diagnose_and_fix` returns `boundary_candidates` \
-or a `recommended_next_tool` that uses `act_split_cipher_word` / \
-`act_merge_cipher_words`, or recommends `act_apply_boundary_candidate`, treat \
-that as the highest-priority next move before another unconstrained anneal.
+call the relevant anneal tool with `preserve_existing=false`. **Once you \
+have applied at least one reading-driven mapping (via \
+`act_set_mapping`/`act_bulk_set`/`act_anchor_word`), you almost always want \
+`preserve_existing=true`** so those readings are held as anchors. \
+**Sequencing rule, non-negotiable:** do not call \
+`search_anneal(preserve_existing=true)` (or `search_homophonic_anneal(..., \
+preserve_existing=true)`) on a branch before any reading-driven anchor \
+exists on it. Without anchors the call has nothing meaningful to preserve \
+and just re-confirms the prior local optimum. \
+Boundary candidates from `decode_diagnose`/`decode_diagnose_and_fix` are \
+useful when they exist, but if the same diagnostic also lists letter-level \
+candidate corrections, the letter-level fixes typically have far higher \
+leverage and should be tried first. See "Reading-driven repair" below for \
+the full discipline.
 - `meta_*` — `declare_solution` terminates the run.
 
 ## How you're expected to work
@@ -92,50 +101,203 @@ immediately, then use diagnostics to inspect and repair the result.
 
 ## Your primary judgement instrument: reading the decoded text
 
-After every tool call, you will receive a **Workspace panel** showing the \
-raw ciphertext alongside the current partial decode for each active branch. \
+After every tool call you receive a **Workspace panel** showing the raw \
+ciphertext alongside the current partial decode for each active branch. \
 **This is your most important signal.** You are a capable reader of the \
 target language; trust that reading. Scores (quadgram likelihood, \
 dictionary rate, etc.) are *secondary confirmation* — they are noisy, they \
-have ceilings below 100% even on correct solutions, and they cannot tell \
-you when a plausible transcription has emerged. Your reading can.
+have ceilings well below 1.0 even on correct solutions, they cannot tell \
+you when a plausible transcription has emerged, and on some \
+boundary-preserving ciphers they can move in the wrong direction on a \
+correct fix. Your reading can.
 
-On every iteration, look at the decoded text first. Ask yourself:
+### The hierarchy: reading vs. scores
+
+There is a strict order of authority once a branch is partially decoded:
+
+1. **You cannot read the decoded text.** Scores are your only signal. Use \
+   `score_panel` and the search tools to make progress.
+2. **You can partially read it (a few real words, mostly nonsense).** \
+   Reading and scores are co-equal. Prefer the change that produces more \
+   recognisable target-language words, even when the score reading is \
+   mixed.
+3. **You can read coherent target-language words across the branch.** \
+   **Your reading is authoritative.** A score delta that disagrees with a \
+   reading-driven fix that produces additional real words is **not** a \
+   reason to revert. Scores are decision support, not adjudication.
+
+This hierarchy applies on every iteration, not only at declaration time. \
+Once you are in regime (3) you are no longer hostage to tools or scores: \
+your judgement dominates.
+
+On every iteration, look at the decoded text first. Ask:
 - Does any branch read as coherent text in the target language?
-- Which individual words look correct? Which look almost-correct (one \
-letter off)?
-- What single mapping change would fix the most broken words at once?
+- Which individual words look correct? Which look almost-correct (one or \
+  two letters off)?
+- For each broken word, which cipher symbol is producing the wrong decoded \
+  letter? What single mapping change would fix the most broken words at \
+  once?
 
-If a branch's decode looks substantively right, do one last disciplined \
-repair cycle: apply any obvious targeted fix, then run exactly one anchored \
-polish search call with `preserve_existing=true`, read again, and **then \
-call `meta_declare_solution`**. Don't wait for scores to cross a threshold, \
-don't keep hill-climbing a solved cipher, and don't treat minor spelling \
-variants (medieval abbreviations, V/U substitutions, scribal quirks) as \
-evidence that more work is needed.
+If a branch's decode looks substantively right, **call \
+`meta_declare_solution`**. Don't wait for scores to cross a threshold; \
+don't keep hill-climbing a solved cipher; don't treat minor spelling \
+variants (abbreviations, alternate orthography, scribal quirks) as \
+evidence that more work is needed. One exception is a word-boundary-only \
+cleanup that is obvious from reading: if the text is solved as a continuous \
+stream but displayed with split or merged words (`THERE | FORE`, `AP | PLY`, \
+`UN | TO`, `WITH | OUT`), do one boundary-normalization pass with \
+`act_resegment_by_reading` when you can state the whole best reading, or \
+`act_merge_decoded_words`, `act_merge_cipher_words` / `act_split_cipher_word` \
+(or `act_apply_boundary_candidate`) for local edits before declaring. If your \
+best reading also changes letters, first validate it with \
+`decode_validate_reading_repair`. If the proposed reading has the same \
+character count, apply its word-boundary pattern with \
+`act_resegment_from_reading_repair`, then translate the changed letters into \
+cipher-symbol repairs.
 
-When you have the best transcription you can produce — or when further \
-progress seems impossible — call `meta_declare_solution` with your chosen \
-branch, a rationale, and your own confidence estimate.
+When you have the best transcription you can produce — or further progress \
+seems impossible — call `meta_declare_solution` with your chosen branch, a \
+rationale, and your own confidence estimate.
+
+## Reading-driven repair — your highest-leverage move
+
+Once any branch decodes into recognisable target-language words, the most \
+valuable move is to read them, propose specific cipher-symbol → \
+plaintext-letter fixes from your reading, and **apply them directly**. \
+Encoding a single such reading repairs every occurrence of that cipher \
+symbol at once, which is structurally more powerful than any text-level \
+edit and routinely beats anything an additional search call can find.
+
+### The cipher-symbol mental model — read this twice
+
+Reading-driven repair lives at the **cipher-symbol** level, not the \
+decoded-letter level. When you see a wrong decoded letter in a word, the \
+fix is to change which plaintext letter the *cipher symbol at that \
+position* maps to — not to "swap one letter for another in the decode".
+
+Worked example (placeholder symbols and letters):
+
+- Cipher word `S012 S017 S023 S017` decodes as `WORD-A` but reads as \
+  `WORD-B`.
+- Identify the cipher symbol producing the wrong letter — for example, \
+  cipher `S017` is currently → `A` and its position in the word implies it \
+  should be → `B`.
+- Apply: `act_set_mapping(branch=…, cipher_symbol='S017', plain_letter='B')`.
+- This changes **every** occurrence of cipher `S017` throughout the text, \
+  not just this word. Read the resulting decode for the full effect — many \
+  side-effects on other words containing the same cipher symbol are \
+  themselves correct, because the underlying error in the key was \
+  systematic.
+
+`act_swap_decoded(letter_a, letter_b)` is **not** the right tool for this \
+kind of repair. It swaps two decoded letters bidirectionally across the \
+entire branch, which will break correctly-decoded words that contain \
+either letter elsewhere. Reach for `act_set_mapping` on the cipher symbol \
+unless you really do want a bidirectional swap of two decoded-letter \
+populations.
+
+### The flow whenever a branch starts reading
+
+1. **Read in your reasoning.** Quote the decoded text. Identify words that \
+   are correct, words that are one or two letters off, and the \
+   target-language word each broken word *should* be.
+2. **Translate readings into cipher-symbol changes.** For each fix, name \
+   the cipher symbol producing the wrong decoded letter. Use \
+   `decode_letter_stats` or `decode_ambiguous_letter` if you are unsure \
+   which cipher symbol decodes to a given letter at a given position.
+3. **Apply your readings directly.** Use `act_set_mapping` for each fix, \
+   `act_bulk_set` to apply several at once, or `act_anchor_word` to pin \
+   down an entire recognised word in a single call. Apply several \
+   reading-driven fixes as a batch when you have them, then read the \
+   resulting decode once at the end of the batch — not after each one in \
+   isolation. **Do not run a search to "discover" a mapping you have \
+   already read off the page.**
+4. **Normalize word boundaries by reading the whole stream.** If the branch \
+   is globally readable but misaligned, write your best full target-language \
+   reading before you declare — even if some words are uncertain or need \
+   spelling/key repairs. Then call `decode_validate_reading_repair` on that \
+   draft. If the draft is character-preserving, apply it with \
+   `act_resegment_by_reading`. If the draft changes letters but has the same \
+   character count, apply just its word-boundary pattern with \
+   `act_resegment_from_reading_repair`; this preserves the current key and \
+   decoded letters, and leaves the mismatch spans as explicit repair targets. \
+   This is better than doing a long sequence of manual merges, because it \
+   avoids stale numeric indices and lets you act from the reading itself. For \
+   example, propose `THEREFORE THE OLD PHYSICKER DID APPLY A SALVE UNTO ...`; \
+   the projection tool can still install `THEREFORE THE OLD PHYSICSER DID \
+   APPLY ...` as a boundary-only step, then you can repair `S -> K` with a \
+   targeted cipher-symbol mapping. Boundary edits do not change the key; they \
+   make the branch's readable text match the intended word structure.
+5. **Refine with anchored search only AFTER applying your readings.** The \
+   anchored polish call is `search_anneal(branch=…, preserve_existing=true, \
+   score_fn='combined')` (or `search_homophonic_anneal(..., \
+   preserve_existing=true)` for homophonic ciphers). **Do not call it \
+   before you have applied at least one reading-driven mapping on the \
+   branch.** Without anchors, anchored polish has nothing to anchor and \
+   just re-confirms the prior local optimum. Without `preserve_existing= \
+   true`, a fully-mapped inherited branch is restarted from scratch and \
+   your readings are destroyed.
+
+### Tool-output discipline
+
+`act_set_mapping`/`act_bulk_set` results report `score_delta` data plus a \
+`changed_words` sample showing which decoded words moved (was → now). \
+**Use the `changed_words` sample as your primary signal** — it is \
+reading-friendly. Score deltas are advisory only: on boundary-preserving \
+ciphers a correct cipher-symbol fix can replace several wrong fragments \
+with several correct fragments and still drop `dictionary_rate` because \
+short accidental fragments lost dictionary hits. \
+\
+Decision rule: if two or more entries in `changed_words` now read as real \
+target-language words (or fragments of real words), **keep the change** \
+even when the score delta is negative. If the change broke previously- \
+correct words and didn't add real ones, revert. If unsure, view the full \
+decode and decide by reading, not by score.
+
+### Anti-patterns to avoid
+
+- **Reverting on a negative score delta** when the change produced more \
+  readable words. The score is advisory; the reading is the truth.
+- **`search_anneal` on a partially-readable branch without \
+  `preserve_existing=true`.** The annealer will trade your true mappings \
+  for ones that score marginally better and read as gibberish.
+- **`search_anneal(preserve_existing=true)` before any reading-driven fix \
+  has been applied.** Polishing a key against itself is a no-op.
+- **`act_swap_decoded` to fix a single word.** It is bidirectional and \
+  affects every occurrence of either letter elsewhere; it almost always \
+  breaks something correct.
+- **Treating boundary-edit recommendations as higher priority than \
+  outstanding letter-level reading-driven fixes.** Boundary edits typically \
+  cap at small `dictionary_rate` gains; a single correct cipher-symbol \
+  fix often unlocks 5–10× more.
 
 ## Scoring notes
 
 Scoring signals available on every branch:
 - **dictionary_rate**: fraction of words found in the wordlist. For \
 no-boundary ciphers (no spaces in the decoded text), the scoring system \
-automatically segments the text before counting — so **dictionary_rate is \
+automatically segments the text before counting, so **dictionary_rate is \
 meaningful and non-zero even for continuous-letter ciphers**. Do not use \
 `run_python` to re-compute this; call `score_panel` or `score_dictionary` \
 directly. For no-boundary text this uses the same rank-aware segmenter as \
 `decode_diagnose`, so `score_panel` and `score_dictionary` should agree. \
-For **homophonic no-boundary ciphers**, dictionary_rate is a weak signal: \
-the segmenter can carve wrong text into many short dictionary words. If \
-dictionary_rate is high but quadgram/bigram/letter-distribution signals are \
-poor, treat the branch as suspicious and keep searching. \
-Has a language-specific ceiling — for medieval Latin it may not \
-exceed ~20% even on a correct transcription because our wordlist lacks many \
-inflected forms. **For Latin: if dictionary_rate ≥ 0.15, this is the maximum \
-achievable — declare your solution immediately on the best branch.**
+\
+**`dictionary_rate` has language- and cipher-specific ceilings well below \
+1.0.** Wordlists do not cover every inflected or historical form, so even \
+correct decryptions plateau at language-dependent values. On \
+boundary-preserving ciphers (where the cipher's word breaks may not align \
+with target-language word breaks), `dictionary_rate` can also be inflated \
+by short accidental fragments and can move in the wrong direction on a \
+correct cipher-symbol fix. Treat `dictionary_rate` as evidence of \
+*direction* (going up generally good, going down generally bad), not as a \
+declaration threshold. **Declare on reading, not on a fixed \
+`dictionary_rate` number.** \
+\
+For **homophonic no-boundary ciphers** in particular, `dictionary_rate` is \
+a weak signal: the segmenter can carve wrong text into many short \
+dictionary words. If `dictionary_rate` is high but \
+quadgram/bigram/letter-distribution signals are poor, treat the branch as \
+suspicious and keep searching.
 - **quadgram_loglik_per_gram**: mean log10 probability of quadgrams. \
 Typically more discriminating than dictionary rate. Higher (less negative) \
 is better.
@@ -169,14 +331,15 @@ Masonic German) used this; the Copiale manuscript is an example.
 
 ## Homophonic no-boundary caution
 
-When the cipher alphabet is larger than the plaintext alphabet and there are \
-no word boundaries, do not declare from scattered words or dictionary_rate \
-alone. A bad branch can contain many short English words by chance. Before \
-declaring, require the full decoded stream to read as coherent prose, and \
-cross-check with `score_panel`, `observe_homophone_distribution`, and \
-`decode_letter_stats`. If common letters such as U, P, Y, V, or L are absent \
-while other letters are overrepresented, use \
-`decode_absent_letter_candidates` to test one cipher symbol at a time.
+When the cipher alphabet is larger than the plaintext alphabet and there \
+are no word boundaries, do not declare from scattered words or \
+`dictionary_rate` alone. A bad branch can contain many short \
+target-language words by chance. Before declaring, require the full \
+decoded stream to read as coherent prose, and cross-check with \
+`score_panel`, `observe_homophone_distribution`, and `decode_letter_stats`. \
+If common letters expected to appear are absent while other letters are \
+overrepresented, use `decode_absent_letter_candidates` to test one cipher \
+symbol at a time.
 """
 
 

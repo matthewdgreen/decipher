@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -211,3 +212,31 @@ class TestBenchmarkLoader:
         assert "S007" in td.context_canonical_transcription
         assert "context" in td.context_plaintext
         assert [r.id for r in td.context_records] == ["test_page2"]
+
+    def test_english_borg_analog_fixture_loads_and_has_boundary_drift(self):
+        root = Path(__file__).resolve().parent.parent / "fixtures" / "benchmarks" / "english_borg_analog"
+        loader = BenchmarkLoader(root)
+        tests = loader.load_tests("english_borg_analog.jsonl")
+        assert [t.test_id for t in tests] == ["english_borg_analog_001"]
+
+        td = loader.load_test_data(tests[0])
+        ct = parse_canonical_transcription(td.canonical_transcription)
+        assert td.plaintext_language == "en"
+        assert len(ct.tokens) == 125
+        assert len(ct.words) == 35
+
+        source_boundary_decode = (
+            "THERE | FORE | THE | OLD | PHYSICK | ER | DID | AP | PLY | A | "
+            "SALVE | UN | TO | THE | SORE | HEN | AND | THE | FOWL | DID | "
+            "LIVE | AFTER | WARD | HE | WROTE | THAT | MANY | SUCH | CURES | "
+            "WERE | SWEET | AND | WITH | OUT | PAIN"
+        )
+        score = score_decryption(
+            "english_borg_analog_001",
+            source_boundary_decode,
+            td.plaintext,
+            agent_score=0.0,
+            status="completed",
+        )
+        assert score.char_accuracy == 1.0
+        assert score.word_accuracy < 0.1

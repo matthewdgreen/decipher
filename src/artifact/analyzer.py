@@ -45,7 +45,21 @@ def analyze_artifact(artifact: dict[str, Any]) -> list[ArtifactFinding]:
     findings.extend(_check_worsening_mutations(tool_calls))
     findings.extend(_check_declaration_after_worse_mutation(tool_calls))
     findings.extend(_check_declared_branch_accuracy(artifact))
+    findings.extend(_check_score_overrode_reading(tool_calls, artifact))
+    findings.extend(_check_unattempted_reading_fix(artifact))
     return findings
+
+
+# Reading-driven repair primitives — see prompts_v2.py "Reading-driven
+# repair". These are the cipher-symbol-level mutation tools the agent should
+# reach for when it recognises target-language words in the decoded text.
+_READING_PRIMITIVES = frozenset(
+    ("act_set_mapping", "act_bulk_set", "act_anchor_word")
+)
+# Loose textual signals that an assistant turn is voicing a reading-driven
+# fix hypothesis. False positives are tolerable: the goal is to surface
+# conversations where a reading was voiced and then dropped.
+_READING_HINTS = ("→", "->", "should be", "should map")
 
 
 def summarize_findings(findings: list[ArtifactFinding]) -> dict[str, Any]:
@@ -246,3 +260,138 @@ def _result_dict(call: dict[str, Any]) -> dict[str, Any]:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _check_score_overrode_reading(
+    tool_calls: list[dict[str, Any]],
+    artifact: dict[str, Any],
+) -> list[ArtifactFinding]:
+    """Flag reading-driven mapping changes that were dropped despite
+    producing multiple word-level edits.
+
+    A reading-driven primitive (`act_set_mapping`, `act_bulk_set`,
+    `act_anchor_word`) that touches >= 2 decoded words but reports a
+    negative `dictionary_rate` delta is the textbook score-vs-reading
+    conflict on boundary-preserved ciphers. If the run later declares a
+    *different* branch, the agent overrode its own reading on the strength
+    of the score signal — the failure pattern this label exists to track.
+    """
+    findings: list[ArtifactFinding] = []
+    solution = artifact.get("solution", {})
+    declared_branch = (
+        solution.get("branch") if isinstance(solution, dict) else None
+    )
+
+    for call in tool_calls:
+        name = call.get("tool_name")
+        if name not in _READING_PRIMITIVES:
+            continue
+        result = _result_dict(call)
+        delta = result.get("score_delta") if isinstance(result, dict) else None
+        if not isinstance(delta, dict):
+            continue
+        dict_delta = delta.get("dict_rate_delta")
+        if dict_delta is None or dict_delta >= 0:
+            continue
+        changed = result.get("changed_words")
+        if not isinstance(changed, list) or len(changed) < 2:
+            continue
+        branch = result.get("branch") or (
+            (call.get("arguments") or {}).get("branch")
+        )
+        if declared_branch and branch == declared_branch:
+            # Change was kept on the declared branch — no override pattern.
+            continue
+        findings.append(ArtifactFinding(
+            label="score_overrode_reading",
+            severity="warning",
+            message=(
+                "Reading-driven mapping change moved >= 2 decoded words "
+                "but lowered dictionary_rate; the run later declared a "
+                "different branch. Likely score-vs-reading conflict — see "
+                "AGENTS.md → 'Reading-driven repair discipline'."
+            ),
+            iteration=call.get("iteration"),
+            tool_name=name,
+            evidence={
+                "branch": branch,
+                "declared_branch": declared_branch,
+                "score_delta": delta,
+                "changed_words_count": len(changed),
+                "changed_words_sample": changed[:4],
+            },
+        ))
+    return findings
+
+
+def _check_unattempted_reading_fix(
+    artifact: dict[str, Any],
+) -> list[ArtifactFinding]:
+    """Flag iterations where assistant reasoning voices a reading-driven
+    fix hypothesis but no mutation primitive follows within two iterations.
+
+    Looks for arrow notation (`→`, `->`) and 'should be' / 'should map'
+    patterns in assistant text. Iterations are tracked by counting assistant
+    turns; tool calls in the next two assistant turns are checked for any
+    reading-driven primitive.
+    """
+    findings: list[ArtifactFinding] = []
+    turns = list(_walk_assistant_turns(artifact))
+    for i, (iter_num, text, tool_names) in enumerate(turns):
+        if not text or not any(p in text for p in _READING_HINTS):
+            continue
+        # Hypothesis voiced in this turn — does any mutation follow within
+        # this or the next two assistant turns?
+        followed = any(
+            tn in _READING_PRIMITIVES
+            for j in range(i, min(i + 3, len(turns)))
+            for tn in turns[j][2]
+        )
+        if followed:
+            continue
+        snippet = text.strip().replace("\n", " ")
+        findings.append(ArtifactFinding(
+            label="unattempted_reading_fix",
+            severity="warning",
+            message=(
+                "Assistant reasoning voiced a reading-driven fix but no "
+                "act_set_mapping/act_bulk_set/act_anchor_word call followed "
+                "within two iterations."
+            ),
+            iteration=iter_num,
+            evidence={"sample": snippet[:300]},
+        ))
+    return findings
+
+
+def _walk_assistant_turns(
+    artifact: dict[str, Any],
+):
+    """Yield (iteration_number, text_content, tool_names) for each
+    assistant turn in the run.
+
+    Iteration numbers are derived from sequence order — assistant turn N
+    corresponds to iteration N. This matches v2 loop semantics where each
+    iteration sends one assistant message, optionally including tool_use
+    blocks.
+    """
+    iter_num = 0
+    for msg in artifact.get("messages", []):
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        iter_num += 1
+        text_parts: list[str] = []
+        tool_names: list[str] = []
+        content = msg.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                btype = block.get("type")
+                if btype == "text":
+                    text_parts.append(str(block.get("text", "")))
+                elif btype == "tool_use":
+                    tool_names.append(str(block.get("name", "")))
+        elif isinstance(content, str):
+            text_parts.append(content)
+        yield iter_num, "\n".join(text_parts), tool_names

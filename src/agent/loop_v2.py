@@ -98,6 +98,25 @@ TOOL_RESULT_STUB = "[result omitted from history — see current workspace panel
 
 # Keep the last N iterations of full tool results; older ones are stubbed out.
 TOOL_RESULT_HISTORY_DEPTH = 4
+READING_WORKFLOW_GATE_TURNS = 2
+
+FULL_READING_WORKFLOW_TOOL_NAMES = {
+    "decode_validate_reading_repair",
+    "act_resegment_by_reading",
+    "act_resegment_from_reading_repair",
+}
+
+PENULTIMATE_ALLOWED_TOOL_NAMES = {
+    "decode_show",
+    "score_panel",
+    "score_dictionary",
+    "decode_validate_reading_repair",
+    "act_resegment_by_reading",
+    "act_resegment_from_reading_repair",
+    "meta_declare_solution",
+}
+
+FINAL_ALLOWED_TOOL_NAMES = {"meta_declare_solution"}
 
 FINAL_ITERATION_PREFLIGHT = (
     "🚨 **THIS IS YOUR FINAL ACTION TURN.** "
@@ -105,6 +124,32 @@ FINAL_ITERATION_PREFLIGHT = (
     "`meta_declare_solution(branch='...', rationale='...', self_confidence=...)` "
     "now. Do not call diagnostic or repair tools on this turn. An imperfect "
     "declared branch scores; no declaration is treated as a failed run."
+)
+
+PENULTIMATE_READING_WORKFLOW_PREFLIGHT = (
+    "⚠ **ONE TURN LEFT AFTER THIS.** If any branch is readable but still has "
+    "word-boundary, segmentation, or alignment issues, this is your last safe "
+    "turn to run the full-reading workflow. Do NOT spend this turn on another "
+    "local split/merge, bulk mapping, or free search. Tool access is restricted "
+    "on this turn: some tools are no longer available, and you must only use "
+    "the allowed tools shown to you. The available path is the full-reading "
+    "workflow. Write your best complete target-language reading and prefer the "
+    "actuator now: "
+    "call `act_resegment_by_reading` if it is character-preserving, or "
+    "`act_resegment_from_reading_repair` if it changes letters but has the same "
+    "character count. Use `decode_validate_reading_repair` first only if you "
+    "truly cannot tell which actuator applies. Then use the final turn to "
+    "declare the best branch."
+)
+
+READING_WORKFLOW_GATE_PREFLIGHT = (
+    "⚠ **FULL-READING WORKFLOW WINDOW.** The run is near its final turns. "
+    "If a branch is readable but has boundary/alignment drift, local edits and "
+    "free search are now gated off. Some tools are no longer allowed; only use "
+    "the tools available on this turn. Draft the best complete target-language "
+    "reading and use `act_resegment_by_reading` or "
+    "`act_resegment_from_reading_repair`; use `decode_validate_reading_repair` "
+    "only if you need to choose between those two."
 )
 
 
@@ -183,6 +228,41 @@ def _compress_history(messages: list[dict]) -> list[dict]:
                 new_content.append(c)
         out.append({**m, "content": new_content})
     return out
+
+
+def _filter_tool_definitions(allowed_names: set[str]) -> list[dict[str, Any]]:
+    return [tool for tool in TOOL_DEFINITIONS if tool["name"] in allowed_names]
+
+
+def _has_used_full_reading_workflow(executor: WorkspaceToolExecutor) -> bool:
+    return any(
+        call.tool_name in FULL_READING_WORKFLOW_TOOL_NAMES
+        for call in executor.call_log
+    )
+
+
+def _is_reading_workflow_gate_turn(
+    executor: WorkspaceToolExecutor,
+    iteration: int,
+    max_iterations: int,
+) -> bool:
+    return (
+        max_iterations > READING_WORKFLOW_GATE_TURNS
+        and max_iterations - READING_WORKFLOW_GATE_TURNS <= iteration < max_iterations
+        and not _has_used_full_reading_workflow(executor)
+    )
+
+
+def _tool_definitions_for_turn(
+    executor: WorkspaceToolExecutor,
+    iteration: int,
+    max_iterations: int,
+) -> list[dict[str, Any]]:
+    if iteration == max_iterations:
+        return _filter_tool_definitions(FINAL_ALLOWED_TOOL_NAMES)
+    if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
+        return _filter_tool_definitions(PENULTIMATE_ALLOWED_TOOL_NAMES)
+    return TOOL_DEFINITIONS
 
 
 def _score_branch_for_panel(
@@ -367,6 +447,10 @@ def build_workspace_panel(
         )
         lines.append("")
 
+    if iters_left == 1:
+        lines.append(PENULTIMATE_READING_WORKFLOW_PREFLIGHT)
+        lines.append("")
+
     if no_boundaries:
         lines.append(
             "**Read the decoded stream above.** This cipher has no word "
@@ -396,7 +480,20 @@ def build_workspace_panel(
             "solver_profile='zenith_native')`, then read again. If a diagnose "
             "tool returns `boundary_candidates` or a `recommended_next_tool` "
             "using split/merge or `act_apply_boundary_candidate`, do that "
-            "before another free anneal. "
+            "before another free anneal. If the character stream reads as "
+            "solved but words are visibly split or merged (for example "
+            "`THERE | FORE`, `AP | PLY`, `UN | TO`, `WITH | OUT`), apply "
+            "those boundary edits before declaring. Prefer one complete "
+            "`act_resegment_by_reading` proposal when you can read the whole "
+            "stream; use `act_merge_decoded_words` for smaller manual merges "
+            "so earlier edits cannot make later numeric word indices stale. "
+            "If your best reading changes letters as well as spaces, validate "
+            "it first with `decode_validate_reading_repair`; if the character "
+            "count matches, apply its boundary pattern with "
+            "`act_resegment_from_reading_repair`, then apply targeted "
+            "cipher-symbol repairs. Merge likely suffix/piece splits too, "
+            "even if the merged spelling is archaic or not in the dictionary, "
+            "when leaving the split would shift all following words. "
             "**IMPORTANT:** Declaring a partial solution is always better than "
             "not declaring. If you can read even a few correct words "
             "(ET, PER, IN, EST…) do not drift into many tiny edits: make one "
@@ -475,6 +572,7 @@ def run_v2(
         word_list=word_list,
         pattern_dict=pattern_dict,
     )
+    executor.set_max_iterations(max_iterations)
 
     # --- initial context ---
     ic_value = ic.index_of_coincidence(cipher_text.tokens, cipher_text.alphabet.size)
@@ -501,6 +599,20 @@ def run_v2(
         executor.set_iteration(iteration)
         emit("iteration_start", {"iteration": iteration})
 
+        if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
+            gate_text = (
+                PENULTIMATE_READING_WORKFLOW_PREFLIGHT
+                if iteration == max_iterations - 1
+                else READING_WORKFLOW_GATE_PREFLIGHT
+            )
+            messages.append({
+                "role": "user",
+                "content": [{
+                    "type": "text",
+                    "text": gate_text,
+                }],
+            })
+
         if iteration == max_iterations:
             messages.append({
                 "role": "user",
@@ -510,11 +622,17 @@ def run_v2(
         # Compress history before sending: stub stale panels and old tool
         # results to keep total input tokens well under rate-limit ceilings.
         send_messages = _compress_history(messages)
+        tool_definitions = _tool_definitions_for_turn(
+            executor,
+            iteration,
+            max_iterations,
+        )
+        executor.set_allowed_tool_names({tool["name"] for tool in tool_definitions})
 
         try:
             response = claude_api.send_message(
                 messages=send_messages,
-                tools=TOOL_DEFINITIONS,
+                tools=tool_definitions,
                 system=system,
                 max_tokens=8192,
             )
