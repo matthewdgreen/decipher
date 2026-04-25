@@ -594,6 +594,68 @@ def test_search_homophonic_anneal_can_use_zenith_native_profile(monkeypatch):
     assert out["model_source"].endswith("models/ngram5_en.bin")
 
 
+def test_search_homophonic_anneal_preserve_existing_passes_fixed_cipher_ids(monkeypatch):
+    raw = "01 02 03 01 02 03"
+    alphabet = Alphabet(["01", "02", "03"])
+    ct = CipherText(raw=raw, alphabet=alphabet, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"ABC"},
+        word_list=["ABCABCABCABC"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt_alpha = ws.plaintext_alphabet
+    ws.set_mapping("main", alphabet.id_for("01"), pt_alpha.id_for("A"))
+
+    monkeypatch.setenv("DECIPHER_NGRAM_MODEL_EN", "models/ngram5_en.bin")
+
+    class FakeModel:
+        log_probs = [0.0] * 10
+
+    seen: dict[str, object] = {}
+
+    result = SimpleNamespace(
+        plaintext="ABCABC",
+        key={0: 0, 1: 1, 2: 2},
+        score=-1.23,
+        normalized_score=-1.23,
+        epochs=2,
+        sampler_iterations=50,
+        accepted_moves=7,
+        improved_moves=3,
+        elapsed_seconds=0.4,
+        fixed_symbols=1,
+        metadata={"cipher_symbols": 3},
+        candidates=[SimpleNamespace(epoch=1, score=-1.23, normalized_score=-1.23, plaintext="ABCABC", key={0: 0, 1: 1, 2: 2})],
+    )
+
+    def fake_zenith_solve(**kwargs):
+        seen["initial_key"] = dict(kwargs["initial_key"])
+        seen["fixed_cipher_ids"] = set(kwargs["fixed_cipher_ids"])
+        return result
+
+    monkeypatch.setattr("analysis.zenith_solver.load_zenith_binary_model", lambda path: FakeModel())
+    monkeypatch.setattr("analysis.zenith_solver.zenith_solve", fake_zenith_solve)
+    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language: Path("models/ngram5_en.bin"))
+    monkeypatch.setattr("automated.runner._maybe_repair_zenith_native_key", lambda **kwargs: {"applied": False, "reason": "test", "key": dict(kwargs["key"]), "plaintext": kwargs["plaintext"]})
+    monkeypatch.setattr("automated.runner._maybe_anchor_refine_zenith_native", lambda **kwargs: {"applied": False, "reason": "test", "key": dict(kwargs["key"]), "plaintext": kwargs["plaintext"], "score": kwargs["anneal_score"]})
+
+    out = ex._tool_search_homophonic_anneal({
+        "branch": "main",
+        "solver_profile": "zenith_native",
+        "preserve_existing": True,
+        "epochs": 2,
+        "sampler_iterations": 50,
+        "seed": 1,
+    })
+
+    assert out["preserve_existing"] is True
+    assert seen["initial_key"] == {0: pt_alpha.id_for("A")}
+    assert seen["fixed_cipher_ids"] == {0}
+
+
 def test_load_zenith_csv_model_reads_requested_order(tmp_path):
     model_path = tmp_path / "model.csv"
     model_path.write_text(

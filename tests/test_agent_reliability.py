@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent.loop_v2 import FINAL_ITERATION_PREFLIGHT, run_v2
+from agent.loop_v2 import FINAL_ITERATION_PREFLIGHT, build_workspace_panel, run_v2
 from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
@@ -288,6 +288,240 @@ def test_search_anneal_restarts_complete_inherited_key_by_default(monkeypatch):
     assert fresh["preserve_existing"] is False
     assert fresh["preserved_symbols"] == 0
     assert fresh["auto_seeded_symbols"] == 3
+
+
+def test_search_anneal_runs_key_repair_and_anchor_refine(monkeypatch):
+    ex = _executor_for("ABC", separator=None)
+    ws = ex.workspace
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+
+    repaired_key = {
+        alpha.id_for("A"): pt.id_for("T"),
+        alpha.id_for("B"): pt.id_for("H"),
+        alpha.id_for("C"): pt.id_for("E"),
+    }
+    refined_key = {
+        alpha.id_for("A"): pt.id_for("E"),
+        alpha.id_for("B"): pt.id_for("T"),
+        alpha.id_for("C"): pt.id_for("A"),
+    }
+
+    def fake_anneal(session, score_fn, max_steps, t_start, t_end):
+        session.set_full_key({
+            alpha.id_for("A"): pt.id_for("A"),
+            alpha.id_for("B"): pt.id_for("B"),
+            alpha.id_for("C"): pt.id_for("C"),
+        })
+        return 0.5
+
+    monkeypatch.setattr(tools_v2, "simulated_anneal", fake_anneal)
+    monkeypatch.setattr(
+        tools_v2.automated_runner,
+        "_run_key_consistent_repair",
+        lambda **kwargs: {
+            "applied": True,
+            "reason": "test",
+            "key": dict(repaired_key),
+        },
+    )
+    monkeypatch.setattr(
+        tools_v2.automated_runner,
+        "_maybe_anchor_refine_substitution",
+        lambda **kwargs: {
+            "applied": True,
+            "reason": "test",
+            "key": dict(refined_key),
+            "score": 1.75,
+        },
+    )
+
+    out = ex._tool_search_anneal({
+        "branch": "main",
+        "steps": 1,
+        "restarts": 1,
+        "score_fn": "combined",
+    })
+
+    assert out["key_repair"]["applied"] is True
+    assert out["anchor_refine"]["applied"] is True
+    assert out["after"] == 1.75
+    assert ws.get_branch("main").key == refined_key
+
+
+def test_split_and_merge_cipher_word_tools_update_branch_local_boundaries():
+    ex = _executor_for("ABC AB", separator=" ")
+    ws = ex.workspace
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("B"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("C"))
+    ws.fork("exp")
+    ws.set_full_key("exp", dict(ws.get_branch("main").key))
+
+    split_out = ex._tool_act_split_cipher_word({
+        "branch": "exp",
+        "cipher_word_index": 0,
+        "split_at_token_offset": 1,
+    })
+
+    assert split_out["status"] == "ok"
+    assert split_out["left_cipher_word"] == "A"
+    assert split_out["right_cipher_word"] == "BC"
+    assert ws.apply_key("exp") == "A BC AB"
+    assert ws.apply_key("main") == "ABC AB"
+
+    merge_out = ex._tool_act_merge_cipher_words({
+        "branch": "exp",
+        "left_word_index": 0,
+    })
+
+    assert merge_out["status"] == "ok"
+    assert merge_out["merged_cipher_word"] == "ABC"
+    assert ws.apply_key("exp") == "ABC AB"
+
+
+def test_workspace_panel_reflects_branch_local_word_boundaries():
+    ex = _executor_for("ABC AB", separator=" ")
+    ws = ex.workspace
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("B"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("C"))
+    ws.fork("exp")
+    ws.set_full_key("exp", dict(ws.get_branch("main").key))
+    ws.split_cipher_word("exp", 0, 1)
+
+    panel = build_workspace_panel(
+        ws,
+        iteration=1,
+        language="en",
+        word_set={"A", "AB", "ABC", "BC"},
+    )
+
+    assert "### Branch `exp`" in panel
+    assert "custom_boundaries=3" in panel
+    assert "A | BC | AB" in panel
+
+
+def test_decode_diagnose_can_suggest_merging_adjacent_cipher_words():
+    alpha = Alphabet.from_text("AB CD", ignore_chars=set())
+    ct = CipherText(raw="AB CD", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"CURA"},
+        word_list=["CURA"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("U"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("R"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("A"))
+
+    out = ex._tool_decode_diagnose({"branch": "main"})
+
+    assert out["candidate_corrections"] == []
+    assert out["boundary_candidates"]
+    cand = out["boundary_candidates"][0]
+    assert cand["type"] == "merge"
+    assert cand["decoded_before"] == "CU | RA"
+    assert cand["decoded_after"] == "CURA"
+    assert "act_merge_cipher_words" in cand["suggested_call"]
+    assert out["recommended_next_tool"] == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+
+
+def test_decode_diagnose_can_suggest_splitting_cipher_word():
+    alpha = Alphabet.from_text("ABCDEF", ignore_chars=set())
+    ct = CipherText(raw="ABCDEF", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"CURA", "ET"},
+        word_list=["CURA", "ET"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("U"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("R"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("E"), pt.id_for("E"))
+    ws.set_mapping("main", alpha.id_for("F"), pt.id_for("T"))
+
+    out = ex._tool_decode_diagnose({"branch": "main"})
+
+    assert out["boundary_candidates"]
+    split = next(c for c in out["boundary_candidates"] if c["type"] == "split")
+    assert split["decoded_before"] == "CURAET"
+    assert split["decoded_after"] == "CURA | ET"
+    assert split["split_at_token_offset"] == 4
+    assert "act_split_cipher_word" in split["suggested_call"]
+    assert out["recommended_next_tool"] == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+
+
+def test_decode_diagnose_and_fix_surfaces_boundary_candidates_when_letter_fixes_are_weak():
+    alpha = Alphabet.from_text("AB CD", ignore_chars=set())
+    ct = CipherText(raw="AB CD", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"CURA"},
+        word_list=["CURA"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("U"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("R"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("A"))
+
+    out = ex._tool_decode_diagnose_and_fix({
+        "branch": "main",
+        "top_k": 5,
+        "min_evidence": 2,
+    })
+
+    assert out["fixes_applied"] == []
+    assert out["boundary_candidates"]
+    assert out["boundary_candidates"][0]["type"] == "merge"
+    assert "act_merge_cipher_words" in out["boundary_candidates"][0]["suggested_call"]
+    assert out["recommended_next_tool"] == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+    assert "Boundary edits look more promising than letter swaps here" in out["note"]
+
+
+def test_act_apply_boundary_candidate_applies_top_merge_suggestion():
+    alpha = Alphabet.from_text("AB CD", ignore_chars=set())
+    ct = CipherText(raw="AB CD", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"CURA"},
+        word_list=["CURA"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("U"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("R"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("A"))
+
+    out = ex._tool_act_apply_boundary_candidate({
+        "branch": "main",
+        "candidate_index": 0,
+    })
+
+    assert out["status"] == "ok"
+    assert out["applied_candidate"]["type"] == "merge"
+    assert out["merged_cipher_word"] == "ABCD"
+    assert ws.apply_key("main") == "CURA"
 
 
 def test_homophone_distribution_flags_absent_and_overloaded_letters():

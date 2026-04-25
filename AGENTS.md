@@ -154,6 +154,13 @@ directly:
   automated postprocessing: segmentation, one-edit local repairs, and local
   re-segmentation over suspicious windows. It is text-only and does not mutate
   branch keys.
+- Branches now also support local word-boundary overlays. The main agent tools
+  for this are:
+  - `act_split_cipher_word`
+  - `act_merge_cipher_words`
+  - `act_apply_boundary_candidate`
+  These are intended for Borg-style cases where the text is locally readable
+  but globally shifted by likely transcription boundary errors.
 
 This closes the earlier gap where the agent had automated preflight context
 but could only actively invoke the older homophonic annealer from inside the
@@ -347,14 +354,16 @@ Decipher does not currently have comparable continuous corpus n-gram files for L
 
 Current April 2026 state for non-English bundled models:
 - Latin now has both `models/ngram5_la.bin` (100 Gutenberg books) and
-  `models/ngram5_la_500.bin` (500 Gutenberg books) available locally for
+  `models/ngram5_la_500.bin` (a `max_books=500` Gutenberg run that currently
+  resolves to all 101 catalog-tagged Latin texts) available locally for
   focused experiments.
 - On the focused Borg `parity_borg_latin_borg_0109v` probe, forcing
   `zenith_native` with the Latin binary model reaches a reproducible
   no-boundary partial-Latin basin at about `13.9%` character accuracy with the
   full 8-seed budget, but still `0.0%` word accuracy.
-- The 500-book Latin model slightly improves the anneal score on that case
-  versus the 100-book model but does not yet move headline accuracy.
+- The larger "all available Gutenberg Latin" model slightly improves the
+  anneal score on that case versus the 100-book model but does not yet move
+  headline accuracy.
 - The shared no-boundary repair helper is now available to both automated and
   agentic paths. On a focused forced-`zenith_native` probe of `0109v` using
   `models/ngram5_la_500.bin`, the repair pass now applies a few conservative
@@ -375,6 +384,13 @@ Additional current read:
   win yet. The new shared repair helper improves that stream a little, which
   strengthens the case that this is a cleanup/segmentation problem at least as
   much as a raw search problem.
+- Focused agentic `0109v` work now has a better boundary-edit path too:
+  - diagnosis returns `boundary_candidates` plus `recommended_next_tool`
+  - prompt emphasis alone was not enough to make the agent use boundary tools
+  - the one-step wrapper `act_apply_boundary_candidate` did improve compliance
+  - best recent agentic `0109v` run reached about `14.2%` char / `8.9%` word
+  - working lesson: for agentic parity, a low-friction actuator can matter
+    more than an increasingly forceful recommendation
 
 ### 5. 🧭 **Context capability audit**
 Blind vs. context-aware parity is now the intended evaluation framework.

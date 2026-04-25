@@ -28,6 +28,7 @@ from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
 from analysis.solver import hill_climb_swaps, simulated_anneal
+from automated import runner as automated_runner
 from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
 from models.session import Session  # only used for search tools that take a Session
@@ -363,6 +364,65 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "auto_revert_if_worse": {"type": "boolean", "default": True},
             },
             "required": ["branch", "letter_a", "letter_b"],
+        },
+    },
+    {
+        "name": "act_split_cipher_word",
+        "description": (
+            "Split one ciphertext word into two words on this branch only. "
+            "Use this when the transcription's word boundary seems to be "
+            "missing, e.g. UELPULLO -> UEL | PULLO."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "cipher_word_index": {"type": "integer"},
+                "split_at_token_offset": {
+                    "type": "integer",
+                    "description": "Offset inside the chosen word where the new word should begin.",
+                },
+            },
+            "required": ["branch", "cipher_word_index", "split_at_token_offset"],
+        },
+    },
+    {
+        "name": "act_merge_cipher_words",
+        "description": (
+            "Merge two adjacent ciphertext words on this branch only. "
+            "Use this when a transcription likely inserted a spurious "
+            "boundary, e.g. CUR | A -> CURA."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "left_word_index": {
+                    "type": "integer",
+                    "description": "Index of the left word in the adjacent pair to merge.",
+                },
+            },
+            "required": ["branch", "left_word_index"],
+        },
+    },
+    {
+        "name": "act_apply_boundary_candidate",
+        "description": (
+            "Apply one of the currently suggested boundary edits for this branch. "
+            "Use this when decode_diagnose or decode_diagnose_and_fix returns "
+            "boundary_candidates or a recommended_next_tool for split/merge."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "candidate_index": {
+                    "type": "integer",
+                    "description": "Index into the current boundary_candidates list; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch"],
         },
     },
     # ----- search_* -----
@@ -962,8 +1022,10 @@ class WorkspaceToolExecutor:
     def _is_homophonic_cipher(self) -> bool:
         return self._alpha().size > self._pt_alpha().size
 
-    def _is_no_boundary_cipher(self) -> bool:
-        return len(self.workspace.cipher_text.words) <= 1
+    def _is_no_boundary_cipher(self, branch_name: str | None = None) -> bool:
+        if branch_name is None:
+            return len(self.workspace.cipher_text.words) <= 1
+        return len(self.workspace.effective_words(branch_name)) <= 1
 
     def _reference_letter_freq(self) -> dict[str, float]:
         """Return plaintext-letter reference frequencies as fractions."""
@@ -1067,7 +1129,7 @@ class WorkspaceToolExecutor:
                 f"({', '.join(over[:8])}); inspect them with "
                 "decode_absent_letter_candidates before declaring."
             )
-        if self._is_no_boundary_cipher() and dict_rate is not None and quad is not None:
+        if self._is_no_boundary_cipher(branch) and dict_rate is not None and quad is not None:
             if dict_rate >= 0.65 and quad < -4.0:
                 warnings.append(
                     "No-boundary homophonic warning: dictionary_rate is high "
@@ -1153,7 +1215,7 @@ class WorkspaceToolExecutor:
         textual effect of its action without a follow-up decode_show call.
         """
         ws = self.workspace
-        words = ws.cipher_text.words
+        words = ws.effective_words(branch_name)
         branch = ws.get_branch(branch_name)
         pt_alpha = self._pt_alpha()
         sep = " " if pt_alpha._multisym else ""
@@ -1326,7 +1388,7 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         start = args.get("start_word", 0)
         count = min(args.get("count", 25), 50)
-        words = self.workspace.cipher_text.words
+        words = self.workspace.effective_words(branch)
         if not words:
             return {"error": "Cipher has no words"}
         if start >= len(words):
@@ -1702,11 +1764,81 @@ class WorkspaceToolExecutor:
                 "suggested_call": suggested,
             })
 
+        boundary_candidates = self._boundary_edit_suggestions(branch)
+
         return {
             "seg": seg,
             "candidates": candidates,
+            "boundary_candidates": boundary_candidates,
             "any_ambiguous": any_ambiguous,
         }
+
+    def _boundary_edit_suggestions(self, branch: str, max_candidates: int = 5) -> list[dict[str, Any]]:
+        words = self.workspace.effective_words(branch)
+        if not words:
+            return []
+
+        decoded_words = [
+            sig.normalize_for_scoring(self._decode_word(word, branch)).replace(" ", "")
+            for word in words
+        ]
+        candidates: list[dict[str, Any]] = []
+
+        # Missing boundary inside a word: ABCDEF -> ABC | DEF
+        for idx, (word_tokens, decoded) in enumerate(zip(words, decoded_words)):
+            if len(word_tokens) < 2 or len(decoded) != len(word_tokens):
+                continue
+            if decoded in self.word_set:
+                continue
+            for split_at in range(1, len(decoded)):
+                left = decoded[:split_at]
+                right = decoded[split_at:]
+                if left in self.word_set and right in self.word_set:
+                    candidates.append({
+                        "type": "split",
+                        "cipher_word_index": idx,
+                        "decoded_before": decoded,
+                        "decoded_after": f"{left} | {right}",
+                        "split_at_token_offset": split_at,
+                        "suggested_call": (
+                            f"act_split_cipher_word(branch='{branch}', "
+                            f"cipher_word_index={idx}, split_at_token_offset={split_at})"
+                        ),
+                        "evidence": "both split parts are dictionary words",
+                        "score_hint": len(left) + len(right),
+                    })
+
+        # Spurious boundary between adjacent words: ABC | DEF -> ABCDEF
+        for idx in range(len(decoded_words) - 1):
+            left = decoded_words[idx]
+            right = decoded_words[idx + 1]
+            merged = left + right
+            if not left or not right or merged not in self.word_set:
+                continue
+            if left in self.word_set and right in self.word_set:
+                continue
+            candidates.append({
+                "type": "merge",
+                "left_word_index": idx,
+                "decoded_before": f"{left} | {right}",
+                "decoded_after": merged,
+                "suggested_call": (
+                    f"act_merge_cipher_words(branch='{branch}', left_word_index={idx})"
+                ),
+                "evidence": "merged form is a dictionary word",
+                "score_hint": len(merged),
+            })
+
+        candidates.sort(key=lambda c: (c["score_hint"], c["type"] == "merge"), reverse=True)
+        trimmed = candidates[:max_candidates]
+        for cand in trimmed:
+            cand.pop("score_hint", None)
+        return trimmed
+
+    def _recommended_boundary_tool(self, boundary_candidates: list[dict[str, Any]]) -> str | None:
+        if not boundary_candidates:
+            return None
+        return "act_apply_boundary_candidate(branch='...', candidate_index=0)"
 
     def _tool_decode_diagnose(self, args: dict) -> Any:
         branch = args["branch"]
@@ -1717,6 +1849,7 @@ class WorkspaceToolExecutor:
 
         seg = diag["seg"]
         candidates = diag["candidates"]
+        boundary_candidates = diag["boundary_candidates"]
         any_ambiguous = diag["any_ambiguous"]
 
         seg_preview = seg.segmented[:600] + ("…" if len(seg.segmented) > 600 else "")
@@ -1735,13 +1868,25 @@ class WorkspaceToolExecutor:
                 " decode_diagnose_and_fix score-checks each candidate and skips "
                 "changes that make the branch worse by default."
             )
+            if boundary_candidates:
+                note += (
+                    " Boundary suggestions are also available below; use "
+                    "split/merge edits when the text looks shifted by a bad "
+                    "word break rather than by a wrong letter."
+                )
             # Bulk fix suggestion — apply all candidates in one tool call.
             bulk_fix_call = (
                 f"decode_diagnose_and_fix(branch='{branch}', "
                 f"top_k={len(candidates)})"
             )
         else:
-            if self._is_homophonic_cipher() and self._is_no_boundary_cipher():
+            if boundary_candidates:
+                note = (
+                    "No strong letter-substitution corrections found, but there "
+                    "are plausible word-boundary edits below. Try split/merge "
+                    "before re-annealing."
+                )
+            elif self._is_homophonic_cipher() and self._is_no_boundary_cipher(branch):
                 note = (
                     "No single-substitution corrections found. In a no-boundary "
                     "homophonic cipher this is NOT evidence that the branch is "
@@ -1765,6 +1910,8 @@ class WorkspaceToolExecutor:
             "dict_rate": round(seg.dict_rate, 4),
             "segmented_text": seg_preview,
             "candidate_corrections": candidates,
+            "boundary_candidates": boundary_candidates,
+            "recommended_next_tool": self._recommended_boundary_tool(boundary_candidates),
             "bulk_fix_call": bulk_fix_call,
             "warnings": self._homophonic_reliability_warnings(
                 branch, round(seg.dict_rate, 4), self._compute_quick_scores(branch).get("quad")
@@ -1784,12 +1931,20 @@ class WorkspaceToolExecutor:
             return {"branch": branch, "error": diag["error"]}
 
         candidates = diag["candidates"]
+        boundary_candidates = diag.get("boundary_candidates", [])
         seg = diag["seg"]
 
         to_apply = [c for c in candidates if c["evidence_count"] >= min_evidence and c["culprit_symbol"]]
         skipped = [c for c in candidates if c["evidence_count"] < min_evidence or not c["culprit_symbol"]]
 
         if not to_apply:
+            boundary_note = ""
+            if boundary_candidates:
+                boundary_note = (
+                    " Boundary edits look more promising than letter swaps here; "
+                    "try act_split_cipher_word / act_merge_cipher_words before "
+                    "more annealing."
+                )
             return {
                 "branch": branch,
                 "fixes_applied": [],
@@ -1798,10 +1953,12 @@ class WorkspaceToolExecutor:
                      "evidence_count": c["evidence_count"]}
                     for c in skipped
                 ],
+                "boundary_candidates": boundary_candidates,
+                "recommended_next_tool": self._recommended_boundary_tool(boundary_candidates),
                 "score_delta": None,
                 "note": (
                     f"No candidates met min_evidence={min_evidence}. "
-                    "Lower min_evidence or inspect with decode_diagnose."
+                    f"Lower min_evidence or inspect with decode_diagnose.{boundary_note}"
                 ),
             }
 
@@ -1856,12 +2013,13 @@ class WorkspaceToolExecutor:
         remaining_diag = self._diagnose_branch(branch, top_k)
         remaining_seg = remaining_diag.get("seg")
         remaining_candidates = remaining_diag.get("candidates", [])
+        remaining_boundary_candidates = remaining_diag.get("boundary_candidates", [])
 
         remaining_pseudo = len(remaining_seg.pseudo_words) if remaining_seg else None
         dict_rate_after = round(remaining_seg.dict_rate, 4) if remaining_seg else None
 
         if dict_rate_after is not None and dict_rate_after >= 0.85:
-            if self._is_homophonic_cipher() and self._is_no_boundary_cipher():
+            if self._is_homophonic_cipher() and self._is_no_boundary_cipher(branch):
                 recommendation = (
                     f"dict_rate is now {dict_rate_after:.0%}, but this is a "
                     "no-boundary homophonic cipher. High dictionary_rate alone "
@@ -1874,13 +2032,19 @@ class WorkspaceToolExecutor:
                     f"dict_rate is now {dict_rate_after:.0%}. "
                     "The decoded text looks solved — call meta_declare_solution now."
                 )
+        elif remaining_boundary_candidates:
+            recommendation = (
+                "Boundary edits are the strongest next move here. Try "
+                "act_split_cipher_word or act_merge_cipher_words before "
+                "more annealing or declaration."
+            )
         elif remaining_candidates:
             recommendation = (
                 f"{remaining_pseudo} pseudo-words remain. "
                 "Call decode_diagnose_and_fix again or declare if the text reads well."
             )
         else:
-            if self._is_homophonic_cipher() and self._is_no_boundary_cipher():
+            if self._is_homophonic_cipher() and self._is_no_boundary_cipher(branch):
                 recommendation = (
                     "No further single-substitution fixes found. For a no-boundary "
                     "homophonic cipher this may mean the branch is structurally "
@@ -1907,6 +2071,8 @@ class WorkspaceToolExecutor:
             "dict_rate_after": dict_rate_after,
             "pseudo_words_remaining": remaining_pseudo,
             "remaining_candidates": remaining_candidates[:3],
+            "boundary_candidates": remaining_boundary_candidates,
+            "recommended_next_tool": self._recommended_boundary_tool(remaining_boundary_candidates),
             "decoded_preview": self._decoded_preview(branch),
             "warnings": self._homophonic_reliability_warnings(
                 branch, dict_rate_after, after.get("quad")
@@ -1966,7 +2132,7 @@ class WorkspaceToolExecutor:
         decrypted = ws.apply_key(branch)
         panel = sig.compute_panel(
             decrypted=decrypted,
-            cipher_words=ws.cipher_text.words,
+            cipher_words=ws.effective_words(branch),
             key=ws.get_branch(branch).key,
             used_ct_ids=self._used_ct_ids(),
             language=self.language,
@@ -2063,7 +2229,8 @@ class WorkspaceToolExecutor:
         idx = args["cipher_word_index"]
         consistent_with = args.get("consistent_with_branch")
         limit = args.get("limit", 50)
-        words = self.workspace.cipher_text.words
+        word_branch = consistent_with or "main"
+        words = self.workspace.effective_words(word_branch)
         if idx < 0 or idx >= len(words):
             return {"error": f"cipher_word_index {idx} out of range (0..{len(words) - 1})"}
         word_tokens = words[idx]
@@ -2188,7 +2355,7 @@ class WorkspaceToolExecutor:
         idx = args["cipher_word_index"]
         target = args["plaintext"].upper()
         ws = self.workspace
-        words = ws.cipher_text.words
+        words = ws.effective_words(branch_name)
         if idx < 0 or idx >= len(words):
             return {"error": f"cipher_word_index {idx} out of range"}
         word_tokens = words[idx]
@@ -2237,6 +2404,80 @@ class WorkspaceToolExecutor:
             "cleared": cipher_sym,
             "decoded_preview": self._decoded_preview(branch),
         }
+
+    def _tool_act_split_cipher_word(self, args: dict) -> Any:
+        branch = args["branch"]
+        idx = int(args["cipher_word_index"])
+        split_at = int(args["split_at_token_offset"])
+        before = self._compute_quick_scores(branch)
+        try:
+            info = self.workspace.split_cipher_word(branch, idx, split_at)
+        except WorkspaceError as exc:
+            return {"error": str(exc)}
+        after = self._compute_quick_scores(branch)
+        words = self.workspace.effective_words(branch)
+        left = self._cipher_word_str(words[idx])
+        right = self._cipher_word_str(words[idx + 1])
+        return {
+            "status": "ok",
+            "branch": branch,
+            "split_word_index": idx,
+            "split_at_token_offset": split_at,
+            "left_cipher_word": left,
+            "right_cipher_word": right,
+            "total_words": len(words),
+            "decoded_preview": self._decoded_preview(branch),
+            "score_delta": self._score_delta(before, after),
+        }
+
+    def _tool_act_merge_cipher_words(self, args: dict) -> Any:
+        branch = args["branch"]
+        left_idx = int(args["left_word_index"])
+        before = self._compute_quick_scores(branch)
+        try:
+            info = self.workspace.merge_cipher_words(branch, left_idx)
+        except WorkspaceError as exc:
+            return {"error": str(exc)}
+        after = self._compute_quick_scores(branch)
+        words = self.workspace.effective_words(branch)
+        merged = self._cipher_word_str(words[left_idx])
+        return {
+            "status": "ok",
+            "branch": branch,
+            "merged_left_word_index": left_idx,
+            "merged_cipher_word": merged,
+            "total_words": len(words),
+            "decoded_preview": self._decoded_preview(branch),
+            "score_delta": self._score_delta(before, after),
+        }
+
+    def _tool_act_apply_boundary_candidate(self, args: dict) -> Any:
+        branch = args["branch"]
+        idx = int(args.get("candidate_index", 0))
+        candidates = self._boundary_edit_suggestions(branch)
+        if not candidates:
+            return {"error": "No boundary_candidates available for this branch"}
+        if idx < 0 or idx >= len(candidates):
+            return {"error": f"candidate_index {idx} out of range (0..{len(candidates) - 1})"}
+        candidate = candidates[idx]
+        if candidate["type"] == "split":
+            return self._tool_act_split_cipher_word({
+                "branch": branch,
+                "cipher_word_index": candidate["cipher_word_index"],
+                "split_at_token_offset": candidate["split_at_token_offset"],
+            }) | {
+                "applied_candidate": candidate,
+                "candidate_index": idx,
+            }
+        if candidate["type"] == "merge":
+            return self._tool_act_merge_cipher_words({
+                "branch": branch,
+                "left_word_index": candidate["left_word_index"],
+            }) | {
+                "applied_candidate": candidate,
+                "candidate_index": idx,
+            }
+        return {"error": f"Unknown boundary candidate type: {candidate['type']}"}
 
     def _tool_act_swap_decoded(self, args: dict) -> Any:
         branch = args["branch"]
@@ -2345,15 +2586,20 @@ class WorkspaceToolExecutor:
                 "remain, call decode_diagnose_and_fix(branch) — it identifies the "
                 "culprit cipher symbol for EACH error and applies ALL fixes in one "
                 "call. You can also batch multiple act_set_mapping calls in a "
-                "single response. Do NOT fix errors one per iteration; each "
-                "iteration costs tokens and grows the context."
+                "single response. After targeted fixes, do one anchored polish "
+                "search with search_homophonic_anneal(preserve_existing=true, "
+                "solver_profile='zenith_native') and then read again. Do NOT "
+                "fix errors one per iteration; each iteration costs tokens and "
+                "grows the context."
             )
         return (
             f"Read decoded_preview carefully. If ANY recognisable {self.language} "
             "words appear, call meta_declare_solution now — a partial solution "
             "scores better than no declaration. If a few residual errors remain, "
             "call decode_diagnose_and_fix(branch) to fix them all in one call, "
-            "then declare."
+            "then do one anchored polish run with "
+            "search_anneal(preserve_existing=true, score_fn='combined') before "
+            "declaring."
         )
 
     def _build_score_fns(
@@ -2476,7 +2722,8 @@ class WorkspaceToolExecutor:
         branch = ws.get_branch(branch_name)
 
         import random as _random
-        pt_size = ws.plaintext_alphabet.size
+        pt_alpha = ws.plaintext_alphabet
+        pt_size = pt_alpha.size
         all_ct_ids = sorted(set(ws.cipher_text.tokens))
         existing_key = dict(branch.key)
         if "preserve_existing" in args:
@@ -2488,6 +2735,8 @@ class WorkspaceToolExecutor:
 
         temp_session = _session_for_branch(ws, anchors)
         _, _, _, score_fn = self._build_score_fns(temp_session, score_fn_name)
+        id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)}
+        letter_to_id = {v: k for k, v in id_to_letter.items()}
 
         best_score = float("-inf")
         best_key: dict[int, int] = {}
@@ -2512,18 +2761,61 @@ class WorkspaceToolExecutor:
                 best_score = s
                 best_key = dict(temp_session.key)
 
-        ws.set_full_key(branch_name, best_key)
+        key_repair_info = automated_runner._run_key_consistent_repair(
+            cipher_text=ws.cipher_text,
+            key=best_key,
+            language=self.language,
+            word_list=self.word_list,
+            id_to_letter=id_to_letter,
+            letter_to_id=letter_to_id,
+            score_fn=automated_runner._quadgram_key_score_fn(
+                list(ws.cipher_text.tokens),
+                id_to_letter,
+                ngram.NGRAM_CACHE.get(self.language, 4),
+            ),
+        )
+        anchor_refine_info: dict[str, Any] | None = None
+        final_key = best_key
+        final_score = best_score
+        if key_repair_info["applied"]:
+            final_key = key_repair_info["key"]
+            temp_session.set_full_key(final_key)
+
+            def score_fn_repaired() -> float:
+                return ngram.normalized_ngram_score(
+                    temp_session.apply_key(),
+                    ngram.NGRAM_CACHE.get(self.language, 4),
+                    n=4,
+                )
+
+            anchor_refine_info = automated_runner._maybe_anchor_refine_substitution(
+                cipher_text=ws.cipher_text,
+                session=temp_session,
+                key=final_key,
+                language=self.language,
+                id_to_letter=id_to_letter,
+                score_fn=score_fn_repaired,
+            )
+            if anchor_refine_info["applied"]:
+                final_key = anchor_refine_info["key"]
+                final_score = anchor_refine_info["score"]
+            else:
+                final_score = score_fn_repaired()
+
+        ws.set_full_key(branch_name, final_key)
         return {
             "branch": branch_name,
             "score_fn": score_fn_name,
             "before": round(before, 4) if before != float("-inf") else None,
-            "after": round(best_score, 4) if best_score != float("-inf") else None,
-            "improved": best_score > before,
+            "after": round(final_score, 4) if final_score != float("-inf") else None,
+            "improved": final_score > before,
             "steps_per_restart": steps,
             "restarts": restarts,
             "preserve_existing": preserve_existing,
             "preserved_symbols": len(anchors),
             "auto_seeded_symbols": seeded_count,
+            "key_repair": key_repair_info,
+            "anchor_refine": anchor_refine_info,
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
             "note": self._search_declare_note("anneal"),
         }
@@ -2570,12 +2862,11 @@ class WorkspaceToolExecutor:
 
         if solver_profile == "zenith_native":
             from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
-            from automated.runner import _zenith_native_model_path
 
             if model_path and str(model_path).strip().lower() != "word_list":
                 bin_path = Path(str(model_path)).expanduser()
             else:
-                bin_path = _zenith_native_model_path(self.language)
+                bin_path = automated_runner._zenith_native_model_path(self.language)
             if bin_path is None:
                 return {
                     "error": (
@@ -2630,7 +2921,49 @@ class WorkspaceToolExecutor:
             model_ngrams = len(model.log_probs)
             solver_name = "native_homophonic_anneal"
 
-        ws.set_full_key(branch_name, result.key)
+        selected_key = result.key
+        selected_plaintext = result.plaintext
+        key_repair_info: dict[str, Any] | None = None
+        anchor_refine_info: dict[str, Any] | None = None
+
+        if solver_profile == "zenith_native":
+            key_repair_info = automated_runner._maybe_repair_zenith_native_key(
+                cipher_text=ws.cipher_text,
+                bin_path=bin_path,
+                key=selected_key,
+                plaintext=selected_plaintext,
+                language=self.language,
+                word_list=self.word_list,
+                id_to_letter=id_to_letter,
+                letter_to_id=letter_to_id,
+            )
+            if key_repair_info["applied"]:
+                selected_key = key_repair_info["key"]
+                selected_plaintext = key_repair_info["plaintext"]
+
+            budget_params = {
+                "seeds": [seed] if seed is not None else [0],
+                "epochs": max(1, epochs),
+                "sampler_iterations": max(1, sampler_iterations),
+            }
+            anchor_refine_info = automated_runner._maybe_anchor_refine_zenith_native(
+                cipher_text=ws.cipher_text,
+                bin_path=bin_path,
+                key=selected_key,
+                plaintext=selected_plaintext,
+                anneal_score=result.normalized_score,
+                language=self.language,
+                word_list=self.word_list,
+                plaintext_ids=plaintext_ids,
+                id_to_letter=id_to_letter,
+                letter_to_id=letter_to_id,
+                budget_params=budget_params,
+            )
+            if anchor_refine_info["applied"]:
+                selected_key = anchor_refine_info["key"]
+                selected_plaintext = anchor_refine_info["plaintext"]
+
+        ws.set_full_key(branch_name, selected_key)
         after = self._compute_quick_scores(branch_name)
         distribution = self._tool_observe_homophone_distribution({"branch": branch_name})
         candidates = []
@@ -2676,11 +3009,14 @@ class WorkspaceToolExecutor:
             "candidates": candidates,
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
             "homophone_warnings": distribution.get("warnings", []),
+            "key_repair": key_repair_info,
+            "anchor_refine": anchor_refine_info,
             "note": (
                 "This native homophonic annealer is intended to replace manual "
                 "guesswork on many-symbol no-boundary ciphers. Read the preview; "
                 "if it is mostly correct, use decode_diagnose/decode_ambiguous_letter "
-                "for residual rare-letter fixes or declare the solution."
+                "for residual rare-letter fixes, then do one preserve_existing=true "
+                "polish call or declare the solution."
             ),
         }
 

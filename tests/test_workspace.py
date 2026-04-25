@@ -83,6 +83,43 @@ class TestDecoding:
         assert ws.apply_key("main") == "ABC AB"
         assert ws.is_complete("main")
 
+    def test_branch_local_word_split_changes_decoding_only_on_that_branch(self):
+        ws = _build_ws()
+        ws.fork("exp")
+        ws.set_mapping("main", 0, 0)
+        ws.set_mapping("main", 1, 1)
+        ws.set_mapping("main", 2, 2)
+        ws.set_mapping("exp", 0, 0)
+        ws.set_mapping("exp", 1, 1)
+        ws.set_mapping("exp", 2, 2)
+
+        ws.split_cipher_word("exp", 0, 1)
+
+        assert ws.apply_key("main") == "ABC AB"
+        assert ws.apply_key("exp") == "A BC AB"
+        assert ws.effective_words("exp") == [[0], [1, 2], [0, 1]]
+
+    def test_branch_local_word_merge_changes_decoding_only_on_that_branch(self):
+        ws = _build_ws()
+        ws.fork("exp")
+        ws.set_mapping("main", 0, 0)
+        ws.set_mapping("main", 1, 1)
+        ws.set_mapping("main", 2, 2)
+        ws.set_mapping("exp", 0, 0)
+        ws.set_mapping("exp", 1, 1)
+        ws.set_mapping("exp", 2, 2)
+
+        ws.merge_cipher_words("exp", 0)
+
+        assert ws.apply_key("main") == "ABC AB"
+        assert ws.apply_key("exp") == "ABCAB"
+        assert ws.effective_words("exp") == [[0, 1, 2, 0, 1]]
+
+    def test_invalid_split_offset_errors(self):
+        ws = _build_ws()
+        with pytest.raises(WorkspaceError):
+            ws.split_cipher_word("main", 0, 0)
+
 
 class TestCompareAndMerge:
     def test_compare(self):

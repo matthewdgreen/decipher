@@ -64,7 +64,18 @@ polish — hill-climbing from random starts often stalls in wrong local optima. 
 If you fork a branch to get a genuinely fresh attempt after a bad full key, \
 call the relevant anneal tool with `preserve_existing=false`; use \
 `preserve_existing=true` only to polish a key you intentionally want to keep \
-anchored.
+anchored. **Reading-driven repair flow:** once a search tool has produced a \
+mostly readable branch, first use diagnostics or a targeted fix tool for the \
+obvious residual errors; then run exactly one polish search call with the \
+current key preserved (`search_anneal(..., preserve_existing=true, \
+score_fn='combined')` for substitution-like text, or \
+`search_homophonic_anneal(..., preserve_existing=true, \
+solver_profile='zenith_native')` for homophonic text). Then read again and \
+either declare or continue with evidence. **Boundary rule:** if \
+`decode_diagnose` or `decode_diagnose_and_fix` returns `boundary_candidates` \
+or a `recommended_next_tool` that uses `act_split_cipher_word` / \
+`act_merge_cipher_words`, or recommends `act_apply_boundary_candidate`, treat \
+that as the highest-priority next move before another unconstrained anneal.
 - `meta_*` — `declare_solution` terminates the run.
 
 ## How you're expected to work
@@ -95,11 +106,13 @@ On every iteration, look at the decoded text first. Ask yourself:
 letter off)?
 - What single mapping change would fix the most broken words at once?
 
-If a branch's decode looks substantively right, **call \
-`meta_declare_solution` on that branch immediately** — don't wait for \
-scores to cross a threshold, don't keep hill-climbing a solved cipher, and \
-don't treat minor spelling variants (medieval abbreviations, V/U \
-substitutions, scribal quirks) as evidence that more work is needed.
+If a branch's decode looks substantively right, do one last disciplined \
+repair cycle: apply any obvious targeted fix, then run exactly one anchored \
+polish search call with `preserve_existing=true`, read again, and **then \
+call `meta_declare_solution`**. Don't wait for scores to cross a threshold, \
+don't keep hill-climbing a solved cipher, and don't treat minor spelling \
+variants (medieval abbreviations, V/U substitutions, scribal quirks) as \
+evidence that more work is needed.
 
 When you have the best transcription you can produce — or when further \
 progress seems impossible — call `meta_declare_solution` with your chosen \

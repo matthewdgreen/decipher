@@ -247,11 +247,12 @@ def build_workspace_panel(
     ct = workspace.cipher_text
     alpha = ct.alphabet
     pt_alpha = workspace.plaintext_alphabet
-    n_words = len(ct.words)
+    canonical_words = ct.words
+    n_words = len(canonical_words)
     indices = _select_word_indices(n_words)
 
     # Render ciphertext tokens in those indices
-    cipher_tokens = [_render_word_tokens(ct.words[i], alpha) for i in indices]
+    cipher_tokens = [_render_word_tokens(canonical_words[i], alpha) for i in indices]
     ct_line = " | ".join(cipher_tokens)
 
     branch_names = _pick_panel_branches(workspace)
@@ -294,8 +295,11 @@ def build_workspace_panel(
 
     for name in branch_names:
         branch = workspace.get_branch(name)
+        branch_words = workspace.effective_words(name)
+        branch_word_count = len(branch_words)
+        branch_indices = _select_word_indices(branch_word_count)
         decoded = [
-            _render_decoded_word(ct.words[i], branch.key, pt_alpha) for i in indices
+            _render_decoded_word(branch_words[i], branch.key, pt_alpha) for i in branch_indices
         ]
         dict_rate, quad = branch_scores[name]
         score_bits = []
@@ -304,10 +308,13 @@ def build_workspace_panel(
         if quad is not None:
             score_bits.append(f"quad={quad:.2f}")
         score_str = f"  {'  '.join(score_bits)}" if score_bits else ""
+        boundary_note = ""
+        if branch.word_spans is not None:
+            boundary_note = f"  custom_boundaries={branch_word_count}"
         lines.append("")
         lines.append(
             f"### Branch `{name}` — {len(branch.key)}/{alpha.size} symbols mapped"
-            f"{score_str}"
+            f"{score_str}{boundary_note}"
         )
         lines.append("```")
         lines.append(" | ".join(decoded))
@@ -315,7 +322,7 @@ def build_workspace_panel(
 
     lines.append("")
 
-    no_boundaries = (n_words <= 1)
+    no_boundaries = all(len(workspace.effective_words(name)) <= 1 for name in branch_names)
 
     # Floor trigger: branch must cross BOTH dict AND quad thresholds to fire.
     # Requiring both signals prevents false positives from the Viterbi dict_rate
@@ -383,15 +390,22 @@ def build_workspace_panel(
             "**Read the decoded text above.** Your primary judgement instrument "
             "is semantic reading, not scores. "
             "If a branch's decode looks like coherent text in the target language, "
-            "call `meta_declare_solution` on that branch now — don't keep "
-            "optimizing a solved cipher. "
+            "fix any obvious residual errors, then do one anchored polish call "
+            "with `search_anneal(..., preserve_existing=true, score_fn='combined')` "
+            "or `search_homophonic_anneal(..., preserve_existing=true, "
+            "solver_profile='zenith_native')`, then read again. If a diagnose "
+            "tool returns `boundary_candidates` or a `recommended_next_tool` "
+            "using split/merge or `act_apply_boundary_candidate`, do that "
+            "before another free anneal. "
             "**IMPORTANT:** Declaring a partial solution is always better than "
             "not declaring. If you can read even a few correct words "
-            "(ET, PER, IN, EST…) call `meta_declare_solution` with your best "
-            "branch immediately — the benchmark records whatever accuracy your "
-            "branch achieves at the moment you declare, so 5% beats 0% every "
-            "time. Only exhaust all iterations if you truly cannot read a single "
-            "recognisable word in the target language."
+            "(ET, PER, IN, EST…) do not drift into many tiny edits: make one "
+            "targeted repair pass, one anchored polish pass, and then call "
+            "`meta_declare_solution` with your best branch — the benchmark "
+            "records whatever accuracy your branch achieves at the moment you "
+            "declare, so 5% beats 0% every time. Only exhaust all iterations if "
+            "you truly cannot read a single recognisable word in the target "
+            "language."
         )
 
     # Last-iteration hard warning — must appear AFTER the main text block.

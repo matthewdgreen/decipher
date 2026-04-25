@@ -32,6 +32,106 @@ class Workspace:
         }
         self._iteration: int = 0
 
+    def _default_word_spans(self) -> list[tuple[int, int]]:
+        spans: list[tuple[int, int]] = []
+        start = 0
+        for word in self.cipher_text.words:
+            end = start + len(word)
+            spans.append((start, end))
+            start = end
+        return spans
+
+    def _flat_word_tokens(self) -> list[int]:
+        flat: list[int] = []
+        for word in self.cipher_text.words:
+            flat.extend(word)
+        return flat
+
+    def _normalize_word_spans(
+        self,
+        spans: list[tuple[int, int]],
+    ) -> list[tuple[int, int]]:
+        tokens = self._flat_word_tokens()
+        if not tokens:
+            if spans:
+                raise WorkspaceError("Word spans must be empty for empty ciphertext")
+            return []
+        if not spans:
+            raise WorkspaceError("Word spans may not be empty for non-empty ciphertext")
+
+        normalized: list[tuple[int, int]] = []
+        expected_start = 0
+        total = len(tokens)
+        for start, end in spans:
+            start = int(start)
+            end = int(end)
+            if start != expected_start:
+                raise WorkspaceError("Word spans must be contiguous and gap-free")
+            if end <= start:
+                raise WorkspaceError("Word spans must have positive length")
+            if end > total:
+                raise WorkspaceError("Word spans exceed ciphertext length")
+            normalized.append((start, end))
+            expected_start = end
+        if expected_start != total:
+            raise WorkspaceError("Word spans must cover all ciphertext tokens exactly once")
+        return normalized
+
+    def effective_word_spans(self, branch_name: str) -> list[tuple[int, int]]:
+        branch = self.get_branch(branch_name)
+        if branch.word_spans is not None:
+            return list(branch.word_spans)
+        return self._default_word_spans()
+
+    def effective_words(self, branch_name: str) -> list[list[int]]:
+        spans = self.effective_word_spans(branch_name)
+        tokens = self._flat_word_tokens()
+        return [tokens[start:end] for start, end in spans]
+
+    def set_word_spans(self, branch_name: str, spans: list[tuple[int, int]]) -> None:
+        branch = self.get_branch(branch_name)
+        normalized = self._normalize_word_spans(spans)
+        default = self._default_word_spans()
+        branch.word_spans = None if normalized == default else normalized
+
+    def reset_word_spans(self, branch_name: str) -> None:
+        branch = self.get_branch(branch_name)
+        branch.word_spans = None
+
+    def split_cipher_word(self, branch_name: str, word_index: int, split_at_offset: int) -> dict[str, Any]:
+        spans = self.effective_word_spans(branch_name)
+        if word_index < 0 or word_index >= len(spans):
+            raise WorkspaceError(f"cipher_word_index {word_index} out of range")
+        start, end = spans[word_index]
+        word_len = end - start
+        if split_at_offset <= 0 or split_at_offset >= word_len:
+            raise WorkspaceError("split_at_offset must be inside the word")
+        split_at = start + split_at_offset
+        new_spans = spans[:word_index] + [(start, split_at), (split_at, end)] + spans[word_index + 1 :]
+        self.set_word_spans(branch_name, new_spans)
+        return {
+            "word_index": word_index,
+            "left_span": (start, split_at),
+            "right_span": (split_at, end),
+            "word_count": len(new_spans),
+        }
+
+    def merge_cipher_words(self, branch_name: str, left_word_index: int) -> dict[str, Any]:
+        spans = self.effective_word_spans(branch_name)
+        if left_word_index < 0 or left_word_index >= len(spans) - 1:
+            raise WorkspaceError(f"left_word_index {left_word_index} out of range")
+        left_start, left_end = spans[left_word_index]
+        right_start, right_end = spans[left_word_index + 1]
+        if left_end != right_start:
+            raise WorkspaceError("Only adjacent words may be merged")
+        new_spans = spans[:left_word_index] + [(left_start, right_end)] + spans[left_word_index + 2 :]
+        self.set_word_spans(branch_name, new_spans)
+        return {
+            "left_word_index": left_word_index,
+            "merged_span": (left_start, right_end),
+            "word_count": len(new_spans),
+        }
+
     # --- iteration tracking (for branch provenance) ---
 
     def set_iteration(self, n: int) -> None:
@@ -97,9 +197,9 @@ class Workspace:
 
     def apply_key(self, branch_name: str) -> str:
         branch = self.get_branch(branch_name)
-        return self._decode_with(branch.key)
+        return self._decode_with(branch.key, self.effective_words(branch_name))
 
-    def _decode_with(self, key: dict[int, int]) -> str:
+    def _decode_with(self, key: dict[int, int], words: list[list[int]] | None = None) -> str:
         ct = self.cipher_text
         pt_alpha = self.plaintext_alphabet
         sep_inner = " " if pt_alpha._multisym else ""
@@ -114,7 +214,8 @@ class Workspace:
             return sep_inner.join(parts)
 
         word_sep = ct.separator or ""
-        return word_sep.join(decode_word(w) for w in ct.words)
+        use_words = words if words is not None else ct.words
+        return word_sep.join(decode_word(w) for w in use_words)
 
     def is_complete(self, branch_name: str) -> bool:
         branch = self.get_branch(branch_name)
@@ -215,6 +316,8 @@ class Workspace:
             "parent": branch.parent,
             "created_iteration": branch.created_iteration,
             "key": dict(branch.key),
+            "word_spans": self.effective_word_spans(name),
+            "custom_word_boundaries": branch.word_spans is not None,
             "mapped_count": len(branch.key),
             "decryption": self.apply_key(name),
             "tags": list(branch.tags),

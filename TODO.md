@@ -140,9 +140,9 @@ or a benchmark data issue.
   - Compare trained models against current word-list fallbacks.
   - Current Latin status:
     - [x] Build `models/ngram5_la.bin` from 100 Gutenberg books.
-    - [x] Build a larger probe model `models/ngram5_la_500.bin` from 500 Gutenberg books.
-    - [ ] Compare the 500-book Latin model against the default Latin model on a small Borg packet, not just `0109v`.
-    - Finding so far: on `parity_borg_latin_borg_0109v`, the 500-book model slightly improves `zenith_native` anneal score but does not improve headline char/word accuracy over the 100-book Latin model.
+    - [x] Build a larger probe model `models/ngram5_la_500.bin` from a `max_books=500` Gutenberg run; this currently resolves to all 101 catalog-tagged Latin texts.
+    - [ ] Compare the larger all-available-Gutenberg Latin model against the default Latin model on a small Borg packet, not just `0109v`.
+    - Finding so far: on `parity_borg_latin_borg_0109v`, the larger all-available-Gutenberg Latin model slightly improves `zenith_native` anneal score but does not improve headline char/word accuracy over the 100-book Latin model.
 - [ ] Add Decipher-native tooling to train/export continuous n-gram models.
   - Input: plain-text corpus directory.
   - Output: supported CSV or compact binary format plus metadata sidecar.
@@ -156,8 +156,16 @@ or a benchmark data issue.
     - With only one seed, the forced `zenith_native` basin is much worse (~`9.0%`), so this case is notably multi-seed-sensitive.
     - The substitution path lands in a different partial-Latin basin with similar character accuracy but slightly better word-level structure.
     - The new shared no-boundary repair helper now gives a small lift on the forced `zenith_native` path with `models/ngram5_la_500.bin` (about `13.9%` char / `3.9%` word), but the repaired plaintext is still only a text-level preview and is not yet key-consistent.
+    - Agentic branch-local boundary editing is now available through workspace word-boundary overlays plus:
+      - `act_split_cipher_word`
+      - `act_merge_cipher_words`
+      - `act_apply_boundary_candidate`
+    - `decode_diagnose` and `decode_diagnose_and_fix` now surface `boundary_candidates` and a `recommended_next_tool`.
+    - Important tool-design finding: recommendation text alone was not enough to make the agent use split/merge; a one-shot wrapper tool (`act_apply_boundary_candidate`) materially improved compliance.
+    - Best recent agentic `0109v` run after that wrapper change reached about `14.2%` character accuracy and `8.9%` word accuracy, modestly improving over earlier `7.7%` word-accuracy runs while still staying in the same broadly partial-Latin basin.
   - Next likely useful experiments:
     - [ ] Try a stronger Latin cleanup pass on `zenith_native` output: segmentation plus phrase-level split/merge and repair, beyond the current conservative shared helper.
+    - [ ] Re-run the improved agentic boundary-tool path on a second small Borg case to see whether the `act_apply_boundary_candidate` gain generalizes beyond `0109v`.
     - [ ] Compare default substitution vs forced `zenith_native` on a second small Borg subset to see whether `0109v` is representative or a special case.
     - [ ] Revisit routing later if a cleanup step starts making the `zenith_native` basin consistently more useful.
 - [x] Fix automated historical language propagation for benchmark-backed parity/frontier runs.
