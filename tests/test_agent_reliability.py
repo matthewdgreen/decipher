@@ -7,7 +7,15 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent.loop_v2 import FINAL_ITERATION_PREFLIGHT, build_workspace_panel, run_v2
+from agent.loop_v2 import (
+    FINAL_ITERATION_PREFLIGHT,
+    FULL_READING_WORKFLOW_TOOL_NAMES,
+    PENULTIMATE_READING_WORKFLOW_PREFLIGHT,
+    PENULTIMATE_ALLOWED_TOOL_NAMES,
+    READING_WORKFLOW_GATE_PREFLIGHT,
+    build_workspace_panel,
+    run_v2,
+)
 from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
@@ -60,6 +68,259 @@ def test_score_delta_reports_mixed_when_signals_disagree():
     assert delta["improved"] is False
     assert delta["dict_rate_delta"] == -0.1
     assert delta["quad_delta"] == 0.2
+
+
+def test_reading_score_delta_strips_verdict_for_act_set_mapping():
+    """Reading-driven repair primitives must not surface a `verdict` /
+    `improved` quality judgement on their score delta — the score is
+    advisory, the agent's reading is authoritative.
+    """
+    ex = _executor_for("ABC")
+    before = {"dict_rate": 0.90, "quad": -5.0}
+    after = {"dict_rate": 0.80, "quad": -4.8}
+
+    delta = ex._reading_score_delta(before, after)
+
+    assert "verdict" not in delta
+    assert "improved" not in delta
+    # Raw deltas remain so the agent has the data, just not a label.
+    assert delta["dict_rate_delta"] == -0.1
+    assert delta["quad_delta"] == 0.2
+
+
+def test_act_set_mapping_returns_changed_words_and_no_verdict():
+    """Reading-driven discipline regression: act_set_mapping must report
+    `changed_words` (was → now) so the agent decides by reading rather
+    than by score, and must not surface a `verdict` field in score_delta.
+    """
+    raw = "AB | CD | AB"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"AT", "OF"},
+        word_list=["AT", "OF"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    # Initial key: A→A, B→T, C→O, D→F → words decode as "AT", "OF", "AT".
+    # All three are in word_set; dict_rate starts at 1.0.
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("O"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("F"))
+
+    # Now change A → X. Two of three words now read "XT" instead of "AT".
+    out = ex._tool_act_set_mapping({
+        "branch": "main",
+        "cipher_symbol": "A",
+        "plain_letter": "X",
+    })
+
+    assert out["status"] == "ok"
+    # changed_words must list the affected words (was → now).
+    changed = out["changed_words"]
+    assert isinstance(changed, list)
+    assert len(changed) >= 2  # both AT instances changed
+    sample = changed[0]
+    assert sample["before"] == "AT"
+    assert sample["after"] == "XT"
+    # score_delta exposes raw deltas but no authoritative verdict.
+    assert "verdict" not in out["score_delta"]
+    assert "improved" not in out["score_delta"]
+    assert "dict_rate_delta" in out["score_delta"]
+    # Note must instruct the agent that score deltas are advisory.
+    assert "advisory" in out["note"].lower()
+    assert "changed_words" in out["note"]
+
+
+def test_act_set_mapping_keeps_reading_positive_negative_score_advisory(monkeypatch):
+    """Discipline regression: a reading-positive mapping may lower the
+    scorer. The tool must not label that as worse; it must surface the
+    changed words so the agent can keep the readable repair.
+    """
+    raw = "XAT | XAR | OF"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR", "OF"},
+        word_list=["BAT", "BAR", "OF"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    for cipher_sym, plain in {
+        "X": "C",
+        "A": "A",
+        "T": "T",
+        "R": "R",
+        "O": "O",
+        "F": "F",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    def fake_scores(branch: str) -> dict:
+        decoded = ex.workspace.apply_key(branch)
+        if decoded.startswith("CAT | CAR"):
+            return {"dict_rate": 0.90, "quad": -5.0}
+        if decoded.startswith("BAT | BAR"):
+            return {"dict_rate": 0.70, "quad": -5.2}
+        return {"dict_rate": 0.0, "quad": -99.0}
+
+    monkeypatch.setattr(ex, "_compute_quick_scores", fake_scores)
+
+    out = ex._tool_act_set_mapping({
+        "branch": "main",
+        "cipher_symbol": "X",
+        "plain_letter": "B",
+    })
+
+    assert out["status"] == "ok"
+    assert ex.workspace.apply_key("main").startswith("BAT | BAR")
+    assert {"index": 0, "before": "CAT", "after": "BAT"} in out["changed_words"]
+    assert {"index": 1, "before": "CAR", "after": "BAR"} in out["changed_words"]
+    assert out["score_delta"]["dict_rate_delta"] < 0
+    assert "verdict" not in out["score_delta"]
+    assert "improved" not in out["score_delta"]
+    assert "keep the change" in out["note"].lower()
+
+
+def test_act_bulk_set_and_anchor_word_use_reading_score_delta():
+    raw = "AB | CD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"AT", "OF"},
+        word_list=["AT", "OF"],
+        pattern_dict={},
+    )
+
+    bulk = ex._tool_act_bulk_set({
+        "branch": "main",
+        "mappings": {"A": "A", "B": "T", "C": "O", "D": "F"},
+    })
+    assert bulk["status"] == "ok"
+    assert bulk["changed_words"]
+    assert "verdict" not in bulk["score_delta"]
+    assert "improved" not in bulk["score_delta"]
+
+    ex.workspace.fork("anchor")
+    anchor = ex._tool_act_anchor_word({
+        "branch": "anchor",
+        "cipher_word_index": 0,
+        "plaintext": "IT",
+    })
+    assert anchor["status"] == "ok"
+    assert anchor["changed_words"]
+    assert "verdict" not in anchor["score_delta"]
+    assert "improved" not in anchor["score_delta"]
+
+
+def test_act_swap_decoded_revert_lists_unidirectional_alternatives():
+    """When act_swap_decoded auto-reverts, the result must include
+    `unidirectional_alternatives` listing specific act_set_mapping calls
+    that would make the same intent without the bidirectional side-effect.
+    """
+    raw = "AB | CD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"AT", "OF"},
+        word_list=["AT", "OF"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    # Set up A→A, B→T, C→O, D→F so the branch decodes as ["AT", "OF"]
+    # — both dictionary words. A swap of A↔O will break both.
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("O"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("F"))
+
+    out = ex._tool_act_swap_decoded({
+        "branch": "main",
+        "letter_a": "A",
+        "letter_b": "O",
+        "auto_revert_if_worse": True,
+    })
+
+    assert out["status"] == "reverted"
+    alternatives = out["unidirectional_alternatives"]
+    assert isinstance(alternatives, list)
+    assert any("act_set_mapping" in alt for alt in alternatives)
+    # The note must explicitly steer toward act_set_mapping for
+    # reading-driven repairs.
+    assert "act_set_mapping" in out["note"]
+    assert "bidirectional" in out["note"].lower()
+
+
+def test_recommended_boundary_tool_yields_none_when_letter_candidates_present():
+    """Boundary edits must not be promoted as the next move when the
+    diagnostic also surfaced letter-level corrections — letter-level fixes
+    are far higher leverage on boundary-preserved ciphers.
+    """
+    ex = _executor_for("AB")
+    boundary = [{"type": "split", "cipher_word_index": 0}]
+    letter = [{"wrong": "X", "correct": "Y", "evidence_count": 3}]
+
+    # Boundary alone → recommend boundary actuator.
+    assert ex._recommended_boundary_tool(boundary) == (
+        "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+    )
+
+    # Boundary + letter-level → no recommendation (letter fixes dominate).
+    assert ex._recommended_boundary_tool(
+        boundary, letter_candidates=letter
+    ) is None
+
+    # Empty letter list → boundary recommendation still surfaces.
+    assert ex._recommended_boundary_tool(
+        boundary, letter_candidates=[]
+    ) == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+
+
+def test_system_prompt_carries_reading_first_discipline():
+    """The Reading-driven repair section of the prompt must declare that
+    the agent's reading is authoritative when it can read coherent target-
+    language words, must instruct the cipher-symbol mental model, must
+    warn against bidirectional act_swap_decoded, and must require an
+    applied reading anchor before anchored polish.
+    """
+    prompt = get_system_prompt("la")
+
+    # Hierarchy
+    assert "reading is authoritative" in prompt
+    # Cipher-symbol framing
+    assert "cipher-symbol" in prompt.lower()
+    # Worked example uses placeholder symbols, not Latin words
+    assert "TREUITER" not in prompt
+    assert "QUEDAM" not in prompt
+    # act_swap_decoded warning
+    assert "act_swap_decoded" in prompt
+    assert "bidirectional" in prompt.lower()
+    # Anchored-polish sequencing rule
+    assert "before any reading-driven anchor" in prompt
+    # Tool-output discipline
+    assert "changed_words" in prompt
+    # Boundary-normalization discipline for solved streams with bad word breaks
+    assert "boundary-normalization pass" in prompt
+    assert "WITH | OUT" in prompt
+    assert "act_resegment_by_reading" in prompt
+    assert "act_resegment_from_reading_repair" in prompt
+    assert "decode_validate_reading_repair" in prompt
+    assert "act_merge_decoded_words" in prompt
+    # Generalised dict_rate guidance — no fixed Latin threshold
+    assert "0.15" not in prompt
+    assert "Declare on reading" in prompt
 
 
 def test_decode_ambiguous_letter_groups_contexts_by_cipher_symbol():
@@ -138,9 +399,11 @@ class _FakeAPI:
 
     def __init__(self) -> None:
         self.messages_seen = []
+        self.tools_seen = []
 
     def send_message(self, messages, tools=None, system="", max_tokens=4096):
         self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
         return SimpleNamespace(
             usage=SimpleNamespace(input_tokens=10, output_tokens=2),
             content=[SimpleNamespace(type="text", text="I forgot to declare.")],
@@ -171,6 +434,74 @@ def test_final_turn_prefight_and_auto_declare_fallback():
     assert artifact.solution is not None
     assert artifact.solution.branch == "main"
     assert artifact.solution.self_confidence == 0.0
+
+
+def test_two_turn_runs_do_not_gate_first_action_turn():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=2,
+        cipher_id="unit",
+    )
+
+    first_turn_texts = [
+        c["text"]
+        for m in api.messages_seen[0]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    first_turn_tool_names = {tool["name"] for tool in api.tools_seen[0]}
+    assert not any(PENULTIMATE_READING_WORKFLOW_PREFLIGHT in t for t in first_turn_texts)
+    assert "search_anneal" in first_turn_tool_names
+    assert "act_bulk_set" in first_turn_tool_names
+
+
+def test_prefinal_window_gates_local_edit_tools():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=3,
+        cipher_id="unit",
+    )
+
+    first_turn_texts = [
+        c["text"]
+        for m in api.messages_seen[0]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    first_turn_tool_names = {tool["name"] for tool in api.tools_seen[0]}
+    assert any(READING_WORKFLOW_GATE_PREFLIGHT in t for t in first_turn_texts)
+    assert first_turn_tool_names == PENULTIMATE_ALLOWED_TOOL_NAMES
+    assert "search_anneal" not in first_turn_tool_names
+    assert "act_bulk_set" not in first_turn_tool_names
+
+
+def test_final_turn_only_exposes_declare_tool():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit",
+    )
+
+    final_turn_tool_names = {tool["name"] for tool in api.tools_seen[-1]}
+    assert final_turn_tool_names == {"meta_declare_solution"}
 
 
 def test_automated_preflight_context_and_branch_available_on_first_turn():
@@ -406,6 +737,21 @@ def test_workspace_panel_reflects_branch_local_word_boundaries():
     assert "A | BC | AB" in panel
 
 
+def test_workspace_panel_includes_penultimate_reading_workflow_warning():
+    ex = _executor_for("AP PLY", separator=" ")
+
+    panel = build_workspace_panel(
+        ex.workspace,
+        iteration=14,
+        max_iterations=15,
+        language="en",
+        word_set={"APPLY"},
+    )
+
+    assert PENULTIMATE_READING_WORKFLOW_PREFLIGHT in panel
+    assert "act_resegment_from_reading_repair" in panel
+
+
 def test_decode_diagnose_can_suggest_merging_adjacent_cipher_words():
     alpha = Alphabet.from_text("AB CD", ignore_chars=set())
     ct = CipherText(raw="AB CD", alphabet=alpha, separator=" ")
@@ -433,6 +779,292 @@ def test_decode_diagnose_can_suggest_merging_adjacent_cipher_words():
     assert cand["decoded_after"] == "CURA"
     assert "act_merge_cipher_words" in cand["suggested_call"]
     assert out["recommended_next_tool"] == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+
+
+def test_decode_diagnose_can_suggest_compound_merge_when_parts_are_words():
+    alpha = Alphabet.from_text("ABCD EFG", ignore_chars=set())
+    ct = CipherText(raw="ABCD EFG", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"WITH", "OUT", "WITHOUT"},
+        word_list=["WITH", "OUT", "WITHOUT"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym, plain in {
+        "A": "W",
+        "B": "I",
+        "C": "T",
+        "D": "H",
+        "E": "O",
+        "F": "U",
+        "G": "T",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    out = ex._tool_decode_diagnose({"branch": "main"})
+
+    merge = next(c for c in out["boundary_candidates"] if c["type"] == "merge")
+    assert merge["decoded_before"] == "WITH | OUT"
+    assert merge["decoded_after"] == "WITHOUT"
+    assert "both split parts" in merge["evidence"]
+    assert out["recommended_next_tool"] == "act_apply_boundary_candidate(branch='...', candidate_index=0)"
+
+
+def test_act_merge_decoded_words_finds_current_pair_after_prior_merge():
+    alpha = Alphabet.from_text("AB CD EF GH", ignore_chars=set())
+    ct = CipherText(raw="AB CD EF GH", alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"ABCD", "EFGH"},
+        word_list=["ABCD", "EFGH"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in ["A", "B", "C", "D", "E", "F", "G", "H"]:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    first = ex._tool_act_merge_decoded_words({
+        "branch": "main",
+        "left_decoded": "AB",
+        "right_decoded": "CD",
+    })
+    assert first["status"] == "ok"
+    assert first["matched_left_word_index"] == 0
+    assert ws.apply_key("main") == "ABCD EF GH"
+
+    second = ex._tool_act_merge_decoded_words({
+        "branch": "main",
+        "left_decoded": "EF",
+        "right_decoded": "GH",
+    })
+    assert second["status"] == "ok"
+    # EF | GH is now at index 1, not its original index 2.
+    assert second["matched_left_word_index"] == 1
+    assert ws.apply_key("main") == "ABCD EFGH"
+
+
+def test_act_resegment_by_reading_applies_character_preserving_boundaries():
+    raw = "THERE FORE THE OLD PHYSICS ER DID AP PLY A SALVE UN TO"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={
+            "THEREFORE", "THE", "OLD", "PHYSICSER", "DID", "APPLY",
+            "A", "SALVE", "UNTO",
+        },
+        word_list=[
+            "THE", "A", "DID", "OLD", "APPLY", "UNTO", "SALVE",
+            "THEREFORE", "PHYSICSER",
+        ],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    proposed = "THEREFORE THE OLD PHYSICSER DID APPLY A SALVE UNTO"
+    out = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": proposed,
+    })
+
+    assert out["status"] == "ok"
+    assert out["old_word_count"] == 13
+    assert out["new_word_count"] == 9
+    assert out["dictionary_after"]["dictionary_rate"] == 1.0
+    assert ws.apply_key("main") == proposed
+
+
+def test_act_resegment_by_reading_rejects_letter_changing_proposal():
+    raw = "PHYSICS ER"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PHYSICKER"},
+        word_list=["PHYSICKER"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": "PHYSICKER",
+    })
+
+    assert "error" in out
+    assert out["character_preserving"] is False
+    assert out["mismatches"][0]["current_char"] == "S"
+    assert out["mismatches"][0]["proposed_char"] == "K"
+    assert ws.apply_key("main") == "PHYSICS ER"
+
+
+def test_decode_validate_reading_repair_classifies_boundary_vs_letter_changes():
+    raw = "PHYSICS ER DID AP PLY"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PHYSICKER", "DID", "APPLY"},
+        word_list=["DID", "APPLY", "PHYSICKER"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    boundary_only = ex._tool_decode_validate_reading_repair({
+        "branch": "main",
+        "proposed_text": "PHYSICSER DID APPLY",
+    })
+    letter_repair = ex._tool_decode_validate_reading_repair({
+        "branch": "main",
+        "proposed_text": "PHYSICKER DID APPLY",
+    })
+
+    assert boundary_only["character_preserving"] is True
+    assert "act_resegment_by_reading" in boundary_only["recommendation"]
+    assert letter_repair["character_preserving"] is False
+    assert letter_repair["mismatches"][0]["current_char"] == "S"
+    assert letter_repair["mismatches"][0]["proposed_char"] == "K"
+    assert "act_set_mapping" in letter_repair["recommendation"]
+    assert letter_repair["boundary_projection"]["applicable"] is True
+    assert "act_resegment_from_reading_repair" in letter_repair["recommendation"]
+
+
+def test_act_resegment_from_reading_repair_applies_boundaries_despite_letter_diffs():
+    raw = "PHYSICS ER DID AP PLY"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PHYSICKER", "PHYSICSER", "DID", "APPLY"},
+        word_list=["DID", "APPLY", "PHYSICKER", "PHYSICSER"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_from_reading_repair({
+        "branch": "main",
+        "proposed_text": "PHYSICKER DID APPLY",
+    })
+
+    assert out["status"] == "ok"
+    assert out["mode"] == "boundary_projection_from_repair_reading"
+    assert out["character_preserving"] is False
+    assert out["mismatches"][0]["current_char"] == "S"
+    assert out["mismatches"][0]["proposed_char"] == "K"
+    assert out["projected_text"] == "PHYSICSER DID APPLY"
+    assert ws.apply_key("main") == "PHYSICSER DID APPLY"
+
+
+def test_act_resegment_from_reading_repair_rejects_length_mismatch():
+    raw = "AP PLY"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"APPLYING"},
+        word_list=["APPLYING"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_from_reading_repair({
+        "branch": "main",
+        "proposed_text": "APPLYING",
+    })
+
+    assert "error" in out
+    assert out["boundary_projection"]["applicable"] is False
+    assert ws.apply_key("main") == "AP PLY"
+
+
+def test_meta_declare_blocks_boundary_damaged_branch_before_reading_workflow():
+    ex = _executor_for("AP PLY", separator=" ")
+    ex.set_max_iterations(10)
+    ex.set_iteration(4)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Readable text remains, but there are boundary issues.",
+        "self_confidence": 0.7,
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert ex.terminated is False
+    assert "decode_validate_reading_repair" in out["note"]
+
+    ex.call_log.append(SimpleNamespace(
+        tool_name="decode_validate_reading_repair",
+        arguments={"branch": "main"},
+    ))
+    accepted = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Readable text remains, but there are boundary issues.",
+        "self_confidence": 0.7,
+    })
+
+    assert accepted["status"] == "ok"
+    assert accepted["accepted"] is True
+    assert ex.terminated is True
+
+
+def test_meta_declare_allows_final_turn_even_without_reading_workflow():
+    ex = _executor_for("AP PLY", separator=" ")
+    ex.set_max_iterations(10)
+    ex.set_iteration(10)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Partial readable text remains, with boundary issues.",
+        "self_confidence": 0.7,
+    })
+
+    assert out["status"] == "ok"
+    assert out["accepted"] is True
+    assert ex.terminated is True
+
+
+def test_execute_rejects_tools_not_allowed_on_gated_turn():
+    ex = _executor_for("AP PLY", separator=" ")
+    ex.set_allowed_tool_names({"decode_validate_reading_repair"})
+
+    raw = ex.execute(
+        "act_bulk_set",
+        {"branch": "main", "mappings": {"A": "B"}},
+        tool_use_id="unit",
+    )
+
+    assert "tool_gated" in raw
+    assert "decode_validate_reading_repair" in raw
+    assert "no longer allowed" in raw
+    assert "allowed_tools" in raw
+    assert "Do not call it again" in raw
+    assert ex.call_log[-1].tool_name == "act_bulk_set"
 
 
 def test_decode_diagnose_can_suggest_splitting_cipher_word():

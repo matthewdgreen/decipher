@@ -163,11 +163,48 @@ or a benchmark data issue.
     - `decode_diagnose` and `decode_diagnose_and_fix` now surface `boundary_candidates` and a `recommended_next_tool`.
     - Important tool-design finding: recommendation text alone was not enough to make the agent use split/merge; a one-shot wrapper tool (`act_apply_boundary_candidate`) materially improved compliance.
     - Best recent agentic `0109v` run after that wrapper change reached about `14.2%` character accuracy and `8.9%` word accuracy, modestly improving over earlier `7.7%` word-accuracy runs while still staying in the same broadly partial-Latin basin.
+    - Focused repair diagnosis from the current best `0109v` text:
+      - The current `decode_diagnose` / `decode_diagnose_and_fix` path only proposes **single-letter substitutions** that land on a word already present in the loaded Latin dictionary.
+      - `RLURES -> PLURES` is detectable by that machinery, but it is still a weak case because it is a single local correction and `decode_diagnose_and_fix` defaults to `min_evidence=2` before auto-applying repairs.
+      - Several visually obvious near-Latin forms in the current output are **not** reachable by the existing automatic repair path:
+        - `TREUITER` would like `BREUITER`, but `BREUITER` is not present in the current Latin dictionary.
+        - `SIMULITER` would like `SIMILITER`, but `SIMILITER` is not present in the current Latin dictionary.
+        - `MORIETANTUR` is not a one-substitution miss of the historical target form and also is not repairable through the current dictionary lookup.
+      - So the present limitation is not only "the agent failed to notice the error"; it is also that the shared repair primitive is intentionally narrow: one-edit, dictionary-backed, and conservative.
   - Next likely useful experiments:
     - [ ] Try a stronger Latin cleanup pass on `zenith_native` output: segmentation plus phrase-level split/merge and repair, beyond the current conservative shared helper.
     - [ ] Re-run the improved agentic boundary-tool path on a second small Borg case to see whether the `act_apply_boundary_candidate` gain generalizes beyond `0109v`.
     - [ ] Compare default substitution vs forced `zenith_native` on a second small Borg subset to see whether `0109v` is representative or a special case.
     - [ ] Revisit routing later if a cleanup step starts making the `zenith_native` basin consistently more useful.
+  - Planned branch split:
+    - [ ] **Branch A: automated Latin cleanup / dictionary expansion**
+      - Goal: improve the shared automated repair primitives without changing the core agent posture.
+      - Candidate tasks:
+        - expand the Latin dictionary with missing high-value forms observed in Borg output
+        - add historical/variant Latin spellings where they materially help repair
+        - broaden repair primitives beyond pure one-substitution matches
+        - evaluate whether `decode_diagnose_and_fix` / automated repair should allow lower-evidence fixes when a global score guard agrees
+        - compare stronger automated cleanup on both substitution and forced-`zenith_native` paths
+    - [ ] **Branch B: agent native-reading autonomy**
+      - Goal: make the agent use its own linguistic judgment more directly, with tools as helpers rather than as the outer limit of what it can think.
+      - Problem statement:
+        - the current agent often treats tool output as the boundary of permissible reasoning
+        - on partial Latin text, it does not reliably propose spelling repairs or boundary diagnoses from first-principles reading when the dictionary-backed tools stay silent
+      - Candidate tasks:
+        - strengthen prompt language so the agent treats tools as support, not permission
+        - explicitly allow manual spelling-repair proposals from semantic/contextual reading even when no dictionary tool endorses them
+        - explicitly instruct the agent to diagnose likely word-boundary drift from reading continuity, not only from `boundary_candidates`
+        - [x] add a workflow where the agent can state a manual repair hypothesis first and then use tools to test/refine it
+          - Added `decode_validate_reading_repair` for read-only validation of a proposed best reading, including whether it is character-preserving or requires letter repairs.
+          - Added `act_resegment_by_reading` for one-shot character-preserving word-boundary overlays from a complete proposed reading.
+          - Added `act_resegment_from_reading_repair` for the harder Borg-like case: the proposed reading may change letters, but if its character count matches the current branch, the tool applies only the implied word-boundary pattern and preserves the current key/letters.
+        - evaluate whether the agent begins making manual Latin spelling and boundary proposals on Borg `0109v` and neighboring cases
+      - English readability analog:
+        - Added `fixtures/benchmarks/english_borg_analog`, a tiny benchmark root with one hand-shaped English simple-substitution case.
+        - The plaintext is archaic/readable English, while the canonical cipher word boundaries intentionally split words such as `THEREFORE`, `PHYSICKER`, `APPLY`, `UNTO`, `AFTERWARD`, and `WITHOUT`.
+        - A perfect source-boundary decrypt scores `100%` character accuracy but under `10%` word accuracy, making the Borg-style word-alignment problem easy to inspect in English.
+        - Use this fixture when debugging whether the agent is reading the text directly or over-deferring to tool scores and word-alignment artifacts.
+        - Milestone: the first run after the whole-stream reading/resegmentation tools reached `100%` character / `100%` word accuracy on the analog (`artifacts/english_borg_analog_001/919b40a14b6f.json`). This strongly suggests the missing abstraction was not another local boundary primitive, but a tool-mediated way for the agent to state and validate a full reading.
 - [x] Fix automated historical language propagation for benchmark-backed parity/frontier runs.
   - Benchmark target-record `plaintext_language` now overrides brittle `test_id` prefix heuristics.
   - This closes the accidental `parity_borg_*`/`parity_copiale_*` → English fallback in automated-only and automated preflight paths.
@@ -202,6 +239,161 @@ or a benchmark data issue.
 
 ### Priority 4: Full-Agent Parity
 
+- [ ] **Reading-driven repair discipline.**
+  - Once a branch decodes into recognisable target-language words, the
+    agent's reading must dominate over scoring signals. Recent Borg
+    artifacts show the agent making the correct cipher-symbol fix, the
+    tool reporting `verdict: worse` from a single dict_rate delta, and the
+    agent reverting. See AGENTS.md → "Reading-driven repair discipline" for
+    the full diagnosis. Keep all prompt language language-agnostic; this is
+    a general agentic-decipherment failure mode, not a Borg- or Latin-
+    specific one.
+  - **Prompt changes** (`src/agent/prompts_v2.py`):
+    - [x] Add an explicit reading-vs-score hierarchy near the top of
+      "Reading-driven repair":
+      - When you cannot read the decoded text → scores are your only signal.
+      - When you can partially read it → reading and scores are co-equal;
+        prefer the change that produces more recognisable words.
+      - When you can read coherent target-language words →
+        **your reading is authoritative.** A score delta that disagrees with
+        a reading-driven fix that produces additional real words is not a
+        reason to revert.
+    - [x] Replace the `TREUITER → BREUITER` worked example with a
+      language-agnostic, cipher-symbol-framed example. Lead with cipher
+      symbols, not decoded letters: `cipher word XXXXX decodes as FOO
+      but reads as BAR; cipher symbol Sxx is currently → A and should
+      be → B; call act_set_mapping(cipher_symbol='Sxx', plain_letter='B');
+      this changes every occurrence of cipher Sxx — read the resulting
+      decode for the full effect`.
+    - [x] Add an explicit warning that `act_swap_decoded` is **bidirectional
+      across the entire decoded text** and is a footgun for reading-driven
+      repairs. For "this letter should be that letter in this word" fixes,
+      always use `act_set_mapping` on the cipher symbol producing the wrong
+      letter.
+    - [x] Make the anchored-polish sequencing rule non-negotiable: do not
+      call `search_anneal(preserve_existing=true)` (or
+      `search_homophonic_anneal(preserve_existing=true)`) on a branch until
+      at least one `act_set_mapping` reading-driven anchor has been
+      applied. Otherwise the polish has nothing meaningful to anchor and
+      just re-confirms the prior local optimum.
+    - [x] Generalise the dict_rate threshold guidance away from
+      language-specific numbers ("Latin caps near 0.20"). State the rule in
+      generic form: `dict_rate` has language-and-cipher-specific ceilings;
+      on boundary-preserving ciphers where cipher word boundaries don't
+      align with target-language word boundaries, `dict_rate` can be
+      inflated by short accidental fragments. **Do not declare on
+      `dict_rate` alone — declare on reading.**
+    - [x] Add explicit tool-output discipline: a `verdict: worse` reported
+      by `act_set_mapping` is a score delta, not an authoritative quality
+      verdict. If the change produced two or more decoded words that now
+      read as real target-language words (or fragments of real words),
+      accept it.
+  - **Tool-surface changes** (`src/agent/tools_v2.py`):
+    - [x] Stop surfacing a `verdict: improved/worse` field on
+      `act_set_mapping`/`act_bulk_set` results. Report the score deltas as
+      data only, and include a `changed_words` sample (was → now, up to ~8
+      examples) so the agent reads the change rather than scoring it.
+      `act_swap_decoded` may keep its verdict because it operates at the
+      decoded-letter layer where the score is more meaningful.
+    - [x] Tighten the `act_swap_decoded` tool description: state up front
+      that it swaps two decoded letters bidirectionally across the entire
+      branch and is rarely the right primitive for reading-driven repairs.
+      When it auto-reverts, the result note should suggest the specific
+      `act_set_mapping(cipher_symbol=…)` calls that would have made the
+      same single-direction change.
+    - [x] Downrank boundary candidates in `recommended_next_tool` and the
+      `decode_diagnose` `note` whenever there are unattempted letter-level
+      candidate corrections. Boundary edits should only be the top
+      recommendation when there are no plausible letter-level fixes and the
+      diagnostics indicate a likely missed split/merge.
+    - [ ] Consider adding a `decode_letter_culprit(branch, word_index,
+      position)` helper that returns "the decoded letter at this position
+      is produced by cipher symbol X (currently → Y); other words
+      containing cipher X: …". This shifts the agent's frame from decoded-
+      letter to cipher-symbol without requiring the agent to do the lookup
+      manually each time.
+  - **Telemetry / artifact gap analyzer**:
+    - [x] Add a `score_overrode_reading` label: agent identified a fix from
+      reading, applied it via `act_set_mapping`, the score reported a
+      regression, and the agent reverted or declared a strictly worse
+      branch.
+    - [x] Add an `unattempted_reading_fix` label: agent reasoning text
+      proposes a specific `cipher symbol X → letter Y` fix but no
+      `act_set_mapping`/`act_bulk_set`/`act_anchor_word` call follows
+      within the next two iterations.
+  - **Verification**:
+    - [ ] Re-run `borg_single_B_borg_0109v` and `borg_single_B_borg_0045v`
+      with the updated prompt + tool surfaces. Acceptance signals:
+      - At least 2 reading-driven `act_set_mapping` calls per run.
+      - No `search_anneal(preserve_existing=true)` call before any
+        `act_set_mapping` on the same branch.
+      - When a reading-driven fix produces additional readable words but
+        score delta is negative, the agent keeps the fix.
+      - Final declared branch ≥ automated_preflight on both char and word
+        accuracy.
+      - 2026-04-25 focused `parity_borg_latin_borg_0109v` rerun after the
+        whole-stream reading tools: artifact
+        `artifacts/parity_borg_latin_borg_0109v/b15432813fde.json`.
+        Result: declared `repair` branch reached `13.9%` char / `20.8%`
+        word, versus automated preflight `14.2%` char / `6.4%` word. This
+        is a real word-alignment/reading improvement, but not a full solve:
+        the analyzer still reports six `unattempted_reading_fix` warnings,
+        and the agent did not yet use `act_resegment_by_reading` on the
+        Latin case. Next prompt/tool iteration should encourage full-reading
+        resegmentation when the branch contains many visible boundary drifts,
+        while continuing to require targeted `act_set_mapping` for letter
+        repairs such as `RLURES -> PLURES`.
+      - Follow-up implementation: `decode_validate_reading_repair` now returns
+        a `boundary_projection` whenever the proposed reading has the same
+        character count, and `act_resegment_from_reading_repair` can apply
+        that projection in one call. This is intended to make the Latin case
+        behave more like the English analog: draft the best whole reading,
+        apply safe boundaries, then repair the listed letter mismatches.
+      - Added a pre-final declaration guard: if an agent rationale still
+        mentions boundary/alignment issues and the branch has not used
+        `decode_validate_reading_repair`, `act_resegment_by_reading`, or
+        `act_resegment_from_reading_repair`, `meta_declare_solution` blocks
+        once and points the agent to that workflow. Final-turn declarations
+        are still accepted so partial readable work is not lost.
+      - Added a penultimate-turn warning in the loop/panel. This is the
+        important scheduling fix: the final turn must remain a declaration
+        turn, so the agent is now told one turn earlier to run the full-reading
+        validation/projection workflow instead of spending that turn on more
+        local edits or search.
+      - Late-window tool gating now hides and executor-blocks local edit/search
+        tools. This successfully caused the agent to attempt the full-reading
+        workflow on `0109v`, but the proposed readings failed character-count
+        checks (`345` current chars vs `307`/`378` proposed chars), so no
+        boundary projection was applied. Latest gated-run artifact:
+        `artifacts/parity_borg_latin_borg_0109v/8776c6231842.json`
+        (`13.9%` char / `8.9%` word).
+      - Current conclusion: pause Borg-specific prompt/tool iteration until a
+        more modern agentic loop exists. Prompt nudges and late gating can make
+        the agent attempt the right workflow, but the current turn-based loop
+        is too clunky for exact length-preserving reading repair.
+      - Next design note: `docs/agent_loop_redesign_plan.md`.
+    - [x] Add an automated check to `tests/test_agent_reliability.py` (or a
+      new fixture-driven test) that simulates a "verdict: worse but
+      reading-positive" tool result and asserts the prompt-derived loop
+      keeps the change. This protects the discipline against future prompt
+      drift.
+- [ ] Design a provider-neutral modern agent loop before further Borg-specific
+  work.
+  - Keep the core Decipher harness independent of any one LLM provider.
+  - Use a small provider adapter so Claude, OpenAI, and future local/hosted
+    models can share the same tool/workspace/artifact state machine.
+  - Separate outer benchmark iterations from inner tool steps.
+  - Add same-iteration retry for gated/disallowed tools so a stale tool choice
+    does not consume a scarce late-turn action.
+  - Make workflows first-class, especially:
+    - full-reading validation and boundary projection
+    - reading-driven mapping repair
+    - declaration preparation
+  - Track explicit run state: active mode, branch, repair agenda, held/reverted
+    repairs, unresolved hypotheses, per-branch workflow completion.
+  - Preserve complete artifact observability for every model call, tool call,
+    workflow event, gate rejection, retry, and declaration.
+  - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
 - [ ] Add a full-agent parity smoke suite.
 - [x] Add artifact checks for wrong-tool use.
   - Homophonic no-boundary should call `search_homophonic_anneal` before generic `search_anneal`.

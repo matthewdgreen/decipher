@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -281,10 +282,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "act_set_mapping",
         "description": (
             "Set a single encoded-symbol → plaintext-letter mapping on a branch. "
+            "**This is the default primitive for reading-driven repair.** "
             "cipher_symbol must be the name of a symbol from the cipher alphabet "
             "(e.g. 'S001', 'A', 'X') — NOT a letter you see in the decoded output. "
-            "For homophonic ciphers this is the safest repair primitive: change "
-            "one cipher symbol at a time and inspect score_delta."
+            "Unidirectional and surgical: only words containing this cipher "
+            "symbol change. Result includes a `changed_words` sample (was→now) "
+            "so you can decide by reading rather than by score. The score_delta "
+            "is advisory — on boundary-preserving ciphers a correct cipher- "
+            "symbol fix can drop dictionary_rate while still being correct. "
+            "If two or more `changed_words` entries now read as real target- "
+            "language words (or fragments of real words), keep the change."
         ),
         "input_schema": {
             "type": "object",
@@ -344,16 +351,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "act_swap_decoded",
         "description": (
-            "Swap two decoded letters throughout the text by exchanging the cipher "
-            "symbols that produce them. Use this when you see a letter in the decoded "
-            "output that should be a different letter — e.g. if you see T where F "
-            "should appear, call act_swap_decoded(branch, 'T', 'F'). This finds "
-            "which cipher symbols currently produce each letter and swaps their "
-            "plaintext assignments, preserving bijectivity. "
-            "If one letter has no mapping yet, it is simply remapped to the target. "
-            "Avoid this for homophonic repairs unless you really want to move every "
-            "symbol currently mapped to both decoded letters; use act_set_mapping "
-            "for targeted homophonic fixes."
+            "**Bidirectional letter-population swap** — exchanges the cipher "
+            "symbols mapped to two decoded letters across the entire branch. "
+            "**Rarely the right primitive for reading-driven repairs**: if you "
+            "see decoded T in a word that should be B, this tool will move "
+            "every cipher symbol currently producing T to produce B *and* "
+            "every symbol producing B to produce T, almost always breaking "
+            "correctly-decoded words elsewhere. For 'this letter should be "
+            "that letter in this word' fixes, use `act_set_mapping` on the "
+            "single cipher symbol producing the wrong letter — that is "
+            "unidirectional and surgical. Use act_swap_decoded only when you "
+            "deliberately want to swap two whole decoded-letter populations "
+            "(e.g. a confirmed full ↔ swap such as A↔E). When auto-reverted, "
+            "the result includes `unidirectional_alternatives` listing the "
+            "specific act_set_mapping calls that would have made the same "
+            "intent without the bidirectional side-effects."
         ),
         "input_schema": {
             "type": "object",
@@ -391,7 +403,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Merge two adjacent ciphertext words on this branch only. "
             "Use this when a transcription likely inserted a spurious "
-            "boundary, e.g. CUR | A -> CURA."
+            "boundary, e.g. CUR | A -> CURA. Numeric word indices shift "
+            "after every split/merge; when acting from decoded text, prefer "
+            "`act_merge_decoded_words` or re-run decode_show/decode_diagnose "
+            "before using another numeric index."
         ),
         "input_schema": {
             "type": "object",
@@ -406,11 +421,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "act_merge_decoded_words",
+        "description": (
+            "Merge the currently adjacent cipher words whose decoded forms "
+            "match left_decoded and right_decoded. This is the safest boundary "
+            "tool when you are reading the plaintext directly, because it "
+            "finds the current pair after earlier merges have shifted numeric "
+            "word indices. Example: left_decoded='AP', right_decoded='PLY' "
+            "merges the current AP | PLY pair into APPLY."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "left_decoded": {"type": "string"},
+                "right_decoded": {"type": "string"},
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Which matching adjacent pair to merge; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch", "left_decoded", "right_decoded"],
+        },
+    },
+    {
         "name": "act_apply_boundary_candidate",
         "description": (
             "Apply one of the currently suggested boundary edits for this branch. "
             "Use this when decode_diagnose or decode_diagnose_and_fix returns "
-            "boundary_candidates or a recommended_next_tool for split/merge."
+            "boundary_candidates or a recommended_next_tool for split/merge. "
+            "It recomputes candidates each call, so repeated calls are safer "
+            "than manually reusing old numeric word indices."
         ),
         "input_schema": {
             "type": "object",
@@ -423,6 +465,63 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["branch"],
+        },
+    },
+    {
+        "name": "act_resegment_by_reading",
+        "description": (
+            "Replace this branch's word boundaries with a complete reading that "
+            "you propose, while preserving the exact decoded character stream. "
+            "This is the one-shot boundary-normalization tool: instead of "
+            "merging THERE | FORE, AP | PLY, UN | TO, AFTER | WARD one at a "
+            "time, provide proposed_text='THEREFORE THE ... APPLY ... UNTO ...' "
+            "and the tool applies the new word spans only if the letters match "
+            "exactly after removing spaces/punctuation. If you need to change "
+            "letters too, first call decode_validate_reading_repair and then "
+            "use act_set_mapping/act_bulk_set for the character repairs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "proposed_text": {
+                    "type": "string",
+                    "description": (
+                        "Complete best reading with desired word boundaries. "
+                        "Must have the same letters as the current branch."
+                    ),
+                },
+            },
+            "required": ["branch", "proposed_text"],
+        },
+    },
+    {
+        "name": "act_resegment_from_reading_repair",
+        "description": (
+            "Apply only the word-boundary pattern implied by a proposed best "
+            "reading, while preserving the branch's current decoded letters "
+            "and key. Use this when the branch is readable-but-damaged and "
+            "your best reading changes both spaces and a few letters. Example: "
+            "current PHYSICS ER, proposed PHYSICKER has the same character "
+            "count, so this tool can safely install one word boundary span and "
+            "leave the current letters as PHYSICSER. It returns mismatch spans "
+            "so you can then repair the true letter/key errors with "
+            "act_set_mapping or act_bulk_set."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "proposed_text": {
+                    "type": "string",
+                    "description": (
+                        "Best target-language reading. The letters may differ "
+                        "from the current branch, but the normalized character "
+                        "count must match."
+                    ),
+                },
+            },
+            "required": ["branch", "proposed_text"],
         },
     },
     # ----- search_* -----
@@ -821,6 +920,36 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["branch"],
         },
     },
+    {
+        "name": "decode_validate_reading_repair",
+        "description": (
+            "Validate a proposed best reading of a branch. This is read-only. "
+            "Use it when your human/agent reading wants to change letters, "
+            "archaic spellings, or word boundaries. The tool compares the "
+            "proposed text with the branch's current decoded character stream, "
+            "reports whether it is character-preserving, shows first mismatch "
+            "spans, and scores the proposed words against the target-language "
+            "dictionary. If the proposal is character-preserving, apply it "
+            "with act_resegment_by_reading. If it changes characters but has "
+            "the same character count, apply its boundary pattern safely with "
+            "act_resegment_from_reading_repair, then translate the mismatch "
+            "spans into act_set_mapping/act_bulk_set repairs."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "proposed_text": {
+                    "type": "string",
+                    "description": (
+                        "Your best target-language reading. Spaces may differ; "
+                        "letters may differ only if this is a repair hypothesis."
+                    ),
+                },
+            },
+            "required": ["branch", "proposed_text"],
+        },
+    },
     # ----- run_python -----
     {
         "name": "run_python",
@@ -945,6 +1074,8 @@ class WorkspaceToolExecutor:
         # Termination state
         self.terminated: bool = False
         self.solution: SolutionDeclaration | None = None
+        self.max_iterations: int | None = None
+        self.allowed_tool_names: set[str] | None = None
 
         # Log of all tool calls for the run artifact
         self.call_log: list[ToolCall] = []
@@ -955,6 +1086,12 @@ class WorkspaceToolExecutor:
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
+
+    def set_max_iterations(self, n: int | None) -> None:
+        self.max_iterations = n
+
+    def set_allowed_tool_names(self, names: set[str] | None) -> None:
+        self.allowed_tool_names = set(names) if names is not None else None
 
     # ------------------------------------------------------------------
     # Dispatch
@@ -967,7 +1104,29 @@ class WorkspaceToolExecutor:
     ) -> str:
         handler = getattr(self, f"_tool_{tool_name}", None)
         started = time.time()
-        if handler is None:
+        if self.allowed_tool_names is not None and tool_name not in self.allowed_tool_names:
+            allowed = sorted(self.allowed_tool_names)
+            result = _json({
+                "error": (
+                    f"STOP: `{tool_name}` is no longer allowed on this turn. "
+                    "Do not call it again in this gated window."
+                ),
+                "reason": "tool_gated",
+                "attempted_tool": tool_name,
+                "allowed_tools": allowed,
+                "note": (
+                    "This turn is gated. Some tools are intentionally hidden "
+                    "and executor-blocked. You must choose only from "
+                    "`allowed_tools`. Do not use local split/merge, bulk "
+                    "mapping, or search tools now. If the text is readable but "
+                    "misaligned, write a complete best reading and use "
+                    "`act_resegment_by_reading` or "
+                    "`act_resegment_from_reading_repair`; use "
+                    "`decode_validate_reading_repair` only if you need to "
+                    "decide which resegmentation actuator applies."
+                ),
+            })
+        elif handler is None:
             result = _json({"error": f"Unknown tool: {tool_name}"})
         else:
             try:
@@ -1214,19 +1373,239 @@ class WorkspaceToolExecutor:
         Included on mutation and search tool results so the LLM sees the
         textual effect of its action without a follow-up decode_show call.
         """
+        words = self._decoded_words(branch_name, max_words=max_words)
+        return " | ".join(words)
+
+    def _decoded_words(
+        self, branch_name: str, max_words: int | None = None
+    ) -> list[str]:
+        """Return per-word decoded strings for the branch.
+
+        Used by `_changed_words_sample` to diff before/after decodes word by
+        word. With `max_words=None` returns the full sequence.
+        """
         ws = self.workspace
         words = ws.effective_words(branch_name)
         branch = ws.get_branch(branch_name)
         pt_alpha = self._pt_alpha()
         sep = " " if pt_alpha._multisym else ""
-        out = []
-        for w in words[:max_words]:
+        if max_words is not None:
+            words = words[:max_words]
+        out: list[str] = []
+        for w in words:
             parts = [
                 pt_alpha.symbol_for(branch.key[t]) if t in branch.key else "?"
                 for t in w
             ]
             out.append(sep.join(parts))
-        return " | ".join(out)
+        return out
+
+    def _reading_words_from_text(self, text: str) -> list[str]:
+        """Return uppercase word-like runs from a proposed reading.
+
+        These are the units the agent wants to install as word boundaries.
+        Punctuation is ignored, so a proposal may include light manuscript
+        punctuation without changing the character-preservation check.
+        """
+        normalized = sig.normalize_for_scoring(text)
+        return re.findall(r"[A-Z?]+", normalized)
+
+    def _reading_char_stream(self, text: str) -> str:
+        return "".join(self._reading_words_from_text(text))
+
+    def _branch_reading_words(self, branch_name: str) -> list[str]:
+        return [
+            self._reading_char_stream(word)
+            for word in self._decoded_words(branch_name, max_words=None)
+        ]
+
+    def _dictionary_summary_for_words(self, words: list[str]) -> dict[str, Any]:
+        scored = [w for w in words if any(ch.isalpha() for ch in w)]
+        hits = [w for w in scored if w in self.word_set]
+        unrecognized = [w for w in scored if w not in self.word_set]
+        rate = len(hits) / len(scored) if scored else 0.0
+        return {
+            "dictionary_rate": round(rate, 4),
+            "total_words": len(scored),
+            "recognized": len(hits),
+            "unrecognized_sample": unrecognized[:20],
+        }
+
+    def _first_reading_mismatches(
+        self,
+        current_stream: str,
+        proposed_stream: str,
+        max_mismatches: int = 8,
+    ) -> list[dict[str, Any]]:
+        mismatches: list[dict[str, Any]] = []
+        common_len = min(len(current_stream), len(proposed_stream))
+        for idx in range(common_len):
+            if current_stream[idx] == proposed_stream[idx]:
+                continue
+            start = max(0, idx - 8)
+            end = min(max(len(current_stream), len(proposed_stream)), idx + 9)
+            mismatches.append({
+                "char_index": idx,
+                "current_char": current_stream[idx],
+                "proposed_char": proposed_stream[idx],
+                "current_context": current_stream[start:min(end, len(current_stream))],
+                "proposed_context": proposed_stream[start:min(end, len(proposed_stream))],
+            })
+            if len(mismatches) >= max_mismatches:
+                break
+        if len(mismatches) < max_mismatches and len(current_stream) != len(proposed_stream):
+            idx = common_len
+            start = max(0, idx - 8)
+            mismatches.append({
+                "char_index": idx,
+                "current_char": current_stream[idx] if idx < len(current_stream) else None,
+                "proposed_char": proposed_stream[idx] if idx < len(proposed_stream) else None,
+                "current_context": current_stream[start:min(idx + 9, len(current_stream))],
+                "proposed_context": proposed_stream[start:min(idx + 9, len(proposed_stream))],
+                "note": "Streams differ in length at or after this point.",
+            })
+        return mismatches
+
+    def _reading_validation(self, branch: str, proposed_text: str) -> dict[str, Any]:
+        current_words = self._branch_reading_words(branch)
+        proposed_words = self._reading_words_from_text(proposed_text)
+        current_stream = "".join(current_words)
+        proposed_stream = "".join(proposed_words)
+        same = current_stream == proposed_stream
+        same_len = len(current_stream) == len(proposed_stream)
+        current_summary = self._dictionary_summary_for_words(current_words)
+        proposed_summary = self._dictionary_summary_for_words(proposed_words)
+        result: dict[str, Any] = {
+            "branch": branch,
+            "character_preserving": same,
+            "same_character_count": same_len,
+            "current_char_count": len(current_stream),
+            "proposed_char_count": len(proposed_stream),
+            "current_word_count": len(current_words),
+            "proposed_word_count": len(proposed_words),
+            "current_dictionary": current_summary,
+            "proposed_dictionary": proposed_summary,
+            "proposed_words_preview": proposed_words[:80],
+            "mismatches": [] if same else self._first_reading_mismatches(
+                current_stream, proposed_stream
+            ),
+        }
+        if same_len and proposed_words:
+            projected_words: list[str] = []
+            pos = 0
+            for word in proposed_words:
+                end = pos + len(word)
+                projected_words.append(current_stream[pos:end])
+                pos = end
+            projected_text = " ".join(projected_words)
+            word_mismatches = [
+                {"index": i, "current_projected": cur, "proposed": prop}
+                for i, (cur, prop) in enumerate(zip(projected_words, proposed_words))
+                if cur != prop
+            ]
+            result["boundary_projection"] = {
+                "applicable": True,
+                "projected_text": projected_text,
+                "projected_words_preview": projected_words[:80],
+                "projected_dictionary": self._dictionary_summary_for_words(projected_words),
+                "word_mismatches_preview": word_mismatches[:20],
+                "suggested_call": (
+                    f"act_resegment_from_reading_repair(branch='{branch}', "
+                    "proposed_text='<same proposed_text>')"
+                ),
+                "note": (
+                    "The proposed reading has the same character count as the "
+                    "current branch, so its word boundaries can be applied "
+                    "without changing the key or decoded letters. Letter "
+                    "differences remain as repair targets."
+                ),
+            }
+        else:
+            result["boundary_projection"] = {
+                "applicable": False,
+                "reason": (
+                    "Proposed and current character counts differ; boundary "
+                    "projection would drop or duplicate ciphertext tokens."
+                ),
+            }
+        return result
+
+    def _changed_words_sample(
+        self,
+        before_words: list[str],
+        after_words: list[str],
+        max_changes: int = 8,
+    ) -> list[dict[str, Any]]:
+        """Return up to max_changes word-level differences between two decodes.
+
+        The samples are reading-friendly: each entry shows the decoded form
+        before and after the change. Lets the agent decide by reading rather
+        than by score.
+        """
+        out: list[dict[str, Any]] = []
+        for i, (b, a) in enumerate(zip(before_words, after_words)):
+            if b != a:
+                out.append({"index": i, "before": b, "after": a})
+                if len(out) >= max_changes:
+                    break
+        return out
+
+    def _reading_score_delta(
+        self, before: dict[str, float | None], after: dict[str, float | None]
+    ) -> dict[str, Any]:
+        """Score delta without verdict/improved fields.
+
+        Used by reading-driven repair primitives (`act_set_mapping`,
+        `act_bulk_set`, `act_anchor_word`) so the agent treats the score
+        movement as data rather than as an authoritative quality verdict.
+        On boundary-preserving ciphers a correct cipher-symbol fix can move
+        `dictionary_rate` in the wrong direction; the agent should rely on
+        the `changed_words` reading sample, not on a verdict label.
+        """
+        delta = self._score_delta(before, after)
+        return {
+            k: v for k, v in delta.items() if k not in ("verdict", "improved")
+        }
+
+    _READING_DECISION_NOTE = (
+        "Score deltas are advisory. Read `changed_words` — if two or more "
+        "entries now read as real target-language words (or fragments of "
+        "real words), keep the change even when deltas are negative. "
+        "Revert only if previously-correct words broke and no real words "
+        "were added. Boundary-preserving ciphers in particular can show a "
+        "negative `dictionary_rate` delta on a correct cipher-symbol fix."
+    )
+
+    _BOUNDARY_DECLARATION_TERMS = (
+        "boundary", "word break", "word-break", "word boundary",
+        "split", "merge", "merged", "misaligned", "alignment",
+    )
+
+    def _branch_used_full_reading_workflow(self, branch: str) -> bool:
+        workflow_tools = {
+            "decode_validate_reading_repair",
+            "act_resegment_by_reading",
+            "act_resegment_from_reading_repair",
+        }
+        for call in self.call_log:
+            if call.tool_name not in workflow_tools:
+                continue
+            args = call.arguments or {}
+            if args.get("branch") == branch:
+                return True
+        return False
+
+    def _should_guard_declaration_for_reading_workflow(
+        self,
+        branch: str,
+        rationale: str,
+    ) -> bool:
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return False
+        if self._branch_used_full_reading_workflow(branch):
+            return False
+        lowered = rationale.lower()
+        return any(term in lowered for term in self._BOUNDARY_DECLARATION_TERMS)
 
     # ------------------------------------------------------------------
     # workspace_*
@@ -1815,8 +2194,7 @@ class WorkspaceToolExecutor:
             merged = left + right
             if not left or not right or merged not in self.word_set:
                 continue
-            if left in self.word_set and right in self.word_set:
-                continue
+            both_parts_known = left in self.word_set and right in self.word_set
             candidates.append({
                 "type": "merge",
                 "left_word_index": idx,
@@ -1825,8 +2203,14 @@ class WorkspaceToolExecutor:
                 "suggested_call": (
                     f"act_merge_cipher_words(branch='{branch}', left_word_index={idx})"
                 ),
-                "evidence": "merged form is a dictionary word",
-                "score_hint": len(merged),
+                "evidence": (
+                    "merged form is a dictionary word; both split parts are "
+                    "also dictionary words, so apply only if the surrounding "
+                    "reading wants the compound"
+                    if both_parts_known
+                    else "merged form is a dictionary word"
+                ),
+                "score_hint": len(merged) - (1 if both_parts_known else 0),
             })
 
         candidates.sort(key=lambda c: (c["score_hint"], c["type"] == "merge"), reverse=True)
@@ -1835,8 +2219,24 @@ class WorkspaceToolExecutor:
             cand.pop("score_hint", None)
         return trimmed
 
-    def _recommended_boundary_tool(self, boundary_candidates: list[dict[str, Any]]) -> str | None:
+    def _recommended_boundary_tool(
+        self,
+        boundary_candidates: list[dict[str, Any]],
+        letter_candidates: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        """Recommend a boundary edit only when nothing better is available.
+
+        Boundary edits typically yield small `dictionary_rate` gains. When
+        letter-level corrections are also visible (`candidate_corrections`
+        from the same diagnostic), those are far higher-leverage and should
+        be tried first — see "Reading-driven repair" in the system prompt.
+        """
         if not boundary_candidates:
+            return None
+        if letter_candidates:
+            # Letter-level fixes dominate; do not promote a boundary edit as
+            # the next move when the diagnostic also surfaced letter-level
+            # culprits.
             return None
         return "act_apply_boundary_candidate(branch='...', candidate_index=0)"
 
@@ -1911,7 +2311,9 @@ class WorkspaceToolExecutor:
             "segmented_text": seg_preview,
             "candidate_corrections": candidates,
             "boundary_candidates": boundary_candidates,
-            "recommended_next_tool": self._recommended_boundary_tool(boundary_candidates),
+            "recommended_next_tool": self._recommended_boundary_tool(
+                boundary_candidates, letter_candidates=candidates,
+            ),
             "bulk_fix_call": bulk_fix_call,
             "warnings": self._homophonic_reliability_warnings(
                 branch, round(seg.dict_rate, 4), self._compute_quick_scores(branch).get("quad")
@@ -1939,7 +2341,7 @@ class WorkspaceToolExecutor:
 
         if not to_apply:
             boundary_note = ""
-            if boundary_candidates:
+            if boundary_candidates and not skipped:
                 boundary_note = (
                     " Boundary edits look more promising than letter swaps here; "
                     "try act_split_cipher_word / act_merge_cipher_words before "
@@ -1954,7 +2356,9 @@ class WorkspaceToolExecutor:
                     for c in skipped
                 ],
                 "boundary_candidates": boundary_candidates,
-                "recommended_next_tool": self._recommended_boundary_tool(boundary_candidates),
+                "recommended_next_tool": self._recommended_boundary_tool(
+                    boundary_candidates, letter_candidates=skipped,
+                ),
                 "score_delta": None,
                 "note": (
                     f"No candidates met min_evidence={min_evidence}. "
@@ -2032,16 +2436,20 @@ class WorkspaceToolExecutor:
                     f"dict_rate is now {dict_rate_after:.0%}. "
                     "The decoded text looks solved — call meta_declare_solution now."
                 )
-        elif remaining_boundary_candidates:
-            recommendation = (
-                "Boundary edits are the strongest next move here. Try "
-                "act_split_cipher_word or act_merge_cipher_words before "
-                "more annealing or declaration."
-            )
         elif remaining_candidates:
             recommendation = (
                 f"{remaining_pseudo} pseudo-words remain. "
-                "Call decode_diagnose_and_fix again or declare if the text reads well."
+                "Call decode_diagnose_and_fix again, apply targeted "
+                "act_set_mapping fixes from your reading, or declare if "
+                "the text reads well."
+            )
+        elif remaining_boundary_candidates:
+            recommendation = (
+                "No remaining letter-level corrections, but boundary edits "
+                "look plausible. Try act_split_cipher_word or "
+                "act_merge_cipher_words before declaration if your reading "
+                "suggests the cipher's word breaks are misaligned with "
+                "target-language word breaks."
             )
         else:
             if self._is_homophonic_cipher() and self._is_no_boundary_cipher(branch):
@@ -2072,7 +2480,10 @@ class WorkspaceToolExecutor:
             "pseudo_words_remaining": remaining_pseudo,
             "remaining_candidates": remaining_candidates[:3],
             "boundary_candidates": remaining_boundary_candidates,
-            "recommended_next_tool": self._recommended_boundary_tool(remaining_boundary_candidates),
+            "recommended_next_tool": self._recommended_boundary_tool(
+                remaining_boundary_candidates,
+                letter_candidates=remaining_candidates,
+            ),
             "decoded_preview": self._decoded_preview(branch),
             "warnings": self._homophonic_reliability_warnings(
                 branch, dict_rate_after, after.get("quad")
@@ -2122,6 +2533,33 @@ class WorkspaceToolExecutor:
                 "search_homophonic_anneal."
             ),
         }
+
+    def _tool_decode_validate_reading_repair(self, args: dict) -> Any:
+        branch = args["branch"]
+        proposed_text = str(args["proposed_text"])
+        validation = self._reading_validation(branch, proposed_text)
+        if validation["character_preserving"]:
+            validation["recommendation"] = (
+                "This proposal only changes word boundaries. Apply it with "
+                "act_resegment_by_reading using the same proposed_text."
+            )
+        elif validation.get("boundary_projection", {}).get("applicable"):
+            validation["recommendation"] = (
+                "This proposal changes letters but has the same character "
+                "count. Apply only its word-boundary pattern with "
+                "act_resegment_from_reading_repair using the same proposed_text; "
+                "then use the mismatch spans to make targeted "
+                "act_set_mapping/act_bulk_set repairs."
+            )
+        else:
+            validation["recommendation"] = (
+                "This proposal changes the decoded character stream. Treat it "
+                "as a reading hypothesis: inspect the mismatch spans, identify "
+                "the responsible cipher symbols with decode_show, then apply "
+                "targeted act_set_mapping/act_bulk_set repairs before changing "
+                "boundaries."
+            )
+        return validation
 
     # ------------------------------------------------------------------
     # score_*
@@ -2307,18 +2745,27 @@ class WorkspaceToolExecutor:
         if not pt_alpha.has_symbol(plain_letter):
             return {"error": f"Unknown plaintext letter: {plain_letter}"}
         before = self._compute_quick_scores(branch)
+        before_words = self._decoded_words(branch)
         self.workspace.set_mapping(
             branch,
             alpha.id_for(cipher_sym),
             pt_alpha.id_for(plain_letter),
         )
         after = self._compute_quick_scores(branch)
+        after_words = self._decoded_words(branch)
+        changed = self._changed_words_sample(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
             "mapping": f"{cipher_sym} -> {plain_letter}",
+            "occurrences_changed": sum(
+                1 for w in self.workspace.cipher_text.tokens
+                if alpha.symbol_for(w) == cipher_sym
+            ),
+            "changed_words": changed,
             "decoded_preview": self._decoded_preview(branch),
-            "score_delta": self._score_delta(before, after),
+            "score_delta": self._reading_score_delta(before, after),
+            "note": self._READING_DECISION_NOTE,
         }
 
     def _tool_act_bulk_set(self, args: dict) -> Any:
@@ -2329,6 +2776,7 @@ class WorkspaceToolExecutor:
         set_ok: list[str] = []
         errors: list[str] = []
         before = self._compute_quick_scores(branch)
+        before_words = self._decoded_words(branch)
         for cipher_sym, plain_letter in mappings.items():
             pl = plain_letter.upper()
             if not alpha.has_symbol(cipher_sym):
@@ -2340,14 +2788,18 @@ class WorkspaceToolExecutor:
             self.workspace.set_mapping(branch, alpha.id_for(cipher_sym), pt_alpha.id_for(pl))
             set_ok.append(f"{cipher_sym}->{pl}")
         after = self._compute_quick_scores(branch)
+        after_words = self._decoded_words(branch)
+        changed = self._changed_words_sample(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
             "mappings_set": len(set_ok),
             "details": set_ok,
             "errors": errors if errors else None,
+            "changed_words": changed,
             "decoded_preview": self._decoded_preview(branch),
-            "score_delta": self._score_delta(before, after),
+            "score_delta": self._reading_score_delta(before, after),
+            "note": self._READING_DECISION_NOTE,
         }
 
     def _tool_act_anchor_word(self, args: dict) -> Any:
@@ -2370,6 +2822,7 @@ class WorkspaceToolExecutor:
         pt_alpha = self._pt_alpha()
         branch = ws.get_branch(branch_name)
         before = self._compute_quick_scores(branch_name)
+        before_words = self._decoded_words(branch_name)
         changes: list[str] = []
         for token_id, target_char in zip(word_tokens, target):
             if not pt_alpha.has_symbol(target_char):
@@ -2381,14 +2834,18 @@ class WorkspaceToolExecutor:
             changes.append(f"{alpha.symbol_for(token_id)}->{target_char}")
         decoded = self._decode_word(word_tokens, branch_name)
         after = self._compute_quick_scores(branch_name)
+        after_words = self._decoded_words(branch_name)
+        changed = self._changed_words_sample(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch_name,
             "cipher_word": self._cipher_word_str(word_tokens),
             "now_decodes_as": decoded,
             "changes": changes,
+            "changed_words": changed,
             "decoded_preview": self._decoded_preview(branch_name),
-            "score_delta": self._score_delta(before, after),
+            "score_delta": self._reading_score_delta(before, after),
+            "note": self._READING_DECISION_NOTE,
         }
 
     def _tool_act_clear_mapping(self, args: dict) -> Any:
@@ -2451,6 +2908,52 @@ class WorkspaceToolExecutor:
             "score_delta": self._score_delta(before, after),
         }
 
+    def _tool_act_merge_decoded_words(self, args: dict) -> Any:
+        branch = args["branch"]
+        left_target = sig.normalize_for_scoring(str(args["left_decoded"]))
+        right_target = sig.normalize_for_scoring(str(args["right_decoded"]))
+        occurrence = int(args.get("occurrence", 0))
+        if not left_target or not right_target:
+            return {"error": "left_decoded and right_decoded must be non-empty"}
+        words = self.workspace.effective_words(branch)
+        decoded_words = [
+            sig.normalize_for_scoring(self._decode_word(word, branch)).replace(" ", "")
+            for word in words
+        ]
+        matches = [
+            idx for idx in range(len(decoded_words) - 1)
+            if decoded_words[idx] == left_target and decoded_words[idx + 1] == right_target
+        ]
+        if not matches:
+            return {
+                "error": (
+                    f"No adjacent decoded pair {left_target} | {right_target} "
+                    f"found on branch {branch}"
+                ),
+                "branch": branch,
+                "current_decoded_words": decoded_words[:80],
+                "note": (
+                    "Word indices and decoded pairs change after each boundary "
+                    "edit. Re-read the branch with decode_show if the pair is "
+                    "not found."
+                ),
+            }
+        if occurrence < 0 or occurrence >= len(matches):
+            return {
+                "error": f"occurrence {occurrence} out of range (0..{len(matches) - 1})",
+                "matches": matches,
+            }
+        left_idx = matches[occurrence]
+        result = self._tool_act_merge_cipher_words({
+            "branch": branch,
+            "left_word_index": left_idx,
+        })
+        return result | {
+            "matched_decoded_before": f"{left_target} | {right_target}",
+            "matched_left_word_index": left_idx,
+            "occurrence": occurrence,
+        }
+
     def _tool_act_apply_boundary_candidate(self, args: dict) -> Any:
         branch = args["branch"]
         idx = int(args.get("candidate_index", 0))
@@ -2478,6 +2981,162 @@ class WorkspaceToolExecutor:
                 "candidate_index": idx,
             }
         return {"error": f"Unknown boundary candidate type: {candidate['type']}"}
+
+    def _tool_act_resegment_by_reading(self, args: dict) -> Any:
+        branch = args["branch"]
+        proposed_text = str(args["proposed_text"])
+        if self._pt_alpha()._multisym:
+            return {
+                "error": (
+                    "act_resegment_by_reading currently supports single-character "
+                    "plaintext alphabets only"
+                )
+            }
+
+        validation = self._reading_validation(branch, proposed_text)
+        if not validation["character_preserving"]:
+            projection = validation.get("boundary_projection", {})
+            next_step = (
+                "If the letter changes are intentional, first use "
+                "decode_validate_reading_repair to inspect them, then apply "
+                "act_set_mapping/act_bulk_set repairs. If this was meant to "
+                "be boundary-only, revise proposed_text so the letters match."
+            )
+            if projection.get("applicable"):
+                next_step = (
+                    "This proposal changes letters but has the same character "
+                    "count. To apply only its word-boundary pattern while "
+                    "preserving the current decoded letters, call "
+                    "act_resegment_from_reading_repair with the same "
+                    "proposed_text. Then repair the mismatch spans with "
+                    "act_set_mapping/act_bulk_set."
+                )
+            return {
+                "error": (
+                    "Proposed reading is not character-preserving; no boundaries "
+                    "were changed."
+                ),
+                **validation,
+                "next_step": next_step,
+            }
+
+        proposed_words = self._reading_words_from_text(proposed_text)
+        token_count = len(self.workspace.cipher_text.tokens)
+        if sum(len(word) for word in proposed_words) != token_count:
+            return {
+                "error": (
+                    "Proposed words preserve the decoded character stream but "
+                    "do not match the ciphertext token count. This can happen "
+                    "with multi-character plaintext symbols."
+                ),
+                **validation,
+            }
+
+        before = self._compute_quick_scores(branch)
+        before_preview = self._decoded_preview(branch, max_words=80)
+        spans: list[tuple[int, int]] = []
+        start = 0
+        for word in proposed_words:
+            end = start + len(word)
+            spans.append((start, end))
+            start = end
+        try:
+            self.workspace.set_word_spans(branch, spans)
+        except WorkspaceError as exc:
+            return {"error": str(exc), **validation}
+        after = self._compute_quick_scores(branch)
+        after_preview = self._decoded_preview(branch, max_words=80)
+        return {
+            "status": "ok",
+            "branch": branch,
+            "applied": True,
+            "old_word_count": validation["current_word_count"],
+            "new_word_count": validation["proposed_word_count"],
+            "dictionary_before": validation["current_dictionary"],
+            "dictionary_after": validation["proposed_dictionary"],
+            "score_delta": self._reading_score_delta(before, after),
+            "decoded_preview_before": before_preview,
+            "decoded_preview": after_preview,
+            "note": (
+                "Applied word-boundary overlay only. The branch key and decoded "
+                "characters were unchanged; only the reading's word segmentation "
+                "changed."
+            ),
+        }
+
+    def _tool_act_resegment_from_reading_repair(self, args: dict) -> Any:
+        branch = args["branch"]
+        proposed_text = str(args["proposed_text"])
+        if self._pt_alpha()._multisym:
+            return {
+                "error": (
+                    "act_resegment_from_reading_repair currently supports "
+                    "single-character plaintext alphabets only"
+                )
+            }
+
+        validation = self._reading_validation(branch, proposed_text)
+        projection = validation.get("boundary_projection", {})
+        if not projection.get("applicable"):
+            return {
+                "error": (
+                    "Cannot project proposed word boundaries because the "
+                    "proposed reading does not have the same normalized "
+                    "character count as the current branch."
+                ),
+                **validation,
+            }
+
+        proposed_words = self._reading_words_from_text(proposed_text)
+        token_count = len(self.workspace.cipher_text.tokens)
+        if sum(len(word) for word in proposed_words) != token_count:
+            return {
+                "error": (
+                    "Projected word lengths do not match the ciphertext token "
+                    "count. No boundaries were changed."
+                ),
+                **validation,
+            }
+
+        before = self._compute_quick_scores(branch)
+        before_preview = self._decoded_preview(branch, max_words=80)
+        spans: list[tuple[int, int]] = []
+        start = 0
+        for word in proposed_words:
+            end = start + len(word)
+            spans.append((start, end))
+            start = end
+        try:
+            self.workspace.set_word_spans(branch, spans)
+        except WorkspaceError as exc:
+            return {"error": str(exc), **validation}
+        after = self._compute_quick_scores(branch)
+        after_preview = self._decoded_preview(branch, max_words=80)
+        projected = projection.get("projected_text", "")
+        return {
+            "status": "ok",
+            "branch": branch,
+            "applied": True,
+            "mode": "boundary_projection_from_repair_reading",
+            "character_preserving": validation["character_preserving"],
+            "old_word_count": validation["current_word_count"],
+            "new_word_count": validation["proposed_word_count"],
+            "dictionary_before": validation["current_dictionary"],
+            "projected_dictionary_after": projection.get("projected_dictionary"),
+            "proposed_dictionary": validation["proposed_dictionary"],
+            "mismatches": validation["mismatches"],
+            "word_mismatches_preview": projection.get("word_mismatches_preview", []),
+            "projected_text": projected[:1200],
+            "score_delta": self._reading_score_delta(before, after),
+            "decoded_preview_before": before_preview,
+            "decoded_preview": after_preview,
+            "note": (
+                "Applied the proposed reading's word boundaries only. The key "
+                "and decoded character stream were preserved; any mismatches "
+                "between projected_text and proposed_text are still true "
+                "letter/key repair hypotheses."
+            ),
+        }
 
     def _tool_act_swap_decoded(self, args: dict) -> Any:
         branch = args["branch"]
@@ -2514,6 +3173,21 @@ class WorkspaceToolExecutor:
                 self.workspace.set_mapping(branch, cid, id_a)
             for cid in cipher_for_b:
                 self.workspace.set_mapping(branch, cid, id_b)
+            # Suggest the unidirectional cipher-symbol calls that match the
+            # *intent* of the swap, so the agent can try a surgical fix
+            # instead of a bidirectional one if the reading only justifies
+            # changing one direction.
+            unidirectional_hints: list[str] = []
+            for cs in swapped_a:
+                unidirectional_hints.append(
+                    f"act_set_mapping(branch='{branch}', "
+                    f"cipher_symbol='{cs}', plain_letter='{letter_b}')"
+                )
+            for cs in swapped_b:
+                unidirectional_hints.append(
+                    f"act_set_mapping(branch='{branch}', "
+                    f"cipher_symbol='{cs}', plain_letter='{letter_a}')"
+                )
             return {
                 "status": "reverted",
                 "branch": branch,
@@ -2523,10 +3197,16 @@ class WorkspaceToolExecutor:
                 "trial_decoded_preview": trial_preview,
                 "decoded_preview": self._decoded_preview(branch),
                 "score_delta": delta,
+                "unidirectional_alternatives": unidirectional_hints[:6],
                 "note": (
                     "Swap made the branch score worse and was automatically "
-                    "reverted. For homophonic ciphers, prefer act_set_mapping on "
-                    "one culprit cipher symbol."
+                    "reverted. act_swap_decoded is bidirectional and changes "
+                    "every cipher symbol producing either letter — which "
+                    "almost always breaks correctly-decoded words. If your "
+                    "reading only justifies changing ONE cipher symbol's "
+                    "mapping, use one of `unidirectional_alternatives` "
+                    "(act_set_mapping) instead. That is the right primitive "
+                    "for reading-driven repairs."
                 ),
             }
         return {
@@ -3158,6 +3838,29 @@ class WorkspaceToolExecutor:
         confidence = float(args["self_confidence"])
         if not self.workspace.has_branch(branch):
             return {"error": f"Branch not found: {branch}"}
+        if self._should_guard_declaration_for_reading_workflow(branch, rationale):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "full_reading_workflow_required",
+                "note": (
+                    "Your rationale still mentions word-boundary/alignment "
+                    "issues, but this branch has not gone through the full-"
+                    "reading validation workflow. Before declaring, write your "
+                    "best complete target-language reading and call "
+                    "decode_validate_reading_repair. If it is character-"
+                    "preserving, follow with act_resegment_by_reading. If it "
+                    "changes letters but has the same character count, follow "
+                    "with act_resegment_from_reading_repair, then repair the "
+                    "reported mismatch spans with act_set_mapping/act_bulk_set."
+                ),
+                "suggested_next_tools": [
+                    "decode_validate_reading_repair",
+                    "act_resegment_by_reading",
+                    "act_resegment_from_reading_repair",
+                ],
+            }
         self.solution = SolutionDeclaration(
             branch=branch,
             rationale=rationale,
