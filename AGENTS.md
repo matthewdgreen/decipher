@@ -391,6 +391,29 @@ Current April 2026 state for non-English bundled models:
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
 
 Additional current read:
+- Agent-loop Milestone 4 now has broader Borg evidence:
+  - Borg `0140v`
+    (`artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`) improved from
+    weak automated preflight (`36.9%` char / `0.0%` word) to a readable agent
+    branch (`85.5%` char / `54.8%` word).
+  - Borg `0077v`
+    (`artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`) improved
+    from weak `zenith_native` preflight (`37.2%` char / `2.8%` word) to a
+    readable partial agent branch (`84.1%` char / `53.5%` word).
+  - Borg `0171v`
+    (`artifacts/borg_single_B_borg_0171v/a43a53111e26.json`) exposed a
+    do-no-harm failure: automated preflight was already strong (`90.9%` char /
+    `72.7%` word), but the agent declared a more classicized repair branch at
+    `85.8%` char / `50.8%` word. The prompt, preflight context, and branch
+    cards now tell the agent to treat `automated_preflight` as a protected
+    no-LLM baseline and avoid broad manuscript-orthography drift.
+- Copiale `p068`
+  (`artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`) did not
+  improve over preflight (`45.3%` char / `0.0%` word). The agent found
+  German-looking islands but not coherent sentence-level German. Treat
+  Copiale/German as a separate capability track: stronger German models,
+  context-aware modes, nomenclator/codeword behavior, and stricter declaration
+  discipline are needed before comparing it to Borg progress.
 - Borg `0077v` routes to `zenith_native` because its symbol inventory exceeds
   the Latin plaintext alphabet size.
 - Borg `0109v` still routes to the substitution path by default because its

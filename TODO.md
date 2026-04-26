@@ -477,6 +477,28 @@ or a benchmark data issue.
       agent chooses a repair/search/declaration action. Compact pages also
       show all words in the workspace panel (currently up to 90 words), which
       should reduce unnecessary `decode_show` calls caused by panel truncation.
+      Milestone 4 generalization checkpoint:
+      - Borg `0140v`
+        (`artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`) improved
+        from weak automated preflight (`36.9%` char / `0.0%` word) to a
+        readable agent branch (`85.5%` char / `54.8%` word).
+      - Borg `0077v`
+        (`artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`) improved
+        from weak `zenith_native` preflight (`37.2%` char / `2.8%` word) to a
+        readable partial agent branch (`84.1%` char / `53.5%` word).
+      - Borg `0171v`
+        (`artifacts/borg_single_B_borg_0171v/a43a53111e26.json`) exposed a
+        do-no-harm failure: preflight was already strong (`90.9%` char /
+        `72.7%` word), but the agent declared a more classicized repair branch
+        at `85.8%` char / `50.8%` word. The prompt, preflight context, and
+        branch cards now tell the agent to treat `automated_preflight` as a
+        protected no-LLM baseline and avoid broad manuscript-orthography drift.
+      - Copiale `p068`
+        (`artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`) did not
+        improve over preflight (`45.3%` char / `0.0%` word). The agent found
+        German-looking islands but not coherent sentence-level German, so
+        Copiale should become a separate capability track rather than a Borg
+        repair follow-up.
   - [x] Track explicit run state: active mode, branch, repair agenda, held/reverted
     repairs, unresolved hypotheses, per-branch workflow completion.
   - [x] Preserve complete artifact observability for every model call, tool call,
@@ -517,6 +539,16 @@ or a benchmark data issue.
     - Desired affordances: scroll through full word/character alignment,
       inspect branch cards and repair agenda history, compare parent/resume
       artifacts, and copy exact tool calls or branch diffs for follow-up runs.
+  - [ ] Update the README for the current agentic interface and capabilities.
+    - Document `--display {auto,pretty,raw,jsonl}`, the live decrypt view,
+      token/cost reporting, final reading/process summary, and raw/JSONL modes
+      for wrappers.
+    - Document automated preflight, the protected `automated_preflight`
+      baseline branch, branch cards, repair agenda, reading-driven repair
+      tools, boundary/resegmentation tools, and `resume-artifact`.
+    - Include current benchmark command examples for clean no-extra-context
+      agentic runs, artifact continuation, and the planned
+      `--benchmark-context` modes once implemented.
   - [x] Add first-class artifact resume/continuation.
     - Command shape: `decipher resume-artifact <artifact.json>
       --extra-iterations N [--branch BRANCH]`.
@@ -531,7 +563,42 @@ or a benchmark data issue.
     - Current limitation: old artifacts did not persist custom branch
       `word_spans`, so exact boundary overlays can only be restored for
       artifacts produced after the new `word_spans` snapshot field landed.
+  - [ ] Add explicit benchmark-context modes for agentic runs.
+    - Proposed command shape:
+      `--benchmark-context none|metadata|ciphertext|metadata+ciphertext`,
+      defaulting to `none`.
+    - `metadata` should pass benign manifest context such as source family,
+      plaintext language, date/century, provenance, manuscript page, cipher
+      type, symbol count, curation notes, and source URL. Do not include
+      solution plaintext or solution-derived hints.
+    - `ciphertext` should pass same-cipher context records from benchmark
+      split definitions, as the current `10page`/`full` cases already can,
+      but make this explicit in artifacts instead of implicit.
+    - Artifacts must record the selected context mode and a compact summary of
+      the exact context supplied, so clean parity runs and context-aware runs
+      are never mixed silently.
+    - Keep this off until the current no-extra-context generalization pass is
+      documented for Borg `0140v`, Borg `0171v`, Borg `0077v`, and at least
+      one Copiale/German stretch case.
   - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
+- [ ] Add a Copiale/German capability track.
+  - Do not treat Copiale as "Borg in German." Current `p068` evidence shows
+    scattered German word islands are not enough for declaration.
+  - Near-term work:
+    - Add stronger declaration discipline for Copiale-like no-boundary
+      homophonic/nomenclator ciphers: require coherent sentence-level German,
+      not just common short words.
+    - Audit whether benchmark metadata/context should be opt-in for Copiale,
+      especially source family, Masonic/fraternal domain, page context, and
+      same-cipher neighboring pages.
+    - Improve German continuous n-gram/model support and consider a
+      Copiale-specific or 18th-century German model.
+    - Investigate nomenclator/codeword behavior and whether some symbols or
+      clusters should be treated as nulls, abbreviations, or multi-letter
+      tokens rather than simple letter homophones.
+    - Add a small Copiale-focused artifact packet once the above exists:
+      `p017`, `p035`, `p052`, `p068`, and `p084`, with clean
+      no-extra-context and context-aware modes separated.
 - [ ] Add a full-agent parity smoke suite.
 - [x] Add artifact checks for wrong-tool use.
   - Homophonic no-boundary should call `search_homophonic_anneal` before generic `search_anneal`.

@@ -10,9 +10,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.display import (
     JsonlAgentRenderer,
+    PrettyAgentRenderer,
     RawAgentRenderer,
     _compact_final_summary,
     _compact_preview,
+    _format_live_usage,
     summarize_tool_call,
 )
 
@@ -103,3 +105,27 @@ def test_final_display_compacts_decrypt_to_single_preview_line():
     compact = _compact_preview("THERE | FORE\nTHE   OLD", max_chars=100)
 
     assert compact == "THERE | FORE THE OLD"
+
+
+def test_live_usage_formatter_keeps_header_compact():
+    assert _format_live_usage(0, 0.0) == "tokens=0 cost=$0.00"
+    assert _format_live_usage(12_345, 0.456) == "tokens=12K cost=$0.46"
+    assert _format_live_usage(1_234_567, 12.3) == "tokens=1.23M cost=$12.30"
+
+
+def test_pretty_renderer_tracks_usage_from_workspace_snapshot():
+    renderer = PrettyAgentRenderer(io.StringIO())
+    renderer.event(
+        "workspace_snapshot",
+        {
+            "decryption": "THE",
+            "branch": "main",
+            "mapped_count": 3,
+            "scores": {"dict_rate": 1.0, "quad": -1.23},
+            "total_tokens": 12_345,
+            "estimated_cost_usd": 0.456,
+        },
+    )
+
+    assert renderer.state.total_tokens == 12_345
+    assert renderer.state.estimated_cost_usd == 0.456

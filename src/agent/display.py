@@ -151,6 +151,8 @@ class _PrettyState:
     branch: str = ""
     mapped_count: int = 0
     scores: dict[str, Any] = field(default_factory=dict)
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
     decryption: str = ""
     previous_decryption: str = ""
     log: list[str] = field(default_factory=list)
@@ -224,6 +226,8 @@ class PrettyAgentRenderer:
             self.state.branch = str(payload.get("branch") or "")
             self.state.mapped_count = int(payload.get("mapped_count") or 0)
             self.state.scores = payload.get("scores") or {}
+            self.state.total_tokens = int(payload.get("total_tokens") or 0)
+            self.state.estimated_cost_usd = float(payload.get("estimated_cost_usd") or 0.0)
         elif event == "boundary_projection_count_retry":
             self._add_log("warning: reading proposal length mismatch; retrying in-place")
         elif event == "gated_tool_retry":
@@ -281,7 +285,8 @@ class PrettyAgentRenderer:
         header = (
             f"{self.state.test_id}  iter {self.state.iteration}/{self.state.max_iterations}  "
             f"mode={self.state.mode or '-'}  branch={self.state.branch or '-'}  "
-            f"dict={self.state.scores.get('dict_rate')} quad={self.state.scores.get('quad')}"
+            f"dict={self.state.scores.get('dict_rate')} quad={self.state.scores.get('quad')}  "
+            f"{_format_live_usage(self.state.total_tokens, self.state.estimated_cost_usd)}"
         )
         layout["header"].update(Panel(header, title="Decipher agentic run"))
         layout["decrypt"].update(Panel(self._decrypt_text(), title="Current decrypt"))
@@ -416,6 +421,20 @@ def _compact_preview(text: str, *, max_chars: int) -> str:
     if len(text) > max_chars:
         text = text[:max_chars].rstrip() + " ..."
     return text or "(no decrypt available)"
+
+
+def _format_live_usage(total_tokens: int, estimated_cost_usd: float) -> str:
+    tokens = max(0, int(total_tokens or 0))
+    cost = max(0.0, float(estimated_cost_usd or 0.0))
+    if tokens >= 1_000_000:
+        token_text = f"{tokens / 1_000_000:.2f}M"
+    elif tokens >= 10_000:
+        token_text = f"{tokens / 1000:.0f}K"
+    elif tokens >= 1000:
+        token_text = f"{tokens / 1000:.1f}K"
+    else:
+        token_text = str(tokens)
+    return f"tokens={token_text} cost=${cost:.2f}"
 
 
 def _compact_final_summary(text: str, *, max_chars: int) -> str:

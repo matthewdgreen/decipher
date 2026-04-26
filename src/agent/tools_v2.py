@@ -2168,6 +2168,7 @@ class WorkspaceToolExecutor:
             "mapped_count": len(branch.key),
             "cipher_alphabet_size": self._alpha().size,
             "tags": list(branch.tags),
+            "protected_baseline": branch_name == "automated_preflight",
             "scores": self._compute_quick_scores(branch_name),
             "repair_agenda": agenda,
             "repair_counts": {
@@ -2308,7 +2309,11 @@ class WorkspaceToolExecutor:
             "cards": cards,
             "note": (
                 "Use these cards before declaration: compare readability, "
-                "internal scores, applied/held repairs, and orthography risks."
+                "internal scores, applied/held repairs, and orthography risks. "
+                "Treat `automated_preflight` as a protected no-LLM baseline; "
+                "do not discard it in favor of a modernized/classicized edit "
+                "unless the edited branch is clearly better in the manuscript "
+                "transcription style."
             ),
         }
 

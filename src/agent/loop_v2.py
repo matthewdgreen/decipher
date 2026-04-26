@@ -525,6 +525,8 @@ def _workspace_snapshot_payload(
     freq_rank: dict[str, int],
     iteration: int,
     max_iterations: int,
+    total_tokens: int = 0,
+    estimated_cost_usd: float = 0.0,
 ) -> dict[str, Any]:
     branch, scores = _best_branch_for_auto_declare(
         workspace, language, word_set, freq_rank
@@ -549,6 +551,8 @@ def _workspace_snapshot_payload(
         "branch": branch,
         "mapped_count": len(b.key),
         "scores": scores,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
         "decryption": decryption,
         "decryption_preview": decryption[:1000],
         "branches": branches,
@@ -1251,6 +1255,8 @@ def run_v2(
                 freq_rank,
                 iteration,
                 max_iterations,
+                total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
+                estimated_cost_usd=artifact.estimated_cost_usd,
             ),
             outer_iteration=iteration,
             inner_step=inner_step,
@@ -1365,8 +1371,19 @@ def _preflight_context(automated_preflight: dict[str, Any] | None) -> str | None
         return None
     summary = automated_preflight.get("summary")
     if isinstance(summary, str) and summary.strip():
-        return summary
-    return None
+        body = summary
+    else:
+        body = "Automated native solver preflight is available as branch `automated_preflight`."
+    return (
+        f"{body}\n\n"
+        "Protected baseline rule: `automated_preflight` is a no-LLM branch. "
+        "Inspect it before fresh search. If it already reads coherently, fork "
+        "from it for experiments and keep the original branch unchanged for "
+        "comparison. Do not declare an edited branch over a readable preflight "
+        "branch just because the spelling looks more modern/classical; prefer "
+        "the manuscript-faithful transcription style unless the edited branch "
+        "clearly reads better."
+    )
 
 
 def _install_automated_preflight_branch(

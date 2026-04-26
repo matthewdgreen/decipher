@@ -1,10 +1,14 @@
 # Agent Loop Redesign Plan
 
-Status: Milestone 2 boundary-projection prototype started. The existing v2
-loop still owns the benchmark path, but it now runs through a provider-neutral
-response adapter, records loop events, and can retry one gated
-boundary-projection tool choice or wrong-length full-reading proposal inside
-the same outer iteration.
+Status: Milestones 1-3 are implemented in the existing `run_v2` benchmark
+path. Milestone 4 generalization is partly validated for Borg and remains open
+for Copiale/German. The English Borg analog plus Borg `0109v`, `0045v`,
+`0140v`, `0171v`, and `0077v` have been exercised; Copiale `p068` showed that
+Copiale needs a separate capability track rather than only Borg-style repair.
+The loop now runs through a provider-neutral response adapter, records loop
+events, supports bounded same-iteration inspection/repair sandboxes, can retry
+gated or wrong-length boundary-projection attempts inside the same outer
+iteration, and writes final reading/process summaries.
 
 ## Why This Exists
 
@@ -292,8 +296,15 @@ Milestone 3 owns durable reading-repair capability.
 - [x] Add a first low-friction word repair planner/action pair:
   `decode_plan_word_repair` and `act_apply_word_repair`.
 - [x] Add structured repair agenda.
-- Add one-at-a-time repair application with immediate feedback.
-- Add branch cards and unresolved hypothesis summaries.
+- [x] Add one-at-a-time repair application with immediate feedback.
+- [x] Add branch cards and unresolved hypothesis summaries.
+- [x] Add bounded low-cost inspection/repair sandboxes so read-only checks,
+  repair menus, local resegmentation attempts, branch cards, and declaration
+  can happen without burning additional outer benchmark iterations.
+- [x] Add artifact resume/continuation support for follow-up iterations
+  without replaying the whole run from scratch.
+- [x] Add final reading/process summaries and render them in the pretty
+  terminal final screen.
 
 Early implementation note:
 
@@ -341,12 +352,55 @@ Early implementation note:
   `workspace_branch_cards`) but spent the final turn on bookkeeping and failed
   to call `meta_declare_solution`, causing fallback declaration. This
   motivated the same-iteration final declaration retry.
+- Later follow-up added edit-aware word and character scoring, same-iteration
+  inspection/repair sandboxes, final-summary recovery from blocked
+  declarations, artifact continuation, and the pretty live terminal display.
+  Borg `0109v` now reliably produces readable partial Latin with a high
+  insertion-friendly local word score, though it still has inserted words and
+  unresolved spelling/boundary errors.
+- Borg `0045v` was exercised as an out-of-family Latin page and reached a
+  readable but still partial branch:
+  `artifacts/parity_borg_latin_borg_0045v/4353961ccb34.json` improved over
+  automated preflight but retained significant errors. This is useful evidence
+  that the workflow generalizes beyond a single page, but not enough to close
+  Milestone 4.
 
 ### Milestone 4: Generalization
 
-- Run Borg `0109v`, Borg `0045v`, and the English analog.
-- Confirm improvements are not just prompt overfitting.
-- Decide whether to expand to Copiale/German.
+- [x] Run Borg `0109v`.
+- [x] Run Borg `0045v`.
+- [x] Run the English Borg analog.
+- [x] Run additional Borg pages outside the current parity trio, especially
+  `borg_single_B_borg_0140v`, `borg_single_B_borg_0171v`, and/or
+  `parity_borg_latin_borg_0077v`.
+- [x] Confirm improvements are not just prompt overfitting by comparing
+  behavior and artifact labels across those additional pages.
+- [x] Decide whether to expand the immediate loop-work branch to
+  Copiale/German, after at least one stretch run such as
+  `copiale_single_B_copiale_p068`: do not treat Copiale as just another Borg
+  page. Create a separate Copiale/German capability track.
+- [ ] Add a full-agent parity smoke suite so core agent-loop behavior can be
+  regression-tested without manually inspecting long artifacts every time.
+
+Latest generalization checkpoint:
+
+- Borg `0140v`, `artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`:
+  automated preflight was weak (`36.9%` char / `0.0%` word), while the agent
+  found a fresh readable branch at `85.5%` char / `54.8%` word.
+- Borg `0171v`, `artifacts/borg_single_B_borg_0171v/a43a53111e26.json`:
+  automated preflight was already strong (`90.9%` char / `72.7%` word), but
+  the agent over-repaired it to `85.8%` char / `50.8%` word by favoring more
+  classicized Latin-looking forms. This motivates the protected-preflight
+  rule: a readable `automated_preflight` branch should be preserved as the
+  baseline, and broad Latin `U/V` or `I/J` edits must be treated skeptically.
+- Borg `0077v`, `artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`:
+  automated preflight was weak (`37.2%` char / `2.8%` word), while the agent
+  reached a readable partial branch at `84.1%` char / `53.5%` word.
+- Copiale `p068`, `artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`:
+  the agent did not improve over preflight (`45.3%` char / `0.0%` word). It
+  identified German-looking islands but not coherent sentence-level German.
+  Copiale needs separate work on German homophonic/nomenclator modeling,
+  context use, and declaration discipline.
 
 ## Open Questions
 

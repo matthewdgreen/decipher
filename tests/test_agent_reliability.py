@@ -439,6 +439,24 @@ def test_word_repair_flags_latin_orthography_shift_and_branch_card():
     assert card["branch"] == "main"
     assert card["repair_counts"]["applied"] == 1
     assert card["orthography_risks"]
+    assert "automated_preflight" in cards["note"]
+
+
+def test_workspace_branch_cards_mark_automated_preflight_as_protected_baseline():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE"},
+        word_list=["THE"],
+        pattern_dict={},
+    )
+    ex.workspace.fork("automated_preflight", from_branch="main")
+
+    cards = ex._tool_workspace_branch_cards({"branch": "automated_preflight"})
+
+    assert cards["cards"][0]["protected_baseline"] is True
 
 
 def test_act_bulk_set_and_anchor_word_use_reading_score_delta():
@@ -1506,6 +1524,7 @@ def test_automated_preflight_context_and_branch_available_on_first_turn():
         if isinstance(c, dict) and c.get("type") == "text"
     ]
     assert any("Automated native solver preflight" in t for t in first_turn_texts)
+    assert any("Protected baseline rule" in t for t in first_turn_texts)
     assert artifact.automated_preflight is not None
     branch = next(b for b in artifact.branches if b.name == "automated_preflight")
     assert branch.decryption == "THE"

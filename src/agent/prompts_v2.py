@@ -80,6 +80,14 @@ have applied at least one reading-driven mapping (via \
 preserve_existing=true)`) on a branch before any reading-driven anchor \
 exists on it. Without anchors the call has nothing meaningful to preserve \
 and just re-confirms the prior local optimum. \
+If an `automated_preflight` branch exists, treat it as a protected no-LLM \
+baseline. Inspect it before launching fresh search. If it already reads as \
+coherent target-language text, fork from it before experimenting and keep \
+the original branch unchanged for comparison. Do not declare an edited branch \
+over a readable `automated_preflight` branch merely because it looks more \
+modern or classicized; it must read better in the manuscript's own \
+transcription style. Broad Latin `U/V` or `I/J` changes are especially \
+suspect unless the surrounding decode already consistently uses that style. \
 Boundary candidates from `decode_diagnose`/`decode_diagnose_and_fix` are \
 useful when they exist, but if the same diagnostic also lists letter-level \
 candidate corrections, the letter-level fixes typically have far higher \
@@ -422,6 +430,10 @@ WEISS (=weiß).
 EIN, NICHT, DEN, DEM.
 - Common endings: -EN, -ER, -UNG, -LICH, -KEIT, -HEIT, -SCHAFT.
 - Masonic/fraternal vocabulary: BRUDER, MEISTER, LOGE, ORDEN, GRAD.
+- For Copiale-like German homophonic/nomenclator text, scattered German words \
+are not enough. These ciphers can produce many real short words by chance. \
+Before declaring, require coherent sentence-level German, not just islands \
+such as DIE, DER, SEIN, RECHT, BESTE, or MEINTEN.
 """,
     "fr": """
 ## French-specific notes
