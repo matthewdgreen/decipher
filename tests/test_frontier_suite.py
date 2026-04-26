@@ -6,8 +6,13 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from benchmark.loader import BenchmarkTest
-from frontier.suite import evaluate_frontier_rows, load_frontier_suite, nominate_frontier_candidates
+from benchmark.loader import BenchmarkLoader, BenchmarkTest
+from frontier.suite import (
+    evaluate_frontier_rows,
+    load_frontier_suite,
+    nominate_frontier_candidates,
+    resolve_frontier_case,
+)
 from testgen.cache import PlaintextCache
 from testgen.spec import TestSpec as SyntheticSpec
 
@@ -122,6 +127,23 @@ def test_english_model_comparison_suite_loads():
     assert all("english_model_comparison" in case.frontier_tags for case in cases)
     assert sum(1 for case in cases if case.synthetic_spec is not None) == 7
     assert cases[-1].synthetic_spec is None
+
+
+def test_real_english_challenge_suite_loads():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "real_english_challenge.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "parity_tool_zenith_goldbug",
+        "parity_tool_zenith_horacemann",
+        "parity_tool_zenith_zodiac408",
+    ]
+    assert all("real_english_challenge" in case.frontier_tags for case in cases)
+    assert all(case.synthetic_spec is None for case in cases)
+    assert cases[0].min_char_accuracy_by_solver["decipher-automated"] == 0.95
+    assert cases[1].min_char_accuracy_by_solver["decipher-automated"] == 0.70
+    assert cases[2].min_char_accuracy_by_solver["decipher-automated"] == 0.95
 
 
 def test_automated_solver_frontier_suite_loads_shared_hard_cases():
@@ -772,3 +794,42 @@ def test_frontier_runner_defaults_external_config_to_zenith_only(monkeypatch, tm
     frontier_runner.main()
 
     assert seen["external_config"].endswith("external_baselines/zenith_only.json")
+
+
+def test_transposition_homophonic_ladder_suite_loads():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "transposition_homophonic_ladder.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "synth_en_120honb_s11",
+        "synth_en_120thonb_reverse_s12",
+        "synth_en_120thonb_ranges_s13",
+        "synth_en_120thonb_columnar_s14",
+        "synth_en_180thonb_ndown_s15",
+    ]
+    assert cases[0].synthetic_spec is not None
+    assert cases[0].synthetic_spec.transform_pipeline is None
+    assert all("transposition_homophonic_ladder" in case.frontier_tags for case in cases)
+    assert cases[1].synthetic_spec is not None
+    assert cases[1].synthetic_spec.transform_pipeline["steps"][0]["name"] == "Reverse"
+
+
+def test_zodiac340_known_replay_suite_loads_fixture():
+    repo_root = Path(__file__).resolve().parents[1]
+    suite = repo_root / "frontier" / "zodiac340_known_replay.jsonl"
+    benchmark_root = repo_root / "fixtures" / "benchmarks" / "zodiac340_known_replay"
+
+    cases = load_frontier_suite(suite)
+    test_data = resolve_frontier_case(
+        cases[0],
+        benchmark_loader=BenchmarkLoader(benchmark_root),
+        cache=PlaintextCache(repo_root / "testgen_cache"),
+    )
+
+    assert cases[0].test.test_id == "zodiac340_known_replay"
+    assert cases[0].raw["transform_pipeline"]["columns"] == 17
+    assert len(cases[0].raw["transform_pipeline"]["steps"]) == 10
+    assert test_data.transform_pipeline["steps"][0]["name"] == "NDownMAcross"
+    assert len(test_data.plaintext) == 340
+    assert len(test_data.canonical_transcription.split()) == 340

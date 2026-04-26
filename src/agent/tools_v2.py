@@ -30,6 +30,11 @@ from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
 from analysis.solver import hill_climb_swaps, simulated_anneal
+from analysis.transformers import (
+    TransformPipeline,
+    apply_transform_pipeline,
+    candidate_transform_pipelines,
+)
 from automated import runner as automated_runner
 from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
@@ -48,13 +53,42 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Create a new branch by copying the key of an existing branch. "
             "Cheap — branches are independent dicts. Use this to test a "
-            "hypothesis without committing to main."
+            "hypothesis without committing to main. If an automated preflight "
+            "or other readable branch exists and you want to repair it, prefer "
+            "`workspace_fork_best` so you do not accidentally fork empty `main`."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "new_name": {"type": "string", "description": "Name for the new branch (alphanumeric, _ or -)."},
                 "from_branch": {"type": "string", "description": "Source branch to fork from. Defaults to 'main'.", "default": "main"},
+            },
+            "required": ["new_name"],
+        },
+    },
+    {
+        "name": "workspace_fork_best",
+        "description": (
+            "Create a new repair branch from the strongest existing branch. "
+            "Use this when an automated preflight branch exists or when you "
+            "want to repair the current best decode. It avoids accidentally "
+            "forking empty `main`; the result tells you exactly which source "
+            "branch was copied."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "new_name": {
+                    "type": "string",
+                    "description": "Name for the new branch (alphanumeric, _ or -).",
+                },
+                "prefer_branch": {
+                    "type": "string",
+                    "description": (
+                        "Optional source branch to copy if it exists. Omit to "
+                        "let the tool choose the strongest branch."
+                    ),
+                },
             },
             "required": ["new_name"],
         },
@@ -181,6 +215,19 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "Optional branch whose current mapped-symbol counts should be compared.",
                 },
             },
+        },
+    },
+    {
+        "name": "observe_transform_pipeline",
+        "description": (
+            "Inspect ciphertext-transform state for a branch: current grid "
+            "metadata, active token-order overlay, and any applied "
+            "Zenith-compatible transform pipeline. Use this when a cipher may "
+            "be transposition+homophonic and the reading order itself may be wrong."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"branch": {"type": "string", "default": "main"}},
         },
     },
     # ----- decode_* -----
@@ -811,6 +858,51 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "act_apply_transform_pipeline",
+        "description": (
+            "Apply a Zenith-compatible ciphertext transform pipeline to this "
+            "branch's reading order. This does not change symbol mappings; it "
+            "changes the branch's token order so subsequent decode/search tools "
+            "operate on the transformed ciphertext."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "pipeline": {
+                    "type": "object",
+                    "description": (
+                        "Pipeline object with optional columns/rows and steps, "
+                        "where each step is {name, data}."
+                    ),
+                },
+            },
+            "required": ["branch", "pipeline"],
+        },
+    },
+    {
+        "name": "search_transform_homophonic",
+        "description": (
+            "Try a bounded set of simple ciphertext transform candidates. For "
+            "each candidate, apply the transform, run a short homophonic search, "
+            "rank the candidates, and optionally write the best transformed "
+            "branch. This is for early transposition+homophonic experiments, "
+            "not exhaustive open-ended transposition solving."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "columns": {"type": "integer"},
+                "profile": {"type": "string", "enum": ["small", "medium"], "default": "small"},
+                "top_n": {"type": "integer", "default": 3},
+                "write_best_branch": {"type": "boolean", "default": True},
+                "homophonic_budget": {"type": "string", "enum": ["screen", "full"], "default": "screen"},
+            },
+            "required": ["branch"],
+        },
+    },
+    {
         "name": "decode_letter_stats",
         "description": (
             "Show the letter-frequency distribution of a branch's decoded text "
@@ -1249,6 +1341,17 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "One or two sentences explaining what further "
                         "iterations should try, or why they are probably not "
                         "needed."
+                    ),
+                },
+                "forced_partial": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Set true only when you are intentionally submitting a "
+                        "low-confidence partial hypothesis before the final "
+                        "iteration because no useful remaining tool action is "
+                        "available. If further_iterations_helpful is true, this "
+                        "is usually false."
                     ),
                 },
             },
@@ -2279,6 +2382,40 @@ class WorkspaceToolExecutor:
         lowered = rationale.lower()
         return any(term in lowered for term in self._BOUNDARY_DECLARATION_TERMS)
 
+    _TRANSFORM_DECLARATION_TERMS = (
+        "transform", "transposition", "transpose", "columnar", "vigenere",
+        "polyalpha", "polyalphabetic", "period", "key-period", "key period",
+        "ic=", "below english", "below english level",
+    )
+
+    def _has_seen_any_tool(self, tool_names: set[str]) -> bool:
+        return any(call.tool_name in tool_names for call in self.call_log)
+
+    def _declaration_has_untried_transform_work(self, rationale: str, note: str) -> bool:
+        text = f"{rationale}\n{note}".lower()
+        mentions_transform_family = any(
+            term in text for term in self._TRANSFORM_DECLARATION_TERMS
+        )
+        if not mentions_transform_family:
+            return False
+        return not self._has_seen_any_tool({
+            "observe_transform_pipeline",
+            "act_apply_transform_pipeline",
+            "search_transform_homophonic",
+        })
+
+    def _should_guard_low_confidence_declaration(
+        self,
+        confidence: float,
+        further_iterations_helpful: bool,
+        forced_partial: bool,
+    ) -> bool:
+        if forced_partial:
+            return False
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return False
+        return confidence < 0.50 and further_iterations_helpful
+
     # ------------------------------------------------------------------
     # workspace_*
     # ------------------------------------------------------------------
@@ -2292,6 +2429,50 @@ class WorkspaceToolExecutor:
             "parent": from_branch,
             "inherited_mapped_count": len(branch.key),
         }
+
+    def _tool_workspace_fork_best(self, args: dict) -> Any:
+        new_name = args["new_name"]
+        prefer_branch = str(args.get("prefer_branch") or "").strip()
+        source = self._select_best_fork_source(prefer_branch or None)
+        branch = self.workspace.fork(new_name, from_branch=source)
+        card = self._branch_card(source)
+        note = (
+            "Forked from `automated_preflight`, preserving the no-LLM baseline "
+            "as an unchanged comparison branch."
+            if source == "automated_preflight"
+            else "Forked from the strongest existing branch by quick scores and mapped count."
+        )
+        return {
+            "status": "ok",
+            "created": new_name,
+            "parent": source,
+            "source_branch": source,
+            "inherited_mapped_count": len(branch.key),
+            "source_scores": card.get("scores"),
+            "source_tags": card.get("tags"),
+            "note": note,
+        }
+
+    def _select_best_fork_source(self, prefer_branch: str | None = None) -> str:
+        if prefer_branch and self.workspace.has_branch(prefer_branch):
+            return prefer_branch
+
+        def branch_key(name: str) -> tuple[float, float, int, int]:
+            branch = self.workspace.get_branch(name)
+            scores = self._compute_quick_scores(name)
+            dict_rate = scores.get("dict_rate")
+            quad = scores.get("quad")
+            return (
+                dict_rate if isinstance(dict_rate, (int, float)) else float("-inf"),
+                quad if isinstance(quad, (int, float)) else float("-inf"),
+                len(branch.key),
+                1 if name == "automated_preflight" else 0,
+            )
+
+        names = self.workspace.branch_names()
+        if not names:
+            return "main"
+        return max(names, key=branch_key)
 
     def _tool_workspace_list_branches(self, _args: dict) -> Any:
         return {"branches": self.workspace.list_branches()}
@@ -2459,6 +2640,24 @@ class WorkspaceToolExecutor:
                 "cipher symbols to common letters and at least one symbol to most "
                 "common plaintext letters. Large absences or overloaded letters "
                 "are evidence of a structurally wrong branch."
+            ),
+        }
+
+    def _tool_observe_transform_pipeline(self, args: dict) -> Any:
+        branch_name = args.get("branch") or "main"
+        branch = self.workspace.get_branch(branch_name)
+        effective_tokens = self.workspace.effective_tokens(branch_name)
+        preview_symbols = self.workspace.cipher_text.alphabet.decode(effective_tokens[:80])
+        return {
+            "branch": branch_name,
+            "token_count": len(self.workspace.cipher_text.tokens),
+            "has_transform": branch.token_order is not None,
+            "transform_pipeline": branch.transform_pipeline,
+            "active_order_preview": branch.token_order[:40] if branch.token_order is not None else None,
+            "transformed_cipher_preview": preview_symbols,
+            "note": (
+                "For transposition+homophonic ciphers, apply or search a "
+                "ciphertext transform before judging the homophonic key."
             ),
         }
 
@@ -4583,7 +4782,7 @@ class WorkspaceToolExecutor:
 
         ws = self.workspace
         branch = ws.get_branch(branch_name)
-        tokens = list(ws.cipher_text.tokens)
+        tokens = list(ws.effective_tokens(branch_name))
         pt_alpha = ws.plaintext_alphabet
         plaintext_ids = [
             i for i in range(pt_alpha.size)
@@ -4671,7 +4870,7 @@ class WorkspaceToolExecutor:
 
         if solver_profile == "zenith_native":
             key_repair_info = automated_runner._maybe_repair_zenith_native_key(
-                cipher_text=ws.cipher_text,
+                cipher_text=ws.effective_cipher_text(branch_name),
                 bin_path=bin_path,
                 key=selected_key,
                 plaintext=selected_plaintext,
@@ -4690,7 +4889,7 @@ class WorkspaceToolExecutor:
                 "sampler_iterations": max(1, sampler_iterations),
             }
             anchor_refine_info = automated_runner._maybe_anchor_refine_zenith_native(
-                cipher_text=ws.cipher_text,
+                cipher_text=ws.effective_cipher_text(branch_name),
                 bin_path=bin_path,
                 key=selected_key,
                 plaintext=selected_plaintext,
@@ -4771,7 +4970,7 @@ class WorkspaceToolExecutor:
 
         before = self._compute_quick_scores(branch_name)
         result = run_automated(
-            cipher_text=self.workspace.cipher_text,
+            cipher_text=self.workspace.effective_cipher_text(branch_name),
             language=self.language,
             cipher_id="agent_search",
             ground_truth=None,
@@ -4817,6 +5016,101 @@ class WorkspaceToolExecutor:
                 "This runs the same local automated stack used by the "
                 "no-LLM frontier/parity harness and installs the resulting key "
                 "onto the requested branch."
+            ),
+        }
+
+    def _tool_act_apply_transform_pipeline(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        pipeline = TransformPipeline.from_raw(args.get("pipeline"))
+        if pipeline is None:
+            return {"error": "pipeline is required"}
+        before_preview = self._decoded_preview(branch_name, max_words=20)
+        result = self.workspace.apply_transform_pipeline(branch_name, pipeline)
+        after_preview = self._decoded_preview(branch_name, max_words=20)
+        return {
+            **result,
+            "before_preview": before_preview,
+            "after_preview": after_preview,
+            "note": (
+                "The branch now has a token-order overlay. Subsequent decode "
+                "and homophonic search tools operate in this transformed order."
+            ),
+        }
+
+    def _tool_search_transform_homophonic(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        profile = str(args.get("profile", "small"))
+        top_n = max(1, int(args.get("top_n", 3)))
+        write_best_branch = bool(args.get("write_best_branch", True))
+        homophonic_budget = str(args.get("homophonic_budget", "screen"))
+        base_tokens = self.workspace.effective_tokens(branch_name)
+        candidates = candidate_transform_pipelines(
+            token_count=len(base_tokens),
+            columns=columns,
+            profile=profile,
+        )
+        ranked: list[dict[str, Any]] = []
+        for index, pipeline in enumerate(candidates):
+            transformed_tokens = apply_transform_pipeline(base_tokens, pipeline).tokens
+            transformed_cipher = automated_runner._cipher_text_from_tokens(
+                transformed_tokens,
+                self.workspace.cipher_text.alphabet,
+                source=f"agent_transform_candidate:{index}",
+            )
+            result = run_automated(
+                cipher_text=transformed_cipher,
+                language=self.language,
+                cipher_id=f"agent_transform_candidate_{index}",
+                ground_truth=None,
+                cipher_system="homophonic_substitution",
+                homophonic_budget=homophonic_budget,
+                homophonic_solver="zenith_native",
+            )
+            artifact = result.artifact or {}
+            primary_step = next(
+                (step for step in artifact.get("steps", []) if step.get("name") != "route_automated_solver"),
+                {},
+            )
+            ranked.append({
+                "candidate_index": index,
+                "pipeline": pipeline.to_raw(),
+                "status": result.status,
+                "solver": result.solver,
+                "anneal_score": primary_step.get("anneal_score"),
+                "elapsed_seconds": round(result.elapsed_seconds, 3),
+                "decoded_preview": result.final_decryption[:800],
+                "key": artifact.get("key") or {},
+            })
+        ranked.sort(
+            key=lambda item: (
+                item.get("status") == "completed",
+                float(item.get("anneal_score") or float("-inf")),
+            ),
+            reverse=True,
+        )
+        written_branch = None
+        if write_best_branch and ranked:
+            best = ranked[0]
+            written_branch = f"{branch_name}_transform_best"
+            if not self.workspace.has_branch(written_branch):
+                self.workspace.fork(written_branch, from_branch=branch_name)
+            self.workspace.apply_transform_pipeline(written_branch, best["pipeline"])
+            self.workspace.set_full_key(
+                written_branch,
+                {int(k): int(v) for k, v in (best.get("key") or {}).items()},
+            )
+        return {
+            "branch": branch_name,
+            "profile": profile,
+            "columns": columns,
+            "candidate_count": len(candidates),
+            "written_branch": written_branch,
+            "top_candidates": ranked[:top_n],
+            "note": (
+                "This is a bounded screen over simple transform candidates. "
+                "Read the previews and compare transformed branches before declaring."
             ),
         }
 
@@ -4899,6 +5193,12 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         rationale = args["rationale"]
         confidence = float(args["self_confidence"])
+        further_iterations_helpful = (
+            bool(args["further_iterations_helpful"])
+            if args.get("further_iterations_helpful") is not None else None
+        )
+        further_iterations_note = str(args.get("further_iterations_note") or "")
+        forced_partial = bool(args.get("forced_partial", False))
         if not self.workspace.has_branch(branch):
             return {"error": f"Branch not found: {branch}"}
         unresolved = self._unresolved_repair_agenda_items(branch)
@@ -4962,17 +5262,69 @@ class WorkspaceToolExecutor:
                     "act_resegment_from_reading_repair",
                 ],
             }
+        if (
+            further_iterations_helpful is True
+            and self._declaration_has_untried_transform_work(rationale, further_iterations_note)
+            and not forced_partial
+            and not (self.max_iterations is not None and self._current_iteration >= self.max_iterations)
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "transform_work_untried",
+                "note": (
+                    "Your declaration says further iterations should try a "
+                    "transposition/period/poly-alphabetic style hypothesis, "
+                    "but this run has not used the available transform tools. "
+                    "Before declaring, inspect transform state and run a bounded "
+                    "transform+homophonic screen. If that screen is not useful, "
+                    "declare again with that negative result in the rationale."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_pipeline",
+                    "search_transform_homophonic",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_low_confidence_declaration(
+            confidence,
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "low_confidence_more_work_required",
+                "note": (
+                    "This is a low-confidence declaration and you also report "
+                    "that further iterations would likely help. Continue using "
+                    "the remaining budget instead of terminating early. Try a "
+                    "new hypothesis class, compare branches, or mark "
+                    "`further_iterations_helpful=false` only if the remaining "
+                    "work is unlikely to improve the decipherment. Use "
+                    "`forced_partial=true` only for an intentional early "
+                    "partial submission when no useful remaining tool action is "
+                    "available."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_pipeline",
+                    "search_transform_homophonic",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
         self.solution = SolutionDeclaration(
             branch=branch,
             rationale=rationale,
             self_confidence=confidence,
             declared_at_iteration=self._current_iteration,
             reading_summary=str(args.get("reading_summary") or ""),
-            further_iterations_helpful=(
-                bool(args["further_iterations_helpful"])
-                if args.get("further_iterations_helpful") is not None else None
-            ),
-            further_iterations_note=str(args.get("further_iterations_note") or ""),
+            further_iterations_helpful=further_iterations_helpful,
+            further_iterations_note=further_iterations_note,
         )
         self.terminated = True
         review = self._declaration_review(branch)

@@ -69,7 +69,10 @@ def resolve_frontier_case(
     generation_api_key: str = "",
 ) -> TestData:
     if case.synthetic_spec is None:
-        return benchmark_loader.load_test_data(case.test)
+        test_data = benchmark_loader.load_test_data(case.test)
+        if case.raw.get("transform_pipeline"):
+            test_data.transform_pipeline = dict(case.raw["transform_pipeline"])
+        return test_data
 
     spec = case.synthetic_spec
     cached = cache.get(spec)
@@ -363,6 +366,7 @@ def _parse_synthetic_spec(data: Any, source: str) -> TestSpec | None:
         seed=int(data["seed"]) if data.get("seed") is not None else None,
         topic=str(data.get("topic", "general")),
         frequency_style=str(data.get("frequency_style", "normal")),
+        transform_pipeline=dict(data["transform_pipeline"]) if data.get("transform_pipeline") else None,
     )
 
 

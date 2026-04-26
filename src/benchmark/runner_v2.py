@@ -18,7 +18,6 @@ from benchmark.scorer import (
     score_decryption,
 )
 from preprocessing import convert_s_tokens_to_letters, estimate_normalization_benefit
-from services.claude_api import ClaudeAPI
 
 
 @dataclass
@@ -48,7 +47,7 @@ class BenchmarkRunnerV2:
 
     def __init__(
         self,
-        claude_api: ClaudeAPI,
+        claude_api: Any,
         max_iterations: int = 50,
         verbose: bool = False,
         language: str | None = None,

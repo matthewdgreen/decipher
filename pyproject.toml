@@ -22,6 +22,10 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+providers = [
+    "openai>=1.0",
+    "google-genai>=1.0",
+]
 
 [project.scripts]
 decipher = "cli:main"

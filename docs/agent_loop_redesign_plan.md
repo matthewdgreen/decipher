@@ -1,14 +1,15 @@
 # Agent Loop Redesign Plan
 
-Status: Milestones 1-3 are implemented in the existing `run_v2` benchmark
-path. Milestone 4 generalization is partly validated for Borg and remains open
-for Copiale/German. The English Borg analog plus Borg `0109v`, `0045v`,
-`0140v`, `0171v`, and `0077v` have been exercised; Copiale `p068` showed that
-Copiale needs a separate capability track rather than only Borg-style repair.
-The loop now runs through a provider-neutral response adapter, records loop
-events, supports bounded same-iteration inspection/repair sandboxes, can retry
-gated or wrong-length boundary-projection attempts inside the same outer
-iteration, and writes final reading/process summaries.
+Status: Milestones 1-4 are implemented in the existing `run_v2` benchmark
+path. The English Borg analog plus Borg `0109v`, `0045v`, `0140v`, `0171v`,
+and `0077v` have been exercised, and Milestone 4 now has both no-LLM automated
+baseline smoke coverage and fake-provider LLM-agent smoke coverage. Copiale
+`p068` showed that Copiale/German should move to a separate capability plan
+rather than being treated as another Borg-style repair page. The loop now runs
+through a provider-neutral response adapter, records loop events, supports
+bounded same-iteration inspection/repair sandboxes, can retry gated or
+wrong-length boundary-projection attempts inside the same outer iteration, and
+writes final reading/process summaries.
 
 ## Why This Exists
 
@@ -70,6 +71,12 @@ Define a narrow model-provider interface:
 The rest of the harness should not know whether the backend is Claude,
 OpenAI, or another API. Provider-specific Agent SDKs can be used behind this
 adapter later, but should not own the benchmark loop.
+
+April 2026 implementation note: the CLI now exposes
+`--provider anthropic|openai|gemini` for agentic benchmark/crack/testgen/resume
+runs. The adapters translate Decipher's internal Anthropic-style tool transcript
+to OpenAI function tools or Gemini function declarations, then normalize text,
+tool calls, and usage accounting back into `ModelResponse`.
 
 ### Outer Loop
 
@@ -379,8 +386,18 @@ Early implementation note:
   Copiale/German, after at least one stretch run such as
   `copiale_single_B_copiale_p068`: do not treat Copiale as just another Borg
   page. Create a separate Copiale/German capability track.
-- [ ] Add a full-agent parity smoke suite so core agent-loop behavior can be
+- [x] Add a full-agent parity smoke suite so core agent-loop behavior can be
   regression-tested without manually inspecting long artifacts every time.
+  - [x] Add the no-LLM automated baseline packet:
+    `frontier/agentic_milestone4_smoke.jsonl`.
+  - [x] Add an opt-in pytest harness that runs the automated-only solver for
+    every packet case, asserts zero LLM tokens/cost, and checks baseline
+    thresholds when `DECIPHER_RUN_MILESTONE4_SMOKE=1` is set.
+  - [x] Add the separate LLM-agent smoke layer with fake-provider/unit
+    coverage. Current smoke checks prove that the loop can preserve and
+    declare a protected `automated_preflight` branch, and can make a tiny
+    reading-driven `act_set_mapping` repair before declaration, without live
+    provider access.
 
 Latest generalization checkpoint:
 

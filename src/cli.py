@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 
 def _use_agentic_mode(args: argparse.Namespace) -> bool:
@@ -20,19 +21,121 @@ def _resolve_agent_display(args: argparse.Namespace) -> str:
     return "pretty" if sys.stdout.isatty() else "raw"
 
 
-def get_api_key() -> str:
-    key = os.environ.get("ANTHROPIC_API_KEY")
+_PROVIDER_ENV_KEYS = {
+    "anthropic": ["ANTHROPIC_API_KEY"],
+    "openai": ["OPENAI_API_KEY"],
+    "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+}
+
+_PROVIDER_KEYRING_ACCOUNTS = {
+    "anthropic": "anthropic_api_key",
+    "openai": "openai_api_key",
+    "gemini": "gemini_api_key",
+}
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def _read_dotenv_key(provider: str) -> str:
+    names = set(_PROVIDER_ENV_KEYS.get(provider, []))
+    for path in [_repo_root() / ".env", Path.cwd() / ".env"]:
+        if not path.exists():
+            continue
+        try:
+            for raw_line in path.read_text(encoding="utf-8").splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                if name.strip() in names:
+                    return value.strip().strip("'\"")
+        except OSError:
+            continue
+    return ""
+
+
+def _read_key_file(provider: str) -> str:
+    root = _repo_root()
+    candidates = [
+        root / ".decipher_keys" / f"{provider}_api_key",
+        Path.cwd() / ".decipher_keys" / f"{provider}_api_key",
+    ]
+    for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
+        candidates.extend([
+            root / ".decipher_keys" / env_name,
+            Path.cwd() / ".decipher_keys" / env_name,
+        ])
+    for path in candidates:
+        try:
+            if path.exists():
+                value = path.read_text(encoding="utf-8").strip()
+                if value:
+                    return value
+        except OSError:
+            continue
+    return ""
+
+
+def get_api_key(provider: str = "anthropic") -> str:
+    from agent.model_provider import canonical_provider
+
+    provider = canonical_provider(provider)
+    for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
+        key = os.environ.get(env_name)
+        if key:
+            return key
+    key = _read_dotenv_key(provider)
+    if key:
+        return key
+    key = _read_key_file(provider)
     if key:
         return key
     try:
         import keyring
-        key = keyring.get_password("decipher", "anthropic_api_key")
+
+        key = keyring.get_password(
+            "decipher",
+            _PROVIDER_KEYRING_ACCOUNTS.get(provider, f"{provider}_api_key"),
+        )
         if key:
             return key
     except Exception:
         pass
-    print("Error: No API key found. Set ANTHROPIC_API_KEY or configure via the keychain.", file=sys.stderr)
+    env_hint = " or ".join(_PROVIDER_ENV_KEYS.get(provider, []))
+    print(
+        "Error: No API key found. "
+        f"Set {env_hint}, put it in .env, put it in "
+        f".decipher_keys/{provider}_api_key, or configure keychain account "
+        f"`{_PROVIDER_KEYRING_ACCOUNTS.get(provider, f'{provider}_api_key')}`.",
+        file=sys.stderr,
+    )
     sys.exit(1)
+
+
+def _resolve_provider_and_model(args: argparse.Namespace) -> tuple[str, str]:
+    from agent.model_provider import (
+        default_model_for_provider,
+        infer_provider_from_model,
+    )
+
+    requested_provider = getattr(args, "provider", None)
+    requested_model = getattr(args, "model", None)
+    provider = infer_provider_from_model(requested_model, requested_provider)
+    model = requested_model or default_model_for_provider(provider)
+    return provider, model
+
+
+def _make_agent_provider(args: argparse.Namespace):
+    from agent.model_provider import make_model_provider
+
+    provider, model = _resolve_provider_and_model(args)
+    return make_model_provider(
+        provider=provider,
+        api_key=get_api_key(provider),
+        model=model,
+    )
 
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
@@ -69,11 +172,9 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         mode_label = "automated"
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
-        from services.claude_api import ClaudeAPI
 
-        api_key = get_api_key()
-        model = args.model or "claude-opus-4-7"
-        api = ClaudeAPI(api_key=api_key, model=model)
+        provider, model = _resolve_provider_and_model(args)
+        api = _make_agent_provider(args)
         runner = BenchmarkRunnerV2(
             claude_api=api,
             max_iterations=args.max_iterations,
@@ -83,7 +184,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             automated_preflight=not args.no_automated_preflight,
             display_mode=display_mode,
         )
-        mode_label = f"agentic ({model})"
+        mode_label = f"agentic ({provider}/{model})"
 
     if not quiet_structured_display:
         print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
@@ -179,11 +280,9 @@ def cmd_crack(args: argparse.Namespace) -> None:
 
     from agent.loop_v2 import run_v2
     from agent.display import make_agent_renderer
-    from services.claude_api import ClaudeAPI
 
-    api_key = get_api_key()
-    model = args.model or "claude-opus-4-7"
-    api = ClaudeAPI(api_key=api_key, model=model)
+    provider, model = _resolve_provider_and_model(args)
+    api = _make_agent_provider(args)
     display_mode = _resolve_agent_display(args)
     renderer = make_agent_renderer(display_mode)
     if renderer is not None:
@@ -318,7 +417,6 @@ def cmd_resume_artifact(args: argparse.Namespace) -> None:
         has_word_boundaries,
         score_branch_decryptions,
     )
-    from services.claude_api import ClaudeAPI
 
     parent_path = Path(args.artifact).expanduser().resolve()
     prior_artifact = load_artifact_dict(parent_path)
@@ -328,8 +426,10 @@ def cmd_resume_artifact(args: argparse.Namespace) -> None:
     extra_iterations = args.extra_iterations
     branch = args.branch or (prior_artifact.get("solution") or {}).get("branch")
 
-    model = args.model or prior_artifact.get("model") or "claude-opus-4-7"
-    api = ClaudeAPI(api_key=get_api_key(), model=model)
+    if not getattr(args, "model", None) and prior_artifact.get("model"):
+        args.model = prior_artifact.get("model")
+    provider, model = _resolve_provider_and_model(args)
+    api = _make_agent_provider(args)
     display_mode = _resolve_agent_display(args)
     renderer = make_agent_renderer(display_mode)
     if renderer is not None:
@@ -512,11 +612,19 @@ def cmd_testgen(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
-        api_key = "" if cached is not None else get_api_key()
+        provider, _model = _resolve_provider_and_model(args)
+        api_key = "" if cached is not None else get_api_key(provider)
     else:
-        api_key = get_api_key()
+        provider, _model = _resolve_provider_and_model(args)
+        api_key = get_api_key(provider)
 
-    test_data = build_test_case(spec, cache, api_key, seed=args.seed)
+    test_data = build_test_case(
+        spec,
+        cache,
+        api_key,
+        seed=args.seed,
+        generator_provider=provider,
+    )
 
     pt_preview = test_data.plaintext[:120] + ("..." if len(test_data.plaintext) > 120 else "")
     ct_preview = test_data.canonical_transcription[:120] + "..."
@@ -544,11 +652,10 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         result = runner.run_test(test_data, language=args.language)
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
-        from services.claude_api import ClaudeAPI
 
         display_mode = _resolve_agent_display(args)
-        crack_model = args.model or "claude-opus-4-7"
-        crack_api = ClaudeAPI(api_key=api_key, model=crack_model)
+        provider, crack_model = _resolve_provider_and_model(args)
+        crack_api = _make_agent_provider(args)
         runner = BenchmarkRunnerV2(
             claude_api=crack_api,
             max_iterations=args.max_iterations,
@@ -558,7 +665,10 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             automated_preflight=not args.no_automated_preflight,
             display_mode=display_mode,
         )
-        print(f"\nRunning agent (model={crack_model}, max_iter={args.max_iterations})...")
+        print(
+            f"\nRunning agent (provider={provider}, model={crack_model}, "
+            f"max_iter={args.max_iterations})..."
+        )
         result = runner.run_test(test_data)
 
     score = score_decryption(
@@ -594,7 +704,16 @@ def main() -> None:
     bench.add_argument("--test-id", help="Run a single test by ID")
     bench.add_argument("--limit", "-n", type=int, help="Maximum number of tests to run")
     bench.add_argument("--max-iterations", "-i", type=int, default=25)
-    bench.add_argument("--model", "-m", help="Claude model (default: claude-opus-4-7)")
+    bench.add_argument(
+        "--provider",
+        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
+    )
+    bench.add_argument(
+        "--model",
+        "-m",
+        help="LLM model name. Defaults by provider.",
+    )
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")
@@ -643,7 +762,12 @@ def main() -> None:
     crack.add_argument("--canonical", action="store_true",
                        help="Input is canonical S-token format (space-separated, | word breaks)")
     crack.add_argument("--max-iterations", "-i", type=int, default=25)
-    crack.add_argument("--model", "-m", help="Claude model (default: claude-opus-4-7)")
+    crack.add_argument(
+        "--provider",
+        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
+    )
+    crack.add_argument("--model", "-m", help="LLM model name. Defaults by provider.")
     crack.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"],
                        default="en")
     crack.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
@@ -698,7 +822,12 @@ def main() -> None:
         "--branch",
         help="Branch to focus on from the prior artifact (default: declared branch).",
     )
-    resume.add_argument("--model", "-m", help="Claude model (default: prior artifact model)")
+    resume.add_argument(
+        "--provider",
+        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        help="LLM provider for the continuation. Default is inferred from --model.",
+    )
+    resume.add_argument("--model", "-m", help="LLM model name (default: prior artifact model)")
     resume.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     resume.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     resume.add_argument("--cipher-id", help="Override cipher id for the continuation artifact")
@@ -727,6 +856,11 @@ def main() -> None:
     tg.add_argument("--list-cache", action="store_true")
     tg.add_argument("--dry-run", action="store_true")
     tg.add_argument("--max-iterations", "-i", type=int, default=25)
+    tg.add_argument(
+        "--provider",
+        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        help="LLM provider for generation/agentic runs. Default is inferred from --model, else anthropic.",
+    )
     tg.add_argument("--model", "-m")
     tg.add_argument("--artifact-dir", default="artifacts")
     tg.add_argument("--cache-dir", default="testgen_cache")

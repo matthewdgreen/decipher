@@ -29,6 +29,13 @@ from agent.model_provider import (
     ModelResponse,
     TextBlock,
     ToolUseBlock,
+    _messages_to_openai_chat,
+    _openai_chat_response_to_model_response,
+    _schema_for_gemini,
+    _tools_to_openai_chat,
+    default_model_for_provider,
+    estimate_provider_cost,
+    infer_provider_from_model,
     normalize_model_response,
 )
 from agent.orchestration import AgentMode, AgentRunState, MODE_ALLOWED_TOOLS
@@ -459,6 +466,33 @@ def test_workspace_branch_cards_mark_automated_preflight_as_protected_baseline()
     assert cards["cards"][0]["protected_baseline"] is True
 
 
+def test_workspace_fork_best_copies_automated_preflight_instead_of_empty_main():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE"},
+        word_list=["THE"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ex.workspace.fork("automated_preflight", from_branch="main")
+    ex.workspace.set_mapping("automated_preflight", alpha.id_for("A"), pt.id_for("T"))
+    ex.workspace.set_mapping("automated_preflight", alpha.id_for("B"), pt.id_for("H"))
+    ex.workspace.set_mapping("automated_preflight", alpha.id_for("C"), pt.id_for("E"))
+    ex.workspace.tag("automated_preflight", "automated_preflight")
+    ex.workspace.tag("automated_preflight", "no_llm")
+
+    out = ex._tool_workspace_fork_best({"new_name": "repair_preflight"})
+
+    assert out["status"] == "ok"
+    assert out["source_branch"] == "automated_preflight"
+    assert out["parent"] == "automated_preflight"
+    assert out["inherited_mapped_count"] == 3
+    assert len(ex.workspace.get_branch("repair_preflight").key) == 3
+
+
 def test_act_bulk_set_and_anchor_word_use_reading_score_delta():
     raw = "AB | CD"
     alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
@@ -588,6 +622,8 @@ def test_system_prompt_carries_reading_first_discipline():
     assert "act_resegment_from_reading_repair" in prompt
     assert "decode_validate_reading_repair" in prompt
     assert "act_merge_decoded_words" in prompt
+    assert "workspace_fork_best" in prompt
+    assert "defaults to `main`" in prompt
     # Generalised dict_rate guidance — no fixed Latin threshold
     assert "0.15" not in prompt
     assert "Declare on reading" in prompt
@@ -1087,6 +1123,134 @@ def test_claude_model_provider_wraps_existing_api_without_loop_specifics():
     assert provider.model == api.model
     assert isinstance(response, ModelResponse)
     assert response.content == [TextBlock(text="I forgot to declare.")]
+
+
+def test_provider_inference_and_defaults_cover_supported_families():
+    assert infer_provider_from_model("claude-sonnet-4-6") == "anthropic"
+    assert infer_provider_from_model("gpt-5.4-mini") == "openai"
+    assert infer_provider_from_model("gemini-3-flash") == "gemini"
+    assert infer_provider_from_model("claude-sonnet-4-6", "openai") == "openai"
+    assert default_model_for_provider("openai").startswith("gpt-")
+    assert default_model_for_provider("gemini").startswith("gemini-")
+
+
+def test_openai_adapter_converts_anthropic_style_tool_history():
+    messages = [
+        {"role": "user", "content": "Initial text"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will inspect."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "decode_show",
+                    "input": {"branch": "main"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": '{"ok": true}',
+                },
+                {"type": "text", "text": "Continue."},
+            ],
+        },
+    ]
+
+    converted = _messages_to_openai_chat(messages, system="System prompt")
+
+    assert converted[0] == {"role": "system", "content": "System prompt"}
+    assert converted[2]["role"] == "assistant"
+    assert converted[2]["tool_calls"][0]["id"] == "toolu_1"
+    assert converted[2]["tool_calls"][0]["function"]["name"] == "decode_show"
+    assert converted[3] == {
+        "role": "tool",
+        "tool_call_id": "toolu_1",
+        "content": '{"ok": true}',
+    }
+    assert converted[4] == {"role": "user", "content": "Continue."}
+
+
+def test_openai_adapter_normalizes_text_and_tool_calls():
+    raw = SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=4,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=2),
+        ),
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="Plan",
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call_1",
+                            function=SimpleNamespace(
+                                name="score_panel",
+                                arguments='{"branch": "main"}',
+                            ),
+                        )
+                    ],
+                )
+            )
+        ],
+    )
+
+    response = _openai_chat_response_to_model_response(raw)
+
+    assert response.content == [
+        TextBlock(text="Plan"),
+        ToolUseBlock(id="call_1", name="score_panel", input={"branch": "main"}),
+    ]
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 4
+    assert response.usage.cache_read_input_tokens == 2
+
+
+def test_tool_schema_converters_cover_openai_and_gemini_shapes():
+    tools = [
+        {
+            "name": "decode_show",
+            "description": "Show decode.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "branch": {
+                        "type": "string",
+                        "description": "Branch name",
+                        "default": "main",
+                    }
+                },
+                "required": ["branch"],
+                "additionalProperties": False,
+            },
+        }
+    ]
+
+    openai_tools = _tools_to_openai_chat(tools)
+    gemini_schema = _schema_for_gemini(tools[0]["input_schema"])
+
+    assert openai_tools[0]["type"] == "function"
+    assert openai_tools[0]["function"]["name"] == "decode_show"
+    assert gemini_schema["type"] == "object"
+    assert "default" not in gemini_schema["properties"]["branch"]
+    assert "additionalProperties" not in gemini_schema
+
+
+def test_provider_cost_estimation_is_provider_specific():
+    anthropic = estimate_provider_cost("anthropic", "claude-sonnet-4-6", 1000, 100)
+    openai = estimate_provider_cost("openai", "gpt-5.4-mini", 1000, 100)
+    gemini = estimate_provider_cost("gemini", "gemini-3-flash", 1000, 100)
+
+    assert anthropic > 0
+    assert openai > 0
+    assert gemini > 0
+    assert len({anthropic, openai, gemini}) == 3
 
 
 def test_agent_run_state_exposes_mode_specific_tool_gates():
@@ -2294,6 +2458,67 @@ def test_meta_declare_records_final_reading_summary_and_iteration_assessment():
     assert ex.solution.reading_summary == "This appears to be a short test passage."
     assert ex.solution.further_iterations_helpful is True
     assert ex.solution.further_iterations_note == "More iterations could test one unresolved spelling."
+
+
+def test_meta_declare_blocks_low_confidence_helpful_declaration_before_final_turn():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(13)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best current low-confidence hypothesis.",
+        "self_confidence": 0.15,
+        "reading_summary": "Only scattered word islands are visible.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "More iterations should try another hypothesis.",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert out["reason"] == "low_confidence_more_work_required"
+    assert "search_transform_homophonic" in out["suggested_next_tools"]
+    assert ex.terminated is False
+
+
+def test_meta_declare_blocks_untried_transform_work_when_note_names_it():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(13)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best current hypothesis, but columnar transposition may be involved.",
+        "self_confidence": 0.7,
+        "reading_summary": "Only scattered word islands are visible.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "Further iterations should try columnar transposition.",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "transform_work_untried"
+    assert "observe_transform_pipeline" in out["suggested_next_tools"]
+    assert "search_transform_homophonic" in out["suggested_next_tools"]
+    assert ex.terminated is False
+
+
+def test_meta_declare_allows_low_confidence_helpful_on_final_turn():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(30)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Final turn; submit best current hypothesis.",
+        "self_confidence": 0.15,
+        "reading_summary": "Only scattered word islands are visible.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "More work might help, but the run is out of turns.",
+    })
+
+    assert out["status"] == "ok"
+    assert out["accepted"] is True
+    assert ex.terminated is True
 
 
 def test_execute_rejects_tools_not_allowed_on_gated_turn():

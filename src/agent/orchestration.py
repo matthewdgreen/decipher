@@ -23,6 +23,7 @@ class AgentMode(str, Enum):
 MODE_ALLOWED_TOOLS: dict[AgentMode, frozenset[str]] = {
     AgentMode.EXPLORE: frozenset({
         "observe_frequency",
+        "observe_transform_pipeline",
         "observe_patterns",
         "decode_show",
         "decode_letter_stats",
@@ -72,6 +73,8 @@ MODE_ALLOWED_TOOLS: dict[AgentMode, frozenset[str]] = {
         "search_anneal",
         "search_homophonic_anneal",
         "search_automated_solver",
+        "search_transform_homophonic",
+        "act_apply_transform_pipeline",
     }),
     AgentMode.DECLARE: frozenset({"meta_declare_solution"}),
 }

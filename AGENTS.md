@@ -391,6 +391,9 @@ Current April 2026 state for non-English bundled models:
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
 
 Additional current read:
+- The Agent Loop Redesign plan is now considered complete through Milestone 4
+  smoke coverage. New Copiale/German and broader generalization work should
+  start from `docs/copiale_generalization_plan.md`.
 - Agent-loop Milestone 4 now has broader Borg evidence:
   - Borg `0140v`
     (`artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`) improved from
@@ -414,6 +417,15 @@ Additional current read:
   Copiale/German as a separate capability track: stronger German models,
   context-aware modes, nomenclator/codeword behavior, and stricter declaration
   discipline are needed before comparing it to Borg progress.
+- A no-LLM automated baseline smoke packet for these Milestone 4 cases now
+  lives at `frontier/agentic_milestone4_smoke.jsonl`. The opt-in pytest
+  command `DECIPHER_RUN_MILESTONE4_SMOKE=1 .venv/bin/python -m pytest
+  tests/test_milestone4_smoke.py` runs `AutomatedBenchmarkRunner` across the
+  packet, verifies zero LLM tokens/cost, and checks baseline thresholds.
+- The same smoke test file also includes fake-provider LLM-agent coverage.
+  These tests do not call a live API; they check that the loop can inspect and
+  declare a protected `automated_preflight` branch, and can make a small
+  reading-driven `act_set_mapping` repair before declaration.
 - Borg `0077v` routes to `zenith_native` because its symbol inventory exceeds
   the Latin plaintext alphabet size.
 - Borg `0109v` still routes to the substitution path by default because its
@@ -746,6 +758,7 @@ PYTHONPATH=src .venv/bin/python scripts/validate_benchmark.py \
 cd ~/Dropbox/src2/decipher
 source .venv/bin/activate   # Python 3.11 venv
 pip install -e .             # Install with entry points
+pip install -e '.[providers]' # Optional: OpenAI/Gemini agent providers
 ```
 
 Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
@@ -760,12 +773,26 @@ Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
 ### Model Notes
 - **Claude Sonnet 4.6**: Strong performance on S-token sequences and Latin/German manuscript analysis
 - **Claude Opus 4.7**: More conservative with historical encoded text; use Sonnet 4.6 for decipherment
+- **OpenAI/Gemini**: Agentic runs now support `--provider openai` and
+  `--provider gemini` through the provider adapter. Use the smoke packet before
+  treating any non-Claude model as parity-quality for historical decipherment.
 - **Preprocessing**: S-token normalization (letter substitution) improves API compatibility across models
 
 ### Configuration
-Models configurable via `--model` CLI flag.
-API key stored in macOS Keychain under service `decipher`, account `anthropic_api_key`.
-Also reads `ANTHROPIC_API_KEY` env var.
+Models are configurable via `--provider` and `--model` CLI flags. If
+`--provider` is omitted, Decipher infers it from common model prefixes
+(`claude-*`, `gpt-*`, `gemini-*`) and otherwise defaults to Anthropic.
+
+API keys may be supplied by environment variable, gitignored local files, or
+macOS Keychain:
+- Anthropic: `ANTHROPIC_API_KEY`, `.decipher_keys/anthropic_api_key`,
+  keychain account `anthropic_api_key`
+- OpenAI: `OPENAI_API_KEY`, `.decipher_keys/openai_api_key`, keychain account
+  `openai_api_key`
+- Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`,
+  `.decipher_keys/gemini_api_key`, keychain account `gemini_api_key`
+
+The repo gitignores `.env`, `.env.*`, and `.decipher_keys/`.
 
 ### Performance
 Sonnet 4.6 on `synth_en_250nb_s4`: exact match in 7 iterations after reliability and segmentation fixes.

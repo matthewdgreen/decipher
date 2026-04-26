@@ -1,5 +1,9 @@
 .venv/
 .venv311/
+.env
+.env.*
+.decipher_keys/
+*_api_key.txt
 .DS_Store
 __pycache__/
 *.pyc

@@ -15,7 +15,12 @@ import uuid
 import json
 from typing import Any
 
-from agent.model_provider import ClaudeModelProvider, ModelResponse
+from agent.model_provider import (
+    ModelProviderError,
+    ModelResponse,
+    ensure_model_provider,
+    estimate_provider_cost,
+)
 from agent.orchestration import AgentMode
 from agent.prompts_v2 import get_system_prompt, initial_context
 from agent.resume import inherited_repair_agenda, install_resume_branches
@@ -25,7 +30,6 @@ from analysis import signals as sig
 from analysis.segment import segment_text
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
 from models.cipher_text import CipherText
-from services.claude_api import ClaudeAPI, ClaudeAPIError, estimate_cost
 from workspace import Workspace
 
 
@@ -123,9 +127,11 @@ FULL_READING_ACTUATOR_TOOL_NAMES = {
 }
 
 PENULTIMATE_ALLOWED_TOOL_NAMES = {
+    "workspace_fork_best",
     "decode_show",
     "score_panel",
     "score_dictionary",
+    "observe_transform_pipeline",
     "workspace_branch_cards",
     "decode_plan_word_repair",
     "decode_plan_word_repair_menu",
@@ -136,6 +142,8 @@ PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
     "act_resegment_window_by_reading",
+    "search_transform_homophonic",
+    "act_apply_transform_pipeline",
     "meta_declare_solution",
 }
 
@@ -163,10 +171,12 @@ REPAIR_SANDBOX_TOOL_NAMES = {
 }
 
 INSPECTION_SANDBOX_TOOL_NAMES = {
+    "workspace_fork_best",
     "observe_frequency",
     "observe_patterns",
     "observe_ic",
     "observe_homophone_distribution",
+    "observe_transform_pipeline",
     "decode_show",
     "decode_unmapped",
     "decode_heatmap",
@@ -789,6 +799,11 @@ def build_workspace_panel(
         lines.append(
             "**Read the decoded text above.** Your primary judgement instrument "
             "is semantic reading, not scores. "
+            "If you want to repair the current best branch, especially an "
+            "`automated_preflight` baseline, create the repair branch with "
+            "`workspace_fork_best` rather than plain `workspace_fork`; plain "
+            "`workspace_fork` defaults to empty `main` unless you explicitly "
+            "set `from_branch`. "
             "If a branch's decode looks like coherent text in the target language, "
             "fix any obvious residual errors, then do one anchored polish call "
             "with `search_anneal(..., preserve_existing=true, score_fn='combined')` "
@@ -821,6 +836,17 @@ def build_workspace_panel(
             "language."
         )
 
+    lines.append("")
+    lines.append(
+        "**Transform check:** If the best branches show only scattered word "
+        "islands, low confidence, or you are thinking about columnar/"
+        "transposition/period/Vigenere explanations, do not declare early. "
+        "Call `observe_transform_pipeline`, then try "
+        "`search_transform_homophonic(branch=..., homophonic_budget='screen')` "
+        "before giving up on this run. If that screen does not help, say so in "
+        "the declaration rationale."
+    )
+
     # Last-iteration hard warning — must appear AFTER the main text block.
     if max_iterations is not None and iteration >= max_iterations:
         lines.append("")
@@ -837,7 +863,7 @@ def build_workspace_panel(
 
 def run_v2(
     cipher_text: CipherText,
-    claude_api: ClaudeAPI,
+    claude_api: Any,
     language: str = "en",
     max_iterations: int = 50,
     cipher_id: str = "unknown",
@@ -852,7 +878,7 @@ def run_v2(
     """Run one v2 agent session against a cipher. Returns a full RunArtifact."""
 
     run_id = uuid.uuid4().hex[:12]
-    model_provider = ClaudeModelProvider(claude_api)
+    model_provider = ensure_model_provider(claude_api)
 
     artifact = RunArtifact(
         run_id=run_id,
@@ -950,7 +976,8 @@ def run_v2(
         artifact.total_input_tokens += usage.input_tokens
         artifact.total_output_tokens += usage.output_tokens
         artifact.total_cache_read_tokens += usage.cache_read_input_tokens
-        artifact.estimated_cost_usd = estimate_cost(
+        artifact.estimated_cost_usd = estimate_provider_cost(
+            model_provider.provider_name,
             model_provider.model,
             artifact.total_input_tokens,
             artifact.total_output_tokens,
@@ -1005,7 +1032,7 @@ def run_v2(
                 system=system,
                 max_tokens=8192,
             )
-        except ClaudeAPIError as e:
+        except ModelProviderError as e:
             artifact.status = "error"
             artifact.error_message = f"API error on iteration {iteration}: {e}"
             emit("error", {"message": artifact.error_message})
@@ -1208,7 +1235,7 @@ def run_v2(
                     system=system,
                     max_tokens=8192,
                 )
-            except ClaudeAPIError as e:
+            except ModelProviderError as e:
                 artifact.status = "error"
                 artifact.error_message = f"API error on iteration {iteration}: {e}"
                 emit("error", {"message": artifact.error_message})

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 
 class DifficultyPreset(str, Enum):
@@ -31,6 +31,7 @@ class TestSpec:
     seed: int | None = None
     frequency_style: Literal["normal", "unusual"] = "normal"
     homophonic: bool = False
+    transform_pipeline: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.language not in SUPPORTED_LANGUAGES:

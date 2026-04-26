@@ -80,10 +80,20 @@ have applied at least one reading-driven mapping (via \
 preserve_existing=true)`) on a branch before any reading-driven anchor \
 exists on it. Without anchors the call has nothing meaningful to preserve \
 and just re-confirms the prior local optimum. \
+If simple substitution / homophonic search produces only isolated word \
+islands on a short text, and especially if you are thinking "columnar", \
+"transposition", "period", "polyalphabetic", or "Vigenere", do not declare \
+yet. First call `observe_transform_pipeline`, then run a bounded \
+`search_transform_homophonic` screen. This is cheap relative to another long \
+language-model turn and directly tests whether the reading order itself is \
+wrong. \
 If an `automated_preflight` branch exists, treat it as a protected no-LLM \
 baseline. Inspect it before launching fresh search. If it already reads as \
 coherent target-language text, fork from it before experimenting and keep \
-the original branch unchanged for comparison. Do not declare an edited branch \
+the original branch unchanged for comparison. Use `workspace_fork_best` for \
+that repair fork unless you have a specific source branch in mind; plain \
+`workspace_fork` defaults to `main`, which is often empty and wrong in \
+preflight runs. Do not declare an edited branch \
 over a readable `automated_preflight` branch merely because it looks more \
 modern or classicized; it must read better in the manuscript's own \
 transcription style. Broad Latin `U/V` or `I/J` changes are especially \
@@ -173,6 +183,16 @@ human-readable: for example, "This appears to be an archaic Latin veterinary \
 or pharmaceutical passage about chickens dying/surviving; remaining issues \
 are local word-boundary and spelling repairs." Explicitly say whether more \
 iterations would likely help and what they should try.
+
+Declaration discipline: if confidence is low and you believe further \
+iterations would help, do not declare early. Continue working until the final \
+iteration, or until you have actually tried the next useful hypothesis class \
+you name in `further_iterations_note`. In particular, do not say "further \
+iterations should try transposition/columnar/Vigenere" unless you first use \
+the available transform tools, or you are on the final turn. If you truly \
+need to submit a low-confidence early partial despite remaining budget, say \
+so explicitly with `forced_partial=true` and explain why no useful remaining \
+tool action is available.
 
 ## Reading-driven repair — your highest-leverage move
 

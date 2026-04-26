@@ -26,6 +26,7 @@ from analysis.segment import (
     segment_text,
 )
 from analysis.solver import simulated_anneal
+from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
 from models.alphabet import Alphabet
@@ -91,16 +92,19 @@ class AutomatedBenchmarkRunner:
                 solver="automated_only",
             )
 
-        result = run_automated(
-            cipher_text=cipher_text,
-            language=lang,
-            cipher_id=test_id,
-            ground_truth=test_data.plaintext,
-            cipher_system=test_data.test.cipher_system,
-            homophonic_budget=self.homophonic_budget,
-            homophonic_refinement=self.homophonic_refinement,
-            homophonic_solver=self.homophonic_solver,
-        )
+        run_kwargs = {
+            "cipher_text": cipher_text,
+            "language": lang,
+            "cipher_id": test_id,
+            "ground_truth": test_data.plaintext,
+            "cipher_system": test_data.test.cipher_system,
+            "homophonic_budget": self.homophonic_budget,
+            "homophonic_refinement": self.homophonic_refinement,
+            "homophonic_solver": self.homophonic_solver,
+        }
+        if test_data.transform_pipeline:
+            run_kwargs["transform_pipeline"] = test_data.transform_pipeline
+        result = run_automated(**run_kwargs)
         artifact = dict(result.artifact)
         artifact["description"] = test_data.test.description
         artifact["cipher_system"] = test_data.test.cipher_system
@@ -133,6 +137,8 @@ class _AutomatedInternalResult:
     char_accuracy: float = 0.0
     word_accuracy: float = 0.0
     error_message: str = ""
+    transform_pipeline: dict[str, Any] | None = None
+    original_cipher_token_count: int | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -173,6 +179,8 @@ class _AutomatedInternalResult:
             "cipher_alphabet_size": self.cipher_alphabet_size,
             "cipher_token_count": self.cipher_token_count,
             "cipher_word_count": self.cipher_word_count,
+            "transform_pipeline": self.transform_pipeline,
+            "original_cipher_token_count": self.original_cipher_token_count,
             "decryption": self.decryption,
             "key": {str(k): v for k, v in self.key.items()},
             "steps": self.steps,
@@ -192,6 +200,7 @@ def run_automated(
     cipher_id: str = "cli",
     ground_truth: str | None = None,
     cipher_system: str = "",
+    transform_pipeline: dict[str, Any] | None = None,
     homophonic_budget: str = "full",
     homophonic_refinement: str = "none",
     homophonic_solver: str = "zenith_native",
@@ -205,9 +214,34 @@ def run_automated(
     status = "error"
     solver = "automated_only"
     error = ""
-    routing = _select_solver_path(cipher_text, language, cipher_system)
+    original_cipher_text = cipher_text
+    parsed_transform = TransformPipeline.from_raw(transform_pipeline)
+    transformed_step: dict[str, Any] | None = None
+    if parsed_transform is not None and not parsed_transform.is_empty():
+        transform_result = apply_transform_pipeline(cipher_text.tokens, parsed_transform)
+        cipher_text = _cipher_text_from_tokens(
+            transform_result.tokens,
+            cipher_text.alphabet,
+            source=f"{cipher_text.source}:transform",
+        )
+        transformed_step = {
+            "name": "apply_cipher_transform",
+            "pipeline": parsed_transform.to_raw(),
+            "original_token_count": len(original_cipher_text.tokens),
+            "transformed_token_count": len(cipher_text.tokens),
+            "locked_positions": sum(1 for locked in transform_result.locked if locked),
+        }
+
+    routing = _select_solver_path(
+        cipher_text,
+        language,
+        cipher_system,
+        has_transform_pipeline=transformed_step is not None,
+    )
 
     try:
+        if transformed_step is not None:
+            steps.append(transformed_step)
         steps.append({
             "name": "route_automated_solver",
             "solver": routing["solver"],
@@ -218,7 +252,10 @@ def run_automated(
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": homophonic_solver,
+            "transform_pipeline": parsed_transform.to_raw() if parsed_transform else None,
         })
+        if routing["route"] == "unsupported_mixed_transposition":
+            raise ValueError(routing["reason"])
         if routing["route"] == "homophonic":
             solver, key, decryption, step = _run_homophonic(
                 cipher_text,
@@ -268,6 +305,8 @@ def run_automated(
         char_accuracy=char_accuracy,
         word_accuracy=word_accuracy,
         error_message=error,
+        transform_pipeline=parsed_transform.to_raw() if parsed_transform else None,
+        original_cipher_token_count=len(original_cipher_text.tokens),
     )
     return internal.to_result()
 
@@ -388,11 +427,26 @@ def _select_solver_path(
     cipher_text: CipherText,
     language: str,
     cipher_system: str = "",
+    has_transform_pipeline: bool = False,
 ) -> dict[str, str]:
     pt_alpha = _plaintext_alphabet(language)
     cipher_name = cipher_system.lower()
     alphabet_size = cipher_text.alphabet.size
     word_groups = len(cipher_text.words)
+    is_mixed_transposition = (
+        any(token in cipher_name for token in ("transposition", "z340", "zodiac340"))
+        and any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
+    )
+
+    if is_mixed_transposition and not has_transform_pipeline:
+        return {
+            "route": "unsupported_mixed_transposition",
+            "solver": "unsupported",
+            "reason": (
+                "mixed transposition+homophonic solving requires an explicit "
+                "ciphertext transform pipeline or a bounded transform-search profile"
+            ),
+        }
 
     if any(token in cipher_name for token in ("homophonic", "zodiac", "copiale")):
         return {
@@ -423,6 +477,11 @@ def _select_solver_path(
         "solver": "native_substitution_continuous_anneal" if language == "en" else "native_substitution_anneal",
         "reason": "default substitution path",
     }
+
+
+def _cipher_text_from_tokens(tokens: list[int], alphabet: Alphabet, source: str = "transform") -> CipherText:
+    raw = alphabet.decode(tokens)
+    return CipherText(raw=raw, alphabet=alphabet, source=source, separator=None)
 
 
 def _run_homophonic(

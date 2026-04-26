@@ -7,6 +7,12 @@ capability as the best available non-agentic solvers on clean benchmark tasks,
 and failures should identify a missing tool, a weak tool, a wrong agent choice,
 or a benchmark data issue.
 
+Current planning split:
+- The Agent Loop Redesign plan is considered complete after Milestone 4 smoke
+  coverage.
+- New Copiale/generalization work is tracked in
+  `docs/copiale_generalization_plan.md`.
+
 ### Priority 1: Benchmark Hygiene
 
 - [x] Add a benchmark validator for `../cipher_benchmark/benchmark`.
@@ -388,6 +394,18 @@ or a benchmark data issue.
   - [x] Keep the core Decipher harness independent of any one LLM provider.
   - [x] Use a small provider adapter so Claude, OpenAI, and future local/hosted
     models can share the same tool/workspace/artifact state machine.
+    - Cross-provider CLI support now exists for `--provider anthropic|openai|gemini`.
+      OpenAI and Gemini adapters translate Decipher's existing Anthropic-style
+      message/tool transcript into each provider's function-calling shape and
+      normalize responses back into `ModelResponse`.
+    - API keys are read from provider-specific env vars, `.env`, gitignored
+      `.decipher_keys/*_api_key` files, or macOS Keychain.
+    - Remaining work: run the live smoke packet across candidate models and
+      calibrate provider-specific reliability/cost notes.
+    - Add periodic checkpoint artifact saving during long live-provider runs.
+      Current artifacts are written only after `run_v2` returns, so an
+      interrupted or hung provider call can lose partial post-fix state, as
+      seen with the Gemini Pro packet rerun.
   - [x] Separate outer benchmark iterations from inner tool steps.
   - [x] Add same-iteration retry for gated/disallowed tools so a stale tool choice
     does not consume a scarce late-turn action.
@@ -540,6 +558,17 @@ or a benchmark data issue.
       inspect branch cards and repair agenda history, compare parent/resume
       artifacts, and copy exact tool calls or branch diffs for follow-up runs.
   - [ ] Update the README for the current agentic interface and capabilities.
+    - Add a short testing section that points to `docs/test_inventory.md`.
+    - Include the main default test command, the opt-in Milestone 4 smoke
+      command, and the live cross-model packet command.
+    - Document cross-provider agentic configuration:
+      `--provider anthropic|openai|gemini`, model inference from `--model`,
+      and provider-specific API key locations/env vars.
+    - Include gitignored local key-file locations:
+      `.decipher_keys/anthropic_api_key`, `.decipher_keys/openai_api_key`,
+      and `.decipher_keys/gemini_api_key`.
+    - Note that `.env`, `.env.*`, `.decipher_keys/`, and `*_api_key.txt` are
+      ignored so credentials should not be committed.
     - Document `--display {auto,pretty,raw,jsonl}`, the live decrypt view,
       token/cost reporting, final reading/process summary, and raw/JSONL modes
       for wrappers.
@@ -599,7 +628,20 @@ or a benchmark data issue.
     - Add a small Copiale-focused artifact packet once the above exists:
       `p017`, `p035`, `p052`, `p068`, and `p084`, with clean
       no-extra-context and context-aware modes separated.
-- [ ] Add a full-agent parity smoke suite.
+- [x] Add a full-agent parity smoke suite.
+  - [x] Add no-LLM automated baseline packet for the Milestone 4 cases:
+    `frontier/agentic_milestone4_smoke.jsonl`.
+  - [x] Add opt-in pytest coverage for the automated-only baseline pass:
+    `DECIPHER_RUN_MILESTONE4_SMOKE=1 .venv/bin/python -m pytest
+    tests/test_milestone4_smoke.py`.
+    This runs `AutomatedBenchmarkRunner` on every packet case, checks
+    `run_mode=automated_only`, zero tokens, zero estimated cost, and baseline
+    char-accuracy/elapsed expectations.
+  - [x] Add the actual agentic smoke layer separately.
+    `tests/test_milestone4_smoke.py` now includes fake-provider LLM-agent
+    coverage for declaring a protected `automated_preflight` branch and for
+    making a small reading-driven mapping repair before declaration. Keep any
+    live-provider smoke packet opt-in if we add one later.
 - [x] Add artifact checks for wrong-tool use.
   - Homophonic no-boundary should call `search_homophonic_anneal` before generic `search_anneal`.
   - High dictionary rate on no-boundary homophonic text must not trigger declaration without coherent reading.

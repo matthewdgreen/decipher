@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
 from workspace.branch import Branch
@@ -32,7 +33,11 @@ class Workspace:
         }
         self._iteration: int = 0
 
-    def _default_word_spans(self) -> list[tuple[int, int]]:
+    def _default_word_spans(self, branch_name: str | None = None) -> list[tuple[int, int]]:
+        if branch_name is not None:
+            branch = self.get_branch(branch_name)
+            if branch.token_order is not None:
+                return [(0, len(branch.token_order))] if branch.token_order else []
         spans: list[tuple[int, int]] = []
         start = 0
         for word in self.cipher_text.words:
@@ -41,17 +46,42 @@ class Workspace:
             start = end
         return spans
 
-    def _flat_word_tokens(self) -> list[int]:
+    def _base_flat_word_tokens(self) -> list[int]:
         flat: list[int] = []
         for word in self.cipher_text.words:
             flat.extend(word)
         return flat
 
+    def effective_tokens(self, branch_name: str = "main") -> list[int]:
+        branch = self.get_branch(branch_name)
+        base_tokens = self._base_flat_word_tokens()
+        if branch.token_order is None:
+            return base_tokens
+        return [base_tokens[i] for i in branch.token_order]
+
+    def effective_cipher_text(self, branch_name: str = "main") -> CipherText:
+        branch = self.get_branch(branch_name)
+        if branch.token_order is None and branch.word_spans is None:
+            return self.cipher_text
+        tokens = self.effective_tokens(branch_name)
+        raw = self.cipher_text.alphabet.decode(tokens)
+        return CipherText(
+            raw=raw,
+            alphabet=self.cipher_text.alphabet,
+            source=f"{self.cipher_text.source}:branch:{branch_name}",
+            separator=None,
+        )
+
+    def _flat_word_tokens(self, branch_name: str | None = None) -> list[int]:
+        if branch_name is not None:
+            return self.effective_tokens(branch_name)
+        return self._base_flat_word_tokens()
+
     def _normalize_word_spans(
         self,
         spans: list[tuple[int, int]],
     ) -> list[tuple[int, int]]:
-        tokens = self._flat_word_tokens()
+        tokens = self._flat_word_tokens(branch_name=None)
         if not tokens:
             if spans:
                 raise WorkspaceError("Word spans must be empty for empty ciphertext")
@@ -81,22 +111,52 @@ class Workspace:
         branch = self.get_branch(branch_name)
         if branch.word_spans is not None:
             return list(branch.word_spans)
-        return self._default_word_spans()
+        return self._default_word_spans(branch_name)
 
     def effective_words(self, branch_name: str) -> list[list[int]]:
         spans = self.effective_word_spans(branch_name)
-        tokens = self._flat_word_tokens()
+        tokens = self._flat_word_tokens(branch_name)
         return [tokens[start:end] for start, end in spans]
 
     def set_word_spans(self, branch_name: str, spans: list[tuple[int, int]]) -> None:
         branch = self.get_branch(branch_name)
         normalized = self._normalize_word_spans(spans)
-        default = self._default_word_spans()
+        default = self._default_word_spans(branch_name)
         branch.word_spans = None if normalized == default else normalized
 
     def reset_word_spans(self, branch_name: str) -> None:
         branch = self.get_branch(branch_name)
         branch.word_spans = None
+
+    def apply_transform_pipeline(
+        self,
+        branch_name: str,
+        pipeline: TransformPipeline | dict[str, Any] | list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        branch = self.get_branch(branch_name)
+        parsed = TransformPipeline.from_raw(pipeline)
+        if parsed is None or parsed.is_empty():
+            branch.token_order = None
+            branch.transform_pipeline = None
+            branch.word_spans = None
+            return {
+                "branch": branch_name,
+                "transformed": False,
+                "token_count": len(self.cipher_text.tokens),
+            }
+        base_tokens = self._base_flat_word_tokens()
+        order = apply_transform_pipeline(list(range(len(base_tokens))), parsed).tokens
+        if sorted(order) != list(range(len(base_tokens))):
+            raise WorkspaceError("Transform pipeline did not produce a token permutation")
+        branch.token_order = order
+        branch.transform_pipeline = parsed.to_raw()
+        branch.word_spans = None
+        return {
+            "branch": branch_name,
+            "transformed": True,
+            "token_count": len(order),
+            "pipeline": parsed.to_raw(),
+        }
 
     def split_cipher_word(self, branch_name: str, word_index: int, split_at_offset: int) -> dict[str, Any]:
         spans = self.effective_word_spans(branch_name)
@@ -188,6 +248,8 @@ class Workspace:
         created_iteration: int = 0,
         tags: list[str] | None = None,
         word_spans: list[tuple[int, int]] | None = None,
+        token_order: list[int] | None = None,
+        transform_pipeline: dict | None = None,
     ) -> Branch:
         """Restore a branch from an artifact snapshot.
 
@@ -206,6 +268,8 @@ class Workspace:
             name=name,
             key=dict(key),
             word_spans=normalized_spans,
+            token_order=list(token_order) if token_order is not None else None,
+            transform_pipeline=dict(transform_pipeline) if transform_pipeline is not None else None,
             parent=parent,
             created_iteration=created_iteration,
             tags=list(tags or []),

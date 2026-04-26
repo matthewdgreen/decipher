@@ -47,6 +47,7 @@ class TestData:
     context_plaintext: str = ""
     context_records: list[BenchmarkRecord] = field(default_factory=list)
     symbol_map: dict | None = None  # optional symbol map metadata
+    transform_pipeline: dict | None = None
 
 
 class BenchmarkLoader:
