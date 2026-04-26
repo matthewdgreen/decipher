@@ -179,6 +179,40 @@ class Workspace:
         if tag not in branch.tags:
             branch.tags.append(tag)
 
+    def restore_branch(
+        self,
+        name: str,
+        *,
+        key: dict[int, int],
+        parent: str | None = None,
+        created_iteration: int = 0,
+        tags: list[str] | None = None,
+        word_spans: list[tuple[int, int]] | None = None,
+    ) -> Branch:
+        """Restore a branch from an artifact snapshot.
+
+        This is intentionally a low-level state operation for continuation
+        runs. It avoids replaying old tool calls while preserving the branch
+        state the previous run actually ended with.
+        """
+        if not name or not name.replace("_", "").replace("-", "").isalnum():
+            raise WorkspaceError(
+                f"Branch name must be alphanumeric (plus _ or -): {name!r}"
+            )
+        normalized_spans = (
+            self._normalize_word_spans(word_spans) if word_spans is not None else None
+        )
+        branch = Branch(
+            name=name,
+            key=dict(key),
+            word_spans=normalized_spans,
+            parent=parent,
+            created_iteration=created_iteration,
+            tags=list(tags or []),
+        )
+        self._branches[name] = branch
+        return branch
+
     # --- key mutation (always scoped to a branch) ---
 
     def set_mapping(self, branch_name: str, ct_id: int, pt_id: int) -> None:

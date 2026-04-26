@@ -2,6 +2,28 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Literal
+
+
+AlignmentOp = Literal["match", "substitute", "insert", "delete"]
+
+
+@dataclass
+class WordAlignmentRow:
+    decoded_index: int | None
+    ground_truth_index: int | None
+    decoded: str | None
+    ground_truth: str | None
+    op: AlignmentOp
+
+
+@dataclass
+class CharAlignmentRow:
+    decoded_index: int | None
+    ground_truth_index: int | None
+    decoded: str | None
+    ground_truth: str | None
+    op: AlignmentOp
 
 
 @dataclass
@@ -56,35 +78,19 @@ def score_decryption(
 
     gt_clean = normalize_text(ground_truth)
 
-    # Character-level accuracy (aligned comparison)
+    # Character-level accuracy. Use edit-aware exact-character alignment so a
+    # local insertion/deletion can resynchronize later text. Substitutions and
+    # gaps are still errors; only exact matched characters get credit.
     dec_chars = dec_clean.replace(" ", "")
     gt_chars = gt_clean.replace(" ", "")
+    char_accuracy, correct_chars, max_len = aligned_char_accuracy(dec_chars, gt_chars)
 
-    min_len = min(len(dec_chars), len(gt_chars))
-    max_len = max(len(dec_chars), len(gt_chars))
-
-    if max_len == 0:
-        char_accuracy = 1.0
-        correct_chars = 0
-    else:
-        correct = sum(1 for i in range(min_len) if dec_chars[i] == gt_chars[i])
-        correct_chars = correct
-        char_accuracy = correct / max_len
-
-    # Word-level accuracy
+    # Word-level accuracy. This uses edit-aware exact-word alignment, not a
+    # brittle positional zip, so local split/merge/extra-word errors do not
+    # cause every subsequent word to score as wrong.
     dec_words = dec_clean.split()
     gt_words = gt_clean.split()
-
-    min_words = min(len(dec_words), len(gt_words))
-    max_words = max(len(dec_words), len(gt_words))
-
-    if max_words == 0:
-        word_accuracy = 1.0
-        correct_words = 0
-    else:
-        correct_w = sum(1 for i in range(min_words) if dec_words[i] == gt_words[i])
-        correct_words = correct_w
-        word_accuracy = correct_w / max_words
+    word_accuracy, correct_words, max_words = aligned_word_accuracy(dec_words, gt_words)
 
     return ScoreResult(
         test_id=test_id,
@@ -111,6 +117,212 @@ def _collapse_spaced_letters(text: str) -> str:
 
     # Pattern: 3+ single letters (A-Z or ?) separated by single spaces
     return re.sub(r"(?<!\S)([A-Z?] ){2,}[A-Z?](?!\S)", replacer, text)
+
+
+def _decoded_words(decoded: str) -> list[str]:
+    if " | " in decoded:
+        word_parts = decoded.split(" | ")
+        words = [_collapse_spaced_letters(w) for w in word_parts]
+        return normalize_text(" ".join(words)).split()
+    return normalize_text(_collapse_spaced_letters(decoded)).split()
+
+
+def _ground_truth_words(ground_truth: str) -> list[str]:
+    return normalize_text(ground_truth).split()
+
+
+def align_char_sequences(
+    decoded_chars: str,
+    ground_truth_chars: str,
+) -> list[CharAlignmentRow]:
+    """Globally align decoded and ground-truth character streams.
+
+    This is stricter than "best common subsequence": substitutions are cheaper
+    than opening two gaps, so ordinary wrong letters stay wrong letters, but a
+    true insertion/deletion can be skipped to recover later exact matches.
+    """
+    m = len(decoded_chars)
+    n = len(ground_truth_chars)
+    if m == 0 and n == 0:
+        return []
+
+    match_score = 2
+    mismatch_score = -1
+    gap_score = -1
+    scores = [[0] * (n + 1) for _ in range(m + 1)]
+    back: list[list[str | None]] = [[None] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(1, m + 1):
+        scores[i][0] = scores[i - 1][0] + gap_score
+        back[i][0] = "up"
+    for j in range(1, n + 1):
+        scores[0][j] = scores[0][j - 1] + gap_score
+        back[0][j] = "left"
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            exact = decoded_chars[i - 1] == ground_truth_chars[j - 1]
+            diag_score = scores[i - 1][j - 1] + (
+                match_score if exact else mismatch_score
+            )
+            up_score = scores[i - 1][j] + gap_score
+            left_score = scores[i][j - 1] + gap_score
+            candidates: list[tuple[int, int, str]] = []
+            if exact:
+                candidates.append((diag_score, 4, "diag"))
+            if not exact:
+                candidates.append((diag_score, 3, "diag"))
+            candidates.append((up_score, 2, "up"))
+            candidates.append((left_score, 1, "left"))
+            best_score, _rank, move = max(candidates)
+            scores[i][j] = best_score
+            back[i][j] = move
+
+    rows: list[CharAlignmentRow] = []
+    i, j = m, n
+    while i > 0 or j > 0:
+        move = back[i][j]
+        if move == "diag":
+            dc = decoded_chars[i - 1]
+            gc = ground_truth_chars[j - 1]
+            rows.append(CharAlignmentRow(
+                decoded_index=i - 1,
+                ground_truth_index=j - 1,
+                decoded=dc,
+                ground_truth=gc,
+                op="match" if dc == gc else "substitute",
+            ))
+            i -= 1
+            j -= 1
+        elif move == "up":
+            rows.append(CharAlignmentRow(
+                decoded_index=i - 1,
+                ground_truth_index=None,
+                decoded=decoded_chars[i - 1],
+                ground_truth=None,
+                op="insert",
+            ))
+            i -= 1
+        else:
+            rows.append(CharAlignmentRow(
+                decoded_index=None,
+                ground_truth_index=j - 1,
+                decoded=None,
+                ground_truth=ground_truth_chars[j - 1],
+                op="delete",
+            ))
+            j -= 1
+    rows.reverse()
+    return rows
+
+
+def aligned_char_accuracy(
+    decoded_chars: str,
+    ground_truth_chars: str,
+) -> tuple[float, int, int]:
+    total_chars = max(len(decoded_chars), len(ground_truth_chars))
+    if total_chars == 0:
+        return 1.0, 0, 0
+    rows = align_char_sequences(decoded_chars, ground_truth_chars)
+    correct_chars = sum(1 for row in rows if row.op == "match")
+    return correct_chars / total_chars, correct_chars, total_chars
+
+
+def align_word_sequences(
+    decoded_words: list[str],
+    ground_truth_words: list[str],
+) -> list[WordAlignmentRow]:
+    """Globally align decoded words to ground truth with edit-aware resync.
+
+    Exact word matches still define correctness, but local insertions,
+    deletions, split words, or merged words can be skipped so later matching
+    words line up again.
+    """
+    m = len(decoded_words)
+    n = len(ground_truth_words)
+    if m == 0 and n == 0:
+        return []
+
+    match_score = 3
+    mismatch_score = -2
+    gap_score = -1
+    scores = [[0] * (n + 1) for _ in range(m + 1)]
+    back: list[list[str | None]] = [[None] * (n + 1) for _ in range(m + 1)]
+
+    for i in range(1, m + 1):
+        scores[i][0] = scores[i - 1][0] + gap_score
+        back[i][0] = "up"
+    for j in range(1, n + 1):
+        scores[0][j] = scores[0][j - 1] + gap_score
+        back[0][j] = "left"
+
+    for i in range(1, m + 1):
+        for j in range(1, n + 1):
+            exact = decoded_words[i - 1] == ground_truth_words[j - 1]
+            diag_score = scores[i - 1][j - 1] + (
+                match_score if exact else mismatch_score
+            )
+            up_score = scores[i - 1][j] + gap_score
+            left_score = scores[i][j - 1] + gap_score
+            candidates: list[tuple[int, int, str]] = []
+            if exact:
+                candidates.append((diag_score, 4, "diag"))
+            candidates.append((up_score, 3, "up"))
+            candidates.append((left_score, 2, "left"))
+            if not exact:
+                candidates.append((diag_score, 1, "diag"))
+            best_score, _rank, move = max(candidates)
+            scores[i][j] = best_score
+            back[i][j] = move
+
+    rows: list[WordAlignmentRow] = []
+    i, j = m, n
+    while i > 0 or j > 0:
+        move = back[i][j]
+        if move == "diag":
+            dw = decoded_words[i - 1]
+            gw = ground_truth_words[j - 1]
+            rows.append(WordAlignmentRow(
+                decoded_index=i - 1,
+                ground_truth_index=j - 1,
+                decoded=dw,
+                ground_truth=gw,
+                op="match" if dw == gw else "substitute",
+            ))
+            i -= 1
+            j -= 1
+        elif move == "up":
+            rows.append(WordAlignmentRow(
+                decoded_index=i - 1,
+                ground_truth_index=None,
+                decoded=decoded_words[i - 1],
+                ground_truth=None,
+                op="insert",
+            ))
+            i -= 1
+        else:
+            rows.append(WordAlignmentRow(
+                decoded_index=None,
+                ground_truth_index=j - 1,
+                decoded=None,
+                ground_truth=ground_truth_words[j - 1],
+                op="delete",
+            ))
+            j -= 1
+    rows.reverse()
+    return rows
+
+
+def aligned_word_accuracy(
+    decoded_words: list[str],
+    ground_truth_words: list[str],
+) -> tuple[float, int, int]:
+    total_words = max(len(decoded_words), len(ground_truth_words))
+    if total_words == 0:
+        return 1.0, 0, 0
+    rows = align_word_sequences(decoded_words, ground_truth_words)
+    correct_words = sum(1 for row in rows if row.op == "match")
+    return correct_words / total_words, correct_words, total_words
 
 
 def score_branch_decryptions(
@@ -145,8 +357,8 @@ def has_word_boundaries(text: str) -> bool:
 def format_char_diff(decoded: str, ground_truth: str, context: int = 10) -> str:
     """Show character-level mismatches for no-word-boundary ciphers.
 
-    Finds all positions where decoded and ground truth differ and prints
-    each mismatch with surrounding context.
+    Uses the same edit-aware alignment as score_decryption, then prints
+    mismatch/gap spans with surrounding aligned context.
     """
     if " | " in decoded:
         dec_chars = "".join(_collapse_spaced_letters(w) for w in decoded.split(" | "))
@@ -155,24 +367,24 @@ def format_char_diff(decoded: str, ground_truth: str, context: int = 10) -> str:
     dec_chars = normalize_text(dec_chars).replace(" ", "")
     gt_chars = normalize_text(ground_truth).replace(" ", "")
 
-    n = min(len(dec_chars), len(gt_chars))
-    extra = abs(len(dec_chars) - len(gt_chars))
-
-    # Find mismatch spans (merge nearby mismatches within context distance)
-    mismatches = [i for i in range(n) if dec_chars[i] != gt_chars[i]]
-    if not mismatches and extra == 0:
+    rows = align_char_sequences(dec_chars, gt_chars)
+    errors = [i for i, row in enumerate(rows) if row.op != "match"]
+    if not errors:
         return "  (exact match)"
 
     lines = []
-    total_errors = len(mismatches) + extra
-    lines.append(f"  {total_errors} character error(s) out of {max(len(dec_chars), len(gt_chars))}")
+    total_chars = max(len(dec_chars), len(gt_chars))
+    matches = sum(1 for row in rows if row.op == "match")
+    lines.append(
+        f"  {len(errors)} character alignment error(s); "
+        f"{matches}/{total_chars} exact aligned characters"
+    )
 
-    # Group mismatches into spans separated by more than context*2 matching chars
     groups: list[tuple[int, int]] = []
-    if mismatches:
-        start = mismatches[0]
-        end = mismatches[0]
-        for pos in mismatches[1:]:
+    if errors:
+        start = errors[0]
+        end = errors[0]
+        for pos in errors[1:]:
             if pos <= end + context * 2:
                 end = pos
             else:
@@ -183,25 +395,36 @@ def format_char_diff(decoded: str, ground_truth: str, context: int = 10) -> str:
 
     for span_start, span_end in groups[:12]:
         lo = max(0, span_start - context)
-        hi = min(n, span_end + context + 1)
-        dec_seg = dec_chars[lo:hi]
-        gt_seg = gt_chars[lo:hi]
-        # Mark differing positions with brackets
+        hi = min(len(rows), span_end + context + 1)
         dec_marked = ""
         gt_marked = ""
-        for i, (d, g) in enumerate(zip(dec_seg, gt_seg)):
-            if d != g:
+        d_positions = [
+            row.decoded_index for row in rows[lo:hi]
+            if row.decoded_index is not None
+        ]
+        g_positions = [
+            row.ground_truth_index for row in rows[lo:hi]
+            if row.ground_truth_index is not None
+        ]
+        d_lo = min(d_positions) + 1 if d_positions else "-"
+        d_hi = max(d_positions) + 1 if d_positions else "-"
+        g_lo = min(g_positions) + 1 if g_positions else "-"
+        g_hi = max(g_positions) + 1 if g_positions else "-"
+        for row in rows[lo:hi]:
+            d = row.decoded or "-"
+            g = row.ground_truth or "-"
+            if row.op != "match":
                 dec_marked += f"[{d}]"
                 gt_marked += f"[{g}]"
             else:
                 dec_marked += d
                 gt_marked += g
-        lines.append(f"  pos {lo+1:>4}-{hi:>4}  dec: {dec_marked}")
-        lines.append(f"           gt:  {gt_marked}")
+        lines.append(f"  dec {d_lo:>4}-{d_hi:<4} gt {g_lo:>4}-{g_hi:<4}  dec: {dec_marked}")
+        lines.append(f"                         gt:  {gt_marked}")
 
     if len(groups) > 12:
         lines.append(f"  ... ({len(groups) - 12} more error spans not shown)")
-    if extra:
+    if len(dec_chars) != len(gt_chars):
         lines.append(f"  length mismatch: decoded={len(dec_chars)}, ground_truth={len(gt_chars)}")
 
     return "\n".join(lines)
@@ -210,37 +433,53 @@ def format_char_diff(decoded: str, ground_truth: str, context: int = 10) -> str:
 def format_alignment(decoded: str, ground_truth: str, max_words: int = 60) -> str:
     """Return a compact word-by-word alignment table for display.
 
-    Decryption and ground truth are compared position-by-position (same
-    logic as score_decryption). Matching words are shown with ✓, mismatches
-    with the ground-truth word in brackets.
+    Decryption and ground truth are compared with the same edit-aware word
+    alignment used by score_decryption. Matching words are shown with ✓,
+    mismatches with the ground-truth word in brackets, and local insertions or
+    deletions are shown explicitly so the table can resynchronize.
     """
-    if " | " in decoded:
-        word_parts = decoded.split(" | ")
-        dec_words = [_collapse_spaced_letters(w) for w in word_parts]
-    else:
-        dec_words = _collapse_spaced_letters(decoded).split()
-    dec_words = normalize_text(" ".join(dec_words)).split()
-    gt_words = normalize_text(ground_truth).split()
+    dec_words = _decoded_words(decoded)
+    gt_words = _ground_truth_words(ground_truth)
+    rows = align_word_sequences(dec_words, gt_words)
 
-    n = max(len(dec_words), len(gt_words))
+    n = len(rows)
     lines = []
     shown = min(n, max_words)
-    col_w = max(12, max((len(w) for w in dec_words[:shown]), default=6),
-                max((len(w) for w in gt_words[:shown]), default=6))
+    shown_rows = rows[:shown]
+    col_w = max(
+        12,
+        max((len(row.decoded or "") for row in shown_rows), default=6),
+        max((len(row.ground_truth or "") for row in shown_rows), default=6),
+    )
     col_w = min(col_w, 20)
 
-    header = f"  {'#':>4}  {'Decoded':<{col_w}}  {'Ground truth':<{col_w}}  Match"
+    header = (
+        f"  {'D#':>4}  {'G#':>4}  "
+        f"{'Decoded':<{col_w}}  {'Ground truth':<{col_w}}  Match"
+    )
     lines.append(header)
     lines.append("  " + "-" * (len(header) - 2))
 
-    for i in range(shown):
-        dw = dec_words[i] if i < len(dec_words) else "(missing)"
-        gw = gt_words[i] if i < len(gt_words) else "(missing)"
-        match = "✓" if dw == gw else f"✗ [{gw}]"
-        lines.append(f"  {i:>4}  {dw:<{col_w}}  {gw:<{col_w}}  {match}")
+    for i, row in enumerate(shown_rows):
+        dw = row.decoded or "(gap)"
+        gw = row.ground_truth or "(gap)"
+        if row.op == "match":
+            match = "✓"
+        elif row.op == "insert":
+            match = "↷ decoded extra"
+        elif row.op == "delete":
+            match = "↶ missing decoded"
+        else:
+            match = f"✗ [{gw}]"
+        d_idx = str(row.decoded_index) if row.decoded_index is not None else "-"
+        g_idx = (
+            str(row.ground_truth_index)
+            if row.ground_truth_index is not None else "-"
+        )
+        lines.append(f"  {d_idx:>4}  {g_idx:>4}  {dw:<{col_w}}  {gw:<{col_w}}  {match}")
 
     if n > max_words:
-        lines.append(f"  ... ({n - max_words} more words not shown)")
+        lines.append(f"  ... ({n - max_words} more alignment row(s) not shown)")
 
     return "\n".join(lines)
 

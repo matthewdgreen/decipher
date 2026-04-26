@@ -149,8 +149,14 @@ or a benchmark data issue.
   - Include tests for loader compatibility and scoring reproducibility.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.
 - [ ] Assess Borg and Copiale failures by tool gap: language model, context loading, nomenclator/codeword behavior, historical spelling, or prompt choice.
-- [ ] Borg focused follow-up: `parity_borg_latin_borg_0109v`.
-  - Current state:
+  - [ ] Borg focused follow-up: `parity_borg_latin_borg_0109v`.
+    - Current state:
+    - Case-state note: `docs/borg_0109v_case_state.md`.
+    - Latest high-level conclusion: pause intensive work on `0109v` for now.
+      The best branch is readable and reaches `95.36%` edit-aware character
+      accuracy / `77.92%` edit-aware word accuracy, but remaining issues are
+      local historical-Latin cleanup, odd inserted/split words, and
+      benchmark-alignment nuance rather than first-pass decipherment.
     - Default routing sends `0109v` down the substitution path because its symbol inventory does not exceed the Latin plaintext alphabet size.
     - Forcing `zenith_native` with the full 8-seed budget is reproducible and reaches a distinct no-boundary Latin basin at about `13.9%` character accuracy and `0.0%` word accuracy.
     - With only one seed, the forced `zenith_native` basin is much worse (~`9.0%`), so this case is notably multi-seed-sensitive.
@@ -395,6 +401,13 @@ or a benchmark data issue.
     - First reading-repair slice added:
       `decode_plan_word_repair` plans same-length word repairs and
       `act_apply_word_repair` applies them with `changed_words` feedback.
+      Follow-up repair-menu slice added:
+      `decode_plan_word_repair_menu` compares multiple candidate readings for
+      one word without mutating the branch, flags repeated-symbol conflicts,
+      summarizes collateral changed words, and tells the agent when a direct
+      word repair should not be applied. This addresses the `RLURES -> PLURES`
+      failure mode where the agent knew a plausible target word but one
+      naive mapping changed another position in the same cipher word.
       Planned repairs are now also tracked in a durable `repair_agenda`
       artifact field, with `repair_agenda_list` / `repair_agenda_update`
       available to keep open hypotheses from vanishing into transcript memory.
@@ -429,6 +442,41 @@ or a benchmark data issue.
       `workspace_branch_cards` but forgot `meta_declare_solution`, so fallback
       declaration fired. A same-iteration final declaration retry now covers
       that case.
+      Later trial:
+      `artifacts/parity_borg_latin_borg_0109v/8f2993dc03a6.json`, 13.9%
+      char / 7.7% word. Final declaration retry worked and the agent recovered
+      from a bad `RLURES -> PLURES` repair by restoring `M -> R`, but the run
+      still did not use `act_resegment_window_by_reading`. This motivates two
+      active rules: uncertain word repairs should go through the repair menu,
+      and once words are readable the agent should perform local/global
+      boundary repair rather than merely describing boundary drift.
+      Scoring follow-up: word accuracy now uses edit-aware exact-word alignment
+      instead of positional zip comparison. Local extra/missing/split words are
+      shown as alignment edits, and later exact word runs can resynchronize
+      instead of being counted wrong for the rest of the text.
+      Character accuracy now uses the same principle at character level:
+      exact-character alignment with penalties for substitutions and gaps.
+      This preserves substitutions as errors while allowing local
+      insertions/deletions to resynchronize later matching text.
+      Loop/tool follow-up:
+      boundary-projection count failures now get up to three same-iteration
+      retries, and the late reading workflow has a bounded low-cost repair
+      sandbox. Within that sandbox the agent can inspect, compare repair
+      menus, apply small word repairs, try local resegmentation windows, call
+      branch cards, and declare without burning additional outer benchmark
+      iterations. Failed local resegmentation windows now also return
+      `nearby_compatible_windows`, which catches stale-index cases such as
+      asking for `BITUR | SI -> LIBEBITUR` when the matching window is really
+      `LIBE | BITUR`.
+      Continuation follow-up from
+      `artifacts/parity_borg_latin_borg_0109v/6a1b5bd9137b.json`: the agent
+      used most of its additional outer iterations on read-only inspection.
+      The loop now has a bounded read-only inspection sandbox, so
+      `decode_show`, branch cards, dictionary/corpus probes, diagnostics, and
+      score panels can continue inside the same outer iteration before the
+      agent chooses a repair/search/declaration action. Compact pages also
+      show all words in the workspace panel (currently up to 90 words), which
+      should reduce unnecessary `decode_show` calls caused by panel truncation.
   - [x] Track explicit run state: active mode, branch, repair agenda, held/reverted
     repairs, unresolved hypotheses, per-branch workflow completion.
   - [x] Preserve complete artifact observability for every model call, tool call,
@@ -454,10 +502,35 @@ or a benchmark data issue.
     - Pretty mode renders a live decrypt panel, agent commentary, concise tool
       summaries, branch scores, changed-word previews, and loud API/fallback
       errors.
+    - Final screens now include a human-readable reading/process summary built
+      from `meta_declare_solution`, including what the text appears to be
+      about, status/uncertainty notes, and whether further iterations would
+      likely help.
     - Raw mode preserves the compact event/tool stream; JSONL mode exposes
       structured events for GUI wrappers.
     - Output is driven by structured `loop_events` plus `workspace_snapshot`
       events; artifact JSON remains the source of truth.
+  - [ ] Design a richer artifact/run review GUI.
+    - The pretty terminal display is useful for live runs, but long final
+      word alignments, decrypts, and reading/process summaries need scrollable
+      panes.
+    - Desired affordances: scroll through full word/character alignment,
+      inspect branch cards and repair agenda history, compare parent/resume
+      artifacts, and copy exact tool calls or branch diffs for follow-up runs.
+  - [x] Add first-class artifact resume/continuation.
+    - Command shape: `decipher resume-artifact <artifact.json>
+      --extra-iterations N [--branch BRANCH]`.
+    - Resumes from workspace state and branch snapshots, not by replaying the
+      entire old provider transcript verbatim.
+    - Includes prior final summary, repair agenda, held/open repairs, branch
+      previews, missing-tool requests, and compact declaration context in the
+      new first prompt.
+    - Writes a chained artifact with `parent_run_id`/`parent_artifact_path` so
+      continued runs are auditable and comparable without overwriting the
+      original run.
+    - Current limitation: old artifacts did not persist custom branch
+      `word_spans`, so exact boundary overlays can only be restored for
+      artifacts produced after the new `word_spans` snapshot field landed.
   - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
 - [ ] Add a full-agent parity smoke suite.
 - [x] Add artifact checks for wrong-tool use.

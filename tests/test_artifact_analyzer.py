@@ -290,6 +290,142 @@ def test_analyzer_does_not_flag_unattempted_when_mutation_follows():
     assert "unattempted_reading_fix" not in summary["labels"]
 
 
+def test_analyzer_does_not_flag_speculative_reading_notes_as_unattempted():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "search_anneal", "result": "{}"},
+            {"iteration": 2, "tool_name": "workspace_fork", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "I can see SIMALITER → SIMILITER ✓ and "
+                            "MORIETANTER → likely MORIRENTUR or similar. "
+                            "Let me fork the better branch and inspect more."
+                        ),
+                    },
+                    {"type": "tool_use", "name": "workspace_fork", "input": {}},
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]
+
+
+def test_analyzer_counts_word_repair_plan_as_attempted_reading_fix():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "decode_plan_word_repair", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Key repairs I can read: SIMALITER → SIMILITER. "
+                            "Let me plan the clearest word repair."
+                        ),
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "decode_plan_word_repair",
+                        "input": {},
+                    },
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]
+
+
+def test_analyzer_counts_word_repair_menu_as_attempted_reading_fix():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "decode_plan_word_repair_menu", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "RLURES -> PLURES might be right, but I need to "
+                            "compare repair options before applying it."
+                        ),
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "decode_plan_word_repair_menu",
+                        "input": {},
+                    },
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]
+
+
+def test_analyzer_does_not_flag_rejected_repair_notes_as_unattempted():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {"iteration": 15, "tool_name": "meta_declare_solution", "result": "{}"},
+        ],
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "I can see repair #2 (RLURES→PLURES) actually "
+                            "broke things badly (M→P conflicted with R). "
+                            "The current workspace shows the branch reads as "
+                            "excellent Latin. Let me declare now."
+                        ),
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "meta_declare_solution",
+                        "input": {},
+                    },
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]
+
+
 def test_analyzer_labels_gated_and_projection_retry_events():
     artifact = {
         "cipher_alphabet_size": 23,

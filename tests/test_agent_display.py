@@ -8,7 +8,13 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent.display import JsonlAgentRenderer, RawAgentRenderer, summarize_tool_call
+from agent.display import (
+    JsonlAgentRenderer,
+    RawAgentRenderer,
+    _compact_final_summary,
+    _compact_preview,
+    summarize_tool_call,
+)
 
 
 def test_summarize_tool_call_prefers_readable_repair_fields():
@@ -60,6 +66,7 @@ def test_jsonl_renderer_emits_machine_readable_events():
         word_accuracy=0.5,
         artifact_path="artifacts/case/run.json",
         error_message="",
+        final_summary="A short final reading summary.",
     ))
 
     rows = [json.loads(line) for line in stream.getvalue().splitlines()]
@@ -67,3 +74,32 @@ def test_jsonl_renderer_emits_machine_readable_events():
     assert rows[1]["event"] == "iteration_start"
     assert rows[2]["event"] == "test_finish"
     assert rows[2]["char_accuracy"] == 1.0
+    assert rows[2]["final_summary"] == "A short final reading summary."
+
+
+def test_final_display_compacts_summary_sections_without_blank_lines():
+    text = """Target language: Latin.
+Reading note: this is an agent summary.
+
+What it appears to say:
+This is an archaic Latin text about poultry.
+
+Process notes:
+- One repair was held.
+- One boundary retry failed.
+
+Further iterations:
+Likely helpful. Try local repair.
+"""
+
+    compact = _compact_final_summary(text, max_chars=500)
+
+    assert "What it appears to say: This is an archaic Latin text" in compact
+    assert "Process notes: One repair was held. One boundary retry failed." in compact
+    assert "\n\n" not in compact
+
+
+def test_final_display_compacts_decrypt_to_single_preview_line():
+    compact = _compact_preview("THERE | FORE\nTHE   OLD", max_chars=100)
+
+    assert compact == "THERE | FORE THE OLD"

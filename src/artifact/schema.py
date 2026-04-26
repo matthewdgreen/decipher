@@ -45,6 +45,7 @@ class BranchSnapshot:
     decryption: str                             # result of applying key
     signals: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    word_spans: list[tuple[int, int]] | None = None
     char_accuracy: float | None = None   # vs ground truth (filled post-hoc by runner)
     word_accuracy: float | None = None
 
@@ -72,6 +73,9 @@ class SolutionDeclaration:
     rationale: str
     self_confidence: float                      # 0.0–1.0, agent's own assessment
     declared_at_iteration: int
+    reading_summary: str = ""
+    further_iterations_helpful: bool | None = None
+    further_iterations_note: str = ""
 
 
 @dataclass
@@ -102,6 +106,8 @@ class RunArtifact:
     cipher_word_count: int = 0
     max_iterations: int = 0
     automated_preflight: dict[str, Any] | None = None
+    parent_run_id: str = ""
+    parent_artifact_path: str = ""
 
     # What the agent produced
     plan: str = ""                              # first-turn text (or extended-thinking trace)
@@ -118,6 +124,7 @@ class RunArtifact:
     solution: SolutionDeclaration | None = None
     status: str = "running"                     # running | solved | exhausted | error | stopped
     error_message: str = ""
+    final_summary: str = ""
 
     # Token usage (accumulated across all API calls in this run)
     total_input_tokens: int = 0

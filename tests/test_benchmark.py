@@ -12,6 +12,9 @@ from benchmark.loader import BenchmarkLoader, BenchmarkTest, parse_canonical_tra
 from benchmark.scorer import (
     ScoreResult,
     _collapse_spaced_letters,
+    align_char_sequences,
+    align_word_sequences,
+    format_char_diff,
     format_report,
     normalize_text,
     score_decryption,
@@ -82,6 +85,66 @@ class TestScoreDecryption:
             "t4", "R E T", "ret[ulit]", 0.5, "solved",
         )
         assert result.char_accuracy == 1.0
+
+    def test_char_score_resynchronizes_after_insertion(self):
+        result = score_decryption(
+            "t5",
+            "ABCDEFXGHIJK",
+            "ABCDEFGHIJK",
+            0.5,
+            "completed",
+        )
+
+        assert result.correct_chars == 11
+        assert result.total_chars == 12
+        assert result.char_accuracy == pytest.approx(11 / 12)
+
+    def test_char_alignment_keeps_substitutions_as_errors(self):
+        rows = align_char_sequences("ABCXDEF", "ABCYDEF")
+
+        assert [row.op for row in rows] == [
+            "match",
+            "match",
+            "match",
+            "substitute",
+            "match",
+            "match",
+            "match",
+        ]
+
+    def test_char_diff_reports_gaps_from_alignment(self):
+        diff = format_char_diff("ABCDEFXGHIJK", "ABCDEFGHIJK", context=2)
+
+        assert "character alignment error" in diff
+        assert "[X]" in diff
+        assert "[-]" in diff
+
+    def test_word_score_resynchronizes_after_extra_words(self):
+        result = score_decryption(
+            "t6",
+            "ETIAM QUOD IN TALI CUR PLICARE U UEL AC PULLO ET BREUITER",
+            "ETIAM QUOD IN TALI CUR PLICARE UEL PULLO ET BREUITER",
+            0.5,
+            "completed",
+        )
+
+        assert result.correct_words == 10
+        assert result.total_words == 12
+        assert result.word_accuracy == pytest.approx(10 / 12)
+
+    def test_word_alignment_marks_insertions_and_resyncs(self):
+        rows = align_word_sequences(
+            ["PULLO", "ET", "AC", "BREUITER", "UT"],
+            ["PULLO", "ET", "BREUITER", "UT"],
+        )
+
+        assert [row.op for row in rows] == [
+            "match",
+            "match",
+            "insert",
+            "match",
+            "match",
+        ]
 
 
 class TestFormatReport:
@@ -239,4 +302,4 @@ class TestBenchmarkLoader:
             status="completed",
         )
         assert score.char_accuracy == 1.0
-        assert score.word_accuracy < 0.1
+        assert 0.5 < score.word_accuracy < 1.0

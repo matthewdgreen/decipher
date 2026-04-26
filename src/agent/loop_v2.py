@@ -18,6 +18,7 @@ from typing import Any
 from agent.model_provider import ClaudeModelProvider, ModelResponse
 from agent.orchestration import AgentMode
 from agent.prompts_v2 import get_system_prompt, initial_context
+from agent.resume import inherited_repair_agenda, install_resume_branches
 from agent.tools_v2 import TOOL_DEFINITIONS, WorkspaceToolExecutor
 from analysis import dictionary, ic, ngram, pattern
 from analysis import signals as sig
@@ -35,6 +36,7 @@ from workspace import Workspace
 
 PANEL_WORDS_START = 30
 PANEL_WORDS_TAIL = 10
+PANEL_WORDS_FULL_LIMIT = 90
 MAX_BRANCHES_IN_PANEL = 3
 
 # Floor-trigger thresholds — when a branch crosses BOTH signals simultaneously,
@@ -68,7 +70,7 @@ def _render_decoded_word(tokens, key, pt_alphabet) -> str:
 
 
 def _select_word_indices(n_words: int) -> list[int]:
-    if n_words <= PANEL_WORDS_START + PANEL_WORDS_TAIL:
+    if n_words <= PANEL_WORDS_FULL_LIMIT:
         return list(range(n_words))
     head = list(range(PANEL_WORDS_START))
     tail = list(range(n_words - PANEL_WORDS_TAIL, n_words))
@@ -102,31 +104,38 @@ TOOL_RESULT_STUB = "[result omitted from history — see current workspace panel
 # Keep the last N iterations of full tool results; older ones are stubbed out.
 TOOL_RESULT_HISTORY_DEPTH = 4
 READING_WORKFLOW_GATE_TURNS = 2
-BOUNDARY_PROJECTION_MAX_INNER_RETRIES = 1
-FINAL_DECLARATION_MAX_INNER_RETRIES = 2
+BOUNDARY_PROJECTION_MAX_INNER_RETRIES = 3
+REPAIR_SANDBOX_MAX_INNER_RETRIES = 4
+INSPECTION_SANDBOX_MAX_INNER_RETRIES = 3
+FINAL_DECLARATION_MAX_INNER_RETRIES = 3
 
 FULL_READING_WORKFLOW_TOOL_NAMES = {
     "decode_validate_reading_repair",
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
+    "act_resegment_window_by_reading",
 }
 
 FULL_READING_ACTUATOR_TOOL_NAMES = {
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
+    "act_resegment_window_by_reading",
 }
 
 PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "decode_show",
     "score_panel",
     "score_dictionary",
+    "workspace_branch_cards",
     "decode_plan_word_repair",
+    "decode_plan_word_repair_menu",
     "act_apply_word_repair",
     "repair_agenda_list",
     "repair_agenda_update",
     "decode_validate_reading_repair",
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
+    "act_resegment_window_by_reading",
     "meta_declare_solution",
 }
 
@@ -137,16 +146,59 @@ FINAL_ALLOWED_TOOL_NAMES = {
     "meta_declare_solution",
 }
 
+REPAIR_SANDBOX_TOOL_NAMES = {
+    "decode_show",
+    "score_panel",
+    "score_dictionary",
+    "workspace_branch_cards",
+    "decode_plan_word_repair",
+    "decode_plan_word_repair_menu",
+    "act_apply_word_repair",
+    "repair_agenda_list",
+    "repair_agenda_update",
+    "decode_validate_reading_repair",
+    "act_resegment_by_reading",
+    "act_resegment_from_reading_repair",
+    "act_resegment_window_by_reading",
+}
+
+INSPECTION_SANDBOX_TOOL_NAMES = {
+    "observe_frequency",
+    "observe_patterns",
+    "observe_ic",
+    "observe_homophone_distribution",
+    "decode_show",
+    "decode_unmapped",
+    "decode_heatmap",
+    "decode_letter_stats",
+    "decode_ambiguous_letter",
+    "decode_absent_letter_candidates",
+    "decode_diagnose",
+    "score_panel",
+    "score_quadgram",
+    "score_dictionary",
+    "corpus_lookup_word",
+    "corpus_word_candidates",
+    "workspace_list_branches",
+    "workspace_branch_cards",
+    "workspace_compare",
+    "repair_agenda_list",
+}
+
 FINAL_ITERATION_PREFLIGHT = (
     "🚨 **THIS IS YOUR FINAL ACTION TURN.** "
     "You are on the last iteration. You MUST end by calling "
-    "`meta_declare_solution(branch='...', rationale='...', self_confidence=...)` "
-    "now. Only final bookkeeping tools are available. If there are multiple "
+    "`meta_declare_solution(branch='...', rationale='...', self_confidence=..., "
+    "reading_summary='...', further_iterations_helpful=..., "
+    "further_iterations_note='...')` now. Only final bookkeeping tools are available. "
+    "If there are multiple "
     "branches, call `workspace_branch_cards` first. If any repair agenda item "
     "is open but you have decided not to apply it, call `repair_agenda_update` "
     "with status `held` or `rejected`, then declare in the same response. An "
     "imperfect declared branch scores; no declaration is treated as a failed "
-    "run."
+    "run. The reading_summary should explain what the text appears to be about "
+    "in plain language, especially for non-English target languages, and the "
+    "further_iterations fields should say whether more work would likely help."
 )
 
 PENULTIMATE_READING_WORKFLOW_PREFLIGHT = (
@@ -157,9 +209,12 @@ PENULTIMATE_READING_WORKFLOW_PREFLIGHT = (
     "restricted on this turn: some tools are no longer available, and you must "
     "only use the allowed tools shown to you. If you can name a same-length "
     "word repair such as TREUITER -> BREUITER, call "
-    "`decode_plan_word_repair` and then `act_apply_word_repair`. If the main "
-    "problem is boundaries/alignment, write your best complete target-language "
-    "reading and prefer the actuator now: "
+    "`decode_plan_word_repair`; if several readings are plausible or the word "
+    "contains repeated letters, call `decode_plan_word_repair_menu` before "
+    "`act_apply_word_repair`. If the main problem is boundaries/alignment, "
+    "write your best target-language reading and prefer the actuator now. For "
+    "a local boundary repair, use "
+    "`act_resegment_window_by_reading`; for a whole-stream repair, "
     "call `act_resegment_by_reading` if it is character-preserving, or "
     "`act_resegment_from_reading_repair` if it changes letters but has the same "
     "character count. Use `decode_validate_reading_repair` first only if you "
@@ -172,9 +227,13 @@ READING_WORKFLOW_GATE_PREFLIGHT = (
     "If a branch is readable but has boundary/alignment drift, local edits and "
     "free search are now gated off. Some tools are no longer allowed; only use "
     "the tools available on this turn. If you have specific same-length word "
-    "repairs, use `decode_plan_word_repair` / `act_apply_word_repair` so the "
-    "repair agenda records them. For boundary drift, draft the best complete "
-    "target-language reading and use `act_resegment_by_reading` or "
+    "repairs, use `decode_plan_word_repair_menu` when several readings are "
+    "plausible, or `decode_plan_word_repair` / `act_apply_word_repair` when "
+    "one reading is clearly safe, so the repair agenda records them. For local "
+    "boundary drift, use "
+    "`act_resegment_window_by_reading` on just the affected word window. For "
+    "global boundary drift, draft the best complete target-language reading "
+    "and use `act_resegment_by_reading` or "
     "`act_resegment_from_reading_repair`; use `decode_validate_reading_repair` "
     "only if you need to choose between those two."
 )
@@ -184,7 +243,9 @@ BOUNDARY_PROJECTION_RETRY_PREFLIGHT = (
     "This does not consume another outer iteration, but you must recover now. "
     "Some tools are no longer allowed in this window. Use only the allowed "
     "tools shown to you. If you voiced a same-length word repair, use "
-    "`decode_plan_word_repair` / `act_apply_word_repair`. Otherwise prefer a "
+    "`decode_plan_word_repair_menu` or `decode_plan_word_repair` before "
+    "`act_apply_word_repair`. Otherwise prefer a "
+    "local boundary action with `act_resegment_window_by_reading`, or a "
     "full-reading action: `act_resegment_by_reading`, "
     "`act_resegment_from_reading_repair`, or "
     "`decode_validate_reading_repair` if you need to choose between them."
@@ -199,7 +260,30 @@ BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT = (
     "`current_char_count` reported by the tool result. If you intend only word "
     "boundary changes, preserve the decoded character stream exactly and call "
     "`act_resegment_by_reading`. If you intend spelling/key repairs too, keep "
-    "the same character count and call `act_resegment_from_reading_repair`."
+    "the same character count and call `act_resegment_from_reading_repair`. "
+    "For small split/merge fixes, avoid rewriting the whole stream: call "
+    "`act_resegment_window_by_reading` with the affected word window. If the "
+    "failed tool result includes `nearby_compatible_windows`, use one of those "
+    "exact suggested retry calls before drafting a new proposal from scratch."
+)
+
+REPAIR_SANDBOX_CONTINUE_PREFLIGHT = (
+    "You are still inside the low-cost repair sandbox for this same outer "
+    "iteration. The previous tool results did not consume another benchmark "
+    "iteration. Use this chance for one more small experiment: inspect the "
+    "result, try a nearby suggested resegmentation window, compare a word "
+    "repair menu, apply a clearly safe word repair, or declare if the branch "
+    "is good enough. Avoid free search and broad mapping changes here; keep "
+    "this to local reading, word-repair, and boundary-repair tools."
+)
+
+INSPECTION_SANDBOX_CONTINUE_PREFLIGHT = (
+    "You are still inside the same outer iteration. The previous tool call(s) "
+    "were read-only inspection, so they did not consume another benchmark "
+    "iteration. Use this chance to act on what you just learned: apply a "
+    "targeted repair, try a boundary tool, start a search/polish step, or "
+    "declare. Call more read-only inspection only if it is genuinely needed "
+    "to choose the next action."
 )
 
 FINAL_DECLARATION_RETRY_PREFLIGHT = (
@@ -408,6 +492,10 @@ def _tool_result_summary(result: str) -> dict[str, Any]:
         "score_delta",
         "old_word_count",
         "new_word_count",
+        "old_window_word_count",
+        "new_window_word_count",
+        "old_total_word_count",
+        "new_total_word_count",
         "current_char_count",
         "proposed_char_count",
         "same_character_count",
@@ -560,7 +648,7 @@ def build_workspace_panel(
     lines.append("")
     span_note = (
         f"words 0..{n_words - 1} (all)"
-        if n_words <= PANEL_WORDS_START + PANEL_WORDS_TAIL
+        if n_words <= PANEL_WORDS_FULL_LIMIT
         else f"first {PANEL_WORDS_START} + last {PANEL_WORDS_TAIL} of {n_words} words"
     )
     lines.append(f"### Ciphertext ({span_note})")
@@ -629,7 +717,9 @@ def build_workspace_panel(
             f"**⚑ DECLARE NOW: branch `{best_name}` has {dr_part}{qd_part} — "
             f"this is a solved cipher.** Call "
             f"`meta_declare_solution(branch='{best_name}', rationale='...', "
-            f"self_confidence=0.9)`. Further manual swaps from this point "
+            f"self_confidence=0.9, reading_summary='...', "
+            f"further_iterations_helpful=false, further_iterations_note='...')`. "
+            f"Further manual swaps from this point "
             f"risk *regression*. Declaration records the CURRENT accuracy; "
             f"chasing perfection and running out of iterations scores ZERO."
         )
@@ -749,6 +839,9 @@ def run_v2(
     cipher_id: str = "unknown",
     prior_context: str | None = None,
     automated_preflight: dict[str, Any] | None = None,
+    resume_from_artifact: dict[str, Any] | None = None,
+    resume_branch: str | None = None,
+    parent_artifact_path: str = "",
     verbose: bool = False,
     on_event: Any = None,  # optional callback(event_type: str, payload: dict)
 ) -> RunArtifact:
@@ -767,6 +860,8 @@ def run_v2(
         cipher_word_count=len(cipher_text.words),
         max_iterations=max_iterations,
         automated_preflight=automated_preflight,
+        parent_run_id=str((resume_from_artifact or {}).get("run_id") or ""),
+        parent_artifact_path=parent_artifact_path,
     )
 
     def emit(
@@ -802,7 +897,13 @@ def run_v2(
     pattern_dict = pattern.build_pattern_dictionary(word_list)
 
     workspace = Workspace(cipher_text=cipher_text)
-    if automated_preflight:
+    if resume_from_artifact:
+        install_resume_branches(
+            workspace,
+            resume_from_artifact,
+            branch=resume_branch,
+        )
+    elif automated_preflight:
         _install_automated_preflight_branch(workspace, automated_preflight)
     executor = WorkspaceToolExecutor(
         workspace=workspace,
@@ -812,6 +913,13 @@ def run_v2(
         pattern_dict=pattern_dict,
     )
     executor.set_max_iterations(max_iterations)
+    if resume_from_artifact:
+        executor.repair_agenda = inherited_repair_agenda(resume_from_artifact)
+        max_id = max(
+            (int(item.get("id") or 0) for item in executor.repair_agenda),
+            default=0,
+        )
+        executor._next_repair_agenda_id = max_id + 1
 
     # --- initial context ---
     ic_value = ic.index_of_coincidence(cipher_text.tokens, cipher_text.alphabet.size)
@@ -973,7 +1081,18 @@ def run_v2(
             if iteration == max_iterations and not executor.terminated:
                 called_meta = any(tu["name"] == "meta_declare_solution" for tu in tool_uses)
                 final_declare_needed = (not called_meta) or final_declare_blocked
-            if gated_tools:
+            if gated_tools and iteration == max_iterations and not executor.terminated:
+                retry_kind = "final_declare_retry"
+                retry_preflight = FINAL_DECLARATION_RETRY_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": gated_tools,
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                    "declare_blocked": final_declare_blocked,
+                    "reason": "gated_tool_on_final_iteration",
+                }
+            elif gated_tools:
                 retry_kind = "gated_tool_retry"
                 retry_preflight = BOUNDARY_PROJECTION_RETRY_PREFLIGHT
                 retry_payload = {
@@ -1001,12 +1120,52 @@ def run_v2(
                     "allowed_tools": sorted(executor.allowed_tool_names or []),
                     "declare_blocked": final_declare_blocked,
                 }
+            elif (
+                turn_mode is AgentMode.EXPLORE
+                and not executor.terminated
+                and tool_uses
+                and all(tu["name"] in INSPECTION_SANDBOX_TOOL_NAMES for tu in tool_uses)
+            ):
+                retry_kind = "inspection_sandbox_continue"
+                retry_preflight = INSPECTION_SANDBOX_CONTINUE_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": [tu["name"] for tu in tool_uses],
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                }
+            elif (
+                turn_mode is AgentMode.BOUNDARY_PROJECTION
+                and not executor.terminated
+                and not any(tu["name"] == "meta_declare_solution" for tu in tool_uses)
+                and any(tu["name"] in REPAIR_SANDBOX_TOOL_NAMES for tu in tool_uses)
+            ):
+                retry_kind = "repair_sandbox_continue"
+                retry_preflight = REPAIR_SANDBOX_CONTINUE_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": [tu["name"] for tu in tool_uses],
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                }
 
             can_retry_boundary_projection = (
-                bool(retry_kind)
+                retry_kind in {"gated_tool_retry", "boundary_projection_count_retry"}
                 and turn_mode is AgentMode.BOUNDARY_PROJECTION
                 and not executor.terminated
                 and inner_retries < BOUNDARY_PROJECTION_MAX_INNER_RETRIES
+            )
+            can_continue_repair_sandbox = (
+                retry_kind == "repair_sandbox_continue"
+                and turn_mode is AgentMode.BOUNDARY_PROJECTION
+                and not executor.terminated
+                and inner_retries < REPAIR_SANDBOX_MAX_INNER_RETRIES
+            )
+            can_continue_inspection_sandbox = (
+                retry_kind == "inspection_sandbox_continue"
+                and turn_mode is AgentMode.EXPLORE
+                and not executor.terminated
+                and inner_retries < INSPECTION_SANDBOX_MAX_INNER_RETRIES
             )
             can_retry_final_declare = (
                 retry_kind == "final_declare_retry"
@@ -1014,7 +1173,12 @@ def run_v2(
                 and not executor.terminated
                 and inner_retries < FINAL_DECLARATION_MAX_INNER_RETRIES
             )
-            if not (can_retry_boundary_projection or can_retry_final_declare):
+            if not (
+                can_retry_boundary_projection
+                or can_continue_repair_sandbox
+                or can_continue_inspection_sandbox
+                or can_retry_final_declare
+            ):
                 break
 
             inner_retries += 1
@@ -1192,6 +1356,7 @@ def _branch_snapshot_for(workspace: Workspace, name: str) -> Any:
         decryption=workspace.apply_key(name),
         signals={},  # panel not computed here; caller can add post-hoc
         tags=list(branch.tags),
+        word_spans=list(branch.word_spans) if branch.word_spans is not None else None,
     )
 
 

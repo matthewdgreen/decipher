@@ -46,7 +46,7 @@ src/
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 32 tools across 9 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 49 tools across 10 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -58,7 +58,8 @@ src/
   benchmark/
     loader.py             — BenchmarkLoader: reads JSONL manifest + splits + data files
     runner_v2.py          — V2 BenchmarkRunner: with artifacts and preprocessing
-    scorer.py             — score_decryption(), format_report() (char/word accuracy)
+    scorer.py             — score_decryption(), format_report(); char/word accuracy
+                            use edit-aware alignment so local drift can resync
   automated/
     runner.py             — Automated-only/no-LLM runner using native solving techniques
   services/
@@ -166,6 +167,21 @@ This closes the earlier gap where the agent had automated preflight context
 but could only actively invoke the older homophonic annealer from inside the
 tool loop.
 
+Agentic declarations now also carry a final reading/process summary. The
+`meta_declare_solution` tool requires the agent to summarize what the text
+appears to be about, record status/uncertainty notes, and say whether further
+iterations would likely help. Pretty terminal mode shows this on the final
+screen, and artifacts persist it as `final_summary` for follow-up analysis.
+
+Artifact continuation is now available through
+`decipher resume-artifact <artifact.json> --extra-iterations N [--branch BRANCH]`.
+It restores saved branch keys, branch tags, repair agenda items, and, for new
+artifacts, custom word-boundary spans. The resumed prompt uses a compact
+prior-run briefing (final summary, declaration, branch preview, open/held
+repairs, and missing-tool requests) rather than blindly replaying the entire
+old provider transcript. Continued artifacts record `parent_run_id` and
+`parent_artifact_path`.
+
 ### Key representation
 `dict[int, int]` — cipher token ID → plaintext token ID. Partial keys are fine; unmapped tokens show as `?`. `apply_key()` uses the plaintext alphabet's `_multisym` flag to determine output spacing (not the cipher alphabet's flag — important fix).
 
@@ -236,7 +252,7 @@ make that asymmetry explicit in reporting.
 ### ✅ **V2 Agentic Framework Completed**
 Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 - **Branching workspace** with fork/merge/compare operations (src/workspace/)
-- **32 specialized tools** across 9 namespaces (src/agent/tools_v2.py)
+- **49 specialized tools** across 10 namespaces (src/agent/tools_v2.py)
 - **Multi-signal scoring** with 6 different metrics (src/analysis/signals.py)
 - **Agent-driven termination** via meta_declare_solution (no rigid phases)
 - **Full observability** via comprehensive run artifacts (src/artifact/schema.py)
@@ -401,6 +417,13 @@ Additional current read:
       to dictionary words in the shipped Latin word list
     - so the remaining miss is partly an agent-policy issue and partly a real
       capability ceiling in the underlying repair primitive
+    - Recent `8f2993dc03a6` follow-up clarified a second repair primitive
+      problem: direct word repair must respect repeated cipher symbols inside
+      the same word. A target like `RLURES -> PLURES` is not a safe one-letter
+      repair when the cipher symbol producing the first `R` also produces a
+      later `R`; forcing it yields `PLUPES`-style collateral damage. The tool
+      surface now has a read-only `decode_plan_word_repair_menu` for comparing
+      candidate readings and flagging these conflicts before mutation.
   - Planned next split for Borg/Latin follow-up:
     - one branch should focus on automated repair capability:
       stronger Latin dictionary coverage, richer cleanup primitives, and
@@ -467,6 +490,19 @@ Additional current read:
       gated-tool retry, explicit workflow state, and provider-neutral model
       adapters. Detailed design note:
       `docs/agent_loop_redesign_plan.md`.
+    - Current active nudge: once a branch is readable enough to notice word
+      fragments or boundary drift, the agent should use
+      `act_resegment_window_by_reading` for local phrases or the full-reading
+      projection tools for global drift before declaring. Merely describing
+      the boundary problem is now treated as unfinished work.
+    - Latest loop/tool refinement: boundary-projection count failures now get
+      multiple same-iteration retries, and late reading repair has a bounded
+      low-cost sandbox. The sandbox lets the agent run small repair/resegment
+      experiments, inspect branch cards, and declare without consuming extra
+      outer benchmark iterations. `act_resegment_window_by_reading` also
+      suggests nearby compatible windows when a proposed local reading has the
+      wrong character count, which helps recover from stale word indices after
+      earlier boundary edits.
 
 ### 6. 📖 **Reading-driven repair discipline (open)**
 
@@ -567,18 +603,19 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 ### Core principle: Agent drives, tools assist
 ✅ **Implemented features:**
 1. **Full visibility** — observe/decode/score tools for comprehensive analysis
-2. **Rich tool set** — 32 tools across 9 namespaces (workspace, observe, decode, score, corpus, act, search, run_python, meta)
+2. **Rich tool set** — 49 tools across 10 namespaces (workspace, observe, decode, score, corpus, act, search, repair_agenda, run_python, meta)
 3. **Agent freedom** — No phases, agent plans own strategy
 4. **Hypothesis tracking** — Branching workspace preserves exploration history
 
-### Tool Arsenal (32 tools implemented)
-✅ **workspace_* (5 tools)** — fork, list, delete, compare, merge
+### Tool Arsenal (49 tools implemented)
+✅ **workspace_* (6 tools)** — fork, list, branch_cards, delete, compare, merge
 ✅ **observe_* (4 tools)** — frequency, isomorph_clusters, ic, homophone_distribution
-✅ **decode_* (8 tools)** — show, unmapped, heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix
+✅ **decode_* (12 tools)** — show, unmapped, heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix, repair_no_boundary, validate_reading_repair, plan_word_repair, plan_word_repair_menu
 ✅ **score_* (3 tools)** — panel, quadgram, dictionary
 ✅ **corpus_* (2 tools)** — lookup_word, word_candidates
-✅ **act_* (5 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded
-✅ **search_* (3 tools)** — hill_climb, anneal, homophonic_anneal
+✅ **act_* (13 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded, split/merge words, decoded-word merge, boundary candidate, word repair, and reading resegmentation tools
+✅ **search_* (4 tools)** — hill_climb, anneal, automated_solver, homophonic_anneal
+✅ **repair_agenda_* (2 tools)** — list, update
 ✅ **run_python (1 tool)** — allowed escape hatch with required justification
 ✅ **meta_* (2 tools)** — request_tool, declare_solution
 

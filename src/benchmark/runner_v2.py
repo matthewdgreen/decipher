@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.display import make_agent_renderer
+from agent.final_summary import build_final_summary
 from agent.loop_v2 import run_v2
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import (
@@ -36,6 +37,10 @@ class RunResultV2:
     tool_requests: list[dict] = field(default_factory=list)
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
+    final_branch: str = ""
+    branch_scores: list[dict[str, Any]] = field(default_factory=list)
+    alignment_report: str = ""
+    final_summary: str = ""
 
 
 class BenchmarkRunnerV2:
@@ -197,9 +202,26 @@ class BenchmarkRunnerV2:
         final_score = branch_acc_map.get(final_branch or "", {})
         artifact.char_accuracy = final_score.get("char_accuracy", 0.0)
         artifact.word_accuracy = final_score.get("word_accuracy", 0.0)
+        word_boundaries = has_word_boundaries(ground_truth) if ground_truth else False
+        alignment_report = ""
+        if ground_truth:
+            if word_boundaries:
+                alignment_report = format_alignment(
+                    final_decryption,
+                    ground_truth,
+                    max_words=50,
+                )
+            else:
+                alignment_report = format_char_diff(final_decryption, ground_truth)
+
+        final_summary = build_final_summary(
+            artifact,
+            final_branch=final_branch or "",
+            final_decryption=final_decryption,
+        )
+        artifact.final_summary = final_summary
 
         if self.verbose and ground_truth:
-            word_boundaries = has_word_boundaries(ground_truth)
             print(f"\n  [{test_id}] Branch scores vs ground truth:")
             for r in branch_scores:
                 declared = " <-- declared" if (artifact.solution and r["branch"] == artifact.solution.branch) else ""
@@ -260,6 +282,10 @@ class BenchmarkRunnerV2:
             tool_requests=list(artifact.tool_requests),
             total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
             estimated_cost_usd=artifact.estimated_cost_usd,
+            final_branch=final_branch or "",
+            branch_scores=branch_scores,
+            alignment_report=alignment_report,
+            final_summary=final_summary,
         )
         if renderer is not None:
             renderer.finish(result)

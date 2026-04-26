@@ -1,13 +1,14 @@
 """v2 tool definitions and executor.
 
 Tools are organized by namespace:
-  workspace_*  — branch lifecycle (fork, list, delete, compare, merge)
+  workspace_*  — branch lifecycle and branch cards
   observe_*    — read-only text analysis (frequency, isomorphs)
-  decode_*     — read-only views of the transcription (show, unmapped, heatmap, letter_stats, diagnose)
+  decode_*     — read-only views, diagnostics, validation, and repair plans
   score_*      — signal panel and individual signals
   corpus_*     — language data (wordlist, patterns)
-  act_*        — branch mutations (set_mapping, bulk_set, anchor_word, clear)
+  act_*        — branch/key/boundary mutations
   search_*     — classical algorithms on a branch (hill_climb, anneal)
+  repair_agenda_* — durable reading-repair hypothesis bookkeeping
   run_python   — execute arbitrary stdlib Python code (escape hatch)
   meta_*       — declare_solution (terminates the run), request_tool (feedback)
 
@@ -565,6 +566,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["branch", "proposed_text"],
         },
     },
+    {
+        "name": "act_resegment_window_by_reading",
+        "description": (
+            "Apply word-boundary changes to a local window of decoded words "
+            "instead of rewriting the entire plaintext stream. Use this for "
+            "repairs like LIBE | BITUR -> LIBEBITUR, A | RI -> ARI, or "
+            "POTESTQUIBUS -> POTEST | QUIBUS. The proposed text only needs to "
+            "cover the selected window. If proposed letters differ but the "
+            "character count matches, the tool applies only the boundary "
+            "pattern to the current decoded letters and returns mismatch spans "
+            "for later key repair."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "start_word_index": {
+                    "type": "integer",
+                    "description": "First current decoded word in the local window.",
+                },
+                "word_count": {
+                    "type": "integer",
+                    "description": "Number of current decoded words in the window.",
+                },
+                "proposed_text": {
+                    "type": "string",
+                    "description": "Desired reading/boundaries for just this window.",
+                },
+            },
+            "required": ["branch", "start_word_index", "word_count", "proposed_text"],
+        },
+    },
     # ----- search_* -----
     {
         "name": "search_hill_climb",
@@ -1028,6 +1061,46 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "decode_plan_word_repair_menu",
+        "description": (
+            "Compare several possible same-length readings for the same decoded "
+            "word without mutating the branch. Use this before applying an "
+            "uncertain word repair: it shows each option's proposed cipher-symbol "
+            "mappings, intra-word conflicts, changed-word preview, dictionary-hit "
+            "delta, collateral-change count, and suggested act_apply_word_repair "
+            "call when safe. This is the repair menu: choose from evidence instead "
+            "of applying the first plausible word."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_words": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Candidate intended readings to compare, e.g. "
+                        "['PLURES', 'RLURES', 'BLURES']."
+                    ),
+                },
+                "cipher_word_index": {
+                    "type": "integer",
+                    "description": "Optional numeric word index to repair.",
+                },
+                "decoded_word": {
+                    "type": "string",
+                    "description": "Optional current decoded word to locate, e.g. RLURES.",
+                },
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Which matching decoded_word occurrence to use; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch", "target_words"],
+        },
+    },
+    {
         "name": "repair_agenda_list",
         "description": (
             "List durable reading-repair agenda items accumulated during this "
@@ -1143,9 +1216,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Terminate the run. Specify the branch whose transcription you want"
             "to submit, a rationale explaining your reasoning and remaining "
-            "uncertainty, and your self-confidence (0.0 - 1.0). This ends "
-            "the session — call it when you believe you have the best answer "
-            "you can produce or when further progress seems impossible."
+            "uncertainty, a brief human-readable reading summary, whether "
+            "more iterations would likely help, and your self-confidence "
+            "(0.0 - 1.0). This ends the session — call it when you believe "
+            "you have the best answer you can produce or when further progress "
+            "seems impossible."
         ),
         "input_schema": {
             "type": "object",
@@ -1153,8 +1228,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "rationale": {"type": "string"},
                 "self_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "reading_summary": {
+                    "type": "string",
+                    "description": (
+                        "Brief plain-language summary for the final screen: "
+                        "what the decipherment appears to say, especially if "
+                        "the target language is not the user's native language."
+                    ),
+                },
+                "further_iterations_helpful": {
+                    "type": "boolean",
+                    "description": (
+                        "True if additional iterations would likely improve "
+                        "the decipherment; false if remaining gains seem minor."
+                    ),
+                },
+                "further_iterations_note": {
+                    "type": "string",
+                    "description": (
+                        "One or two sentences explaining what further "
+                        "iterations should try, or why they are probably not "
+                        "needed."
+                    ),
+                },
             },
-            "required": ["branch", "rationale", "self_confidence"],
+            "required": [
+                "branch",
+                "rationale",
+                "self_confidence",
+                "reading_summary",
+                "further_iterations_helpful",
+                "further_iterations_note",
+            ],
         },
     },
 ]
@@ -1631,14 +1736,11 @@ class WorkspaceToolExecutor:
             })
             return base
 
-        changes: list[dict[str, Any]] = []
-        token_mappings: dict[int, int] = {}
+        desired_by_token: dict[int, dict[str, Any]] = {}
         conflicts: list[dict[str, Any]] = []
         for pos, (token_id, current_ch, target_ch) in enumerate(
             zip(word_tokens, current_word, target)
         ):
-            if current_ch == target_ch:
-                continue
             if not pt_alpha.has_symbol(target_ch):
                 conflicts.append({
                     "position": pos,
@@ -1649,25 +1751,46 @@ class WorkspaceToolExecutor:
                 })
                 continue
             target_id = pt_alpha.id_for(target_ch)
-            if token_id in token_mappings and token_mappings[token_id] != target_id:
+            existing = desired_by_token.get(token_id)
+            if existing is not None and existing["target_id"] != target_id:
                 conflicts.append({
                     "position": pos,
                     "cipher_symbol": alpha.symbol_for(token_id),
                     "current": current_ch,
                     "target": target_ch,
-                    "reason": "same cipher symbol would need two target letters",
+                    "reason": (
+                        "same cipher symbol appears multiple times in this word "
+                        "and the proposed target would require different letters"
+                    ),
+                    "previous_position": existing["position"],
+                    "previous_target": existing["target"],
                 })
+                continue
+            if existing is None:
+                desired_by_token[token_id] = {
+                    "target_id": target_id,
+                    "target": target_ch,
+                    "position": pos,
+                    "current": current_ch,
+                }
+
+        branch_key = self.workspace.get_branch(branch).key
+        changes: list[dict[str, Any]] = []
+        token_mappings: dict[int, int] = {}
+        for token_id, desired in desired_by_token.items():
+            target_id = int(desired["target_id"])
+            if branch_key.get(token_id) == target_id:
                 continue
             token_mappings[token_id] = target_id
             changes.append({
-                "position": pos,
+                "position": desired["position"],
                 "cipher_symbol": alpha.symbol_for(token_id),
-                "current": current_ch,
-                "target": target_ch,
-                "mapping": f"{alpha.symbol_for(token_id)} -> {target_ch}",
+                "current": desired["current"],
+                "target": desired["target"],
+                "mapping": f"{alpha.symbol_for(token_id)} -> {desired['target']}",
             })
 
-        preview_key = dict(self.workspace.get_branch(branch).key)
+        preview_key = dict(branch_key)
         preview_key.update(token_mappings)
         before_words = self._decoded_words(branch, max_words=None)
         after_words = self._decoded_words_with_key(branch, preview_key, max_words=None)
@@ -1681,18 +1804,80 @@ class WorkspaceToolExecutor:
             "conflicts": conflicts,
             "proposed_mappings": proposed_mappings,
             "changed_words_preview": self._changed_words_sample(before_words, after_words),
-            "suggested_call": (
-                "act_apply_word_repair("
-                f"branch={branch!r}, cipher_word_index={idx}, "
-                f"target_word={target!r})"
-            ),
             "_token_mappings": token_mappings,
         })
         if not changes:
             base["note"] = "Current decoded word already matches target_word."
         elif conflicts:
             base["reason"] = "Repair has conflicting or invalid letter assignments."
+        else:
+            base["suggested_call"] = (
+                "act_apply_word_repair("
+                f"branch={branch!r}, cipher_word_index={idx}, "
+                f"target_word={target!r})"
+            )
         return base
+
+    def _word_repair_effect_summary(
+        self,
+        branch: str,
+        token_mappings: dict[int, int],
+    ) -> dict[str, Any]:
+        if not token_mappings:
+            return {
+                "changed_word_count": 0,
+                "changed_words_preview": [],
+                "dictionary_hit_delta": 0,
+            }
+        preview_key = dict(self.workspace.get_branch(branch).key)
+        preview_key.update(token_mappings)
+        before_words = self._decoded_words(branch, max_words=None)
+        after_words = self._decoded_words_with_key(branch, preview_key, max_words=None)
+        changed_all = [
+            {"index": i, "before": b, "after": a}
+            for i, (b, a) in enumerate(zip(before_words, after_words))
+            if b != a
+        ]
+        before_hits = sum(
+            1 for word in before_words
+            if self._reading_char_stream(word) in self.word_set
+        )
+        after_hits = sum(
+            1 for word in after_words
+            if self._reading_char_stream(word) in self.word_set
+        )
+        return {
+            "changed_word_count": len(changed_all),
+            "changed_words_preview": changed_all[:12],
+            "dictionary_hits_before": before_hits,
+            "dictionary_hits_after": after_hits,
+            "dictionary_hit_delta": after_hits - before_hits,
+        }
+
+    def _word_repair_option_recommendation(self, plan: dict[str, Any]) -> str:
+        if plan.get("note") and "already matches" in str(plan.get("note")).lower():
+            return "already_matches: no mapping change is needed for this option."
+        if plan.get("conflicts"):
+            return (
+                "do_not_apply_directly: this word-level target conflicts with "
+                "repeated cipher-symbol constraints. Use boundary repair or a "
+                "different reading, or inspect the responsible symbol manually."
+            )
+        if not plan.get("applicable"):
+            return (
+                "do_not_apply_directly: this target is not a safe same-length "
+                "cipher-symbol repair."
+            )
+        effect = plan.get("effect_summary") or {}
+        changed = int(effect.get("changed_word_count") or 0)
+        hit_delta = int(effect.get("dictionary_hit_delta") or 0)
+        if changed >= 12 and hit_delta < 0:
+            return (
+                "review_before_applying: this repair has broad collateral "
+                "effects and loses dictionary hits. Read the preview carefully "
+                "or fork before applying."
+            )
+        return "safe_to_try: apply if the changed-word preview reads better."
 
     def _repair_agenda_status_for_plan(self, plan: dict[str, Any]) -> str:
         if plan.get("error"):
@@ -3085,6 +3270,73 @@ class WorkspaceToolExecutor:
         plan.pop("_token_mappings", None)
         return plan
 
+    def _tool_decode_plan_word_repair_menu(self, args: dict) -> Any:
+        targets = args.get("target_words") or []
+        if not isinstance(targets, list) or not targets:
+            return {"error": "target_words must be a non-empty list"}
+
+        normalized_targets: list[str] = []
+        seen: set[str] = set()
+        for raw_target in targets:
+            target = self._reading_char_stream(str(raw_target))
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            normalized_targets.append(target)
+        if not normalized_targets:
+            return {"error": "target_words did not contain any alphabetic candidates"}
+
+        options: list[dict[str, Any]] = []
+        current_decoded: str | None = None
+        cipher_word_index: int | None = None
+        for target in normalized_targets[:12]:
+            plan_args = {
+                key: value for key, value in args.items()
+                if key != "target_words"
+            }
+            plan_args["target_word"] = target
+            plan = self._word_repair_plan(plan_args)
+            token_mappings = plan.pop("_token_mappings", {})
+            if not plan.get("error"):
+                current_decoded = plan.get("current_decoded", current_decoded)
+                cipher_word_index = plan.get("cipher_word_index", cipher_word_index)
+            if token_mappings:
+                plan["effect_summary"] = self._word_repair_effect_summary(
+                    args["branch"],
+                    token_mappings,
+                )
+            else:
+                plan["effect_summary"] = {
+                    "changed_word_count": 0,
+                    "changed_words_preview": list(plan.get("changed_words_preview") or []),
+                    "dictionary_hit_delta": 0,
+                }
+            plan["recommendation"] = self._word_repair_option_recommendation(plan)
+            if plan.get("applicable"):
+                plan["suggested_call"] = (
+                    "act_apply_word_repair("
+                    f"branch={args['branch']!r}, "
+                    f"cipher_word_index={plan['cipher_word_index']}, "
+                    f"target_word={plan['target_word']!r})"
+                )
+            options.append(plan)
+
+        return {
+            "status": "ok",
+            "branch": args["branch"],
+            "cipher_word_index": cipher_word_index,
+            "current_decoded": current_decoded,
+            "option_count": len(options),
+            "options": options,
+            "note": (
+                "This is a read-only menu. Apply only options whose preview "
+                "reads better and whose recommendation does not say "
+                "do_not_apply_directly. For conflicting repeated-symbol cases, "
+                "prefer boundary repair or a different reading rather than "
+                "forcing a single mapping."
+            ),
+        }
+
     def _tool_repair_agenda_list(self, args: dict) -> Any:
         branch_filter = args.get("branch")
         status_filter = args.get("status")
@@ -3758,6 +4010,188 @@ class WorkspaceToolExecutor:
                 "Applied the proposed reading's word boundaries only. The key "
                 "and decoded character stream were preserved; any mismatches "
                 "between projected_text and proposed_text are still true "
+                "letter/key repair hypotheses."
+            ),
+        }
+
+    def _nearby_resegment_window_suggestions(
+        self,
+        branch: str,
+        *,
+        start_idx: int,
+        proposed_words: list[str],
+        radius: int = 5,
+        max_word_count: int = 6,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        proposed_stream = "".join(proposed_words)
+        proposed_len = len(proposed_stream)
+        if not proposed_words or proposed_len == 0:
+            return []
+        current_words = self._branch_reading_words(branch)
+        out: list[dict[str, Any]] = []
+        lo = max(0, start_idx - radius)
+        hi = min(len(current_words), start_idx + radius + 1)
+        for cand_start in range(lo, hi):
+            stream = ""
+            for cand_count in range(1, max_word_count + 1):
+                end = cand_start + cand_count
+                if end > len(current_words):
+                    break
+                stream += current_words[end - 1]
+                if len(stream) > proposed_len:
+                    break
+                if len(stream) != proposed_len:
+                    continue
+                projected_words: list[str] = []
+                pos = 0
+                for proposed_word in proposed_words:
+                    projected_words.append(stream[pos:pos + len(proposed_word)])
+                    pos += len(proposed_word)
+                mismatches = self._first_reading_mismatches(stream, proposed_stream)
+                out.append({
+                    "start_word_index": cand_start,
+                    "word_count": cand_count,
+                    "current_window_words": current_words[cand_start:end],
+                    "current_char_count": len(stream),
+                    "proposed_char_count": proposed_len,
+                    "character_preserving": stream == proposed_stream,
+                    "mismatch_count_preview": len(mismatches),
+                    "mismatches": mismatches[:6],
+                    "projected_words": projected_words,
+                    "suggested_call": (
+                        "act_resegment_window_by_reading("
+                        f"branch={branch!r}, start_word_index={cand_start}, "
+                        f"word_count={cand_count}, "
+                        f"proposed_text={' '.join(proposed_words)!r})"
+                    ),
+                })
+                break
+        out.sort(key=lambda item: (
+            not item["character_preserving"],
+            item["mismatch_count_preview"],
+            abs(int(item["start_word_index"]) - start_idx),
+            item["word_count"],
+        ))
+        return out[:limit]
+
+    def _tool_act_resegment_window_by_reading(self, args: dict) -> Any:
+        branch = args["branch"]
+        start_idx = int(args["start_word_index"])
+        word_count = int(args["word_count"])
+        proposed_text = str(args["proposed_text"])
+        if self._pt_alpha()._multisym:
+            return {
+                "error": (
+                    "act_resegment_window_by_reading currently supports "
+                    "single-character plaintext alphabets only"
+                )
+            }
+        spans = self.workspace.effective_word_spans(branch)
+        if start_idx < 0 or start_idx >= len(spans):
+            return {"error": f"start_word_index {start_idx} out of range"}
+        if word_count <= 0 or start_idx + word_count > len(spans):
+            return {
+                "error": (
+                    f"word_count {word_count} out of range for start_word_index "
+                    f"{start_idx}"
+                )
+            }
+
+        current_words = self._branch_reading_words(branch)
+        window_words = current_words[start_idx:start_idx + word_count]
+        current_stream = "".join(window_words)
+        proposed_words = self._reading_words_from_text(proposed_text)
+        proposed_stream = "".join(proposed_words)
+        same_len = len(current_stream) == len(proposed_stream)
+        same_chars = current_stream == proposed_stream
+        base: dict[str, Any] = {
+            "branch": branch,
+            "start_word_index": start_idx,
+            "old_window_word_count": word_count,
+            "current_window_words": window_words,
+            "proposed_words": proposed_words,
+            "character_preserving": same_chars,
+            "same_character_count": same_len,
+            "current_char_count": len(current_stream),
+            "proposed_char_count": len(proposed_stream),
+            "mismatches": [] if same_chars else self._first_reading_mismatches(
+                current_stream,
+                proposed_stream,
+            ),
+        }
+        if not proposed_words:
+            return {"error": "proposed_text must contain at least one word", **base}
+        if not same_len:
+            return {
+                "error": (
+                    "Local proposed reading does not have the same normalized "
+                    "character count as the selected current word window. "
+                    "Select a different word_count or revise proposed_text."
+                ),
+                **base,
+                "nearby_compatible_windows": self._nearby_resegment_window_suggestions(
+                    branch,
+                    start_idx=start_idx,
+                    proposed_words=proposed_words,
+                ),
+                "next_step": (
+                    "If nearby_compatible_windows is non-empty, retry with one "
+                    "of those suggested calls. This usually means the word index "
+                    "shifted after an earlier boundary edit."
+                ),
+            }
+
+        window_start = spans[start_idx][0]
+        window_end = spans[start_idx + word_count - 1][1]
+        if sum(len(word) for word in proposed_words) != window_end - window_start:
+            return {
+                "error": (
+                    "Local proposed word lengths do not match the selected "
+                    "ciphertext token window."
+                ),
+                **base,
+            }
+
+        projected_words: list[str] = []
+        local_spans: list[tuple[int, int]] = []
+        pos = window_start
+        stream_pos = 0
+        for word in proposed_words:
+            end = pos + len(word)
+            local_spans.append((pos, end))
+            projected_words.append(current_stream[stream_pos:stream_pos + len(word)])
+            pos = end
+            stream_pos += len(word)
+
+        before = self._compute_quick_scores(branch)
+        before_preview = self._decoded_preview(branch, max_words=80)
+        new_spans = spans[:start_idx] + local_spans + spans[start_idx + word_count:]
+        try:
+            self.workspace.set_word_spans(branch, new_spans)
+        except WorkspaceError as exc:
+            return {"error": str(exc), **base}
+        after = self._compute_quick_scores(branch)
+        after_preview = self._decoded_preview(branch, max_words=80)
+        return {
+            "status": "ok",
+            **base,
+            "applied": True,
+            "mode": "local_boundary_projection",
+            "new_window_word_count": len(proposed_words),
+            "old_total_word_count": len(spans),
+            "new_total_word_count": len(new_spans),
+            "projected_words": projected_words,
+            "window_dictionary_before": self._dictionary_summary_for_words(window_words),
+            "projected_dictionary_after": self._dictionary_summary_for_words(projected_words),
+            "proposed_dictionary": self._dictionary_summary_for_words(proposed_words),
+            "score_delta": self._reading_score_delta(before, after),
+            "decoded_preview_before": before_preview,
+            "decoded_preview": after_preview,
+            "note": (
+                "Applied a local word-boundary overlay only. The branch key "
+                "and decoded character stream were unchanged. If proposed_words "
+                "differ from projected_words, treat the mismatches as separate "
                 "letter/key repair hypotheses."
             ),
         }
@@ -4528,6 +4962,12 @@ class WorkspaceToolExecutor:
             rationale=rationale,
             self_confidence=confidence,
             declared_at_iteration=self._current_iteration,
+            reading_summary=str(args.get("reading_summary") or ""),
+            further_iterations_helpful=(
+                bool(args["further_iterations_helpful"])
+                if args.get("further_iterations_helpful") is not None else None
+            ),
+            further_iterations_note=str(args.get("further_iterations_note") or ""),
         )
         self.terminated = True
         review = self._declaration_review(branch)

@@ -147,8 +147,10 @@ cleanup that is obvious from reading: if the text is solved as a continuous \
 stream but displayed with split or merged words (`THERE | FORE`, `AP | PLY`, \
 `UN | TO`, `WITH | OUT`), do one boundary-normalization pass with \
 `act_resegment_by_reading` when you can state the whole best reading, or \
-`act_merge_decoded_words`, `act_merge_cipher_words` / `act_split_cipher_word` \
-(or `act_apply_boundary_candidate`) for local edits before declaring. If your \
+`act_resegment_window_by_reading` when only a local phrase/window needs new \
+boundaries. Use `act_merge_decoded_words`, `act_merge_cipher_words` / \
+`act_split_cipher_word` (or `act_apply_boundary_candidate`) for smaller local \
+edits before declaring. If your \
 best reading also changes letters, first validate it with \
 `decode_validate_reading_repair`. If the proposed reading has the same \
 character count, apply its word-boundary pattern with \
@@ -157,7 +159,12 @@ cipher-symbol repairs.
 
 When you have the best transcription you can produce — or further progress \
 seems impossible — call `meta_declare_solution` with your chosen branch, a \
-rationale, and your own confidence estimate.
+rationale, your own confidence estimate, a brief `reading_summary`, and a \
+`further_iterations_helpful` judgement plus note. The final summary should be \
+human-readable: for example, "This appears to be an archaic Latin veterinary \
+or pharmaceutical passage about chickens dying/surviving; remaining issues \
+are local word-boundary and spelling repairs." Explicitly say whether more \
+iterations would likely help and what they should try.
 
 ## Reading-driven repair — your highest-leverage move
 
@@ -210,7 +217,14 @@ populations.
    `NREUITER -> BREUITER` or `SIMALITER -> SIMILITER` — call \
    `decode_plan_word_repair` first, then `act_apply_word_repair` if the \
    preview reads better. This records the hypothesis in the repair agenda \
-   and avoids fragile manual symbol guessing. Use raw `act_set_mapping` or \
+   and avoids fragile manual symbol guessing. If several readings are \
+   plausible, or if the word contains repeated decoded letters / repeated \
+   cipher symbols, call `decode_plan_word_repair_menu` with the candidate \
+   target words before applying anything. The menu is read-only: it shows \
+   conflicts, broad collateral effects, changed-word previews, and whether \
+   the direct word repair is unsafe. **Do not force a repair that the menu \
+   marks `do_not_apply_directly`; use boundary repair, a different reading, \
+   or targeted symbol inspection instead.** Use raw `act_set_mapping` or \
    `act_bulk_set` when the repair is not naturally expressed as a word-level \
    before/after, or when you already know the exact cipher-symbol mapping. \
    Preserve the manuscript/transcription orthography you are actually seeing: \
@@ -221,24 +235,31 @@ populations.
    the same `U` orthography and leave the transcription style stable. \
    **Do not run a search to "discover" a mapping you have already read off \
    the page.**
-4. **Normalize word boundaries by reading the whole stream.** If the branch \
+4. **Normalize word boundaries by reading once words become readable.** If the branch \
    is globally readable but misaligned, write your best full target-language \
    reading before you declare — even if some words are uncertain or need \
    spelling/key repairs. Then call `decode_validate_reading_repair` on that \
    draft. If the draft is character-preserving, apply it with \
-   `act_resegment_by_reading`. If the draft changes letters but has the same \
-   character count, apply just its word-boundary pattern with \
+   `act_resegment_by_reading`. If only a local phrase is missegmented, use \
+   `act_resegment_window_by_reading` on just that current word window (for \
+   example `LIBE | BITUR -> LIBEBITUR` or `POTESTQUIBUS -> POTEST QUIBUS`) \
+   instead of rewriting the whole stream. If the draft changes letters but \
+   has the same character count, apply just its word-boundary pattern with \
    `act_resegment_from_reading_repair`; this preserves the current key and \
    decoded letters, and leaves the mismatch spans as explicit repair targets. \
-   This is better than doing a long sequence of manual merges, because it \
-   avoids stale numeric indices and lets you act from the reading itself. For \
+   Local/window boundary tools are better than a long sequence of manual \
+   merges, because they avoid stale numeric indices and let you act from the \
+   reading itself. If you see adjacent fragments that read as one word, or \
+   one decoded word that clearly reads as two words, do not just comment on \
+   it — call a boundary tool before declaring. For \
    example, propose `THEREFORE THE OLD PHYSICKER DID APPLY A SALVE UNTO ...`; \
    the projection tool can still install `THEREFORE THE OLD PHYSICSER DID \
    APPLY ...` as a boundary-only step, then you can repair `S -> K` with a \
    targeted cipher-symbol mapping. Boundary edits do not change the key; they \
    make the branch's readable text match the intended word structure.
    When you can read a specific same-length word repair, use \
-   `decode_plan_word_repair` to identify the \
+   `decode_plan_word_repair_menu` for competing readings or \
+   `decode_plan_word_repair` for a single clear reading to identify the \
    responsible cipher symbol and preview collateral changes; then use \
    `act_apply_word_repair` if the preview reads better. This is preferable \
    to guessing the cipher symbol manually from prose. These planned repairs \
@@ -291,6 +312,10 @@ decode and decide by reading, not by score.
   outstanding letter-level reading-driven fixes.** Boundary edits typically \
   cap at small `dictionary_rate` gains; a single correct cipher-symbol \
   fix often unlocks 5–10× more.
+- **Mentioning boundary drift without acting on it.** Once the words are \
+  readable enough that you can see `X | Y` should be `XY`, or `XYZ` should \
+  be `X Y`, call `act_resegment_window_by_reading` for the local phrase or \
+  the full-reading projection tools for global drift before declaring.
 
 ## Scoring notes
 

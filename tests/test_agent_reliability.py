@@ -14,8 +14,10 @@ from agent.loop_v2 import (
     FINAL_DECLARATION_RETRY_PREFLIGHT,
     FINAL_ITERATION_PREFLIGHT,
     FULL_READING_WORKFLOW_TOOL_NAMES,
+    INSPECTION_SANDBOX_CONTINUE_PREFLIGHT,
     PENULTIMATE_READING_WORKFLOW_PREFLIGHT,
     PENULTIMATE_ALLOWED_TOOL_NAMES,
+    REPAIR_SANDBOX_CONTINUE_PREFLIGHT,
     READING_WORKFLOW_GATE_PREFLIGHT,
     _is_boundary_projection_count_failure,
     _is_tool_gated_result,
@@ -274,6 +276,92 @@ def test_act_apply_word_repair_applies_mapping_with_changed_words():
     assert "verdict" not in out["score_delta"]
     assert out["agenda_item"]["status"] == "applied"
     assert out["agenda_item"]["last_result"]["mappings_set"] == 1
+
+
+def test_word_repair_blocks_repeated_symbol_conflict_before_mutating():
+    raw = "MKGMAQ"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PLURES", "RLURES"},
+        word_list=["PLURES", "RLURES"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    for cipher_sym, plain in {
+        "M": "R",
+        "K": "L",
+        "G": "U",
+        "A": "E",
+        "Q": "S",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    plan = ex._tool_decode_plan_word_repair({
+        "branch": "main",
+        "decoded_word": "RLURES",
+        "target_word": "PLURES",
+    })
+
+    assert plan["applicable"] is False
+    assert plan["conflicts"]
+    assert "same cipher symbol appears multiple times" in plan["conflicts"][0]["reason"]
+    assert plan["agenda_item"]["status"] == "blocked"
+    assert "suggested_call" not in plan
+
+    applied = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "decoded_word": "RLURES",
+        "target_word": "PLURES",
+    })
+
+    assert applied["error"] == "Word repair is not directly applicable."
+    assert ws.apply_key("main") == "RLURES"
+
+
+def test_decode_plan_word_repair_menu_compares_options_without_agenda_mutation():
+    raw = "MKGMAQ"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PLURES", "RLURES"},
+        word_list=["PLURES", "RLURES"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    for cipher_sym, plain in {
+        "M": "R",
+        "K": "L",
+        "G": "U",
+        "A": "E",
+        "Q": "S",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    menu = ex._tool_decode_plan_word_repair_menu({
+        "branch": "main",
+        "decoded_word": "RLURES",
+        "target_words": ["PLURES", "RLURES"],
+    })
+
+    assert menu["status"] == "ok"
+    assert menu["current_decoded"] == "RLURES"
+    assert len(menu["options"]) == 2
+    plures = next(opt for opt in menu["options"] if opt["target_word"] == "PLURES")
+    rlures = next(opt for opt in menu["options"] if opt["target_word"] == "RLURES")
+    assert plures["applicable"] is False
+    assert plures["conflicts"]
+    assert plures["recommendation"].startswith("do_not_apply_directly")
+    assert "suggested_call" not in plures
+    assert plures["effect_summary"]["changed_words_preview"][0]["after"] == "PLUPES"
+    assert rlures["recommendation"].startswith("already_matches")
+    assert ex.repair_agenda == []
 
 
 def test_repair_agenda_list_and_update_track_word_repair_state():
@@ -558,6 +646,97 @@ def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
     assert "Do not spend early turns re-measuring facts" in system
 
 
+def test_workspace_panel_shows_all_words_for_compact_pages():
+    symbols = [f"S{i:02d}" for i in range(78)]
+    raw = " | ".join(symbols)
+    ct = CipherText(raw=raw, alphabet=Alphabet(symbols), separator=" | ")
+    ws = Workspace(ct)
+
+    panel = build_workspace_panel(
+        ws,
+        iteration=1,
+        language="en",
+        word_set=set(),
+        max_iterations=10,
+    )
+
+    assert "words 0..77 (all)" in panel
+    assert "S77" in panel
+
+
+class _InspectThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        call = len(self.messages_seen)
+        if call == 1:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="show1",
+                    name="decode_show",
+                    input={"branch": "main"},
+                )
+            ]
+        elif call == 2:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="cards",
+                    name="workspace_branch_cards",
+                    input={},
+                )
+            ]
+        else:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "main",
+                        "rationale": "Inspection is complete.",
+                        "self_confidence": 0.5,
+                        "reading_summary": "Toy continuation.",
+                        "further_iterations_helpful": False,
+                        "further_iterations_note": "No further work needed.",
+                    },
+                )
+            ]
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=content,
+        )
+
+
+def test_read_only_inspection_can_continue_inside_one_outer_iteration():
+    alpha = Alphabet.from_text("ABC")
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _InspectThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=5,
+        cipher_id="unit",
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.solution is not None
+    assert artifact.solution.declared_at_iteration == 1
+    assert [tc.iteration for tc in artifact.tool_calls] == [1, 1, 1]
+    assert sum(
+        1 for event in artifact.loop_events
+        if event.event == "inspection_sandbox_continue"
+    ) == 2
+    assert INSPECTION_SANDBOX_CONTINUE_PREFLIGHT in str(api.messages_seen[1])
+
+
 class _FakeAPI:
     model = "claude-sonnet-4-6"
 
@@ -593,6 +772,18 @@ class _GatedThenDeclareAPI:
                         id="bad_tool",
                         name="search_anneal",
                         input={"branch": "main"},
+                    )
+                ],
+            )
+        if len(self.messages_seen) == 3:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="cards",
+                        name="workspace_branch_cards",
+                        input={},
                     )
                 ],
             )
@@ -648,6 +839,150 @@ class _BoundaryCountRetryAPI:
                     input={
                         "branch": "automated_preflight",
                         "proposed_text": "AB C",
+                    },
+                )
+            ],
+        )
+
+
+class _FinalGatedToolThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        if len(self.messages_seen) == 1:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="late_boundary",
+                    name="act_resegment_by_reading",
+                    input={"branch": "main", "proposed_text": "ABC"},
+                )
+            ]
+        else:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "main",
+                        "rationale": "Declared after final gated-tool retry.",
+                        "self_confidence": 0.4,
+                        "reading_summary": "Toy final declaration.",
+                        "further_iterations_helpful": False,
+                        "further_iterations_note": "No further work needed.",
+                    },
+                )
+            ]
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=content,
+        )
+
+
+class _BoundaryCountRetryTwiceThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+        self.tools_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
+        if len(self.messages_seen) <= 2:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=3),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id=f"short_reading_{len(self.messages_seen)}",
+                        name="decode_validate_reading_repair",
+                        input={
+                            "branch": "automated_preflight",
+                            "proposed_text": "A",
+                        },
+                    )
+                ],
+            )
+        if len(self.messages_seen) == 3:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="cards",
+                        name="workspace_branch_cards",
+                        input={},
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "automated_preflight",
+                        "rationale": "Declared after repeated projection retries.",
+                        "self_confidence": 0.3,
+                    },
+                )
+            ],
+        )
+
+
+class _SandboxContinueThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+        self.tools_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
+        if len(self.messages_seen) == 1:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=3),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="show",
+                        name="decode_show",
+                        input={"branch": "automated_preflight"},
+                    )
+                ],
+            )
+        if len(self.messages_seen) == 2:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="cards",
+                        name="workspace_branch_cards",
+                        input={},
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "automated_preflight",
+                        "rationale": "Declared after sandbox inspection.",
+                        "self_confidence": 0.3,
                     },
                 )
             ],
@@ -884,6 +1219,94 @@ def test_boundary_projection_count_mismatch_retries_inside_same_outer_iteration(
     assert any(BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT in t for t in retry_texts)
 
 
+def test_boundary_projection_count_mismatch_can_retry_more_than_once():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _BoundaryCountRetryTwiceThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=3,
+        cipher_id="unit",
+        automated_preflight={
+            "enabled": True,
+            "run_mode": "automated_only",
+            "status": "solved",
+            "solver": "fake_native",
+            "summary": "Automated native solver preflight (no LLM access): ABC",
+            "key": {"0": 0, "1": 1, "2": 2},
+            "estimated_cost_usd": 0.0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+        },
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.solution is not None
+    assert artifact.solution.declared_at_iteration == 1
+    retry_events = [
+        e for e in artifact.loop_events
+        if e.event == "boundary_projection_count_retry"
+    ]
+    assert len(retry_events) == 2
+    assert [event.inner_step for event in retry_events] == [1, 2]
+    assert [call.tool_name for call in artifact.tool_calls[:4]] == [
+        "decode_validate_reading_repair",
+        "decode_validate_reading_repair",
+        "workspace_branch_cards",
+        "meta_declare_solution",
+    ]
+
+
+def test_repair_sandbox_continues_after_low_cost_tool_without_outer_iteration():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _SandboxContinueThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=3,
+        cipher_id="unit",
+        automated_preflight={
+            "enabled": True,
+            "run_mode": "automated_only",
+            "status": "solved",
+            "solver": "fake_native",
+            "summary": "Automated native solver preflight (no LLM access): ABC",
+            "key": {"0": 0, "1": 1, "2": 2},
+            "estimated_cost_usd": 0.0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+        },
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.solution is not None
+    assert artifact.solution.declared_at_iteration == 1
+    assert [call.tool_name for call in artifact.tool_calls[:3]] == [
+        "decode_show",
+        "workspace_branch_cards",
+        "meta_declare_solution",
+    ]
+    sandbox_events = [
+        e for e in artifact.loop_events
+        if e.event == "repair_sandbox_continue"
+    ]
+    assert len(sandbox_events) == 2
+    assert sandbox_events[0].outer_iteration == 1
+    retry_texts = [
+        c["text"]
+        for m in api.messages_seen[1]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any(REPAIR_SANDBOX_CONTINUE_PREFLIGHT in t for t in retry_texts)
+
+
 def test_final_turn_bookkeeping_without_declare_retries_inside_same_iteration():
     alpha = Alphabet(list("ABC"))
     ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
@@ -909,6 +1332,41 @@ def test_final_turn_bookkeeping_without_declare_retries_inside_same_iteration():
         if e.event == "final_declare_retry"
     ]
     assert len(retry_events) == 1
+    retry_texts = [
+        c["text"]
+        for m in api.messages_seen[1]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any(FINAL_DECLARATION_RETRY_PREFLIGHT in t for t in retry_texts)
+
+
+def test_final_turn_gated_tool_retries_with_declaration_nudge():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FinalGatedToolThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit",
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.solution is not None
+    assert artifact.solution.reading_summary == "Toy final declaration."
+    assert [call.tool_name for call in artifact.tool_calls[:2]] == [
+        "act_resegment_by_reading",
+        "meta_declare_solution",
+    ]
+    retry_events = [
+        e for e in artifact.loop_events
+        if e.event == "final_declare_retry"
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0].payload["reason"] == "gated_tool_on_final_iteration"
     retry_texts = [
         c["text"]
         for m in api.messages_seen[1]
@@ -1424,6 +1882,160 @@ def test_act_resegment_by_reading_rejects_letter_changing_proposal():
     assert ws.apply_key("main") == "PHYSICS ER"
 
 
+def test_act_resegment_window_by_reading_merges_local_words():
+    raw = "LIBE BITUR SI"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"LIBEBITUR", "SI"},
+        word_list=["SI", "LIBEBITUR"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_window_by_reading({
+        "branch": "main",
+        "start_word_index": 0,
+        "word_count": 2,
+        "proposed_text": "LIBEBITUR",
+    })
+
+    assert out["status"] == "ok"
+    assert out["character_preserving"] is True
+    assert out["old_window_word_count"] == 2
+    assert out["new_window_word_count"] == 1
+    assert ws.apply_key("main") == "LIBEBITUR SI"
+
+
+def test_act_resegment_window_by_reading_splits_local_word():
+    raw = "A POTESTQUIBUS EUA"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"A", "POTEST", "QUIBUS", "EUA"},
+        word_list=["A", "POTEST", "QUIBUS", "EUA"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_window_by_reading({
+        "branch": "main",
+        "start_word_index": 1,
+        "word_count": 1,
+        "proposed_text": "POTEST QUIBUS",
+    })
+
+    assert out["status"] == "ok"
+    assert out["old_window_word_count"] == 1
+    assert out["new_window_word_count"] == 2
+    assert ws.apply_key("main") == "A POTEST QUIBUS EUA"
+
+
+def test_act_resegment_window_by_reading_projects_boundary_despite_letter_diff():
+    raw = "PHYSICS ER DID"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"PHYSICKER", "DID"},
+        word_list=["DID", "PHYSICKER"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_window_by_reading({
+        "branch": "main",
+        "start_word_index": 0,
+        "word_count": 2,
+        "proposed_text": "PHYSICKER",
+    })
+
+    assert out["status"] == "ok"
+    assert out["character_preserving"] is False
+    assert out["same_character_count"] is True
+    assert out["projected_words"] == ["PHYSICSER"]
+    assert out["mismatches"][0]["current_char"] == "S"
+    assert out["mismatches"][0]["proposed_char"] == "K"
+    assert ws.apply_key("main") == "PHYSICSER DID"
+
+
+def test_act_resegment_window_by_reading_rejects_local_count_mismatch():
+    raw = "AP PLY"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"APPLYING"},
+        word_list=["APPLYING"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_window_by_reading({
+        "branch": "main",
+        "start_word_index": 0,
+        "word_count": 2,
+        "proposed_text": "APPLYING",
+    })
+
+    assert "error" in out
+    assert out["same_character_count"] is False
+    assert ws.apply_key("main") == "AP PLY"
+
+
+def test_act_resegment_window_by_reading_suggests_nearby_matching_window():
+    raw = "EAER LIBE BITUR SI"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"LIBEBITUR"},
+        word_list=["LIBEBITUR"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_window_by_reading({
+        "branch": "main",
+        "start_word_index": 2,
+        "word_count": 2,
+        "proposed_text": "LIBEBITUR",
+    })
+
+    assert "error" in out
+    assert out["same_character_count"] is False
+    suggestions = out["nearby_compatible_windows"]
+    assert suggestions
+    assert suggestions[0]["start_word_index"] == 1
+    assert suggestions[0]["word_count"] == 2
+    assert suggestions[0]["current_window_words"] == ["LIBE", "BITUR"]
+    assert suggestions[0]["character_preserving"] is True
+    assert "start_word_index=1" in suggestions[0]["suggested_call"]
+    assert ws.apply_key("main") == "EAER LIBE BITUR SI"
+
+
 def test_decode_validate_reading_repair_classifies_boundary_vs_letter_changes():
     raw = "PHYSICS ER DID AP PLY"
     alpha = Alphabet.from_text(raw, ignore_chars={" "})
@@ -1642,6 +2254,27 @@ def test_meta_declare_allows_final_turn_even_without_reading_workflow():
     assert out["status"] == "ok"
     assert out["accepted"] is True
     assert ex.terminated is True
+
+
+def test_meta_declare_records_final_reading_summary_and_iteration_assessment():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_iteration(3)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best available branch after reading.",
+        "self_confidence": 0.82,
+        "reading_summary": "This appears to be a short test passage.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "More iterations could test one unresolved spelling.",
+    })
+
+    assert out["status"] == "ok"
+    assert out["accepted"] is True
+    assert ex.solution is not None
+    assert ex.solution.reading_summary == "This appears to be a short test passage."
+    assert ex.solution.further_iterations_helpful is True
+    assert ex.solution.further_iterations_note == "More iterations could test one unresolved spelling."
 
 
 def test_execute_rejects_tools_not_allowed_on_gated_turn():

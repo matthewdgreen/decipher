@@ -248,13 +248,6 @@ def cmd_crack(args: argparse.Namespace) -> None:
         on_event=on_event,
     )
 
-    path = Path(artifact_dir) / cipher_id / f"{artifact.run_id}.json"
-    try:
-        artifact.save(path)
-        print(f"\nArtifact saved: {path}")
-    except Exception as e:  # noqa: BLE001
-        print(f"\nWarning: failed to save artifact: {e}")
-
     print(f"Status: {artifact.status}")
     if artifact.solution:
         print(f"Declared branch: {artifact.solution.branch}")
@@ -269,6 +262,20 @@ def cmd_crack(args: argparse.Namespace) -> None:
         (b.decryption for b in artifact.branches if b.name == final_branch),
         artifact.branches[0].decryption if artifact.branches else "",
     )
+    from agent.final_summary import build_final_summary
+    final_summary = build_final_summary(
+        artifact,
+        final_branch=final_branch,
+        final_decryption=final_dec,
+    )
+    artifact.final_summary = final_summary
+    path = Path(artifact_dir) / cipher_id / f"{artifact.run_id}.json"
+    try:
+        artifact.save(path)
+        print(f"\nArtifact saved: {path}")
+    except Exception as e:  # noqa: BLE001
+        print(f"\nWarning: failed to save artifact: {e}")
+
     if renderer is not None:
         from types import SimpleNamespace
 
@@ -283,8 +290,172 @@ def cmd_crack(args: argparse.Namespace) -> None:
             estimated_cost_usd=artifact.estimated_cost_usd,
             artifact_path=str(path),
             error_message=artifact.error_message,
+            final_decryption=final_dec,
+            final_branch=final_branch,
+            branch_scores=[],
+            alignment_report="",
+            final_summary=final_summary,
         ))
     print(f"\nFinal decryption ({final_branch}):\n{final_dec}")
+
+
+def cmd_resume_artifact(args: argparse.Namespace) -> None:
+    """Continue an agentic decipherment from a saved artifact."""
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from agent.display import make_agent_renderer
+    from agent.final_summary import build_final_summary
+    from agent.loop_v2 import run_v2
+    from agent.resume import (
+        cipher_text_from_artifact,
+        load_artifact_dict,
+        resume_context_from_artifact,
+    )
+    from benchmark.scorer import (
+        format_alignment,
+        format_char_diff,
+        has_word_boundaries,
+        score_branch_decryptions,
+    )
+    from services.claude_api import ClaudeAPI
+
+    parent_path = Path(args.artifact).expanduser().resolve()
+    prior_artifact = load_artifact_dict(parent_path)
+    ct = cipher_text_from_artifact(prior_artifact)
+    language = args.language or prior_artifact.get("language") or "en"
+    cipher_id = args.cipher_id or str(prior_artifact.get("cipher_id") or parent_path.stem)
+    extra_iterations = args.extra_iterations
+    branch = args.branch or (prior_artifact.get("solution") or {}).get("branch")
+
+    model = args.model or prior_artifact.get("model") or "claude-opus-4-7"
+    api = ClaudeAPI(api_key=get_api_key(), model=model)
+    display_mode = _resolve_agent_display(args)
+    renderer = make_agent_renderer(display_mode)
+    if renderer is not None:
+        renderer.start_test(
+            cipher_id,
+            f"Resume artifact {parent_path.name}",
+            model=model,
+            max_iterations=extra_iterations,
+        )
+    else:
+        print(
+            f"Resuming {cipher_id} from {parent_path} "
+            f"for {extra_iterations} additional iteration(s)."
+        )
+
+    prior_context = resume_context_from_artifact(
+        prior_artifact,
+        branch=branch,
+        extra_iterations=extra_iterations,
+    )
+
+    def on_event(event: str, payload: dict) -> None:
+        if renderer is not None:
+            renderer.event(event, payload)
+        elif event == "iteration_start":
+            print(f"  iter {payload['iteration']}...", end="", flush=True)
+        elif event == "tool_call":
+            print(".", end="", flush=True)
+        elif event in {"declared_solution", "run_complete", "error", "max_iterations_reached"}:
+            print(f" [{event}]")
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,
+        language=language,
+        max_iterations=extra_iterations,
+        cipher_id=cipher_id,
+        prior_context=prior_context,
+        automated_preflight=None,
+        resume_from_artifact=prior_artifact,
+        resume_branch=branch,
+        parent_artifact_path=str(parent_path),
+        verbose=args.verbose and display_mode == "off",
+        on_event=on_event,
+    )
+
+    ground_truth = prior_artifact.get("ground_truth")
+    artifact.ground_truth = ground_truth
+    branch_inputs = [
+        (b.name, b.decryption, b.mapped_count) for b in artifact.branches
+    ]
+    branch_scores = (
+        score_branch_decryptions(cipher_id, branch_inputs, ground_truth)
+        if isinstance(ground_truth, str) and ground_truth.strip()
+        else []
+    )
+    branch_acc_map = {r["branch"]: r for r in branch_scores}
+    for b in artifact.branches:
+        if b.name in branch_acc_map:
+            b.char_accuracy = branch_acc_map[b.name]["char_accuracy"]
+            b.word_accuracy = branch_acc_map[b.name]["word_accuracy"]
+
+    final_branch = artifact.solution.branch if artifact.solution else (branch or "main")
+    final_decryption = next(
+        (b.decryption for b in artifact.branches if b.name == final_branch),
+        artifact.branches[0].decryption if artifact.branches else "",
+    )
+    final_score = branch_acc_map.get(final_branch or "", {})
+    artifact.char_accuracy = final_score.get("char_accuracy", 0.0)
+    artifact.word_accuracy = final_score.get("word_accuracy", 0.0)
+    alignment_report = ""
+    if isinstance(ground_truth, str) and ground_truth.strip():
+        if has_word_boundaries(ground_truth):
+            alignment_report = format_alignment(final_decryption, ground_truth, max_words=50)
+        else:
+            alignment_report = format_char_diff(final_decryption, ground_truth)
+
+    final_summary = build_final_summary(
+        artifact,
+        final_branch=final_branch or "",
+        final_decryption=final_decryption,
+    )
+    artifact.final_summary = final_summary
+
+    artifact_dir = Path(args.artifact_dir or "artifacts")
+    path = artifact_dir / cipher_id / f"{artifact.run_id}.json"
+    try:
+        artifact.save(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"\nWarning: failed to save artifact: {e}")
+
+    iterations = max((tc.iteration for tc in artifact.tool_calls), default=0)
+    result = SimpleNamespace(
+        test_id=cipher_id,
+        status=artifact.status,
+        char_accuracy=artifact.char_accuracy or 0.0,
+        word_accuracy=artifact.word_accuracy or 0.0,
+        iterations_used=iterations,
+        elapsed_seconds=artifact.finished_at - artifact.started_at,
+        total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
+        estimated_cost_usd=artifact.estimated_cost_usd,
+        artifact_path=str(path),
+        error_message=artifact.error_message,
+        final_decryption=final_decryption,
+        final_branch=final_branch,
+        branch_scores=branch_scores,
+        alignment_report=alignment_report,
+        final_summary=final_summary,
+    )
+    if renderer is not None:
+        renderer.finish(result)
+    else:
+        conf = (
+            f"{artifact.solution.self_confidence:.2f}"
+            if artifact.solution else "n/a"
+        )
+        print(
+            f"\nStatus: {artifact.status}, Char: {result.char_accuracy:.1%}, "
+            f"Word: {result.word_accuracy:.1%}, Conf: {conf}, "
+            f"Iter: {iterations}, Time: {result.elapsed_seconds:.1f}s"
+        )
+        print(f"Artifact: {path}")
+        if artifact.error_message:
+            print(f"Error: {artifact.error_message}")
+        print(f"\nFinal summary:\n{final_summary}")
+        print(f"\nFinal decryption ({final_branch}):\n{final_decryption}")
 
 
 def cmd_testgen(args: argparse.Namespace) -> None:
@@ -510,6 +681,35 @@ def main() -> None:
         help="Use the older pre-zenith_native homophonic solver path for comparison.",
     )
 
+    # resume-artifact
+    resume = subparsers.add_parser(
+        "resume-artifact",
+        help="Continue an agentic decipherment from a saved artifact",
+    )
+    resume.add_argument("artifact", help="Path to a prior agentic artifact JSON")
+    resume.add_argument(
+        "--extra-iterations",
+        "-i",
+        type=int,
+        default=10,
+        help="Additional outer iterations to run from the restored state.",
+    )
+    resume.add_argument(
+        "--branch",
+        help="Branch to focus on from the prior artifact (default: declared branch).",
+    )
+    resume.add_argument("--model", "-m", help="Claude model (default: prior artifact model)")
+    resume.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
+    resume.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
+    resume.add_argument("--cipher-id", help="Override cipher id for the continuation artifact")
+    resume.add_argument("--verbose", "-v", action="store_true")
+    resume.add_argument(
+        "--display",
+        choices=["auto", "pretty", "raw", "jsonl"],
+        default="auto",
+        help="Agentic terminal display mode.",
+    )
+
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
     tg.add_argument("--language", "-l", choices=["en", "it", "de", "fr", "la"], default="en")
@@ -572,7 +772,12 @@ def main() -> None:
         parser.print_help()
         sys.exit(1)
 
-    dispatch = {"benchmark": cmd_benchmark, "crack": cmd_crack, "testgen": cmd_testgen}
+    dispatch = {
+        "benchmark": cmd_benchmark,
+        "crack": cmd_crack,
+        "resume-artifact": cmd_resume_artifact,
+        "testgen": cmd_testgen,
+    }
     dispatch[args.command](args)
 
 

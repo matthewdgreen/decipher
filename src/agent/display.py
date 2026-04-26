@@ -97,7 +97,13 @@ class RawAgentRenderer:
             print(f" [{event}]", flush=True, file=self.stream)
 
     def finish(self, result: Any) -> None:
-        print(file=self.stream)
+        final_summary = str(getattr(result, "final_summary", "") or "").strip()
+        if final_summary:
+            print(file=self.stream)
+            print("Final summary:", file=self.stream)
+            print(final_summary, file=self.stream)
+        else:
+            print(file=self.stream)
 
 
 class JsonlAgentRenderer:
@@ -127,6 +133,7 @@ class JsonlAgentRenderer:
             "word_accuracy": result.word_accuracy,
             "artifact_path": result.artifact_path,
             "error_message": result.error_message,
+            "final_summary": getattr(result, "final_summary", ""),
         })
 
     def _write(self, obj: dict[str, Any]) -> None:
@@ -246,6 +253,10 @@ class PrettyAgentRenderer:
             )
             if result.error_message:
                 print("ERROR:", result.error_message, file=self.stream)
+            final_summary = str(getattr(result, "final_summary", "") or "").strip()
+            if final_summary:
+                print("\nFinal summary:", file=self.stream)
+                print(final_summary, file=self.stream)
 
     def _refresh(self) -> None:
         if self._live:
@@ -288,21 +299,74 @@ class PrettyAgentRenderer:
     def _render_final(self, result: Any) -> Any:
         if not self._rich:
             return ""
+        Layout = self._rich["Layout"]
         Panel = self._rich["Panel"]
+        layout = Layout()
+        layout.split_column(
+            Layout(name="summary", size=8),
+            Layout(name="body", ratio=1),
+        )
+        layout["body"].split_row(
+            Layout(name="left", ratio=3),
+            Layout(name="final_summary", ratio=2),
+        )
+        layout["left"].split_column(
+            Layout(name="decrypt", ratio=2),
+            Layout(name="alignment", ratio=5),
+        )
         body = [
             f"Status: {result.status}",
+            f"Branch: {getattr(result, 'final_branch', '') or self.state.branch or '-'}",
             f"Char: {result.char_accuracy:.1%}   Word: {result.word_accuracy:.1%}",
             f"Iterations: {result.iterations_used}   Time: {result.elapsed_seconds:.1f}s",
             f"Tokens: {result.total_tokens}   Cost: ${result.estimated_cost_usd:.2f}",
             f"Artifact: {result.artifact_path}",
         ]
+        branch_scores = getattr(result, "branch_scores", None) or []
+        if branch_scores:
+            score_bits = []
+            for row in branch_scores[:5]:
+                word = row.get("word_accuracy")
+                word_part = "N/A" if word is None else f"{word:.1%}"
+                score_bits.append(
+                    f"{row.get('branch')}: char={row.get('char_accuracy', 0.0):.1%} "
+                    f"word={word_part}"
+                )
+            body.append("Branches: " + "; ".join(score_bits))
         if result.error_message:
             body.append("")
             body.append("API/provider error:")
             body.append(result.error_message)
             body.append("")
             body.append("This run may have fallback auto-declared; do not treat it as a capability result.")
-        return Panel("\n".join(body), title=f"{result.test_id} complete")
+        layout["summary"].update(Panel("\n".join(body), title=f"{result.test_id} complete"))
+
+        final_decryption = str(getattr(result, "final_decryption", "") or self.state.decryption)
+        layout["decrypt"].update(
+            Panel(
+                _compact_preview(final_decryption, max_chars=1800),
+                title="Final decrypt",
+            )
+        )
+        final_summary = str(getattr(result, "final_summary", "") or "").strip()
+        if not final_summary:
+            final_summary = "No final reading summary was provided for this run."
+        layout["final_summary"].update(
+            Panel(
+                _compact_final_summary(final_summary, max_chars=2400),
+                title="Reading / Process Summary",
+            )
+        )
+        alignment = str(getattr(result, "alignment_report", "") or "")
+        if not alignment:
+            alignment = "No ground-truth alignment available for this run."
+        layout["alignment"].update(
+            Panel(
+                alignment,
+                title="Matched / Unmatched Words",
+            )
+        )
+        return layout
 
     def _decrypt_text(self) -> Any:
         if not self._rich:
@@ -345,3 +409,50 @@ class PrettyAgentRenderer:
 def _clean_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return textwrap.shorten(text, width=900, placeholder="...")
+
+
+def _compact_preview(text: str, *, max_chars: int) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) > max_chars:
+        text = text[:max_chars].rstrip() + " ..."
+    return text or "(no decrypt available)"
+
+
+def _compact_final_summary(text: str, *, max_chars: int) -> str:
+    """Make the final summary fit a terminal panel without losing sections."""
+    lines = [line.strip() for line in text.splitlines()]
+    sections: list[str] = []
+    current_heading = ""
+    current_parts: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_heading, current_parts
+        if current_heading or current_parts:
+            body = " ".join(current_parts).strip()
+            if current_heading and body:
+                sections.append(f"{current_heading}: {body}")
+            elif current_heading:
+                sections.append(current_heading)
+            elif body:
+                sections.append(body)
+        current_heading = ""
+        current_parts = []
+
+    for line in lines:
+        if not line:
+            continue
+        if line.endswith(":") and len(line) <= 40:
+            flush()
+            current_heading = line[:-1]
+            continue
+        if line.startswith("- "):
+            current_parts.append(line[2:])
+        else:
+            current_parts.append(line)
+    flush()
+
+    compact = "\n".join(sections)
+    compact = re.sub(r"[ \t]+", " ", compact).strip()
+    if len(compact) > max_chars:
+        compact = compact[:max_chars].rstrip() + " ..."
+    return compact or "No final reading summary was provided for this run."
