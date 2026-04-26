@@ -47,6 +47,9 @@ def analyze_artifact(artifact: dict[str, Any]) -> list[ArtifactFinding]:
     findings.extend(_check_declared_branch_accuracy(artifact))
     findings.extend(_check_score_overrode_reading(tool_calls, artifact))
     findings.extend(_check_unattempted_reading_fix(artifact))
+    findings.extend(_check_loop_events(artifact))
+    findings.extend(_check_repair_agenda_unresolved(artifact))
+    findings.extend(_check_projection_failures(tool_calls))
     return findings
 
 
@@ -54,7 +57,7 @@ def analyze_artifact(artifact: dict[str, Any]) -> list[ArtifactFinding]:
 # repair". These are the cipher-symbol-level mutation tools the agent should
 # reach for when it recognises target-language words in the decoded text.
 _READING_PRIMITIVES = frozenset(
-    ("act_set_mapping", "act_bulk_set", "act_anchor_word")
+    ("act_set_mapping", "act_bulk_set", "act_anchor_word", "act_apply_word_repair")
 )
 # Loose textual signals that an assistant turn is voicing a reading-driven
 # fix hypothesis. False positives are tolerable: the goal is to surface
@@ -395,3 +398,118 @@ def _walk_assistant_turns(
         elif isinstance(content, str):
             text_parts.append(content)
         yield iter_num, "\n".join(text_parts), tool_names
+
+
+def _check_loop_events(artifact: dict[str, Any]) -> list[ArtifactFinding]:
+    findings: list[ArtifactFinding] = []
+    for event in artifact.get("loop_events", []) or []:
+        if not isinstance(event, dict):
+            continue
+        name = event.get("event")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        if name == "gated_tool_retry":
+            findings.append(ArtifactFinding(
+                label="gated_tool_retry",
+                severity="info",
+                message=(
+                    "The loop caught a disallowed tool choice and retried "
+                    "inside the same outer iteration."
+                ),
+                iteration=event.get("outer_iteration") or payload.get("iteration"),
+                evidence={
+                    "inner_step": event.get("inner_step") or payload.get("inner_step"),
+                    "mode": event.get("mode"),
+                    "attempted_tools": payload.get("attempted_tools", []),
+                    "allowed_tools": payload.get("allowed_tools", []),
+                },
+            ))
+        elif name == "boundary_projection_count_retry":
+            findings.append(ArtifactFinding(
+                label="same_length_projection_failed",
+                severity="warning",
+                message=(
+                    "A full-reading/boundary projection proposal had the wrong "
+                    "normalized character count and required an immediate retry."
+                ),
+                iteration=event.get("outer_iteration") or payload.get("iteration"),
+                evidence={
+                    "inner_step": event.get("inner_step") or payload.get("inner_step"),
+                    "mode": event.get("mode"),
+                    "attempted_tools": payload.get("attempted_tools", []),
+                    "allowed_tools": payload.get("allowed_tools", []),
+                },
+            ))
+    return findings
+
+
+def _check_repair_agenda_unresolved(artifact: dict[str, Any]) -> list[ArtifactFinding]:
+    agenda = artifact.get("repair_agenda", []) or []
+    if not isinstance(agenda, list):
+        return []
+    unresolved_statuses = {"open", "blocked"}
+    unresolved = [
+        item for item in agenda
+        if isinstance(item, dict) and item.get("status") in unresolved_statuses
+    ]
+    if not unresolved:
+        return []
+    solution = artifact.get("solution") or {}
+    iteration = (
+        solution.get("declared_at_iteration")
+        if isinstance(solution, dict)
+        else None
+    )
+    return [ArtifactFinding(
+        label="repair_agenda_unresolved",
+        severity="warning",
+        message=(
+            "Run ended with unresolved reading-repair agenda items. The agent "
+            "should apply, reject, or explicitly hold these before declaration."
+        ),
+        iteration=iteration,
+        evidence={
+            "unresolved_count": len(unresolved),
+            "items": unresolved[:5],
+        },
+    )]
+
+
+def _check_projection_failures(
+    tool_calls: list[dict[str, Any]],
+) -> list[ArtifactFinding]:
+    findings: list[ArtifactFinding] = []
+    for call in tool_calls:
+        name = call.get("tool_name")
+        if name not in {
+            "decode_validate_reading_repair",
+            "act_resegment_by_reading",
+            "act_resegment_from_reading_repair",
+        }:
+            continue
+        result = _result_dict(call)
+        if not result:
+            continue
+        if result.get("same_character_count") is not False:
+            projection = result.get("boundary_projection")
+            if not (
+                isinstance(projection, dict)
+                and projection.get("applicable") is False
+                and "character counts differ" in str(projection.get("reason", ""))
+            ):
+                continue
+        findings.append(ArtifactFinding(
+            label="same_length_projection_failed",
+            severity="warning",
+            message=(
+                "A reading/projection tool received a proposal whose normalized "
+                "character count did not match the current branch."
+            ),
+            iteration=call.get("iteration"),
+            tool_name=name,
+            evidence={
+                "current_char_count": result.get("current_char_count"),
+                "proposed_char_count": result.get("proposed_char_count"),
+                "error": result.get("error"),
+            },
+        ))
+    return findings

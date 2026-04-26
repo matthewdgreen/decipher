@@ -3,19 +3,33 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agent.loop_v2 import (
+    BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT,
+    BOUNDARY_PROJECTION_RETRY_PREFLIGHT,
+    FINAL_DECLARATION_RETRY_PREFLIGHT,
     FINAL_ITERATION_PREFLIGHT,
     FULL_READING_WORKFLOW_TOOL_NAMES,
     PENULTIMATE_READING_WORKFLOW_PREFLIGHT,
     PENULTIMATE_ALLOWED_TOOL_NAMES,
     READING_WORKFLOW_GATE_PREFLIGHT,
+    _is_boundary_projection_count_failure,
+    _is_tool_gated_result,
     build_workspace_panel,
     run_v2,
 )
+from agent.model_provider import (
+    ClaudeModelProvider,
+    ModelResponse,
+    TextBlock,
+    ToolUseBlock,
+    normalize_model_response,
+)
+from agent.orchestration import AgentMode, AgentRunState, MODE_ALLOWED_TOOLS
 from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
@@ -187,6 +201,156 @@ def test_act_set_mapping_keeps_reading_positive_negative_score_advisory(monkeypa
     assert "verdict" not in out["score_delta"]
     assert "improved" not in out["score_delta"]
     assert "keep the change" in out["note"].lower()
+
+
+def test_decode_plan_word_repair_identifies_symbol_mapping_and_preview():
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("R"))
+
+    out = ex._tool_decode_plan_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+    })
+
+    assert out["applicable"] is True
+    assert out["cipher_word_index"] == 0
+    assert out["current_decoded"] == "CAT"
+    assert out["target_word"] == "BAT"
+    assert out["proposed_mappings"] == {"A": "B"}
+    assert {"index": 0, "before": "CAT", "after": "BAT"} in out["changed_words_preview"]
+    assert {"index": 1, "before": "CAR", "after": "BAR"} in out["changed_words_preview"]
+    assert out["agenda_item"]["status"] == "open"
+    assert out["agenda_item"]["from"] == "CAT"
+    assert out["agenda_item"]["to"] == "BAT"
+    assert ex.repair_agenda[0]["id"] == out["agenda_item"]["id"]
+    assert "_token_mappings" not in out
+
+
+def test_act_apply_word_repair_applies_mapping_with_changed_words():
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("R"))
+
+    out = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+    })
+
+    assert out["status"] == "ok"
+    assert out["mappings"] == {"A": "B"}
+    assert out["mappings_set"] == 1
+    assert {"index": 0, "before": "CAT", "after": "BAT"} in out["changed_words"]
+    assert {"index": 1, "before": "CAR", "after": "BAR"} in out["changed_words"]
+    assert ws.apply_key("main") == "BAT | BAR"
+    assert "verdict" not in out["score_delta"]
+    assert out["agenda_item"]["status"] == "applied"
+    assert out["agenda_item"]["last_result"]["mappings_set"] == 1
+
+
+def test_repair_agenda_list_and_update_track_word_repair_state():
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("R"))
+
+    plan = ex._tool_decode_plan_word_repair({
+        "branch": "main",
+        "cipher_word_index": 0,
+        "target_word": "BAT",
+    })
+    listed = ex._tool_repair_agenda_list({"branch": "main"})
+
+    assert listed["count"] == 1
+    assert listed["unresolved_count"] == 1
+    assert listed["items"][0]["id"] == plan["agenda_item"]["id"]
+
+    updated = ex._tool_repair_agenda_update({
+        "item_id": plan["agenda_item"]["id"],
+        "status": "held",
+        "notes": "Collateral damage needs review.",
+    })
+
+    assert updated["status"] == "ok"
+    assert updated["agenda_item"]["status"] == "held"
+    assert "Collateral" in updated["agenda_item"]["notes"]
+
+
+def test_word_repair_flags_latin_orthography_shift_and_branch_card():
+    raw = "AB | AC | AD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="la",
+        word_set={"UT", "UM", "US", "VT", "VM", "VS"},
+        word_list=["UT", "UM", "US", "VT", "VM", "VS"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("U"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("M"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("S"))
+
+    out = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "cipher_word_index": 0,
+        "target_word": "VT",
+    })
+
+    assert out["status"] == "ok"
+    assert out["orthography_risks"]
+    assert out["orthography_risks"][0]["type"] == "latin_orthography_shift"
+    assert out["orthography_risks"][0]["from"] == "U"
+    assert out["orthography_risks"][0]["to"] == "V"
+
+    cards = ex._tool_workspace_branch_cards({"branch": "main"})
+    card = cards["cards"][0]
+    assert card["branch"] == "main"
+    assert card["repair_counts"]["applied"] == 1
+    assert card["orthography_risks"]
 
 
 def test_act_bulk_set_and_anchor_word_use_reading_score_delta():
@@ -410,6 +574,350 @@ class _FakeAPI:
         )
 
 
+class _GatedThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+        self.tools_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
+        if len(self.messages_seen) == 1:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=3),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="bad_tool",
+                        name="search_anneal",
+                        input={"branch": "main"},
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "main",
+                        "rationale": "Best available branch after retry.",
+                        "self_confidence": 0.2,
+                    },
+                )
+            ],
+        )
+
+
+class _BoundaryCountRetryAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+        self.tools_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
+        if len(self.messages_seen) == 1:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=3),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="short_reading",
+                        name="decode_validate_reading_repair",
+                        input={
+                            "branch": "automated_preflight",
+                            "proposed_text": "A",
+                        },
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="fixed_reading",
+                    name="act_resegment_by_reading",
+                    input={
+                        "branch": "automated_preflight",
+                        "proposed_text": "AB C",
+                    },
+                )
+            ],
+        )
+
+
+class _FinalBookkeepingThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+        self.tools_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.tools_seen.append(tools or [])
+        if len(self.messages_seen) == 1:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=3),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="cards",
+                        name="workspace_branch_cards",
+                        input={},
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "main",
+                        "rationale": "Best branch after final cards.",
+                        "self_confidence": 0.4,
+                    },
+                )
+            ],
+        )
+
+
+def test_normalize_model_response_decouples_loop_from_provider_shape():
+    raw = SimpleNamespace(
+        usage=SimpleNamespace(
+            input_tokens=11,
+            output_tokens=7,
+            cache_read_input_tokens=3,
+        ),
+        content=[
+            SimpleNamespace(type="text", text="Plan."),
+            SimpleNamespace(
+                type="tool_use",
+                id="toolu_1",
+                name="decode_show",
+                input={"branch": "main"},
+            ),
+        ],
+    )
+
+    response = normalize_model_response(raw)
+
+    assert isinstance(response, ModelResponse)
+    assert response.usage.input_tokens == 11
+    assert response.usage.output_tokens == 7
+    assert response.usage.cache_read_input_tokens == 3
+    assert response.raw is raw
+    assert response.content == [
+        TextBlock(text="Plan."),
+        ToolUseBlock(id="toolu_1", name="decode_show", input={"branch": "main"}),
+    ]
+
+
+def test_claude_model_provider_wraps_existing_api_without_loop_specifics():
+    api = _FakeAPI()
+    provider = ClaudeModelProvider(api)
+
+    response = provider.send(messages=[], tools=[], system="", max_tokens=128)
+
+    assert provider.provider_name == "anthropic"
+    assert provider.model == api.model
+    assert isinstance(response, ModelResponse)
+    assert response.content == [TextBlock(text="I forgot to declare.")]
+
+
+def test_agent_run_state_exposes_mode_specific_tool_gates():
+    state = AgentRunState()
+
+    assert state.active_mode is AgentMode.EXPLORE
+    assert state.allowed_tools() == MODE_ALLOWED_TOOLS[AgentMode.EXPLORE]
+
+    state.outer_iteration = 4
+    state.set_mode(AgentMode.BOUNDARY_PROJECTION, branch="repair")
+    state.mark_workflow_started("full_reading_repair")
+    state.mark_workflow_finished("full_reading_repair", note="projected boundaries")
+
+    assert state.active_branch == "repair"
+    assert state.allowed_tools() == MODE_ALLOWED_TOOLS[AgentMode.BOUNDARY_PROJECTION]
+    workflow = state.workflows["repair:full_reading_repair"]
+    assert workflow.status == "completed"
+    assert workflow.started_outer_iteration == 4
+    assert workflow.finished_outer_iteration == 4
+    assert workflow.notes == ["projected boundaries"]
+
+
+def test_tool_gated_detector_ignores_non_object_json_results():
+    assert _is_tool_gated_result('{"reason": "tool_gated"}') is True
+    assert _is_tool_gated_result('[{"symbol": "A", "count": 12}]') is False
+    assert _is_tool_gated_result("not json") is False
+
+
+def test_boundary_projection_count_failure_detector():
+    result = (
+        '{"error": "Cannot project", "same_character_count": false, '
+        '"current_char_count": 345, "proposed_char_count": 178}'
+    )
+
+    assert _is_boundary_projection_count_failure(
+        "decode_validate_reading_repair",
+        result,
+    ) is True
+    assert _is_boundary_projection_count_failure("score_panel", result) is False
+    assert _is_boundary_projection_count_failure(
+        "decode_validate_reading_repair",
+        '{"status": "ok", "same_character_count": true}',
+    ) is False
+
+
+def test_run_v2_records_loop_events_for_future_inner_loop_observability():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit",
+    )
+
+    event_names = [event.event for event in artifact.loop_events]
+    assert "iteration_start" in event_names
+    assert "no_tool_calls" in event_names
+    assert "auto_declared_solution" in event_names
+    assert "run_complete" in event_names
+
+
+def test_boundary_projection_gate_retries_inside_same_outer_iteration():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _GatedThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=3,
+        cipher_id="unit",
+    )
+
+    assert artifact.status == "solved"
+    assert len(api.messages_seen) >= 2
+    assert artifact.solution is not None
+    assert artifact.solution.declared_at_iteration == 1
+    assert [call.tool_name for call in artifact.tool_calls[:2]] == [
+        "search_anneal",
+        "meta_declare_solution",
+    ]
+    retry_events = [e for e in artifact.loop_events if e.event == "gated_tool_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0].outer_iteration == 1
+    assert retry_events[0].inner_step == 1
+    assert retry_events[0].mode == "boundary_projection"
+    assert retry_events[0].payload["attempted_tools"] == ["search_anneal"]
+    retry_texts = [
+        c["text"]
+        for m in api.messages_seen[1]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any(BOUNDARY_PROJECTION_RETRY_PREFLIGHT in t for t in retry_texts)
+
+
+def test_boundary_projection_count_mismatch_retries_inside_same_outer_iteration():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _BoundaryCountRetryAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=3,
+        cipher_id="unit",
+        automated_preflight={
+            "enabled": True,
+            "run_mode": "automated_only",
+            "status": "solved",
+            "solver": "fake_native",
+            "summary": "Automated native solver preflight (no LLM access): ABC",
+            "key": {"0": 0, "1": 1, "2": 2},
+            "estimated_cost_usd": 0.0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+        },
+    )
+
+    assert len(api.messages_seen) >= 2
+    assert [call.tool_name for call in artifact.tool_calls[:2]] == [
+        "decode_validate_reading_repair",
+        "act_resegment_by_reading",
+    ]
+    retry_events = [
+        e for e in artifact.loop_events
+        if e.event == "boundary_projection_count_retry"
+    ]
+    assert len(retry_events) == 1
+    assert retry_events[0].outer_iteration == 1
+    assert retry_events[0].inner_step == 1
+    assert retry_events[0].mode == "boundary_projection"
+    assert retry_events[0].payload["attempted_tools"] == [
+        "decode_validate_reading_repair"
+    ]
+    retry_texts = [
+        c["text"]
+        for m in api.messages_seen[1]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any(BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT in t for t in retry_texts)
+
+
+def test_final_turn_bookkeeping_without_declare_retries_inside_same_iteration():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
+    api = _FinalBookkeepingThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit",
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.solution is not None
+    assert artifact.solution.branch == "main"
+    assert [call.tool_name for call in artifact.tool_calls[:2]] == [
+        "workspace_branch_cards",
+        "meta_declare_solution",
+    ]
+    retry_events = [
+        e for e in artifact.loop_events
+        if e.event == "final_declare_retry"
+    ]
+    assert len(retry_events) == 1
+    retry_texts = [
+        c["text"]
+        for m in api.messages_seen[1]
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+        if isinstance(c, dict) and c.get("type") == "text"
+    ]
+    assert any(FINAL_DECLARATION_RETRY_PREFLIGHT in t for t in retry_texts)
+
+
 def test_final_turn_prefight_and_auto_declare_fallback():
     alpha = Alphabet(list("ABC"))
     ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
@@ -487,7 +995,7 @@ def test_prefinal_window_gates_local_edit_tools():
     assert "act_bulk_set" not in first_turn_tool_names
 
 
-def test_final_turn_only_exposes_declare_tool():
+def test_final_turn_exposes_declare_and_bookkeeping_tools():
     alpha = Alphabet(list("ABC"))
     ct = CipherText(raw="ABC", alphabet=alpha, separator=None)
     api = _FakeAPI()
@@ -501,7 +1009,12 @@ def test_final_turn_only_exposes_declare_tool():
     )
 
     final_turn_tool_names = {tool["name"] for tool in api.tools_seen[-1]}
-    assert final_turn_tool_names == {"meta_declare_solution"}
+    assert final_turn_tool_names == {
+        "workspace_branch_cards",
+        "repair_agenda_list",
+        "repair_agenda_update",
+        "meta_declare_solution",
+    }
 
 
 def test_automated_preflight_context_and_branch_available_on_first_turn():
@@ -1019,13 +1532,95 @@ def test_meta_declare_blocks_boundary_damaged_branch_before_reading_workflow():
     assert "decode_validate_reading_repair" in out["note"]
 
     ex.call_log.append(SimpleNamespace(
-        tool_name="decode_validate_reading_repair",
+        tool_name="act_resegment_from_reading_repair",
         arguments={"branch": "main"},
     ))
     accepted = ex._tool_meta_declare_solution({
         "branch": "main",
         "rationale": "Readable text remains, but there are boundary issues.",
         "self_confidence": 0.7,
+    })
+
+    assert accepted["status"] == "ok"
+    assert accepted["accepted"] is True
+    assert ex.terminated is True
+
+
+def test_meta_declare_blocks_unresolved_repair_agenda_until_item_resolved():
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("R"))
+
+    plan = ex._tool_decode_plan_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+    })
+
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "CAT should probably stay because the collateral is bad.",
+        "self_confidence": 0.5,
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "repair_agenda_unresolved"
+    assert ex.terminated is False
+
+    ex._tool_repair_agenda_update({
+        "item_id": plan["agenda_item"]["id"],
+        "status": "held",
+        "notes": "Collateral damage is too broad.",
+    })
+    accepted = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best available branch; repair was held.",
+        "self_confidence": 0.5,
+    })
+
+    assert accepted["status"] == "ok"
+    assert accepted["accepted"] is True
+    assert ex.terminated is True
+
+
+def test_meta_declare_requires_branch_cards_when_multiple_branches_exist():
+    ex = _executor_for("ABC", separator=None)
+    ex.workspace.fork("candidate", from_branch="main")
+
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best branch.",
+        "self_confidence": 0.5,
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "branch_cards_required"
+    assert ex.terminated is False
+
+    cards = ex._tool_workspace_branch_cards({})
+    assert cards["status"] == "ok"
+    ex.call_log.append(SimpleNamespace(
+        tool_name="workspace_branch_cards",
+        arguments={},
+    ))
+
+    accepted = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best branch after branch-card comparison.",
+        "self_confidence": 0.5,
     })
 
     assert accepted["status"] == "ok"

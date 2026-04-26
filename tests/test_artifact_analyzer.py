@@ -152,6 +152,57 @@ def test_analyzer_does_not_flag_score_overrode_when_change_is_kept():
     assert "score_overrode_reading" not in summary["labels"]
 
 
+def test_analyzer_flags_unresolved_repair_agenda():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "solution": {"branch": "repair", "declared_at_iteration": 12},
+        "repair_agenda": [
+            {
+                "id": 1,
+                "branch": "repair",
+                "from": "TREUITER",
+                "to": "BREUITER",
+                "status": "open",
+            },
+            {
+                "id": 2,
+                "branch": "repair",
+                "from": "SIMALITER",
+                "to": "SIMILITER",
+                "status": "applied",
+            },
+        ],
+        "tool_calls": [],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"]["repair_agenda_unresolved"] == 1
+
+
+def test_analyzer_treats_held_repair_agenda_as_resolved():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "solution": {"branch": "repair", "declared_at_iteration": 12},
+        "repair_agenda": [
+            {
+                "id": 1,
+                "branch": "repair",
+                "from": "RLVRES",
+                "to": "PLVRES",
+                "status": "held",
+            },
+        ],
+        "tool_calls": [],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "repair_agenda_unresolved" not in summary["labels"]
+
+
 def test_analyzer_flags_unattempted_reading_fix():
     """Assistant text proposes a cipher-symbol → letter fix; no mutation
     primitive follows within two iterations."""
@@ -229,6 +280,92 @@ def test_analyzer_does_not_flag_unattempted_when_mutation_follows():
                 "content": [
                     {"type": "text", "text": "Applying the fix."},
                     {"type": "tool_use", "name": "act_set_mapping", "input": {}},
+                ],
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "unattempted_reading_fix" not in summary["labels"]
+
+
+def test_analyzer_labels_gated_and_projection_retry_events():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [],
+        "loop_events": [
+            {
+                "event": "gated_tool_retry",
+                "outer_iteration": 13,
+                "inner_step": 1,
+                "mode": "boundary_projection",
+                "payload": {
+                    "attempted_tools": ["search_anneal"],
+                    "allowed_tools": ["decode_show"],
+                },
+            },
+            {
+                "event": "boundary_projection_count_retry",
+                "outer_iteration": 14,
+                "inner_step": 1,
+                "mode": "boundary_projection",
+                "payload": {
+                    "attempted_tools": ["act_resegment_from_reading_repair"],
+                },
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"]["gated_tool_retry"] == 1
+    assert summary["labels"]["same_length_projection_failed"] == 1
+
+
+def test_analyzer_labels_projection_tool_count_failure():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "tool_calls": [
+            {
+                "iteration": 13,
+                "tool_name": "decode_validate_reading_repair",
+                "result": {
+                    "branch": "main",
+                    "same_character_count": False,
+                    "current_char_count": 345,
+                    "proposed_char_count": 178,
+                },
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"]["same_length_projection_failed"] == 1
+
+
+def test_analyzer_treats_word_repair_as_reading_primitive():
+    artifact = {
+        "cipher_alphabet_size": 23,
+        "cipher_word_count": 78,
+        "messages": [
+            {"role": "user", "content": "init"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "TREUITER should be BREUITER."},
+                    {"type": "tool_use", "name": "decode_show", "input": {}},
+                ],
+            },
+            {"role": "user", "content": [{"type": "tool_result"}]},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "Applying the word repair."},
+                    {"type": "tool_use", "name": "act_apply_word_repair", "input": {}},
                 ],
             },
         ],

@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import time
 import uuid
+import json
 from typing import Any
 
+from agent.model_provider import ClaudeModelProvider, ModelResponse
+from agent.orchestration import AgentMode
 from agent.prompts_v2 import get_system_prompt, initial_context
 from agent.tools_v2 import TOOL_DEFINITIONS, WorkspaceToolExecutor
 from analysis import dictionary, ic, ngram, pattern
 from analysis import signals as sig
 from analysis.segment import segment_text
-from artifact.schema import RunArtifact, SolutionDeclaration
+from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
 from models.cipher_text import CipherText
 from services.claude_api import ClaudeAPI, ClaudeAPIError, estimate_cost
 from workspace import Workspace
@@ -99,9 +102,16 @@ TOOL_RESULT_STUB = "[result omitted from history — see current workspace panel
 # Keep the last N iterations of full tool results; older ones are stubbed out.
 TOOL_RESULT_HISTORY_DEPTH = 4
 READING_WORKFLOW_GATE_TURNS = 2
+BOUNDARY_PROJECTION_MAX_INNER_RETRIES = 1
+FINAL_DECLARATION_MAX_INNER_RETRIES = 2
 
 FULL_READING_WORKFLOW_TOOL_NAMES = {
     "decode_validate_reading_repair",
+    "act_resegment_by_reading",
+    "act_resegment_from_reading_repair",
+}
+
+FULL_READING_ACTUATOR_TOOL_NAMES = {
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
 }
@@ -110,31 +120,46 @@ PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "decode_show",
     "score_panel",
     "score_dictionary",
+    "decode_plan_word_repair",
+    "act_apply_word_repair",
+    "repair_agenda_list",
+    "repair_agenda_update",
     "decode_validate_reading_repair",
     "act_resegment_by_reading",
     "act_resegment_from_reading_repair",
     "meta_declare_solution",
 }
 
-FINAL_ALLOWED_TOOL_NAMES = {"meta_declare_solution"}
+FINAL_ALLOWED_TOOL_NAMES = {
+    "workspace_branch_cards",
+    "repair_agenda_list",
+    "repair_agenda_update",
+    "meta_declare_solution",
+}
 
 FINAL_ITERATION_PREFLIGHT = (
     "🚨 **THIS IS YOUR FINAL ACTION TURN.** "
-    "You are on the last iteration. You MUST call "
+    "You are on the last iteration. You MUST end by calling "
     "`meta_declare_solution(branch='...', rationale='...', self_confidence=...)` "
-    "now. Do not call diagnostic or repair tools on this turn. An imperfect "
-    "declared branch scores; no declaration is treated as a failed run."
+    "now. Only final bookkeeping tools are available. If there are multiple "
+    "branches, call `workspace_branch_cards` first. If any repair agenda item "
+    "is open but you have decided not to apply it, call `repair_agenda_update` "
+    "with status `held` or `rejected`, then declare in the same response. An "
+    "imperfect declared branch scores; no declaration is treated as a failed "
+    "run."
 )
 
 PENULTIMATE_READING_WORKFLOW_PREFLIGHT = (
     "⚠ **ONE TURN LEFT AFTER THIS.** If any branch is readable but still has "
     "word-boundary, segmentation, or alignment issues, this is your last safe "
-    "turn to run the full-reading workflow. Do NOT spend this turn on another "
-    "local split/merge, bulk mapping, or free search. Tool access is restricted "
-    "on this turn: some tools are no longer available, and you must only use "
-    "the allowed tools shown to you. The available path is the full-reading "
-    "workflow. Write your best complete target-language reading and prefer the "
-    "actuator now: "
+    "turn to run the reading repair workflow. Do NOT spend this turn on "
+    "another local split/merge, bulk mapping, or free search. Tool access is "
+    "restricted on this turn: some tools are no longer available, and you must "
+    "only use the allowed tools shown to you. If you can name a same-length "
+    "word repair such as TREUITER -> BREUITER, call "
+    "`decode_plan_word_repair` and then `act_apply_word_repair`. If the main "
+    "problem is boundaries/alignment, write your best complete target-language "
+    "reading and prefer the actuator now: "
     "call `act_resegment_by_reading` if it is character-preserving, or "
     "`act_resegment_from_reading_repair` if it changes letters but has the same "
     "character count. Use `decode_validate_reading_repair` first only if you "
@@ -146,10 +171,43 @@ READING_WORKFLOW_GATE_PREFLIGHT = (
     "⚠ **FULL-READING WORKFLOW WINDOW.** The run is near its final turns. "
     "If a branch is readable but has boundary/alignment drift, local edits and "
     "free search are now gated off. Some tools are no longer allowed; only use "
-    "the tools available on this turn. Draft the best complete target-language "
-    "reading and use `act_resegment_by_reading` or "
+    "the tools available on this turn. If you have specific same-length word "
+    "repairs, use `decode_plan_word_repair` / `act_apply_word_repair` so the "
+    "repair agenda records them. For boundary drift, draft the best complete "
+    "target-language reading and use `act_resegment_by_reading` or "
     "`act_resegment_from_reading_repair`; use `decode_validate_reading_repair` "
     "only if you need to choose between those two."
+)
+
+BOUNDARY_PROJECTION_RETRY_PREFLIGHT = (
+    "The previous tool call was rejected by the boundary-projection gate. "
+    "This does not consume another outer iteration, but you must recover now. "
+    "Some tools are no longer allowed in this window. Use only the allowed "
+    "tools shown to you. If you voiced a same-length word repair, use "
+    "`decode_plan_word_repair` / `act_apply_word_repair`. Otherwise prefer a "
+    "full-reading action: `act_resegment_by_reading`, "
+    "`act_resegment_from_reading_repair`, or "
+    "`decode_validate_reading_repair` if you need to choose between them."
+)
+
+BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT = (
+    "The full-reading proposal could not be applied because its normalized "
+    "character count did not match the current branch. This does not consume "
+    "another outer iteration. Revise the proposal now inside this same "
+    "boundary-projection workflow. You must write a complete reading, not a "
+    "summary or excerpt. Its normalized letters must have exactly the "
+    "`current_char_count` reported by the tool result. If you intend only word "
+    "boundary changes, preserve the decoded character stream exactly and call "
+    "`act_resegment_by_reading`. If you intend spelling/key repairs too, keep "
+    "the same character count and call `act_resegment_from_reading_repair`."
+)
+
+FINAL_DECLARATION_RETRY_PREFLIGHT = (
+    "You used final-turn bookkeeping tools but have not declared yet. This "
+    "does not consume another outer iteration. You must now call "
+    "`meta_declare_solution` on the best branch. If a declaration was blocked, "
+    "use only the suggested bookkeeping tool needed to clear that blocker, "
+    "then call `meta_declare_solution` in this same response."
 )
 
 
@@ -236,7 +294,7 @@ def _filter_tool_definitions(allowed_names: set[str]) -> list[dict[str, Any]]:
 
 def _has_used_full_reading_workflow(executor: WorkspaceToolExecutor) -> bool:
     return any(
-        call.tool_name in FULL_READING_WORKFLOW_TOOL_NAMES
+        call.tool_name in FULL_READING_ACTUATOR_TOOL_NAMES
         for call in executor.call_log
     )
 
@@ -263,6 +321,150 @@ def _tool_definitions_for_turn(
     if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
         return _filter_tool_definitions(PENULTIMATE_ALLOWED_TOOL_NAMES)
     return TOOL_DEFINITIONS
+
+
+def _mode_for_turn(
+    executor: WorkspaceToolExecutor,
+    iteration: int,
+    max_iterations: int,
+) -> AgentMode:
+    if iteration == max_iterations:
+        return AgentMode.DECLARE
+    if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
+        return AgentMode.BOUNDARY_PROJECTION
+    return AgentMode.EXPLORE
+
+
+def _collect_assistant_blocks(
+    response: ModelResponse,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
+    assistant_blocks: list[dict[str, Any]] = []
+    tool_uses: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+    for block in response.content:
+        if block.type == "text":
+            assistant_blocks.append({"type": "text", "text": block.text})
+            text_parts.append(block.text)
+        elif block.type == "tool_use":
+            assistant_blocks.append({
+                "type": "tool_use",
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+            tool_uses.append({
+                "id": block.id,
+                "name": block.name,
+                "input": block.input,
+            })
+    return assistant_blocks, tool_uses, text_parts
+
+
+def _parse_json_result(result: str) -> Any:
+    try:
+        return json.loads(result)
+    except json.JSONDecodeError:
+        return None
+
+
+def _is_tool_gated_result(result: str) -> bool:
+    parsed = _parse_json_result(result)
+    if not isinstance(parsed, dict):
+        return False
+    return parsed.get("reason") == "tool_gated"
+
+
+def _is_boundary_projection_count_failure(tool_name: str, result: str) -> bool:
+    if tool_name not in FULL_READING_WORKFLOW_TOOL_NAMES:
+        return False
+    parsed = _parse_json_result(result)
+    if not isinstance(parsed, dict):
+        return False
+    if parsed.get("same_character_count") is False:
+        return True
+    if not parsed.get("error"):
+        return False
+    projection = parsed.get("boundary_projection")
+    return (
+        isinstance(projection, dict)
+        and projection.get("applicable") is False
+        and "character counts differ" in str(projection.get("reason", ""))
+    )
+
+
+def _tool_result_summary(result: str) -> dict[str, Any]:
+    parsed = _parse_json_result(result)
+    if not isinstance(parsed, dict):
+        return {}
+    keys = (
+        "status",
+        "error",
+        "branch",
+        "mapping",
+        "from",
+        "to",
+        "mappings",
+        "mappings_set",
+        "score_delta",
+        "old_word_count",
+        "new_word_count",
+        "current_char_count",
+        "proposed_char_count",
+        "same_character_count",
+        "unresolved_count",
+    )
+    summary = {key: parsed[key] for key in keys if key in parsed}
+    changed = parsed.get("changed_words")
+    if isinstance(changed, list):
+        summary["changed_words"] = changed[:4]
+    risks = parsed.get("orthography_risks")
+    if isinstance(risks, list) and risks:
+        summary["orthography_risks"] = risks[:2]
+    agenda_item = parsed.get("agenda_item")
+    if isinstance(agenda_item, dict):
+        summary["agenda_item"] = {
+            key: agenda_item[key]
+            for key in ("id", "branch", "from", "to", "status")
+            if key in agenda_item
+        }
+    return summary
+
+
+def _workspace_snapshot_payload(
+    workspace: Workspace,
+    language: str,
+    word_set: set[str],
+    freq_rank: dict[str, int],
+    iteration: int,
+    max_iterations: int,
+) -> dict[str, Any]:
+    branch, scores = _best_branch_for_auto_declare(
+        workspace, language, word_set, freq_rank
+    )
+    b = workspace.get_branch(branch)
+    decryption = workspace.apply_key(branch)
+    branches = []
+    for name in workspace.branch_names():
+        candidate = workspace.get_branch(name)
+        dr, quad = _score_branch_for_panel(
+            workspace, name, language, word_set, freq_rank
+        )
+        branches.append({
+            "name": name,
+            "mapped_count": len(candidate.key),
+            "dict_rate": round(dr, 4) if dr is not None else None,
+            "quad": round(quad, 4) if quad is not None else None,
+        })
+    return {
+        "iteration": iteration,
+        "max_iterations": max_iterations,
+        "branch": branch,
+        "mapped_count": len(b.key),
+        "scores": scores,
+        "decryption": decryption,
+        "decryption_preview": decryption[:1000],
+        "branches": branches,
+    }
 
 
 def _score_branch_for_panel(
@@ -317,6 +519,7 @@ def build_workspace_panel(
     tokens_used: int = 0,
     estimated_cost_usd: float = 0.0,
     run_python_calls: int = 0,
+    repair_agenda: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render ciphertext + current partial decode(s) for this turn.
 
@@ -447,6 +650,25 @@ def build_workspace_panel(
         )
         lines.append("")
 
+    if repair_agenda:
+        unresolved = [
+            item for item in repair_agenda
+            if item.get("status") in {"open", "blocked"}
+        ]
+        lines.append("### Reading repair agenda")
+        for item in repair_agenda[-6:]:
+            lines.append(
+                f"- #{item.get('id')} `{item.get('branch')}` "
+                f"{item.get('from')} -> {item.get('to')} "
+                f"[{item.get('status')}]"
+            )
+        if unresolved:
+            lines.append(
+                "**Resolve open/blocked repair agenda items before "
+                "declaring, or explicitly explain why they remain unresolved.**"
+            )
+        lines.append("")
+
     if iters_left == 1:
         lines.append(PENULTIMATE_READING_WORKFLOW_PREFLIGHT)
         lines.append("")
@@ -533,11 +755,12 @@ def run_v2(
     """Run one v2 agent session against a cipher. Returns a full RunArtifact."""
 
     run_id = uuid.uuid4().hex[:12]
+    model_provider = ClaudeModelProvider(claude_api)
 
     artifact = RunArtifact(
         run_id=run_id,
         cipher_id=cipher_id,
-        model=claude_api.model,
+        model=model_provider.model,
         language=language,
         cipher_alphabet_size=cipher_text.alphabet.size,
         cipher_token_count=len(cipher_text.tokens),
@@ -546,7 +769,23 @@ def run_v2(
         automated_preflight=automated_preflight,
     )
 
-    def emit(event: str, payload: dict) -> None:
+    def emit(
+        event: str,
+        payload: dict,
+        *,
+        outer_iteration: int | None = None,
+        inner_step: int | None = None,
+        mode: AgentMode | None = None,
+    ) -> None:
+        artifact.loop_events.append(
+            LoopEvent(
+                event=event,
+                payload=payload,
+                outer_iteration=outer_iteration,
+                inner_step=inner_step,
+                mode=mode.value if mode is not None else None,
+            )
+        )
         if on_event is not None:
             try:
                 on_event(event, payload)
@@ -594,10 +833,28 @@ def run_v2(
 
     start = time.time()
 
+    def record_usage(response: ModelResponse) -> None:
+        usage = response.usage
+        artifact.total_input_tokens += usage.input_tokens
+        artifact.total_output_tokens += usage.output_tokens
+        artifact.total_cache_read_tokens += usage.cache_read_input_tokens
+        artifact.estimated_cost_usd = estimate_cost(
+            model_provider.model,
+            artifact.total_input_tokens,
+            artifact.total_output_tokens,
+            artifact.total_cache_read_tokens,
+        )
+
     for iteration in range(1, max_iterations + 1):
         workspace.set_iteration(iteration)
         executor.set_iteration(iteration)
-        emit("iteration_start", {"iteration": iteration})
+        turn_mode = _mode_for_turn(executor, iteration, max_iterations)
+        emit(
+            "iteration_start",
+            {"iteration": iteration, "mode": turn_mode.value},
+            outer_iteration=iteration,
+            mode=turn_mode,
+        )
 
         if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
             gate_text = (
@@ -630,7 +887,7 @@ def run_v2(
         executor.set_allowed_tool_names({tool["name"] for tool in tool_definitions})
 
         try:
-            response = claude_api.send_message(
+            response: ModelResponse = model_provider.send(
                 messages=send_messages,
                 tools=tool_definitions,
                 system=system,
@@ -642,40 +899,8 @@ def run_v2(
             emit("error", {"message": artifact.error_message})
             break
 
-        # Accumulate token usage
-        usage = response.usage
-        artifact.total_input_tokens += usage.input_tokens
-        artifact.total_output_tokens += usage.output_tokens
-        cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
-        artifact.total_cache_read_tokens += cache_read
-        artifact.estimated_cost_usd = estimate_cost(
-            claude_api.model,
-            artifact.total_input_tokens,
-            artifact.total_output_tokens,
-            artifact.total_cache_read_tokens,
-        )
-
-        # Collect assistant blocks to add to the message history
-        assistant_blocks: list[dict[str, Any]] = []
-        tool_uses: list[dict[str, Any]] = []
-        text_parts: list[str] = []
-        for block in response.content:
-            if block.type == "text":
-                assistant_blocks.append({"type": "text", "text": block.text})
-                text_parts.append(block.text)
-            elif block.type == "tool_use":
-                assistant_blocks.append({
-                    "type": "tool_use",
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.input,
-                })
-                tool_uses.append({
-                    "id": block.id,
-                    "name": block.name,
-                    "input": block.input,
-                })
-
+        record_usage(response)
+        assistant_blocks, tool_uses, text_parts = _collect_assistant_blocks(response)
         messages.append({"role": "assistant", "content": assistant_blocks})
 
         # Capture plan from the first iteration's text
@@ -683,24 +908,190 @@ def run_v2(
             artifact.plan = "\n\n".join(text_parts)
 
         if text_parts:
-            emit("agent_text", {"iteration": iteration, "text": text_parts[0][:400]})
+            emit(
+                "agent_text",
+                {"iteration": iteration, "text": text_parts[0][:400]},
+                outer_iteration=iteration,
+                inner_step=0,
+                mode=turn_mode,
+            )
 
         # No tool uses → agent has no more to do
         if not tool_uses:
             artifact.status = "exhausted"
-            emit("no_tool_calls", {"iteration": iteration})
+            emit(
+                "no_tool_calls",
+                {"iteration": iteration},
+                outer_iteration=iteration,
+                inner_step=0,
+                mode=turn_mode,
+            )
             break
 
         # Execute tool calls
         tool_results_blocks: list[dict[str, Any]] = []
-        for tu in tool_uses:
-            result = executor.execute(tu["name"], tu["input"], tool_use_id=tu["id"])
-            tool_results_blocks.append({
-                "type": "tool_result",
-                "tool_use_id": tu["id"],
-                "content": result,
+        inner_step = 1
+        inner_retries = 0
+        while True:
+            tool_results_blocks = []
+            gated_tools: list[str] = []
+            boundary_count_failures: list[str] = []
+            final_declare_needed = False
+            final_declare_blocked = False
+            for tu in tool_uses:
+                result = executor.execute(tu["name"], tu["input"], tool_use_id=tu["id"])
+                if _is_tool_gated_result(result):
+                    gated_tools.append(tu["name"])
+                if _is_boundary_projection_count_failure(tu["name"], result):
+                    boundary_count_failures.append(tu["name"])
+                if iteration == max_iterations and tu["name"] == "meta_declare_solution":
+                    parsed_result = _parse_json_result(result)
+                    if isinstance(parsed_result, dict) and parsed_result.get("accepted") is False:
+                        final_declare_blocked = True
+                tool_results_blocks.append({
+                    "type": "tool_result",
+                    "tool_use_id": tu["id"],
+                    "content": result,
+                })
+                emit(
+                    "tool_call",
+                    {
+                        "tool": tu["name"],
+                        "result_preview": result[:160],
+                        "result_summary": _tool_result_summary(result),
+                        "inner_step": inner_step,
+                        "mode": turn_mode.value,
+                    },
+                    outer_iteration=iteration,
+                    inner_step=inner_step,
+                    mode=turn_mode,
+                )
+
+            retry_kind = ""
+            retry_preflight = ""
+            retry_payload: dict[str, Any] = {}
+            if iteration == max_iterations and not executor.terminated:
+                called_meta = any(tu["name"] == "meta_declare_solution" for tu in tool_uses)
+                final_declare_needed = (not called_meta) or final_declare_blocked
+            if gated_tools:
+                retry_kind = "gated_tool_retry"
+                retry_preflight = BOUNDARY_PROJECTION_RETRY_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": gated_tools,
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                }
+            elif boundary_count_failures:
+                retry_kind = "boundary_projection_count_retry"
+                retry_preflight = BOUNDARY_PROJECTION_COUNT_RETRY_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": boundary_count_failures,
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                }
+            elif final_declare_needed:
+                retry_kind = "final_declare_retry"
+                retry_preflight = FINAL_DECLARATION_RETRY_PREFLIGHT
+                retry_payload = {
+                    "iteration": iteration,
+                    "inner_step": inner_step,
+                    "attempted_tools": [tu["name"] for tu in tool_uses],
+                    "allowed_tools": sorted(executor.allowed_tool_names or []),
+                    "declare_blocked": final_declare_blocked,
+                }
+
+            can_retry_boundary_projection = (
+                bool(retry_kind)
+                and turn_mode is AgentMode.BOUNDARY_PROJECTION
+                and not executor.terminated
+                and inner_retries < BOUNDARY_PROJECTION_MAX_INNER_RETRIES
+            )
+            can_retry_final_declare = (
+                retry_kind == "final_declare_retry"
+                and turn_mode is AgentMode.DECLARE
+                and not executor.terminated
+                and inner_retries < FINAL_DECLARATION_MAX_INNER_RETRIES
+            )
+            if not (can_retry_boundary_projection or can_retry_final_declare):
+                break
+
+            inner_retries += 1
+            emit(
+                retry_kind,
+                retry_payload,
+                outer_iteration=iteration,
+                inner_step=inner_step,
+                mode=turn_mode,
+            )
+            messages.append({
+                "role": "user",
+                "content": [
+                    *tool_results_blocks,
+                    {"type": "text", "text": retry_preflight},
+                ],
             })
-            emit("tool_call", {"tool": tu["name"], "result_preview": result[:160]})
+
+            try:
+                retry_response = model_provider.send(
+                    messages=_compress_history(messages),
+                    tools=tool_definitions,
+                    system=system,
+                    max_tokens=8192,
+                )
+            except ClaudeAPIError as e:
+                artifact.status = "error"
+                artifact.error_message = f"API error on iteration {iteration}: {e}"
+                emit("error", {"message": artifact.error_message})
+                break
+
+            record_usage(retry_response)
+            assistant_blocks, tool_uses, text_parts = _collect_assistant_blocks(
+                retry_response
+            )
+            messages.append({"role": "assistant", "content": assistant_blocks})
+            if text_parts:
+                emit(
+                    "agent_text",
+                    {"iteration": iteration, "text": text_parts[0][:400]},
+                    outer_iteration=iteration,
+                    inner_step=inner_step,
+                    mode=turn_mode,
+                )
+            if not tool_uses:
+                artifact.status = "exhausted"
+                tool_results_blocks = []
+                emit(
+                    "no_tool_calls",
+                    {"iteration": iteration},
+                    outer_iteration=iteration,
+                    inner_step=inner_step,
+                    mode=turn_mode,
+                )
+                break
+            inner_step += 1
+
+        if artifact.status == "error":
+            break
+        if artifact.status == "exhausted":
+            messages.append({"role": "user", "content": tool_results_blocks})
+            break
+
+        emit(
+            "workspace_snapshot",
+            _workspace_snapshot_payload(
+                workspace,
+                language,
+                word_set,
+                freq_rank,
+                iteration,
+                max_iterations,
+            ),
+            outer_iteration=iteration,
+            inner_step=inner_step,
+            mode=turn_mode,
+        )
 
         # Append the workspace panel as a trailing text block in the same
         # user turn, so the LLM always sees the raw ciphertext and current
@@ -718,6 +1109,7 @@ def run_v2(
                 tokens_used=artifact.total_input_tokens + artifact.total_output_tokens,
                 estimated_cost_usd=artifact.estimated_cost_usd,
                 run_python_calls=run_python_calls,
+                repair_agenda=executor.repair_agenda,
             )
             tool_results_blocks.append({"type": "text", "text": panel_text})
 
@@ -771,6 +1163,7 @@ def run_v2(
     artifact.finished_at = time.time()
     artifact.tool_calls = list(executor.call_log)
     artifact.tool_requests = list(executor.tool_requests)
+    artifact.repair_agenda = [dict(item) for item in executor.repair_agenda]
     artifact.solution = executor.solution
     artifact.branches = [
         _branch_snapshot_for(workspace, name) for name in workspace.branch_names()

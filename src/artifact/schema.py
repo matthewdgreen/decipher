@@ -75,6 +75,18 @@ class SolutionDeclaration:
 
 
 @dataclass
+class LoopEvent:
+    """Structured agent-loop event for future inner-loop observability."""
+
+    event: str
+    payload: dict[str, Any]
+    outer_iteration: int | None = None
+    inner_step: int | None = None
+    mode: str | None = None
+    timestamp: float = field(default_factory=time.time)
+
+
+@dataclass
 class RunArtifact:
     """Everything about one run — the research datum."""
     run_id: str
@@ -98,6 +110,8 @@ class RunArtifact:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_requests: list[dict[str, Any]] = field(default_factory=list)  # meta_request_tool calls
     subagent_runs: list[SubagentRun] = field(default_factory=list)
+    loop_events: list[LoopEvent] = field(default_factory=list)
+    repair_agenda: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)  # full message history
 
     # Termination

@@ -15,6 +15,7 @@ dependencies = [
     "anthropic>=0.40",
     "keyring>=25",
     "Pillow>=10",
+    "rich>=13",
 ]
 
 [project.optional-dependencies]

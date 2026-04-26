@@ -11,6 +11,15 @@ def _use_agentic_mode(args: argparse.Namespace) -> bool:
     return bool(getattr(args, "agentic", False))
 
 
+def _resolve_agent_display(args: argparse.Namespace) -> str:
+    requested = getattr(args, "display", "auto")
+    if requested != "auto":
+        return requested
+    if getattr(args, "verbose", False):
+        return "off"
+    return "pretty" if sys.stdout.isatty() else "raw"
+
+
 def get_api_key() -> str:
     key = os.environ.get("ANTHROPIC_API_KEY")
     if key:
@@ -29,6 +38,10 @@ def get_api_key() -> str:
 def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
 
+    agentic = _use_agentic_mode(args)
+    display_mode = _resolve_agent_display(args) if agentic else "off"
+    quiet_structured_display = agentic and display_mode in {"pretty", "jsonl"}
+
     loader = BenchmarkLoader(args.benchmark_path)
     split_file = args.split or (
         f"{args.source}_tests.jsonl" if args.source else "all_tests.jsonl"
@@ -42,7 +55,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         print("No matching tests found.", file=sys.stderr)
         sys.exit(1)
 
-    if not _use_agentic_mode(args):
+    if not agentic:
         from automated.runner import AutomatedBenchmarkRunner
 
         runner = AutomatedBenchmarkRunner(
@@ -64,44 +77,48 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         runner = BenchmarkRunnerV2(
             claude_api=api,
             max_iterations=args.max_iterations,
-            verbose=args.verbose,
+            verbose=args.verbose and display_mode == "off",
             language=args.language,
             artifact_dir=args.artifact_dir or "artifacts",
             automated_preflight=not args.no_automated_preflight,
+            display_mode=display_mode,
         )
         mode_label = f"agentic ({model})"
 
-    print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
-    print(f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n")
+    if not quiet_structured_display:
+        print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
+        print(f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n")
 
     results = []
     for i, test in enumerate(tests):
-        print(f"[{i+1}/{len(tests)}] {test.test_id} — {test.description}")
+        if not quiet_structured_display:
+            print(f"[{i+1}/{len(tests)}] {test.test_id} — {test.description}")
         test_data = loader.load_test_data(test)
         result = runner.run_test(test_data)
         conf = f"{result.self_confidence:.2f}" if result.self_confidence is not None else "n/a"
-        print(
-            f"  Status: {result.status}, "
-            f"Char: {result.char_accuracy:.1%}, "
-            f"Word: {result.word_accuracy:.1%}, "
-            f"Conf: {conf}, "
-            f"Iter: {result.iterations_used}, "
-            f"Time: {result.elapsed_seconds:.1f}s"
-        )
-        print(f"  Artifact: {result.artifact_path}")
-        if result.error_message:
-            print(f"  Error: {result.error_message}")
-        if args.verbose and result.final_decryption:
-            print(f"  Decryption: {result.final_decryption[:200]}")
-        print()
+        if not quiet_structured_display:
+            print(
+                f"  Status: {result.status}, "
+                f"Char: {result.char_accuracy:.1%}, "
+                f"Word: {result.word_accuracy:.1%}, "
+                f"Conf: {conf}, "
+                f"Iter: {result.iterations_used}, "
+                f"Time: {result.elapsed_seconds:.1f}s"
+            )
+            print(f"  Artifact: {result.artifact_path}")
+            if result.error_message:
+                print(f"  Error: {result.error_message}")
+            if args.verbose and result.final_decryption:
+                print(f"  Decryption: {result.final_decryption[:200]}")
+            print()
         results.append(result)
 
-    if results:
+    if results and not quiet_structured_display:
         n = len(results)
         avg_char = sum(r.char_accuracy for r in results) / n
         avg_word = sum(r.word_accuracy for r in results) / n
-        success_status = "completed" if not _use_agentic_mode(args) else "solved"
-        success_label = "completed runs" if not _use_agentic_mode(args) else "declared solutions"
+        success_status = "completed" if not agentic else "solved"
+        success_label = "completed runs" if not agentic else "declared solutions"
         successful = sum(1 for r in results if r.status == success_status)
         print(f"AVERAGE: {successful}/{n} {success_label}, char={avg_char:.1%}, word={avg_word:.1%}")
 
@@ -161,17 +178,30 @@ def cmd_crack(args: argparse.Namespace) -> None:
         return
 
     from agent.loop_v2 import run_v2
+    from agent.display import make_agent_renderer
     from services.claude_api import ClaudeAPI
 
     api_key = get_api_key()
     model = args.model or "claude-opus-4-7"
     api = ClaudeAPI(api_key=api_key, model=model)
+    display_mode = _resolve_agent_display(args)
+    renderer = make_agent_renderer(display_mode)
+    if renderer is not None:
+        renderer.start_test(
+            cipher_id,
+            "Interactive crack",
+            model=model,
+            max_iterations=args.max_iterations,
+        )
 
     automated_preflight = None
     if not args.no_automated_preflight:
         from automated.runner import format_automated_preflight_for_llm, run_automated
 
-        print("Running automated preflight (no LLM access)...")
+        if renderer is not None:
+            renderer.event("preflight_start", {})
+        else:
+            print("Running automated preflight (no LLM access)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
         preflight = run_automated(
@@ -185,13 +215,22 @@ def cmd_crack(args: argparse.Namespace) -> None:
         automated_preflight = dict(preflight.artifact)
         automated_preflight["summary"] = format_automated_preflight_for_llm(preflight)
         automated_preflight["enabled"] = True
-        print(
-            f"  preflight: {preflight.status}, solver={preflight.solver}, "
-            "$0.00 (no LLM access)"
-        )
+        if renderer is not None:
+            renderer.event("preflight_result", {
+                "status": preflight.status,
+                "solver": preflight.solver,
+                "elapsed_seconds": preflight.elapsed_seconds,
+            })
+        else:
+            print(
+                f"  preflight: {preflight.status}, solver={preflight.solver}, "
+                "$0.00 (no LLM access)"
+            )
 
     def on_event(event: str, payload: dict) -> None:
-        if event == "iteration_start":
+        if renderer is not None:
+            renderer.event(event, payload)
+        elif event == "iteration_start":
             print(f"  iter {payload['iteration']}...", end="", flush=True)
         elif event == "tool_call":
             print(".", end="", flush=True)
@@ -205,7 +244,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
         max_iterations=args.max_iterations,
         cipher_id=cipher_id,
         automated_preflight=automated_preflight,
-        verbose=args.verbose,
+        verbose=args.verbose and display_mode == "off",
         on_event=on_event,
     )
 
@@ -230,6 +269,21 @@ def cmd_crack(args: argparse.Namespace) -> None:
         (b.decryption for b in artifact.branches if b.name == final_branch),
         artifact.branches[0].decryption if artifact.branches else "",
     )
+    if renderer is not None:
+        from types import SimpleNamespace
+
+        renderer.finish(SimpleNamespace(
+            test_id=cipher_id,
+            status=artifact.status,
+            char_accuracy=0.0,
+            word_accuracy=0.0,
+            iterations_used=iterations,
+            elapsed_seconds=artifact.finished_at - artifact.started_at,
+            total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
+            estimated_cost_usd=artifact.estimated_cost_usd,
+            artifact_path=str(path),
+            error_message=artifact.error_message,
+        ))
     print(f"\nFinal decryption ({final_branch}):\n{final_dec}")
 
 
@@ -321,15 +375,17 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         from benchmark.runner_v2 import BenchmarkRunnerV2
         from services.claude_api import ClaudeAPI
 
+        display_mode = _resolve_agent_display(args)
         crack_model = args.model or "claude-opus-4-7"
         crack_api = ClaudeAPI(api_key=api_key, model=crack_model)
         runner = BenchmarkRunnerV2(
             claude_api=crack_api,
             max_iterations=args.max_iterations,
-            verbose=args.verbose,
+            verbose=args.verbose and display_mode == "off",
             language=args.language,
             artifact_dir=args.artifact_dir,
             automated_preflight=not args.no_automated_preflight,
+            display_mode=display_mode,
         )
         print(f"\nRunning agent (model={crack_model}, max_iter={args.max_iterations})...")
         result = runner.run_test(test_data)
@@ -372,6 +428,15 @@ def main() -> None:
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")
     bench.add_argument(
+        "--display",
+        choices=["auto", "pretty", "raw", "jsonl"],
+        default="auto",
+        help=(
+            "Agentic terminal display mode. auto uses pretty on an interactive "
+            "terminal, raw when piped, and the legacy verbose stream with -v."
+        ),
+    )
+    bench.add_argument(
         "--agentic",
         action="store_true",
         help="Use the experimental LLM agent instead of the default automated solver.",
@@ -413,6 +478,12 @@ def main() -> None:
     crack.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     crack.add_argument("--cipher-id", help="Identifier for this cipher (default: 'cli')")
     crack.add_argument("--verbose", "-v", action="store_true")
+    crack.add_argument(
+        "--display",
+        choices=["auto", "pretty", "raw", "jsonl"],
+        default="auto",
+        help="Agentic terminal display mode.",
+    )
     crack.add_argument(
         "--agentic",
         action="store_true",
@@ -460,6 +531,12 @@ def main() -> None:
     tg.add_argument("--artifact-dir", default="artifacts")
     tg.add_argument("--cache-dir", default="testgen_cache")
     tg.add_argument("--verbose", "-v", action="store_true")
+    tg.add_argument(
+        "--display",
+        choices=["auto", "pretty", "raw", "jsonl"],
+        default="auto",
+        help="Agentic terminal display mode.",
+    )
     tg.add_argument(
         "--agentic",
         action="store_true",

@@ -1,6 +1,10 @@
 # Agent Loop Redesign Plan
 
-Status: design note, no implementation yet.
+Status: Milestone 2 boundary-projection prototype started. The existing v2
+loop still owns the benchmark path, but it now runs through a provider-neutral
+response adapter, records loop events, and can retry one gated
+boundary-projection tool choice or wrong-length full-reading proposal inside
+the same outer iteration.
 
 ## Why This Exists
 
@@ -236,24 +240,107 @@ instead of defining the Decipher architecture.
 
 ### Milestone 1: Design Freeze
 
-- Write provider adapter interface.
-- Define outer loop vs inner loop responsibilities.
-- Define mode/tool-gating table.
-- Define artifact schema additions.
-- No behavior change yet.
+- [x] Write provider adapter interface.
+- [x] Define outer loop vs inner loop responsibilities.
+- [x] Define mode/tool-gating table.
+- [x] Define artifact schema additions.
+- [x] Decide how the next loop entry point coexists with `run_v2`: defer a
+  separate entry point until the workflow boundaries settle; keep the
+  prototype in `run_v2` so existing CLI/benchmark paths exercise it.
+- Behavior change is limited to the `run_v2` prototype path.
 
 ### Milestone 2: Inner Loop Prototype
 
-- Add inner loop for one mode: `boundary_projection`.
-- Support same-iteration retry for gated tools.
-- Run English analog and Borg `0109v`.
-- Compare tool counts, token cost, char/word accuracy, and analyzer labels.
+- [x] Add a narrow inner-loop path for one mode: `boundary_projection`.
+- [x] Support same-iteration retry for gated tools.
+- [x] Support same-iteration retry when a full-reading proposal has the wrong
+  normalized character count.
+- [x] Defer a separate next-generation harness entry point; for now, the
+  prototype is wired into `run_v2` so existing CLI tests exercise it
+  immediately.
+- [x] Run English analog.
+- [x] Run fair post-tightening Borg `0109v` trials.
+- [x] Compare tool counts, token cost, char/word accuracy, and analyzer
+  labels in `docs/agent_loop_milestone2_comparison.md`.
+
+Early validation notes:
+
+- English analog: `artifacts/english_borg_analog_001/f8c8ead3e9b2.json`
+  reached 100.0% character / 100.0% word accuracy in 6 iterations. The agent
+  used whole-reading resegmentation and one mapping repair from a 99.2% /
+  2.9% automated preflight.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/048448b15ebb.json`
+  completed before the actuator-only gate tightening and reached 13.9%
+  character / 7.5% word. It showed why validation alone must not satisfy the
+  late full-reading gate: after `decode_validate_reading_repair`, the next
+  turn dropped back to general explore tools.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/5b16b17ac4c1.json`
+  is not a capability measurement; it stopped after an API credit error and
+  auto-declared a weak partial branch.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/bb419814f0c3.json`
+  reached 13.9% character / 7.7% word after actuator-only gate tightening.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/0827d5850034.json`
+  reached 13.9% character / 6.4% word and exercised two
+  `boundary_projection_count_retry` events.
+
+Milestone 2 closeout: complete as an inner-loop prototype. The result is
+mechanically useful and well-observed, but not sufficient for Borg by itself;
+Milestone 3 owns durable reading-repair capability.
 
 ### Milestone 3: Reading Repair Workflow
 
-- Add structured repair agenda.
+- [x] Add a first low-friction word repair planner/action pair:
+  `decode_plan_word_repair` and `act_apply_word_repair`.
+- [x] Add structured repair agenda.
 - Add one-at-a-time repair application with immediate feedback.
 - Add branch cards and unresolved hypothesis summaries.
+
+Early implementation note:
+
+- The first slice gives the agent a direct tool path for a same-length
+  reading hypothesis such as "this decoded word should be that word": plan
+  the responsible cipher-symbol changes, preview collateral `changed_words`,
+  then apply the repair if the preview reads better.
+- Word-repair plans now populate a durable `repair_agenda` in the run
+  artifact. `act_apply_word_repair` marks matching agenda items applied, and
+  `repair_agenda_list` / `repair_agenda_update` let the agent resolve held,
+  rejected, or blocked repairs before declaration.
+- `workspace_branch_cards` now exposes compact branch cards with internal
+  scores, mapped count, decoded excerpt, applied/held/open repairs, and
+  orthography-risk warnings.
+- Reading repair actions now flag broad Latin `U/V` or `I/J` shifts as
+  orthography risks, so the agent can distinguish manuscript-faithful repair
+  from modernized/classicized spelling.
+- Declaration is now gated on two bits of explicit run discipline: open or
+  blocked repair-agenda items must be applied/held/rejected before declaring,
+  and runs with multiple branches must call `workspace_branch_cards` before
+  declaring. The final action turn exposes only bookkeeping tools plus
+  `meta_declare_solution`, so the agent can perform cards/update/declare in
+  one response. If it performs final bookkeeping but forgets to declare, the
+  loop now retries inside the same final iteration with an explicit
+  declaration nudge.
+- First Borg trial with these tools:
+  `artifacts/parity_borg_latin_borg_0109v/495a27b339ba.json` reached 13.9%
+  character / 9.1% word accuracy. The agent used `act_apply_word_repair` for
+  `NREUITER -> BREUITER` and `SIMALITER -> SIMILITER`, tried
+  `RLURES -> PLURES`, then reverted after seeing broad collateral damage.
+- Follow-up Borg trial after agenda prompting:
+  `artifacts/parity_borg_latin_borg_0109v/38e3d02d7c7a.json` confirmed the
+  agenda behavior, but regressed to 11.6% character / 5.1% word because the
+  agent classicized Latin `U` forms into `V` forms (`BREVITER`, `QVOD`, etc.).
+  This motivated the orthography-risk guard.
+- Latest Borg trial before declaration gating:
+  `artifacts/parity_borg_latin_borg_0109v/260a15ce6778.json` recovered to
+  13.9% character / 7.7% word and avoided broad `U/V` classicization, but
+  left an open `RLURES -> PLURES` agenda item while explaining the rejection
+  only in prose. This motivated the repair-agenda declaration gate.
+- First Borg trial after declaration bookkeeping gates:
+  `artifacts/parity_borg_latin_borg_0109v/fca17fd203a6.json` reached 13.9%
+  character / 7.7% word. It used substantially richer repair tooling
+  (`act_apply_word_repair` on four items, `repair_agenda_list`, and
+  `workspace_branch_cards`) but spent the final turn on bookkeeping and failed
+  to call `meta_declare_solution`, causing fallback declaration. This
+  motivated the same-iteration final declaration retry.
 
 ### Milestone 4: Generalization
 

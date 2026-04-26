@@ -64,6 +64,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "input_schema": {"type": "object", "properties": {}},
     },
     {
+        "name": "workspace_branch_cards",
+        "description": (
+            "Show compact branch state cards: scores, mapped count, readable "
+            "excerpt, applied/held/open repair agenda items, and risk warnings. "
+            "Use this before declaration when multiple branches or repair "
+            "hypotheses exist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Optional branch name; omit to show all branches.",
+                },
+            },
+        },
+    },
+    {
         "name": "workspace_delete",
         "description": "Delete a branch. Cannot delete 'main'.",
         "input_schema": {
@@ -465,6 +483,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["branch"],
+        },
+    },
+    {
+        "name": "act_apply_word_repair",
+        "description": (
+            "Apply a same-length reading-driven word repair such as TREUITER "
+            "-> BREUITER. This is a low-friction wrapper around the correct "
+            "act_set_mapping calls: it locates the word, identifies the "
+            "cipher symbols responsible for differing letters, applies those "
+            "symbol mappings, and returns changed_words so you can judge the "
+            "repair by reading. Provide either cipher_word_index or "
+            "decoded_word plus optional occurrence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_word": {"type": "string"},
+                "cipher_word_index": {"type": "integer"},
+                "decoded_word": {"type": "string"},
+                "occurrence": {"type": "integer", "default": 0},
+            },
+            "required": ["branch", "target_word"],
         },
     },
     {
@@ -950,6 +991,84 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["branch", "proposed_text"],
         },
     },
+    {
+        "name": "decode_plan_word_repair",
+        "description": (
+            "Plan a reading-driven word repair such as TREUITER -> BREUITER "
+            "without mutating the branch. Use this when you can read a decoded "
+            "word or fragment and want the tool to identify the responsible "
+            "cipher symbol changes. Provide either cipher_word_index or "
+            "decoded_word plus optional occurrence. Same-length repairs return "
+            "proposed act_set_mapping-style changes, a changed_words preview, "
+            "and an act_apply_word_repair suggested call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_word": {
+                    "type": "string",
+                    "description": "The intended reading for this word, e.g. BREUITER.",
+                },
+                "cipher_word_index": {
+                    "type": "integer",
+                    "description": "Optional numeric word index to repair.",
+                },
+                "decoded_word": {
+                    "type": "string",
+                    "description": "Optional current decoded word to locate, e.g. TREUITER.",
+                },
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Which matching decoded_word occurrence to use; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch", "target_word"],
+        },
+    },
+    {
+        "name": "repair_agenda_list",
+        "description": (
+            "List durable reading-repair agenda items accumulated during this "
+            "run. Use this before declaring if you have been making or "
+            "considering word-level reading repairs, so open hypotheses are "
+            "not lost in the transcript."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Optional branch filter.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Optional status filter such as open, applied, held, rejected, blocked.",
+                },
+            },
+        },
+    },
+    {
+        "name": "repair_agenda_update",
+        "description": (
+            "Update the status or notes for a durable reading-repair agenda "
+            "item. Use this when you decide a proposed repair is held, "
+            "rejected, blocked, or otherwise resolved without applying it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "integer"},
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "applied", "held", "rejected", "blocked", "reverted"],
+                },
+                "notes": {"type": "string"},
+            },
+            "required": ["item_id", "status"],
+        },
+    },
     # ----- run_python -----
     {
         "name": "run_python",
@@ -1083,6 +1202,11 @@ class WorkspaceToolExecutor:
 
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
+
+        # Durable reading-repair agenda. These are deliberately plain dicts so
+        # they serialize directly into run artifacts and tool results.
+        self.repair_agenda: list[dict[str, Any]] = []
+        self._next_repair_agenda_id: int = 1
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -1400,6 +1524,241 @@ class WorkspaceToolExecutor:
             out.append(sep.join(parts))
         return out
 
+    def _decoded_words_with_key(
+        self,
+        branch_name: str,
+        key: dict[int, int],
+        max_words: int | None = None,
+    ) -> list[str]:
+        ws = self.workspace
+        words = ws.effective_words(branch_name)
+        pt_alpha = self._pt_alpha()
+        sep = " " if pt_alpha._multisym else ""
+        if max_words is not None:
+            words = words[:max_words]
+        out: list[str] = []
+        for w in words:
+            parts = [
+                pt_alpha.symbol_for(key[t]) if t in key else "?"
+                for t in w
+            ]
+            out.append(sep.join(parts))
+        return out
+
+    def _locate_word_for_repair(
+        self,
+        branch: str,
+        args: dict,
+    ) -> tuple[int | None, dict[str, Any] | None]:
+        words = self.workspace.effective_words(branch)
+        if args.get("cipher_word_index") is not None:
+            idx = int(args["cipher_word_index"])
+            if idx < 0 or idx >= len(words):
+                return None, {
+                    "error": f"cipher_word_index {idx} out of range (0..{len(words) - 1})"
+                }
+            return idx, None
+
+        decoded_target = sig.normalize_for_scoring(str(args.get("decoded_word", "")))
+        decoded_target = self._reading_char_stream(decoded_target)
+        if not decoded_target:
+            return None, {
+                "error": (
+                    "Provide either cipher_word_index or decoded_word to locate "
+                    "the repair target."
+                )
+            }
+        occurrence = int(args.get("occurrence", 0))
+        decoded_words = [
+            self._reading_char_stream(word)
+            for word in self._decoded_words(branch, max_words=None)
+        ]
+        matches = [
+            idx for idx, word in enumerate(decoded_words)
+            if word == decoded_target
+        ]
+        if not matches:
+            return None, {
+                "error": f"decoded_word {decoded_target!r} not found on branch {branch!r}",
+                "decoded_word": decoded_target,
+                "sample_decoded_words": decoded_words[:40],
+            }
+        if occurrence < 0 or occurrence >= len(matches):
+            return None, {
+                "error": (
+                    f"occurrence {occurrence} out of range for decoded_word "
+                    f"{decoded_target!r}; found {len(matches)} match(es)"
+                ),
+                "matching_indices": matches,
+            }
+        return matches[occurrence], None
+
+    def _word_repair_plan(self, args: dict) -> dict[str, Any]:
+        branch = args["branch"]
+        idx, error = self._locate_word_for_repair(branch, args)
+        if error:
+            return error
+        assert idx is not None
+
+        target = self._reading_char_stream(str(args["target_word"]))
+        if not target:
+            return {"error": "target_word must contain at least one alphabetic character"}
+
+        words = self.workspace.effective_words(branch)
+        word_tokens = words[idx]
+        current_word = self._reading_char_stream(self._decode_word(word_tokens, branch))
+        alpha = self._alpha()
+        pt_alpha = self._pt_alpha()
+        cipher_word = self._cipher_word_str(word_tokens)
+        base: dict[str, Any] = {
+            "branch": branch,
+            "cipher_word_index": idx,
+            "cipher_word": cipher_word,
+            "current_decoded": current_word,
+            "target_word": target,
+            "same_length": len(current_word) == len(target),
+            "target_in_dictionary": target in self.word_set,
+        }
+        if len(current_word) != len(target):
+            base.update({
+                "applicable": False,
+                "reason": (
+                    "Word repair requires a same-length target. If the target "
+                    "adds/removes letters, use boundary/full-reading tools first."
+                ),
+                "current_length": len(current_word),
+                "target_length": len(target),
+            })
+            return base
+
+        changes: list[dict[str, Any]] = []
+        token_mappings: dict[int, int] = {}
+        conflicts: list[dict[str, Any]] = []
+        for pos, (token_id, current_ch, target_ch) in enumerate(
+            zip(word_tokens, current_word, target)
+        ):
+            if current_ch == target_ch:
+                continue
+            if not pt_alpha.has_symbol(target_ch):
+                conflicts.append({
+                    "position": pos,
+                    "cipher_symbol": alpha.symbol_for(token_id),
+                    "current": current_ch,
+                    "target": target_ch,
+                    "reason": "target letter is not in plaintext alphabet",
+                })
+                continue
+            target_id = pt_alpha.id_for(target_ch)
+            if token_id in token_mappings and token_mappings[token_id] != target_id:
+                conflicts.append({
+                    "position": pos,
+                    "cipher_symbol": alpha.symbol_for(token_id),
+                    "current": current_ch,
+                    "target": target_ch,
+                    "reason": "same cipher symbol would need two target letters",
+                })
+                continue
+            token_mappings[token_id] = target_id
+            changes.append({
+                "position": pos,
+                "cipher_symbol": alpha.symbol_for(token_id),
+                "current": current_ch,
+                "target": target_ch,
+                "mapping": f"{alpha.symbol_for(token_id)} -> {target_ch}",
+            })
+
+        preview_key = dict(self.workspace.get_branch(branch).key)
+        preview_key.update(token_mappings)
+        before_words = self._decoded_words(branch, max_words=None)
+        after_words = self._decoded_words_with_key(branch, preview_key, max_words=None)
+        proposed_mappings = {
+            alpha.symbol_for(token_id): pt_alpha.symbol_for(pt_id)
+            for token_id, pt_id in token_mappings.items()
+        }
+        base.update({
+            "applicable": bool(changes) and not conflicts,
+            "changes": changes,
+            "conflicts": conflicts,
+            "proposed_mappings": proposed_mappings,
+            "changed_words_preview": self._changed_words_sample(before_words, after_words),
+            "suggested_call": (
+                "act_apply_word_repair("
+                f"branch={branch!r}, cipher_word_index={idx}, "
+                f"target_word={target!r})"
+            ),
+            "_token_mappings": token_mappings,
+        })
+        if not changes:
+            base["note"] = "Current decoded word already matches target_word."
+        elif conflicts:
+            base["reason"] = "Repair has conflicting or invalid letter assignments."
+        return base
+
+    def _repair_agenda_status_for_plan(self, plan: dict[str, Any]) -> str:
+        if plan.get("error"):
+            return "blocked"
+        if plan.get("applicable"):
+            return "open"
+        if plan.get("note"):
+            return "applied"
+        return "blocked"
+
+    def _find_repair_agenda_item(self, plan: dict[str, Any]) -> dict[str, Any] | None:
+        branch = plan.get("branch")
+        idx = plan.get("cipher_word_index")
+        target = plan.get("target_word")
+        for item in self.repair_agenda:
+            if (
+                item.get("branch") == branch
+                and item.get("cipher_word_index") == idx
+                and item.get("to") == target
+            ):
+                return item
+        return None
+
+    def _upsert_repair_agenda_item(
+        self,
+        plan: dict[str, Any],
+        *,
+        status: str | None = None,
+        notes: str | None = None,
+        last_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        item = self._find_repair_agenda_item(plan)
+        now_iter = self._current_iteration
+        if item is None:
+            item = {
+                "id": self._next_repair_agenda_id,
+                "branch": plan.get("branch"),
+                "cipher_word_index": plan.get("cipher_word_index"),
+                "cipher_word": plan.get("cipher_word"),
+                "from": plan.get("current_decoded"),
+                "to": plan.get("target_word"),
+                "status": status or self._repair_agenda_status_for_plan(plan),
+                "proposed_mappings": dict(plan.get("proposed_mappings") or {}),
+                "changed_words_preview": list(plan.get("changed_words_preview") or []),
+                "created_iteration": now_iter,
+                "updated_iteration": now_iter,
+                "notes": notes or "",
+            }
+            self._next_repair_agenda_id += 1
+            self.repair_agenda.append(item)
+        else:
+            item.update({
+                "cipher_word": plan.get("cipher_word", item.get("cipher_word")),
+                "from": plan.get("current_decoded", item.get("from")),
+                "proposed_mappings": dict(plan.get("proposed_mappings") or item.get("proposed_mappings") or {}),
+                "changed_words_preview": list(plan.get("changed_words_preview") or item.get("changed_words_preview") or []),
+                "updated_iteration": now_iter,
+            })
+            if status:
+                item["status"] = status
+            if notes is not None:
+                item["notes"] = notes
+        if last_result is not None:
+            item["last_result"] = last_result
+        return dict(item)
+
     def _reading_words_from_text(self, text: str) -> list[str]:
         """Return uppercase word-like runs from a proposed reading.
 
@@ -1567,6 +1926,134 @@ class WorkspaceToolExecutor:
             k: v for k, v in delta.items() if k not in ("verdict", "improved")
         }
 
+    def _orthography_risks(
+        self,
+        before_words: list[str],
+        after_words: list[str],
+    ) -> list[dict[str, Any]]:
+        """Flag broad transcription-style shifts, especially Latin U/V, I/J."""
+        if self.language != "la":
+            return []
+        pairs = {("U", "V"), ("V", "U"), ("I", "J"), ("J", "I")}
+        counts: dict[tuple[str, str], int] = {}
+        affected: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for idx, (before, after) in enumerate(zip(before_words, after_words)):
+            for b_ch, a_ch in zip(before, after):
+                pair = (b_ch, a_ch)
+                if pair not in pairs:
+                    continue
+                counts[pair] = counts.get(pair, 0) + 1
+                samples = affected.setdefault(pair, [])
+                if len(samples) < 6:
+                    samples.append({"index": idx, "before": before, "after": after})
+        risks: list[dict[str, Any]] = []
+        for (src, dst), count in sorted(counts.items(), key=lambda item: -item[1]):
+            word_count = len({sample["index"] for sample in affected[(src, dst)]})
+            if count < 3 or word_count < 3:
+                continue
+            risks.append({
+                "type": "latin_orthography_shift",
+                "from": src,
+                "to": dst,
+                "changed_char_count": count,
+                "affected_word_sample_count": word_count,
+                "sample": affected[(src, dst)],
+                "note": (
+                    f"This repair broadly changes Latin {src}/{dst} "
+                    "orthography. Preserve the transcription style unless "
+                    "the surrounding decoded text consistently supports the "
+                    "shift."
+                ),
+            })
+        return risks
+
+    def _branch_card(self, branch_name: str) -> dict[str, Any]:
+        branch = self.workspace.get_branch(branch_name)
+        agenda = [
+            dict(item) for item in self.repair_agenda
+            if item.get("branch") == branch_name
+        ]
+        risks: list[dict[str, Any]] = []
+        for item in agenda:
+            last_result = item.get("last_result")
+            if isinstance(last_result, dict):
+                risks.extend(last_result.get("orthography_risks") or [])
+        return {
+            "branch": branch_name,
+            "mapped_count": len(branch.key),
+            "cipher_alphabet_size": self._alpha().size,
+            "tags": list(branch.tags),
+            "scores": self._compute_quick_scores(branch_name),
+            "repair_agenda": agenda,
+            "repair_counts": {
+                status: sum(1 for item in agenda if item.get("status") == status)
+                for status in ("open", "applied", "held", "rejected", "blocked", "reverted")
+            },
+            "orthography_risks": risks,
+            "decoded_excerpt": self._decoded_preview(branch_name, max_words=35),
+        }
+
+    def _declaration_review(self, branch_name: str) -> dict[str, Any]:
+        cards = [self._branch_card(name) for name in self.workspace.branch_names()]
+        def score_key(card: dict[str, Any]) -> tuple[float, float, int]:
+            scores = card.get("scores") or {}
+            dict_rate = scores.get("dict_rate")
+            quad = scores.get("quad")
+            return (
+                dict_rate if isinstance(dict_rate, (int, float)) else float("-inf"),
+                quad if isinstance(quad, (int, float)) else float("-inf"),
+                int(card.get("mapped_count") or 0),
+            )
+        best = max(cards, key=score_key) if cards else None
+        selected = next((card for card in cards if card.get("branch") == branch_name), None)
+        warnings: list[str] = []
+        if best and selected and best.get("branch") != branch_name:
+            best_scores = best.get("scores") or {}
+            selected_scores = selected.get("scores") or {}
+            best_dict = best_scores.get("dict_rate")
+            selected_dict = selected_scores.get("dict_rate")
+            best_quad = best_scores.get("quad")
+            selected_quad = selected_scores.get("quad")
+            dict_gap = (
+                round(float(best_dict) - float(selected_dict), 4)
+                if isinstance(best_dict, (int, float)) and isinstance(selected_dict, (int, float))
+                else None
+            )
+            quad_gap = (
+                round(float(best_quad) - float(selected_quad), 4)
+                if isinstance(best_quad, (int, float)) and isinstance(selected_quad, (int, float))
+                else None
+            )
+            if (dict_gap is not None and dict_gap >= 0.05) or (
+                quad_gap is not None and quad_gap >= 0.15
+            ):
+                warnings.append(
+                    f"Branch `{best.get('branch')}` has stronger internal "
+                    f"score signals than `{branch_name}` "
+                    f"(dict_gap={dict_gap}, quad_gap={quad_gap})."
+                )
+        if selected and selected.get("orthography_risks"):
+            warnings.append(
+                "Selected branch has broad orthography-shift warnings; confirm "
+                "these are manuscript-faithful rather than modernized spelling."
+            )
+        open_items = [
+            item for item in (selected or {}).get("repair_agenda", [])
+            if item.get("status") in {"open", "blocked"}
+        ]
+        if open_items:
+            warnings.append(
+                f"Selected branch has {len(open_items)} open/blocked repair "
+                "agenda item(s)."
+            )
+        return {
+            "selected_branch": branch_name,
+            "best_internal_branch": best.get("branch") if best else None,
+            "warnings": warnings,
+            "selected_card": selected,
+            "best_card": best,
+        }
+
     _READING_DECISION_NOTE = (
         "Score deltas are advisory. Read `changed_words` — if two or more "
         "entries now read as real target-language words (or fragments of "
@@ -1583,7 +2070,6 @@ class WorkspaceToolExecutor:
 
     def _branch_used_full_reading_workflow(self, branch: str) -> bool:
         workflow_tools = {
-            "decode_validate_reading_repair",
             "act_resegment_by_reading",
             "act_resegment_from_reading_repair",
         }
@@ -1623,6 +2109,32 @@ class WorkspaceToolExecutor:
 
     def _tool_workspace_list_branches(self, _args: dict) -> Any:
         return {"branches": self.workspace.list_branches()}
+
+    def _tool_workspace_branch_cards(self, args: dict) -> Any:
+        branch = args.get("branch")
+        if branch:
+            if not self.workspace.has_branch(branch):
+                return {"error": f"Branch not found: {branch}"}
+            cards = [self._branch_card(branch)]
+        else:
+            cards = [self._branch_card(name) for name in self.workspace.branch_names()]
+        return {
+            "status": "ok",
+            "cards": cards,
+            "note": (
+                "Use these cards before declaration: compare readability, "
+                "internal scores, applied/held repairs, and orthography risks."
+            ),
+        }
+
+    def _has_seen_branch_cards(self) -> bool:
+        return any(call.tool_name == "workspace_branch_cards" for call in self.call_log)
+
+    def _unresolved_repair_agenda_items(self, branch: str) -> list[dict[str, Any]]:
+        return [
+            dict(item) for item in self.repair_agenda
+            if item.get("branch") == branch and item.get("status") in {"open", "blocked"}
+        ]
 
     def _tool_workspace_delete(self, args: dict) -> Any:
         name = args["name"]
@@ -2561,6 +3073,58 @@ class WorkspaceToolExecutor:
             )
         return validation
 
+    def _tool_decode_plan_word_repair(self, args: dict) -> Any:
+        plan = self._word_repair_plan(args)
+        if not plan.get("error"):
+            status = self._repair_agenda_status_for_plan(plan)
+            plan["agenda_item"] = self._upsert_repair_agenda_item(
+                plan,
+                status=status,
+                notes="Planned by decode_plan_word_repair.",
+            )
+        plan.pop("_token_mappings", None)
+        return plan
+
+    def _tool_repair_agenda_list(self, args: dict) -> Any:
+        branch_filter = args.get("branch")
+        status_filter = args.get("status")
+        items = []
+        for item in self.repair_agenda:
+            if branch_filter and item.get("branch") != branch_filter:
+                continue
+            if status_filter and item.get("status") != status_filter:
+                continue
+            items.append(dict(item))
+        unresolved = [
+            item for item in items
+            if item.get("status") in {"open", "blocked"}
+        ]
+        return {
+            "status": "ok",
+            "count": len(items),
+            "unresolved_count": len(unresolved),
+            "items": items,
+            "note": (
+                "Resolve open/blocked reading repairs before declaring. Held "
+                "items are treated as explicitly resolved but preserved for "
+                "the final rationale."
+            ),
+        }
+
+    def _tool_repair_agenda_update(self, args: dict) -> Any:
+        item_id = int(args["item_id"])
+        status = str(args["status"])
+        notes = str(args.get("notes", ""))
+        for item in self.repair_agenda:
+            if int(item.get("id", -1)) != item_id:
+                continue
+            item["status"] = status
+            item["updated_iteration"] = self._current_iteration
+            if notes:
+                item["notes"] = notes
+            return {"status": "ok", "agenda_item": dict(item)}
+        return {"error": f"repair agenda item {item_id} not found"}
+
     # ------------------------------------------------------------------
     # score_*
     # ------------------------------------------------------------------
@@ -2754,6 +3318,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch)
         after_words = self._decoded_words(branch)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
@@ -2763,6 +3328,7 @@ class WorkspaceToolExecutor:
                 if alpha.symbol_for(w) == cipher_sym
             ),
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2790,6 +3356,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch)
         after_words = self._decoded_words(branch)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
@@ -2797,6 +3364,7 @@ class WorkspaceToolExecutor:
             "details": set_ok,
             "errors": errors if errors else None,
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2836,6 +3404,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch_name)
         after_words = self._decoded_words(branch_name)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch_name,
@@ -2843,6 +3412,7 @@ class WorkspaceToolExecutor:
             "now_decodes_as": decoded,
             "changes": changes,
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch_name),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2981,6 +3551,60 @@ class WorkspaceToolExecutor:
                 "candidate_index": idx,
             }
         return {"error": f"Unknown boundary candidate type: {candidate['type']}"}
+
+    def _tool_act_apply_word_repair(self, args: dict) -> Any:
+        branch = args["branch"]
+        plan = self._word_repair_plan(args)
+        token_mappings = plan.pop("_token_mappings", {})
+        if plan.get("error"):
+            return plan
+        if not plan.get("applicable"):
+            plan["agenda_item"] = self._upsert_repair_agenda_item(
+                plan,
+                status="blocked",
+                notes=str(plan.get("reason") or "Word repair is not directly applicable."),
+            )
+            return {
+                "error": "Word repair is not directly applicable.",
+                **plan,
+            }
+
+        before = self._compute_quick_scores(branch)
+        before_words = self._decoded_words(branch, max_words=None)
+        for token_id, pt_id in token_mappings.items():
+            self.workspace.set_mapping(branch, token_id, pt_id)
+        after = self._compute_quick_scores(branch)
+        after_words = self._decoded_words(branch, max_words=None)
+        changed_words = self._changed_words_sample(before_words, after_words)
+        score_delta = self._reading_score_delta(before, after)
+        orthography_risks = self._orthography_risks(before_words, after_words)
+        agenda_item = self._upsert_repair_agenda_item(
+            plan,
+            status="applied",
+            notes="Applied by act_apply_word_repair.",
+            last_result={
+                "mappings_set": len(token_mappings),
+                "changed_words": changed_words,
+                "score_delta": score_delta,
+                "orthography_risks": orthography_risks,
+            },
+        )
+        return {
+            "status": "ok",
+            "branch": branch,
+            "cipher_word_index": plan["cipher_word_index"],
+            "cipher_word": plan["cipher_word"],
+            "from": plan["current_decoded"],
+            "to": plan["target_word"],
+            "mappings_set": len(token_mappings),
+            "mappings": plan["proposed_mappings"],
+            "changed_words": changed_words,
+            "orthography_risks": orthography_risks,
+            "decoded_preview": self._decoded_preview(branch),
+            "score_delta": score_delta,
+            "agenda_item": agenda_item,
+            "note": self._READING_DECISION_NOTE,
+        }
 
     def _tool_act_resegment_by_reading(self, args: dict) -> Any:
         branch = args["branch"]
@@ -3838,6 +4462,44 @@ class WorkspaceToolExecutor:
         confidence = float(args["self_confidence"])
         if not self.workspace.has_branch(branch):
             return {"error": f"Branch not found: {branch}"}
+        unresolved = self._unresolved_repair_agenda_items(branch)
+        if unresolved:
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "repair_agenda_unresolved",
+                "unresolved_repair_agenda": unresolved,
+                "note": (
+                    "This branch has open/blocked repair agenda items. Before "
+                    "declaring, apply them or mark them held/rejected with "
+                    "repair_agenda_update. If your rationale already explains "
+                    "why the repair should not be applied, make that explicit "
+                    "in the agenda with status `held` or `rejected`, then call "
+                    "meta_declare_solution again."
+                ),
+                "suggested_next_tools": [
+                    "repair_agenda_list",
+                    "repair_agenda_update",
+                    "meta_declare_solution",
+                ],
+            }
+        if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards():
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "branch_cards_required",
+                "note": (
+                    "Multiple branches exist. Call workspace_branch_cards before "
+                    "declaring so you compare readable excerpts, internal "
+                    "scores, repairs, and orthography risks."
+                ),
+                "suggested_next_tools": [
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
         if self._should_guard_declaration_for_reading_workflow(branch, rationale):
             return {
                 "status": "blocked",
@@ -3868,11 +4530,13 @@ class WorkspaceToolExecutor:
             declared_at_iteration=self._current_iteration,
         )
         self.terminated = True
+        review = self._declaration_review(branch)
         return {
             "status": "ok",
             "accepted": True,
             "branch": branch,
             "declared_at_iteration": self._current_iteration,
+            "declaration_review": review,
             "note": "Run will terminate after this tool result is recorded.",
         }
 

@@ -205,13 +205,22 @@ populations.
    the cipher symbol producing the wrong decoded letter. Use \
    `decode_letter_stats` or `decode_ambiguous_letter` if you are unsure \
    which cipher symbol decodes to a given letter at a given position.
-3. **Apply your readings directly.** Use `act_set_mapping` for each fix, \
-   `act_bulk_set` to apply several at once, or `act_anchor_word` to pin \
-   down an entire recognised word in a single call. Apply several \
-   reading-driven fixes as a batch when you have them, then read the \
-   resulting decode once at the end of the batch — not after each one in \
-   isolation. **Do not run a search to "discover" a mapping you have \
-   already read off the page.**
+3. **Plan/apply word repairs when you can name the word.** If your reasoning \
+   says a decoded word should be another same-length word — for example \
+   `NREUITER -> BREUITER` or `SIMALITER -> SIMILITER` — call \
+   `decode_plan_word_repair` first, then `act_apply_word_repair` if the \
+   preview reads better. This records the hypothesis in the repair agenda \
+   and avoids fragile manual symbol guessing. Use raw `act_set_mapping` or \
+   `act_bulk_set` when the repair is not naturally expressed as a word-level \
+   before/after, or when you already know the exact cipher-symbol mapping. \
+   Preserve the manuscript/transcription orthography you are actually seeing: \
+   do **not** modernize or classicize spellings such as Latin `U/V` or `I/J` \
+   unless the decoded text itself consistently supports that distinction. A \
+   target spelling with `V` can change every mapped `U`-style plaintext \
+   position to `V`; if the surrounding decoded text uses `U` forms, prefer \
+   the same `U` orthography and leave the transcription style stable. \
+   **Do not run a search to "discover" a mapping you have already read off \
+   the page.**
 4. **Normalize word boundaries by reading the whole stream.** If the branch \
    is globally readable but misaligned, write your best full target-language \
    reading before you declare — even if some words are uncertain or need \
@@ -228,6 +237,14 @@ populations.
    APPLY ...` as a boundary-only step, then you can repair `S -> K` with a \
    targeted cipher-symbol mapping. Boundary edits do not change the key; they \
    make the branch's readable text match the intended word structure.
+   When you can read a specific same-length word repair, use \
+   `decode_plan_word_repair` to identify the \
+   responsible cipher symbol and preview collateral changes; then use \
+   `act_apply_word_repair` if the preview reads better. This is preferable \
+   to guessing the cipher symbol manually from prose. These planned repairs \
+   are stored in a durable repair agenda. Before declaring after reading \
+   repairs, call `repair_agenda_list`; apply, reject, or explicitly hold any \
+   open items so the final branch is not just transcript-memory lucky.
 5. **Refine with anchored search only AFTER applying your readings.** The \
    anchored polish call is `search_anneal(branch=…, preserve_existing=true, \
    score_fn='combined')` (or `search_homophonic_anneal(..., \
@@ -237,6 +254,10 @@ populations.
    just re-confirms the prior local optimum. Without `preserve_existing= \
    true`, a fully-mapped inherited branch is restarted from scratch and \
    your readings are destroyed.
+6. **Compare branch cards before declaration.** If more than one branch or \
+   repair hypothesis exists, call `workspace_branch_cards` before declaring. \
+   Pick the branch that best balances readable text, internal score signals, \
+   resolved repair agenda items, and manuscript-faithful orthography.
 
 ### Tool-output discipline
 

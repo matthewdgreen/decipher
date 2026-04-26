@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent.display import make_agent_renderer
 from agent.loop_v2 import run_v2
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import (
@@ -48,6 +49,7 @@ class BenchmarkRunnerV2:
         language: str | None = None,
         artifact_dir: str | Path = "artifacts",
         automated_preflight: bool = True,
+        display_mode: str = "off",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -55,6 +57,7 @@ class BenchmarkRunnerV2:
         self.default_language = language
         self.artifact_dir = Path(artifact_dir)
         self.automated_preflight = automated_preflight
+        self.display_mode = display_mode
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -68,6 +71,14 @@ class BenchmarkRunnerV2:
         test_id = test_data.test.test_id
         lang = language or self._resolve_language(test_data)
         start = time.time()
+        renderer = make_agent_renderer(self.display_mode)
+        if renderer is not None:
+            renderer.start_test(
+                test_id,
+                test_data.test.description,
+                model=self.api.model,
+                max_iterations=self.max_iterations,
+            )
 
         try:
             # Normalize S-tokens to letters if beneficial for API compatibility
@@ -105,7 +116,9 @@ class BenchmarkRunnerV2:
 
         automated_preflight = None
         if self.automated_preflight:
-            if not self.verbose:
+            if renderer is not None:
+                renderer.event("preflight_start", {})
+            elif not self.verbose:
                 print("  preflight(no-LLM)...", end="", flush=True)
             automated_preflight = _run_automated_preflight(
                 cipher_text,
@@ -113,7 +126,13 @@ class BenchmarkRunnerV2:
                 test_id,
                 test_data.test.cipher_system,
             )
-            if self.verbose:
+            if renderer is not None:
+                renderer.event("preflight_result", {
+                    "status": automated_preflight.get("status", "unknown"),
+                    "solver": automated_preflight.get("solver", "unknown"),
+                    "elapsed_seconds": automated_preflight.get("elapsed_seconds", 0.0),
+                })
+            elif self.verbose:
                 solver = automated_preflight.get("solver", "unknown")
                 status = automated_preflight.get("status", "unknown")
                 elapsed = automated_preflight.get("elapsed_seconds", 0.0)
@@ -128,7 +147,9 @@ class BenchmarkRunnerV2:
                 print(f" [{status}, {elapsed:.0f}s, $0.00 no LLM]", flush=True)
 
         def on_event(event: str, payload: dict) -> None:
-            if not self.verbose:
+            if renderer is not None:
+                renderer.event(event, payload)
+            elif not self.verbose:
                 if event == "iteration_start":
                     print(f"  iter {payload['iteration']}...", end="", flush=True)
                 elif event == "tool_call":
@@ -223,7 +244,7 @@ class BenchmarkRunnerV2:
             if artifact.tool_calls else 0
         )
         elapsed = time.time() - start
-        return RunResultV2(
+        result = RunResultV2(
             test_id=test_id,
             status=artifact.status,
             final_decryption=final_decryption,
@@ -240,6 +261,9 @@ class BenchmarkRunnerV2:
             total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
             estimated_cost_usd=artifact.estimated_cost_usd,
         )
+        if renderer is not None:
+            renderer.finish(result)
+        return result
 
 
 def _format_benchmark_context(test_data: TestData) -> str | None:

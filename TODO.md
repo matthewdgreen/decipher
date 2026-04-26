@@ -379,20 +379,85 @@ or a benchmark data issue.
       drift.
 - [ ] Design a provider-neutral modern agent loop before further Borg-specific
   work.
-  - Keep the core Decipher harness independent of any one LLM provider.
-  - Use a small provider adapter so Claude, OpenAI, and future local/hosted
+  - [x] Keep the core Decipher harness independent of any one LLM provider.
+  - [x] Use a small provider adapter so Claude, OpenAI, and future local/hosted
     models can share the same tool/workspace/artifact state machine.
-  - Separate outer benchmark iterations from inner tool steps.
-  - Add same-iteration retry for gated/disallowed tools so a stale tool choice
+  - [x] Separate outer benchmark iterations from inner tool steps.
+  - [x] Add same-iteration retry for gated/disallowed tools so a stale tool choice
     does not consume a scarce late-turn action.
-  - Make workflows first-class, especially:
+  - [x] Add same-iteration retry for boundary-projection count mismatches so a
+    truncated or overlong full-reading proposal can be revised before the
+    outer iteration advances.
+  - [ ] Make workflows first-class, especially:
     - full-reading validation and boundary projection
     - reading-driven mapping repair
     - declaration preparation
-  - Track explicit run state: active mode, branch, repair agenda, held/reverted
+    - First reading-repair slice added:
+      `decode_plan_word_repair` plans same-length word repairs and
+      `act_apply_word_repair` applies them with `changed_words` feedback.
+      Planned repairs are now also tracked in a durable `repair_agenda`
+      artifact field, with `repair_agenda_list` / `repair_agenda_update`
+      available to keep open hypotheses from vanishing into transcript memory.
+      Added `workspace_branch_cards` for compact branch state before
+      declaration, plus orthography-risk warnings for broad Latin `U/V` or
+      `I/J` shifts introduced by reading repairs.
+      Declarations now require open/blocked repair agenda items to be resolved
+      with `repair_agenda_update`, and multi-branch runs must call
+      `workspace_branch_cards` before declaring. The final action turn exposes
+      those bookkeeping tools alongside `meta_declare_solution`; if the agent
+      performs final bookkeeping but forgets to declare, the loop retries
+      inside the same final iteration with an explicit declaration nudge.
+      First Borg trial:
+      `artifacts/parity_borg_latin_borg_0109v/495a27b339ba.json`, 13.9%
+      char / 9.1% word. The agent used the wrapper for two useful repairs
+      and correctly backed away from `RLURES -> PLURES` after collateral
+      damage.
+      Follow-up agenda trial:
+      `artifacts/parity_borg_latin_borg_0109v/38e3d02d7c7a.json`, 11.6%
+      char / 5.1% word. This confirmed agenda use but exposed the Latin
+      orthography trap: the agent improved its Latin-looking reading by
+      classicizing `U` to `V`, hurting the benchmark transcription.
+      Later trial:
+      `artifacts/parity_borg_latin_borg_0109v/260a15ce6778.json`, 13.9%
+      char / 7.7% word. This avoided the orthography trap but left
+      `RLURES -> PLURES` open in the agenda despite rejecting it in prose,
+      motivating the declaration gate.
+      Post-gate trial:
+      `artifacts/parity_borg_latin_borg_0109v/fca17fd203a6.json`, 13.9%
+      char / 7.7% word. This showed richer tool behavior but also exposed a
+      final-turn failure: the agent called `repair_agenda_list` and
+      `workspace_branch_cards` but forgot `meta_declare_solution`, so fallback
+      declaration fired. A same-iteration final declaration retry now covers
+      that case.
+  - [x] Track explicit run state: active mode, branch, repair agenda, held/reverted
     repairs, unresolved hypotheses, per-branch workflow completion.
-  - Preserve complete artifact observability for every model call, tool call,
+  - [x] Preserve complete artifact observability for every model call, tool call,
     workflow event, gate rejection, retry, and declaration.
+  - [x] Validate the boundary-projection prototype on the English Borg analog
+    and Borg `0109v`, then compare artifacts against the prior runs.
+    - English analog rerun:
+      `artifacts/english_borg_analog_001/f8c8ead3e9b2.json`, 100.0% char /
+      100.0% word in 6 iterations.
+    - Borg completed once before actuator-only gate tightening:
+      `artifacts/parity_borg_latin_borg_0109v/048448b15ebb.json`, 13.9%
+      char / 7.5% word; showed that validation-only should not end the gate.
+    - Post-tightening Borg retry was interrupted by Anthropic credit-balance
+      API error on iteration 4:
+      `artifacts/parity_borg_latin_borg_0109v/5b16b17ac4c1.json`.
+    - Milestone 2 comparison:
+      `docs/agent_loop_milestone2_comparison.md`.
+  - [x] Improve agent-loop command-line output.
+    - Added `--display {auto,pretty,raw,jsonl}` for agentic benchmark/crack/
+      testgen paths.
+    - `auto` uses pretty mode on an interactive terminal, raw mode when
+      piped, and legacy verbose output with `-v`.
+    - Pretty mode renders a live decrypt panel, agent commentary, concise tool
+      summaries, branch scores, changed-word previews, and loud API/fallback
+      errors.
+    - Raw mode preserves the compact event/tool stream; JSONL mode exposes
+      structured events for GUI wrappers.
+    - Output is driven by structured `loop_events` plus `workspace_snapshot`
+      events; artifact JSON remains the source of truth.
   - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
 - [ ] Add a full-agent parity smoke suite.
 - [x] Add artifact checks for wrong-tool use.
