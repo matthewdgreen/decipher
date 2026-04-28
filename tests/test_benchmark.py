@@ -8,10 +8,14 @@ from pathlib import Path
 
 import pytest
 
+from benchmark.context import build_benchmark_context, safe_read_benchmark_file
 from benchmark.loader import BenchmarkLoader, BenchmarkTest, parse_canonical_transcription
 from benchmark.scorer import (
     ScoreResult,
     _collapse_spaced_letters,
+    align_char_sequences,
+    align_word_sequences,
+    format_char_diff,
     format_report,
     normalize_text,
     score_decryption,
@@ -83,6 +87,66 @@ class TestScoreDecryption:
         )
         assert result.char_accuracy == 1.0
 
+    def test_char_score_resynchronizes_after_insertion(self):
+        result = score_decryption(
+            "t5",
+            "ABCDEFXGHIJK",
+            "ABCDEFGHIJK",
+            0.5,
+            "completed",
+        )
+
+        assert result.correct_chars == 11
+        assert result.total_chars == 12
+        assert result.char_accuracy == pytest.approx(11 / 12)
+
+    def test_char_alignment_keeps_substitutions_as_errors(self):
+        rows = align_char_sequences("ABCXDEF", "ABCYDEF")
+
+        assert [row.op for row in rows] == [
+            "match",
+            "match",
+            "match",
+            "substitute",
+            "match",
+            "match",
+            "match",
+        ]
+
+    def test_char_diff_reports_gaps_from_alignment(self):
+        diff = format_char_diff("ABCDEFXGHIJK", "ABCDEFGHIJK", context=2)
+
+        assert "character alignment error" in diff
+        assert "[X]" in diff
+        assert "[-]" in diff
+
+    def test_word_score_resynchronizes_after_extra_words(self):
+        result = score_decryption(
+            "t6",
+            "ETIAM QUOD IN TALI CUR PLICARE U UEL AC PULLO ET BREUITER",
+            "ETIAM QUOD IN TALI CUR PLICARE UEL PULLO ET BREUITER",
+            0.5,
+            "completed",
+        )
+
+        assert result.correct_words == 10
+        assert result.total_words == 12
+        assert result.word_accuracy == pytest.approx(10 / 12)
+
+    def test_word_alignment_marks_insertions_and_resyncs(self):
+        rows = align_word_sequences(
+            ["PULLO", "ET", "AC", "BREUITER", "UT"],
+            ["PULLO", "ET", "BREUITER", "UT"],
+        )
+
+        assert [row.op for row in rows] == [
+            "match",
+            "match",
+            "insert",
+            "match",
+            "match",
+        ]
+
 
 class TestFormatReport:
     def test_basic(self):
@@ -132,8 +196,11 @@ def benchmark_dir():
         # Create directory structure
         os.makedirs(os.path.join(tmpdir, "manifest"))
         os.makedirs(os.path.join(tmpdir, "splits"))
+        os.makedirs(os.path.join(tmpdir, "sources", "test", "documents"))
+        os.makedirs(os.path.join(tmpdir, "sources", "test", "metadata"))
         os.makedirs(os.path.join(tmpdir, "sources", "test", "transcriptions"))
         os.makedirs(os.path.join(tmpdir, "sources", "test", "plaintext"))
+        os.makedirs(os.path.join(tmpdir, "sources", "zodiac", "metadata"))
 
         # Write manifest
         record = {
@@ -144,6 +211,49 @@ def benchmark_dir():
             "transcription_canonical_file": "sources/test/transcriptions/page1.canonical.txt",
             "plaintext_file": "sources/test/plaintext/page1.txt",
             "has_key": True,
+            "context_layers": {
+                "minimal": {
+                    "label": "Basic provenance",
+                    "text": "A short handwritten test cipher.",
+                },
+                "standard": {
+                    "label": "Standard context",
+                    "text": "The note is from the test archive.",
+                },
+                "historical": {
+                    "label": "Historical context",
+                    "text": "The writer also produced a solved companion note.",
+                    "contains_plaintext_hint": True,
+                },
+            },
+            "related_records": [
+                {
+                    "record_id": "test_page2",
+                    "relationship": "same_writer_solved_example",
+                    "solution_available": True,
+                    "safe_context_layers": ["related_solutions", "max"],
+                }
+            ],
+            "associated_documents": [
+                {
+                    "id": "test_note",
+                    "document_type": "letter",
+                    "title": "Plaintext covering note",
+                    "summary": "A short note accompanying the cipher.",
+                    "text_file": "sources/test/documents/test_note.txt",
+                    "contains_plaintext_hint": True,
+                    "safe_context_layers": ["historical", "related_metadata", "max"],
+                },
+                {
+                    "id": "test_solution_note",
+                    "document_type": "solution_note",
+                    "title": "Solution-bearing note",
+                    "summary": "A deliberately gated note.",
+                    "text_file": "sources/test/documents/test_solution_note.txt",
+                    "contains_solution": True,
+                    "safe_context_layers": ["related_solutions", "max"],
+                },
+            ],
         }
         context_record = {
             "id": "test_page2",
@@ -181,6 +291,14 @@ def benchmark_dir():
             f.write("hello world\n")
         with open(os.path.join(tmpdir, "sources", "test", "plaintext", "page2.txt"), "w") as f:
             f.write("context page\n")
+        with open(os.path.join(tmpdir, "sources", "test", "documents", "test_note.txt"), "w") as f:
+            f.write("The note says this was copied from a handwritten source.\n")
+        with open(os.path.join(tmpdir, "sources", "test", "documents", "test_solution_note.txt"), "w") as f:
+            f.write("The solution-bearing note is only for max-context runs.\n")
+        with open(os.path.join(tmpdir, "sources", "test", "metadata", "test_symbol_map.json"), "w") as f:
+            json.dump({"source": "test", "symbols": {"S001": {"glyph_id": "TEST_A"}}}, f)
+        with open(os.path.join(tmpdir, "sources", "zodiac", "metadata", "zodiac_symbol_map.json"), "w") as f:
+            json.dump({"source": "zodiac", "symbols": {"S001": {"glyph_id": "ZODIAC_A"}}}, f)
 
         yield tmpdir
 
@@ -212,6 +330,71 @@ class TestBenchmarkLoader:
         assert "S007" in td.context_canonical_transcription
         assert "context" in td.context_plaintext
         assert [r.id for r in td.context_records] == ["test_page2"]
+        assert [r.id for r in td.target_records] == ["test_page1"]
+        assert td.benchmark_root == str(Path(benchmark_dir).resolve())
+        assert td.symbol_map["source"] == "test"
+
+    def test_symbol_map_uses_record_source_not_test_id_prefix(self, benchmark_dir):
+        loader = BenchmarkLoader(benchmark_dir)
+        test = BenchmarkTest(
+            test_id="zodiac_named_fixture_but_test_source",
+            track="transcription2plaintext",
+            cipher_system="test_cipher",
+            target_records=["test_page1"],
+            context_records=[],
+            description="test source under a misleading test id",
+        )
+
+        td = loader.load_test_data(test)
+
+        assert td.symbol_map["source"] == "test"
+        assert td.symbol_map["symbols"]["S001"]["glyph_id"] == "TEST_A"
+
+    def test_build_benchmark_context_max_policy(self, benchmark_dir):
+        loader = BenchmarkLoader(benchmark_dir)
+        test = loader.load_tests("test_tests.jsonl")[0]
+        td = loader.load_test_data(test)
+
+        context = build_benchmark_context(td, policy="max")
+
+        assert context is not None
+        assert context.policy == "max"
+        assert context.target_record_ids == ["test_page1"]
+        assert context.context_record_ids == ["test_page2"]
+        assert "test_page2" in context.related_records
+        assert "test_note" in context.associated_documents
+        assert "test_solution_note" in context.associated_documents
+        assert "Basic provenance" in context.prompt
+        assert "Scoped benchmark tools are available" in context.prompt
+        assert context.related_solution_allowed is True
+
+    def test_build_benchmark_context_none_policy_is_empty_but_audited(self, benchmark_dir):
+        loader = BenchmarkLoader(benchmark_dir)
+        test = loader.load_tests("test_tests.jsonl")[0]
+        td = loader.load_test_data(test)
+
+        context = build_benchmark_context(td, policy="none")
+
+        assert context is not None
+        assert context.prompt == ""
+        assert context.injected_layers == []
+        assert context.related_records == {}
+        assert context.to_artifact_dict()["policy"] == "none"
+
+    def test_build_benchmark_context_hides_unavailable_documents_by_policy(self, benchmark_dir):
+        loader = BenchmarkLoader(benchmark_dir)
+        test = loader.load_tests("test_tests.jsonl")[0]
+        td = loader.load_test_data(test)
+
+        minimal = build_benchmark_context(td, policy="minimal")
+        historical = build_benchmark_context(td, policy="historical")
+
+        assert minimal.associated_documents == {}
+        assert set(historical.associated_documents) == {"test_note"}
+
+    def test_safe_read_benchmark_file_rejects_path_escape(self, benchmark_dir):
+        with pytest.raises(ValueError, match="escapes benchmark root"):
+            safe_read_benchmark_file(benchmark_dir, "../outside.txt")
 
     def test_english_borg_analog_fixture_loads_and_has_boundary_drift(self):
         root = Path(__file__).resolve().parent.parent / "fixtures" / "benchmarks" / "english_borg_analog"
@@ -239,4 +422,4 @@ class TestBenchmarkLoader:
             status="completed",
         )
         assert score.char_accuracy == 1.0
-        assert score.word_accuracy < 0.1
+        assert 0.5 < score.word_accuracy < 1.0

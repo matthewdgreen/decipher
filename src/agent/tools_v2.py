@@ -1,13 +1,14 @@
 """v2 tool definitions and executor.
 
 Tools are organized by namespace:
-  workspace_*  — branch lifecycle (fork, list, delete, compare, merge)
+  workspace_*  — branch lifecycle and branch cards
   observe_*    — read-only text analysis (frequency, isomorphs)
-  decode_*     — read-only views of the transcription (show, unmapped, heatmap, letter_stats, diagnose)
+  decode_*     — read-only views, diagnostics, validation, and repair plans
   score_*      — signal panel and individual signals
   corpus_*     — language data (wordlist, patterns)
-  act_*        — branch mutations (set_mapping, bulk_set, anchor_word, clear)
+  act_*        — branch/key/boundary mutations
   search_*     — classical algorithms on a branch (hill_climb, anneal)
+  repair_agenda_* — durable reading-repair hypothesis bookkeeping
   run_python   — execute arbitrary stdlib Python code (escape hatch)
   meta_*       — declare_solution (terminates the run), request_tool (feedback)
 
@@ -29,9 +30,18 @@ from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
 from analysis.solver import hill_climb_swaps, simulated_anneal
+from analysis.transformers import (
+    TransformPipeline,
+    apply_transform_pipeline,
+)
+from analysis.transform_search import (
+    inspect_transform_suspicion,
+    screen_transform_candidates,
+)
 from automated import runner as automated_runner
 from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
+from benchmark.context import ScopedBenchmarkContext, safe_read_benchmark_file
 from models.session import Session  # only used for search tools that take a Session
 from workspace import Workspace, WorkspaceError
 
@@ -47,7 +57,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Create a new branch by copying the key of an existing branch. "
             "Cheap — branches are independent dicts. Use this to test a "
-            "hypothesis without committing to main."
+            "hypothesis without committing to main. If an automated preflight "
+            "or other readable branch exists and you want to repair it, prefer "
+            "`workspace_fork_best` so you do not accidentally fork empty `main`."
         ),
         "input_schema": {
             "type": "object",
@@ -59,9 +71,54 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "workspace_fork_best",
+        "description": (
+            "Create a new repair branch from the strongest existing branch. "
+            "Use this when an automated preflight branch exists or when you "
+            "want to repair the current best decode. It avoids accidentally "
+            "forking empty `main`; the result tells you exactly which source "
+            "branch was copied."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "new_name": {
+                    "type": "string",
+                    "description": "Name for the new branch (alphanumeric, _ or -).",
+                },
+                "prefer_branch": {
+                    "type": "string",
+                    "description": (
+                        "Optional source branch to copy if it exists. Omit to "
+                        "let the tool choose the strongest branch."
+                    ),
+                },
+            },
+            "required": ["new_name"],
+        },
+    },
+    {
         "name": "workspace_list_branches",
         "description": "List all branches with their mapped-symbol counts and tags.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "workspace_branch_cards",
+        "description": (
+            "Show compact branch state cards: scores, mapped count, readable "
+            "excerpt, applied/held/open repair agenda items, and risk warnings. "
+            "Use this before declaration when multiple branches or repair "
+            "hypotheses exist."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Optional branch name; omit to show all branches.",
+                },
+            },
+        },
     },
     {
         "name": "workspace_delete",
@@ -161,6 +218,80 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": "Optional branch whose current mapped-symbol counts should be compared.",
                 },
+            },
+        },
+    },
+    {
+        "name": "observe_transform_pipeline",
+        "description": (
+            "Inspect ciphertext-transform state for a branch: current grid "
+            "metadata, active token-order overlay, and any applied "
+            "Zenith-compatible transform pipeline. Use this when a cipher may "
+            "be transposition+homophonic and the reading order itself may be wrong."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"branch": {"type": "string", "default": "main"}},
+        },
+    },
+    {
+        "name": "observe_transform_suspicion",
+        "description": (
+            "Cheap diagnostic for deciding whether transform search is worth "
+            "trying on a cipher with unknown or incomplete type metadata. It "
+            "reports plausible grid dimensions, homophonic/order-scramble "
+            "signals, and a conservative recommendation. Use this before "
+            "spending solver budget on search_transform_homophonic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "columns": {
+                    "type": "integer",
+                    "description": "Optional suspected grid width.",
+                },
+                "baseline_status": {
+                    "type": "string",
+                    "description": "Optional status from a baseline solve.",
+                },
+                "baseline_score": {
+                    "type": "number",
+                    "description": "Optional normalized baseline quality score if available.",
+                },
+            },
+        },
+    },
+    {
+        "name": "search_transform_candidates",
+        "description": (
+            "Run a structural-only transform candidate search. This can use "
+            "fast, broad, or wide breadth without spending homophonic solver "
+            "budget. Use it when deciding whether a large transform search is "
+            "worth promoting into search_transform_homophonic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "columns": {
+                    "type": "integer",
+                    "description": "Optional suspected grid width.",
+                },
+                "breadth": {
+                    "type": "string",
+                    "enum": ["fast", "broad", "wide"],
+                    "default": "broad",
+                },
+                "top_n": {"type": "integer", "default": 40},
+                "max_generated_candidates": {
+                    "type": "integer",
+                    "default": 25000,
+                    "description": "Safety cap for structural candidate generation.",
+                },
+                "include_program_search": {"type": "boolean", "default": False},
+                "program_max_depth": {"type": "integer", "default": 5},
+                "program_beam_width": {"type": "integer", "default": 48},
             },
         },
     },
@@ -468,6 +599,29 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "act_apply_word_repair",
+        "description": (
+            "Apply a same-length reading-driven word repair such as TREUITER "
+            "-> BREUITER. This is a low-friction wrapper around the correct "
+            "act_set_mapping calls: it locates the word, identifies the "
+            "cipher symbols responsible for differing letters, applies those "
+            "symbol mappings, and returns changed_words so you can judge the "
+            "repair by reading. Provide either cipher_word_index or "
+            "decoded_word plus optional occurrence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_word": {"type": "string"},
+                "cipher_word_index": {"type": "integer"},
+                "decoded_word": {"type": "string"},
+                "occurrence": {"type": "integer", "default": 0},
+            },
+            "required": ["branch", "target_word"],
+        },
+    },
+    {
         "name": "act_resegment_by_reading",
         "description": (
             "Replace this branch's word boundaries with a complete reading that "
@@ -522,6 +676,38 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["branch", "proposed_text"],
+        },
+    },
+    {
+        "name": "act_resegment_window_by_reading",
+        "description": (
+            "Apply word-boundary changes to a local window of decoded words "
+            "instead of rewriting the entire plaintext stream. Use this for "
+            "repairs like LIBE | BITUR -> LIBEBITUR, A | RI -> ARI, or "
+            "POTESTQUIBUS -> POTEST | QUIBUS. The proposed text only needs to "
+            "cover the selected window. If proposed letters differ but the "
+            "character count matches, the tool applies only the boundary "
+            "pattern to the current decoded letters and returns mismatch spans "
+            "for later key repair."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "start_word_index": {
+                    "type": "integer",
+                    "description": "First current decoded word in the local window.",
+                },
+                "word_count": {
+                    "type": "integer",
+                    "description": "Number of current decoded words in the window.",
+                },
+                "proposed_text": {
+                    "type": "string",
+                    "description": "Desired reading/boundaries for just this window.",
+                },
+            },
+            "required": ["branch", "start_word_index", "word_count", "proposed_text"],
         },
     },
     # ----- search_* -----
@@ -732,6 +918,58 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "named <branch>_cand2, <branch>_cand3, ..."
                     ),
                 },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "act_apply_transform_pipeline",
+        "description": (
+            "Apply a Zenith-compatible ciphertext transform pipeline to this "
+            "branch's reading order. This does not change symbol mappings; it "
+            "changes the branch's token order so subsequent decode/search tools "
+            "operate on the transformed ciphertext."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "pipeline": {
+                    "type": "object",
+                    "description": (
+                        "Pipeline object with optional columns/rows and steps, "
+                        "where each step is {name, data}."
+                    ),
+                },
+            },
+            "required": ["branch", "pipeline"],
+        },
+    },
+    {
+        "name": "search_transform_homophonic",
+        "description": (
+            "Try a bounded set of ciphertext transform candidates. For each "
+            "candidate, apply the transform, run a short homophonic search, "
+            "rank the candidates, and optionally write the best transformed "
+            "branch. With include_program_search=true, also construct small "
+            "transform pipelines from a grammar before probing finalists."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "columns": {"type": "integer"},
+                "profile": {"type": "string", "enum": ["small", "medium", "wide"], "default": "small"},
+                "top_n": {"type": "integer", "default": 3},
+                "max_generated_candidates": {
+                    "type": "integer",
+                    "description": "Safety cap for structural candidate generation before solver promotion.",
+                },
+                "write_best_branch": {"type": "boolean", "default": True},
+                "homophonic_budget": {"type": "string", "enum": ["screen", "full"], "default": "screen"},
+                "include_program_search": {"type": "boolean", "default": False},
+                "program_max_depth": {"type": "integer", "default": 5},
+                "program_beam_width": {"type": "integer", "default": 24},
             },
             "required": ["branch"],
         },
@@ -950,6 +1188,226 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["branch", "proposed_text"],
         },
     },
+    {
+        "name": "decode_plan_word_repair",
+        "description": (
+            "Plan a reading-driven word repair such as TREUITER -> BREUITER "
+            "without mutating the branch. Use this when you can read a decoded "
+            "word or fragment and want the tool to identify the responsible "
+            "cipher symbol changes. Provide either cipher_word_index or "
+            "decoded_word plus optional occurrence. Same-length repairs return "
+            "proposed act_set_mapping-style changes, a changed_words preview, "
+            "and an act_apply_word_repair suggested call."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_word": {
+                    "type": "string",
+                    "description": "The intended reading for this word, e.g. BREUITER.",
+                },
+                "cipher_word_index": {
+                    "type": "integer",
+                    "description": "Optional numeric word index to repair.",
+                },
+                "decoded_word": {
+                    "type": "string",
+                    "description": "Optional current decoded word to locate, e.g. TREUITER.",
+                },
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Which matching decoded_word occurrence to use; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch", "target_word"],
+        },
+    },
+    {
+        "name": "decode_plan_word_repair_menu",
+        "description": (
+            "Compare several possible same-length readings for the same decoded "
+            "word without mutating the branch. Use this before applying an "
+            "uncertain word repair: it shows each option's proposed cipher-symbol "
+            "mappings, intra-word conflicts, changed-word preview, dictionary-hit "
+            "delta, collateral-change count, and suggested act_apply_word_repair "
+            "call when safe. This is the repair menu: choose from evidence instead "
+            "of applying the first plausible word."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "target_words": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Candidate intended readings to compare, e.g. "
+                        "['PLURES', 'RLURES', 'BLURES']."
+                    ),
+                },
+                "cipher_word_index": {
+                    "type": "integer",
+                    "description": "Optional numeric word index to repair.",
+                },
+                "decoded_word": {
+                    "type": "string",
+                    "description": "Optional current decoded word to locate, e.g. RLURES.",
+                },
+                "occurrence": {
+                    "type": "integer",
+                    "description": "Which matching decoded_word occurrence to use; defaults to 0.",
+                    "default": 0,
+                },
+            },
+            "required": ["branch", "target_words"],
+        },
+    },
+    {
+        "name": "repair_agenda_list",
+        "description": (
+            "List durable reading-repair agenda items accumulated during this "
+            "run. Use this before declaring if you have been making or "
+            "considering word-level reading repairs, so open hypotheses are "
+            "not lost in the transcript."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Optional branch filter.",
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Optional status filter such as open, applied, held, rejected, blocked.",
+                },
+            },
+        },
+    },
+    {
+        "name": "repair_agenda_update",
+        "description": (
+            "Update the status or notes for a durable reading-repair agenda "
+            "item. Use this when you decide a proposed repair is held, "
+            "rejected, blocked, or otherwise resolved without applying it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "integer"},
+                "status": {
+                    "type": "string",
+                    "enum": ["open", "applied", "held", "rejected", "blocked", "reverted"],
+                },
+                "notes": {"type": "string"},
+            },
+            "required": ["item_id", "status"],
+        },
+    },
+    # ----- benchmark_* -----
+    {
+        "name": "inspect_benchmark_context",
+        "description": (
+            "Inspect the scoped benchmark context made available for this run: "
+            "selected policy, injected layers, target/context records, related "
+            "records, and associated documents. This does not read arbitrary "
+            "files and only exposes manifest-declared context for the current "
+            "benchmark test."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_layer_text": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include the short text of injected context layers.",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_related_records",
+        "description": (
+            "List benchmark records that this test explicitly allows as "
+            "related/context material. Does not expose plaintext; use "
+            "`inspect_related_solution` only when policy permits solution access."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_related_transcription",
+        "description": (
+            "Read the canonical transcription of an allowed context or related "
+            "record. The record must be listed by the benchmark split or by the "
+            "record's `related_records` metadata; arbitrary filesystem paths "
+            "are not accepted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "record_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["record_id"],
+        },
+    },
+    {
+        "name": "inspect_related_solution",
+        "description": (
+            "Read plaintext/solution text for an allowed related record, but "
+            "only when the benchmark context policy explicitly permits "
+            "solution-bearing related context. This is for controlled "
+            "context-ablation runs, not blind parity."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "record_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["record_id"],
+        },
+    },
+    {
+        "name": "list_associated_documents",
+        "description": (
+            "List long-form documents explicitly associated with the current "
+            "benchmark record, such as letters, plaintext notes, envelopes, or "
+            "source commentary. Use `inspect_associated_document` to read an "
+            "allowed document."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_associated_document",
+        "description": (
+            "Read an explicitly associated benchmark document by document ID. "
+            "Only manifest-declared files under the benchmark root are allowed; "
+            "arbitrary paths are rejected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["document_id"],
+        },
+    },
     # ----- run_python -----
     {
         "name": "run_python",
@@ -1024,9 +1482,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Terminate the run. Specify the branch whose transcription you want"
             "to submit, a rationale explaining your reasoning and remaining "
-            "uncertainty, and your self-confidence (0.0 - 1.0). This ends "
-            "the session — call it when you believe you have the best answer "
-            "you can produce or when further progress seems impossible."
+            "uncertainty, a brief human-readable reading summary, whether "
+            "more iterations would likely help, and your self-confidence "
+            "(0.0 - 1.0). This ends the session — call it when you believe "
+            "you have the best answer you can produce or when further progress "
+            "seems impossible."
         ),
         "input_schema": {
             "type": "object",
@@ -1034,8 +1494,49 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "rationale": {"type": "string"},
                 "self_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "reading_summary": {
+                    "type": "string",
+                    "description": (
+                        "Brief plain-language summary for the final screen: "
+                        "what the decipherment appears to say, especially if "
+                        "the target language is not the user's native language."
+                    ),
+                },
+                "further_iterations_helpful": {
+                    "type": "boolean",
+                    "description": (
+                        "True if additional iterations would likely improve "
+                        "the decipherment; false if remaining gains seem minor."
+                    ),
+                },
+                "further_iterations_note": {
+                    "type": "string",
+                    "description": (
+                        "One or two sentences explaining what further "
+                        "iterations should try, or why they are probably not "
+                        "needed."
+                    ),
+                },
+                "forced_partial": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Set true only when you are intentionally submitting a "
+                        "partial hypothesis near the end of the run because no "
+                        "useful remaining tool action is available. This does "
+                        "not override `further_iterations_helpful=true`, and it "
+                        "is not a way to stop early on scattered word islands."
+                    ),
+                },
             },
-            "required": ["branch", "rationale", "self_confidence"],
+            "required": [
+                "branch",
+                "rationale",
+                "self_confidence",
+                "reading_summary",
+                "further_iterations_helpful",
+                "further_iterations_note",
+            ],
         },
     },
 ]
@@ -1049,6 +1550,12 @@ def _json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+
+
 class WorkspaceToolExecutor:
     """Dispatches v2 tool calls against a Workspace + language resources."""
 
@@ -1059,12 +1566,14 @@ class WorkspaceToolExecutor:
         word_set: set[str],
         word_list: list[str],
         pattern_dict: dict[str, list[str]],
+        benchmark_context: ScopedBenchmarkContext | None = None,
     ) -> None:
         self.workspace = workspace
         self.language = language
         self.word_set = word_set
         self.word_list = word_list
         self.pattern_dict = pattern_dict
+        self.benchmark_context = benchmark_context
 
         # Frequency rank for lookup (1-based; lower = more common)
         self._freq_rank: dict[str, int] = {
@@ -1083,6 +1592,11 @@ class WorkspaceToolExecutor:
 
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
+
+        # Durable reading-repair agenda. These are deliberately plain dicts so
+        # they serialize directly into run artifacts and tool results.
+        self.repair_agenda: list[dict[str, Any]] = []
+        self._next_repair_agenda_id: int = 1
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -1157,6 +1671,22 @@ class WorkspaceToolExecutor:
 
     def _pt_alpha(self):
         return self.workspace.plaintext_alphabet
+
+    def _resolve_observation_branch(self, requested: str | None) -> tuple[str, dict[str, Any]]:
+        branch_name = requested or "main"
+        if self.workspace.has_branch(branch_name):
+            return branch_name, {}
+        if branch_name == "automated_preflight" and self.workspace.has_branch("main"):
+            return "main", {
+                "requested_branch": branch_name,
+                "branch_fallback": "main",
+                "warning": (
+                    "`automated_preflight` is not installed. This usually means "
+                    "the no-LLM preflight ran but did not produce a usable key. "
+                    "I used `main` for this observation instead."
+                ),
+            }
+        return branch_name, {}
 
     def _cipher_word_str(self, word_tokens: list[int]) -> str:
         alpha = self._alpha()
@@ -1400,6 +1930,321 @@ class WorkspaceToolExecutor:
             out.append(sep.join(parts))
         return out
 
+    def _decoded_words_with_key(
+        self,
+        branch_name: str,
+        key: dict[int, int],
+        max_words: int | None = None,
+    ) -> list[str]:
+        ws = self.workspace
+        words = ws.effective_words(branch_name)
+        pt_alpha = self._pt_alpha()
+        sep = " " if pt_alpha._multisym else ""
+        if max_words is not None:
+            words = words[:max_words]
+        out: list[str] = []
+        for w in words:
+            parts = [
+                pt_alpha.symbol_for(key[t]) if t in key else "?"
+                for t in w
+            ]
+            out.append(sep.join(parts))
+        return out
+
+    def _locate_word_for_repair(
+        self,
+        branch: str,
+        args: dict,
+    ) -> tuple[int | None, dict[str, Any] | None]:
+        words = self.workspace.effective_words(branch)
+        if args.get("cipher_word_index") is not None:
+            idx = int(args["cipher_word_index"])
+            if idx < 0 or idx >= len(words):
+                return None, {
+                    "error": f"cipher_word_index {idx} out of range (0..{len(words) - 1})"
+                }
+            return idx, None
+
+        decoded_target = sig.normalize_for_scoring(str(args.get("decoded_word", "")))
+        decoded_target = self._reading_char_stream(decoded_target)
+        if not decoded_target:
+            return None, {
+                "error": (
+                    "Provide either cipher_word_index or decoded_word to locate "
+                    "the repair target."
+                )
+            }
+        occurrence = int(args.get("occurrence", 0))
+        decoded_words = [
+            self._reading_char_stream(word)
+            for word in self._decoded_words(branch, max_words=None)
+        ]
+        matches = [
+            idx for idx, word in enumerate(decoded_words)
+            if word == decoded_target
+        ]
+        if not matches:
+            return None, {
+                "error": f"decoded_word {decoded_target!r} not found on branch {branch!r}",
+                "decoded_word": decoded_target,
+                "sample_decoded_words": decoded_words[:40],
+            }
+        if occurrence < 0 or occurrence >= len(matches):
+            return None, {
+                "error": (
+                    f"occurrence {occurrence} out of range for decoded_word "
+                    f"{decoded_target!r}; found {len(matches)} match(es)"
+                ),
+                "matching_indices": matches,
+            }
+        return matches[occurrence], None
+
+    def _word_repair_plan(self, args: dict) -> dict[str, Any]:
+        branch = args["branch"]
+        idx, error = self._locate_word_for_repair(branch, args)
+        if error:
+            return error
+        assert idx is not None
+
+        target = self._reading_char_stream(str(args["target_word"]))
+        if not target:
+            return {"error": "target_word must contain at least one alphabetic character"}
+
+        words = self.workspace.effective_words(branch)
+        word_tokens = words[idx]
+        current_word = self._reading_char_stream(self._decode_word(word_tokens, branch))
+        alpha = self._alpha()
+        pt_alpha = self._pt_alpha()
+        cipher_word = self._cipher_word_str(word_tokens)
+        base: dict[str, Any] = {
+            "branch": branch,
+            "cipher_word_index": idx,
+            "cipher_word": cipher_word,
+            "current_decoded": current_word,
+            "target_word": target,
+            "same_length": len(current_word) == len(target),
+            "target_in_dictionary": target in self.word_set,
+        }
+        if len(current_word) != len(target):
+            base.update({
+                "applicable": False,
+                "reason": (
+                    "Word repair requires a same-length target. If the target "
+                    "adds/removes letters, use boundary/full-reading tools first."
+                ),
+                "current_length": len(current_word),
+                "target_length": len(target),
+            })
+            return base
+
+        desired_by_token: dict[int, dict[str, Any]] = {}
+        conflicts: list[dict[str, Any]] = []
+        for pos, (token_id, current_ch, target_ch) in enumerate(
+            zip(word_tokens, current_word, target)
+        ):
+            if not pt_alpha.has_symbol(target_ch):
+                conflicts.append({
+                    "position": pos,
+                    "cipher_symbol": alpha.symbol_for(token_id),
+                    "current": current_ch,
+                    "target": target_ch,
+                    "reason": "target letter is not in plaintext alphabet",
+                })
+                continue
+            target_id = pt_alpha.id_for(target_ch)
+            existing = desired_by_token.get(token_id)
+            if existing is not None and existing["target_id"] != target_id:
+                conflicts.append({
+                    "position": pos,
+                    "cipher_symbol": alpha.symbol_for(token_id),
+                    "current": current_ch,
+                    "target": target_ch,
+                    "reason": (
+                        "same cipher symbol appears multiple times in this word "
+                        "and the proposed target would require different letters"
+                    ),
+                    "previous_position": existing["position"],
+                    "previous_target": existing["target"],
+                })
+                continue
+            if existing is None:
+                desired_by_token[token_id] = {
+                    "target_id": target_id,
+                    "target": target_ch,
+                    "position": pos,
+                    "current": current_ch,
+                }
+
+        branch_key = self.workspace.get_branch(branch).key
+        changes: list[dict[str, Any]] = []
+        token_mappings: dict[int, int] = {}
+        for token_id, desired in desired_by_token.items():
+            target_id = int(desired["target_id"])
+            if branch_key.get(token_id) == target_id:
+                continue
+            token_mappings[token_id] = target_id
+            changes.append({
+                "position": desired["position"],
+                "cipher_symbol": alpha.symbol_for(token_id),
+                "current": desired["current"],
+                "target": desired["target"],
+                "mapping": f"{alpha.symbol_for(token_id)} -> {desired['target']}",
+            })
+
+        preview_key = dict(branch_key)
+        preview_key.update(token_mappings)
+        before_words = self._decoded_words(branch, max_words=None)
+        after_words = self._decoded_words_with_key(branch, preview_key, max_words=None)
+        proposed_mappings = {
+            alpha.symbol_for(token_id): pt_alpha.symbol_for(pt_id)
+            for token_id, pt_id in token_mappings.items()
+        }
+        base.update({
+            "applicable": bool(changes) and not conflicts,
+            "changes": changes,
+            "conflicts": conflicts,
+            "proposed_mappings": proposed_mappings,
+            "changed_words_preview": self._changed_words_sample(before_words, after_words),
+            "_token_mappings": token_mappings,
+        })
+        if not changes:
+            base["note"] = "Current decoded word already matches target_word."
+        elif conflicts:
+            base["reason"] = "Repair has conflicting or invalid letter assignments."
+        else:
+            base["suggested_call"] = (
+                "act_apply_word_repair("
+                f"branch={branch!r}, cipher_word_index={idx}, "
+                f"target_word={target!r})"
+            )
+        return base
+
+    def _word_repair_effect_summary(
+        self,
+        branch: str,
+        token_mappings: dict[int, int],
+    ) -> dict[str, Any]:
+        if not token_mappings:
+            return {
+                "changed_word_count": 0,
+                "changed_words_preview": [],
+                "dictionary_hit_delta": 0,
+            }
+        preview_key = dict(self.workspace.get_branch(branch).key)
+        preview_key.update(token_mappings)
+        before_words = self._decoded_words(branch, max_words=None)
+        after_words = self._decoded_words_with_key(branch, preview_key, max_words=None)
+        changed_all = [
+            {"index": i, "before": b, "after": a}
+            for i, (b, a) in enumerate(zip(before_words, after_words))
+            if b != a
+        ]
+        before_hits = sum(
+            1 for word in before_words
+            if self._reading_char_stream(word) in self.word_set
+        )
+        after_hits = sum(
+            1 for word in after_words
+            if self._reading_char_stream(word) in self.word_set
+        )
+        return {
+            "changed_word_count": len(changed_all),
+            "changed_words_preview": changed_all[:12],
+            "dictionary_hits_before": before_hits,
+            "dictionary_hits_after": after_hits,
+            "dictionary_hit_delta": after_hits - before_hits,
+        }
+
+    def _word_repair_option_recommendation(self, plan: dict[str, Any]) -> str:
+        if plan.get("note") and "already matches" in str(plan.get("note")).lower():
+            return "already_matches: no mapping change is needed for this option."
+        if plan.get("conflicts"):
+            return (
+                "do_not_apply_directly: this word-level target conflicts with "
+                "repeated cipher-symbol constraints. Use boundary repair or a "
+                "different reading, or inspect the responsible symbol manually."
+            )
+        if not plan.get("applicable"):
+            return (
+                "do_not_apply_directly: this target is not a safe same-length "
+                "cipher-symbol repair."
+            )
+        effect = plan.get("effect_summary") or {}
+        changed = int(effect.get("changed_word_count") or 0)
+        hit_delta = int(effect.get("dictionary_hit_delta") or 0)
+        if changed >= 12 and hit_delta < 0:
+            return (
+                "review_before_applying: this repair has broad collateral "
+                "effects and loses dictionary hits. Read the preview carefully "
+                "or fork before applying."
+            )
+        return "safe_to_try: apply if the changed-word preview reads better."
+
+    def _repair_agenda_status_for_plan(self, plan: dict[str, Any]) -> str:
+        if plan.get("error"):
+            return "blocked"
+        if plan.get("applicable"):
+            return "open"
+        if plan.get("note"):
+            return "applied"
+        return "blocked"
+
+    def _find_repair_agenda_item(self, plan: dict[str, Any]) -> dict[str, Any] | None:
+        branch = plan.get("branch")
+        idx = plan.get("cipher_word_index")
+        target = plan.get("target_word")
+        for item in self.repair_agenda:
+            if (
+                item.get("branch") == branch
+                and item.get("cipher_word_index") == idx
+                and item.get("to") == target
+            ):
+                return item
+        return None
+
+    def _upsert_repair_agenda_item(
+        self,
+        plan: dict[str, Any],
+        *,
+        status: str | None = None,
+        notes: str | None = None,
+        last_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        item = self._find_repair_agenda_item(plan)
+        now_iter = self._current_iteration
+        if item is None:
+            item = {
+                "id": self._next_repair_agenda_id,
+                "branch": plan.get("branch"),
+                "cipher_word_index": plan.get("cipher_word_index"),
+                "cipher_word": plan.get("cipher_word"),
+                "from": plan.get("current_decoded"),
+                "to": plan.get("target_word"),
+                "status": status or self._repair_agenda_status_for_plan(plan),
+                "proposed_mappings": dict(plan.get("proposed_mappings") or {}),
+                "changed_words_preview": list(plan.get("changed_words_preview") or []),
+                "created_iteration": now_iter,
+                "updated_iteration": now_iter,
+                "notes": notes or "",
+            }
+            self._next_repair_agenda_id += 1
+            self.repair_agenda.append(item)
+        else:
+            item.update({
+                "cipher_word": plan.get("cipher_word", item.get("cipher_word")),
+                "from": plan.get("current_decoded", item.get("from")),
+                "proposed_mappings": dict(plan.get("proposed_mappings") or item.get("proposed_mappings") or {}),
+                "changed_words_preview": list(plan.get("changed_words_preview") or item.get("changed_words_preview") or []),
+                "updated_iteration": now_iter,
+            })
+            if status:
+                item["status"] = status
+            if notes is not None:
+                item["notes"] = notes
+        if last_result is not None:
+            item["last_result"] = last_result
+        return dict(item)
+
     def _reading_words_from_text(self, text: str) -> list[str]:
         """Return uppercase word-like runs from a proposed reading.
 
@@ -1567,6 +2412,135 @@ class WorkspaceToolExecutor:
             k: v for k, v in delta.items() if k not in ("verdict", "improved")
         }
 
+    def _orthography_risks(
+        self,
+        before_words: list[str],
+        after_words: list[str],
+    ) -> list[dict[str, Any]]:
+        """Flag broad transcription-style shifts, especially Latin U/V, I/J."""
+        if self.language != "la":
+            return []
+        pairs = {("U", "V"), ("V", "U"), ("I", "J"), ("J", "I")}
+        counts: dict[tuple[str, str], int] = {}
+        affected: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for idx, (before, after) in enumerate(zip(before_words, after_words)):
+            for b_ch, a_ch in zip(before, after):
+                pair = (b_ch, a_ch)
+                if pair not in pairs:
+                    continue
+                counts[pair] = counts.get(pair, 0) + 1
+                samples = affected.setdefault(pair, [])
+                if len(samples) < 6:
+                    samples.append({"index": idx, "before": before, "after": after})
+        risks: list[dict[str, Any]] = []
+        for (src, dst), count in sorted(counts.items(), key=lambda item: -item[1]):
+            word_count = len({sample["index"] for sample in affected[(src, dst)]})
+            if count < 3 or word_count < 3:
+                continue
+            risks.append({
+                "type": "latin_orthography_shift",
+                "from": src,
+                "to": dst,
+                "changed_char_count": count,
+                "affected_word_sample_count": word_count,
+                "sample": affected[(src, dst)],
+                "note": (
+                    f"This repair broadly changes Latin {src}/{dst} "
+                    "orthography. Preserve the transcription style unless "
+                    "the surrounding decoded text consistently supports the "
+                    "shift."
+                ),
+            })
+        return risks
+
+    def _branch_card(self, branch_name: str) -> dict[str, Any]:
+        branch = self.workspace.get_branch(branch_name)
+        agenda = [
+            dict(item) for item in self.repair_agenda
+            if item.get("branch") == branch_name
+        ]
+        risks: list[dict[str, Any]] = []
+        for item in agenda:
+            last_result = item.get("last_result")
+            if isinstance(last_result, dict):
+                risks.extend(last_result.get("orthography_risks") or [])
+        return {
+            "branch": branch_name,
+            "mapped_count": len(branch.key),
+            "cipher_alphabet_size": self._alpha().size,
+            "tags": list(branch.tags),
+            "protected_baseline": branch_name == "automated_preflight",
+            "scores": self._compute_quick_scores(branch_name),
+            "repair_agenda": agenda,
+            "repair_counts": {
+                status: sum(1 for item in agenda if item.get("status") == status)
+                for status in ("open", "applied", "held", "rejected", "blocked", "reverted")
+            },
+            "orthography_risks": risks,
+            "decoded_excerpt": self._decoded_preview(branch_name, max_words=35),
+        }
+
+    def _declaration_review(self, branch_name: str) -> dict[str, Any]:
+        cards = [self._branch_card(name) for name in self.workspace.branch_names()]
+        def score_key(card: dict[str, Any]) -> tuple[float, float, int]:
+            scores = card.get("scores") or {}
+            dict_rate = scores.get("dict_rate")
+            quad = scores.get("quad")
+            return (
+                dict_rate if isinstance(dict_rate, (int, float)) else float("-inf"),
+                quad if isinstance(quad, (int, float)) else float("-inf"),
+                int(card.get("mapped_count") or 0),
+            )
+        best = max(cards, key=score_key) if cards else None
+        selected = next((card for card in cards if card.get("branch") == branch_name), None)
+        warnings: list[str] = []
+        if best and selected and best.get("branch") != branch_name:
+            best_scores = best.get("scores") or {}
+            selected_scores = selected.get("scores") or {}
+            best_dict = best_scores.get("dict_rate")
+            selected_dict = selected_scores.get("dict_rate")
+            best_quad = best_scores.get("quad")
+            selected_quad = selected_scores.get("quad")
+            dict_gap = (
+                round(float(best_dict) - float(selected_dict), 4)
+                if isinstance(best_dict, (int, float)) and isinstance(selected_dict, (int, float))
+                else None
+            )
+            quad_gap = (
+                round(float(best_quad) - float(selected_quad), 4)
+                if isinstance(best_quad, (int, float)) and isinstance(selected_quad, (int, float))
+                else None
+            )
+            if (dict_gap is not None and dict_gap >= 0.05) or (
+                quad_gap is not None and quad_gap >= 0.15
+            ):
+                warnings.append(
+                    f"Branch `{best.get('branch')}` has stronger internal "
+                    f"score signals than `{branch_name}` "
+                    f"(dict_gap={dict_gap}, quad_gap={quad_gap})."
+                )
+        if selected and selected.get("orthography_risks"):
+            warnings.append(
+                "Selected branch has broad orthography-shift warnings; confirm "
+                "these are manuscript-faithful rather than modernized spelling."
+            )
+        open_items = [
+            item for item in (selected or {}).get("repair_agenda", [])
+            if item.get("status") in {"open", "blocked"}
+        ]
+        if open_items:
+            warnings.append(
+                f"Selected branch has {len(open_items)} open/blocked repair "
+                "agenda item(s)."
+            )
+        return {
+            "selected_branch": branch_name,
+            "best_internal_branch": best.get("branch") if best else None,
+            "warnings": warnings,
+            "selected_card": selected,
+            "best_card": best,
+        }
+
     _READING_DECISION_NOTE = (
         "Score deltas are advisory. Read `changed_words` — if two or more "
         "entries now read as real target-language words (or fragments of "
@@ -1583,7 +2557,6 @@ class WorkspaceToolExecutor:
 
     def _branch_used_full_reading_workflow(self, branch: str) -> bool:
         workflow_tools = {
-            "decode_validate_reading_repair",
             "act_resegment_by_reading",
             "act_resegment_from_reading_repair",
         }
@@ -1607,6 +2580,71 @@ class WorkspaceToolExecutor:
         lowered = rationale.lower()
         return any(term in lowered for term in self._BOUNDARY_DECLARATION_TERMS)
 
+    _TRANSFORM_DECLARATION_TERMS = (
+        "transform", "transposition", "transpose", "columnar", "vigenere",
+        "polyalpha", "polyalphabetic", "period", "key-period", "key period",
+        "ic=", "below english", "below english level",
+    )
+
+    def _has_seen_any_tool(self, tool_names: set[str]) -> bool:
+        return any(call.tool_name in tool_names for call in self.call_log)
+
+    def _declaration_has_untried_transform_work(self, rationale: str, note: str) -> bool:
+        text = f"{rationale}\n{note}".lower()
+        mentions_transform_family = any(
+            term in text for term in self._TRANSFORM_DECLARATION_TERMS
+        )
+        if not mentions_transform_family:
+            return False
+        return not self._has_seen_any_tool({
+            "observe_transform_pipeline",
+            "observe_transform_suspicion",
+            "search_transform_candidates",
+            "act_apply_transform_pipeline",
+            "search_transform_homophonic",
+        })
+
+    def _should_guard_low_confidence_declaration(
+        self,
+        confidence: float,
+        further_iterations_helpful: bool,
+        forced_partial: bool,
+    ) -> bool:
+        if forced_partial:
+            return False
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return False
+        return confidence < 0.50 and further_iterations_helpful
+
+    def _should_guard_more_work_declaration(
+        self,
+        further_iterations_helpful: bool,
+        forced_partial: bool,
+    ) -> bool:
+        if not further_iterations_helpful:
+            return False
+        if self.max_iterations is None:
+            return False
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return False
+        return True
+
+    def _should_guard_premature_partial_declaration(
+        self,
+        confidence: float,
+        forced_partial: bool,
+    ) -> bool:
+        if not forced_partial:
+            return False
+        if self.max_iterations is None:
+            return False
+        if self._current_iteration >= self.max_iterations:
+            return False
+        final_stretch = max(1, int(self.max_iterations * 0.8))
+        if self._current_iteration >= final_stretch:
+            return False
+        return confidence < 0.50
+
     # ------------------------------------------------------------------
     # workspace_*
     # ------------------------------------------------------------------
@@ -1621,8 +2659,95 @@ class WorkspaceToolExecutor:
             "inherited_mapped_count": len(branch.key),
         }
 
+    def _tool_workspace_fork_best(self, args: dict) -> Any:
+        new_name = args["new_name"]
+        prefer_branch = str(args.get("prefer_branch") or "").strip()
+        source = self._select_best_fork_source(prefer_branch or None)
+        branch = self.workspace.fork(new_name, from_branch=source)
+        card = self._branch_card(source)
+        note = (
+            "Forked from `automated_preflight`, preserving the no-LLM baseline "
+            "as an unchanged comparison branch."
+            if source == "automated_preflight"
+            else "Forked from the strongest existing branch by quick scores and mapped count."
+        )
+        return {
+            "status": "ok",
+            "created": new_name,
+            "parent": source,
+            "source_branch": source,
+            "inherited_mapped_count": len(branch.key),
+            "source_scores": card.get("scores"),
+            "source_tags": card.get("tags"),
+            "note": note,
+        }
+
+    def _select_best_fork_source(self, prefer_branch: str | None = None) -> str:
+        if prefer_branch and self.workspace.has_branch(prefer_branch):
+            return prefer_branch
+
+        def branch_key(name: str) -> tuple[float, float, int, int]:
+            branch = self.workspace.get_branch(name)
+            scores = self._compute_quick_scores(name)
+            dict_rate = scores.get("dict_rate")
+            quad = scores.get("quad")
+            return (
+                dict_rate if isinstance(dict_rate, (int, float)) else float("-inf"),
+                quad if isinstance(quad, (int, float)) else float("-inf"),
+                len(branch.key),
+                1 if name == "automated_preflight" else 0,
+            )
+
+        names = self.workspace.branch_names()
+        if not names:
+            return "main"
+        return max(names, key=branch_key)
+
     def _tool_workspace_list_branches(self, _args: dict) -> Any:
         return {"branches": self.workspace.list_branches()}
+
+    def _tool_workspace_branch_cards(self, args: dict) -> Any:
+        branch = args.get("branch")
+        if branch:
+            if not self.workspace.has_branch(branch):
+                return {"error": f"Branch not found: {branch}"}
+            cards = [self._branch_card(branch)]
+        else:
+            cards = [self._branch_card(name) for name in self.workspace.branch_names()]
+        return {
+            "status": "ok",
+            "cards": cards,
+            "note": (
+                "Use these cards before declaration: compare readability, "
+                "internal scores, applied/held repairs, and orthography risks. "
+                "Treat `automated_preflight` as a protected no-LLM baseline; "
+                "do not discard it in favor of a modernized/classicized edit "
+                "unless the edited branch is clearly better in the manuscript "
+                "transcription style."
+            ),
+        }
+
+    def _has_seen_branch_cards(self, branch_name: str | None = None) -> bool:
+        min_iteration = 0
+        if branch_name and self.workspace.has_branch(branch_name):
+            min_iteration = int(self.workspace.get_branch(branch_name).created_iteration or 0)
+        for call in self.call_log:
+            if call.tool_name != "workspace_branch_cards":
+                continue
+            if int(getattr(call, "iteration", 0) or 0) < min_iteration:
+                continue
+            args = call.arguments or {}
+            requested_branch = args.get("branch")
+            if branch_name and requested_branch not in {None, "", branch_name}:
+                continue
+            return True
+        return False
+
+    def _unresolved_repair_agenda_items(self, branch: str) -> list[dict[str, Any]]:
+        return [
+            dict(item) for item in self.repair_agenda
+            if item.get("branch") == branch and item.get("status") in {"open", "blocked"}
+        ]
 
     def _tool_workspace_delete(self, args: dict) -> Any:
         name = args["name"]
@@ -1757,6 +2882,116 @@ class WorkspaceToolExecutor:
                 "cipher symbols to common letters and at least one symbol to most "
                 "common plaintext letters. Large absences or overloaded letters "
                 "are evidence of a structurally wrong branch."
+            ),
+        }
+
+    def _tool_observe_transform_pipeline(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        branch = self.workspace.get_branch(branch_name)
+        effective_tokens = self.workspace.effective_tokens(branch_name)
+        preview_symbols = self.workspace.cipher_text.alphabet.decode(effective_tokens[:80])
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "token_count": len(self.workspace.cipher_text.tokens),
+            "has_transform": branch.token_order is not None,
+            "transform_pipeline": branch.transform_pipeline,
+            "active_order_preview": branch.token_order[:40] if branch.token_order is not None else None,
+            "transformed_cipher_preview": preview_symbols,
+            "note": (
+                "For transposition+homophonic ciphers, apply or search a "
+                "ciphertext transform before judging the homophonic key."
+            ),
+        }
+
+    def _tool_observe_transform_suspicion(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        tokens = self.workspace.effective_tokens(branch_name)
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        report = inspect_transform_suspicion(
+            token_count=len(tokens),
+            cipher_alphabet_size=self._alpha().size,
+            plaintext_alphabet_size=self._pt_alpha().size,
+            word_group_count=len(self.workspace.cipher_text.words),
+            cipher_system=getattr(self.workspace.cipher_text, "cipher_system", "") or "",
+            columns=columns,
+            baseline_status=args.get("baseline_status"),
+            baseline_score=args.get("baseline_score"),
+        )
+        screen_profile = "medium" if report["recommendation"] == "run_screen" else "small"
+        screen = screen_transform_candidates(
+            tokens,
+            columns=columns,
+            profile=screen_profile,
+            top_n=5,
+            include_mutations=screen_profile != "small",
+            include_program_search=bool(args.get("include_program_search", False)),
+        )
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **report,
+            "candidate_screen": screen,
+            "recommended_next_tool": (
+                "search_transform_homophonic"
+                if report["recommendation"] in {"run_screen", "consider_screen"}
+                else "continue_baseline_or_mapping_diagnostics"
+            ),
+            "note": (
+                "This tool is meant to help the agent decide whether the "
+                "ciphertext order itself is suspicious. Escalate only if the "
+                "diagnostic reasons and candidate menu look coherent."
+            ),
+        }
+
+    def _tool_search_transform_candidates(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        tokens = self.workspace.effective_tokens(branch_name)
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        breadth = str(args.get("breadth") or "broad").strip().lower()
+        if breadth not in {"fast", "broad", "wide"}:
+            return {"error": "breadth must be one of: fast, broad, wide"}
+        profile = "small" if breadth == "fast" else "medium" if breadth == "broad" else "wide"
+        top_n = max(1, min(int(args.get("top_n", 40)), 1000))
+        max_generated = args.get("max_generated_candidates")
+        max_generated_candidates = int(max_generated) if max_generated is not None else (
+            5000 if breadth == "fast" else 10000 if breadth == "broad" else 25000
+        )
+        include_program_search = bool(args.get("include_program_search", breadth == "wide"))
+        screen = screen_transform_candidates(
+            tokens,
+            columns=columns,
+            profile=profile,
+            top_n=top_n,
+            max_generated_candidates=max_generated_candidates,
+            streaming=breadth == "wide",
+            include_mutations=False,
+            include_program_search=include_program_search,
+            program_max_depth=int(args.get("program_max_depth", 5)),
+            program_beam_width=int(args.get("program_beam_width", 48 if breadth == "wide" else 24)),
+        )
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "breadth": breadth,
+            "profile": profile,
+            "columns": columns,
+            "candidate_count": screen.get("candidate_count", 0),
+            "deduped_candidate_count": screen.get("deduped_candidate_count", 0),
+            "generation_limit_reached": screen.get("generation_limit_reached", False),
+            "family_counts": screen.get("family_counts", {}),
+            "top_family_counts": screen.get("top_family_counts", {}),
+            "anchor_candidates": screen.get("anchor_candidates", [])[:40],
+            "top_candidates": screen.get("top_candidates", [])[:top_n],
+            "program_search": screen.get("program_search"),
+            "structural_screen": screen,
+            "recommended_next_tool": "search_transform_homophonic",
+            "note": (
+                "This is structural-only. It performs no language-model "
+                "annealing and should be used to decide which small set of "
+                "candidates deserves solver-backed promotion."
             ),
         }
 
@@ -2561,6 +3796,125 @@ class WorkspaceToolExecutor:
             )
         return validation
 
+    def _tool_decode_plan_word_repair(self, args: dict) -> Any:
+        plan = self._word_repair_plan(args)
+        if not plan.get("error"):
+            status = self._repair_agenda_status_for_plan(plan)
+            plan["agenda_item"] = self._upsert_repair_agenda_item(
+                plan,
+                status=status,
+                notes="Planned by decode_plan_word_repair.",
+            )
+        plan.pop("_token_mappings", None)
+        return plan
+
+    def _tool_decode_plan_word_repair_menu(self, args: dict) -> Any:
+        targets = args.get("target_words") or []
+        if not isinstance(targets, list) or not targets:
+            return {"error": "target_words must be a non-empty list"}
+
+        normalized_targets: list[str] = []
+        seen: set[str] = set()
+        for raw_target in targets:
+            target = self._reading_char_stream(str(raw_target))
+            if not target or target in seen:
+                continue
+            seen.add(target)
+            normalized_targets.append(target)
+        if not normalized_targets:
+            return {"error": "target_words did not contain any alphabetic candidates"}
+
+        options: list[dict[str, Any]] = []
+        current_decoded: str | None = None
+        cipher_word_index: int | None = None
+        for target in normalized_targets[:12]:
+            plan_args = {
+                key: value for key, value in args.items()
+                if key != "target_words"
+            }
+            plan_args["target_word"] = target
+            plan = self._word_repair_plan(plan_args)
+            token_mappings = plan.pop("_token_mappings", {})
+            if not plan.get("error"):
+                current_decoded = plan.get("current_decoded", current_decoded)
+                cipher_word_index = plan.get("cipher_word_index", cipher_word_index)
+            if token_mappings:
+                plan["effect_summary"] = self._word_repair_effect_summary(
+                    args["branch"],
+                    token_mappings,
+                )
+            else:
+                plan["effect_summary"] = {
+                    "changed_word_count": 0,
+                    "changed_words_preview": list(plan.get("changed_words_preview") or []),
+                    "dictionary_hit_delta": 0,
+                }
+            plan["recommendation"] = self._word_repair_option_recommendation(plan)
+            if plan.get("applicable"):
+                plan["suggested_call"] = (
+                    "act_apply_word_repair("
+                    f"branch={args['branch']!r}, "
+                    f"cipher_word_index={plan['cipher_word_index']}, "
+                    f"target_word={plan['target_word']!r})"
+                )
+            options.append(plan)
+
+        return {
+            "status": "ok",
+            "branch": args["branch"],
+            "cipher_word_index": cipher_word_index,
+            "current_decoded": current_decoded,
+            "option_count": len(options),
+            "options": options,
+            "note": (
+                "This is a read-only menu. Apply only options whose preview "
+                "reads better and whose recommendation does not say "
+                "do_not_apply_directly. For conflicting repeated-symbol cases, "
+                "prefer boundary repair or a different reading rather than "
+                "forcing a single mapping."
+            ),
+        }
+
+    def _tool_repair_agenda_list(self, args: dict) -> Any:
+        branch_filter = args.get("branch")
+        status_filter = args.get("status")
+        items = []
+        for item in self.repair_agenda:
+            if branch_filter and item.get("branch") != branch_filter:
+                continue
+            if status_filter and item.get("status") != status_filter:
+                continue
+            items.append(dict(item))
+        unresolved = [
+            item for item in items
+            if item.get("status") in {"open", "blocked"}
+        ]
+        return {
+            "status": "ok",
+            "count": len(items),
+            "unresolved_count": len(unresolved),
+            "items": items,
+            "note": (
+                "Resolve open/blocked reading repairs before declaring. Held "
+                "items are treated as explicitly resolved but preserved for "
+                "the final rationale."
+            ),
+        }
+
+    def _tool_repair_agenda_update(self, args: dict) -> Any:
+        item_id = int(args["item_id"])
+        status = str(args["status"])
+        notes = str(args.get("notes", ""))
+        for item in self.repair_agenda:
+            if int(item.get("id", -1)) != item_id:
+                continue
+            item["status"] = status
+            item["updated_iteration"] = self._current_iteration
+            if notes:
+                item["notes"] = notes
+            return {"status": "ok", "agenda_item": dict(item)}
+        return {"error": f"repair agenda item {item_id} not found"}
+
     # ------------------------------------------------------------------
     # score_*
     # ------------------------------------------------------------------
@@ -2754,6 +4108,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch)
         after_words = self._decoded_words(branch)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
@@ -2763,6 +4118,7 @@ class WorkspaceToolExecutor:
                 if alpha.symbol_for(w) == cipher_sym
             ),
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2790,6 +4146,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch)
         after_words = self._decoded_words(branch)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch,
@@ -2797,6 +4154,7 @@ class WorkspaceToolExecutor:
             "details": set_ok,
             "errors": errors if errors else None,
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2836,6 +4194,7 @@ class WorkspaceToolExecutor:
         after = self._compute_quick_scores(branch_name)
         after_words = self._decoded_words(branch_name)
         changed = self._changed_words_sample(before_words, after_words)
+        orthography_risks = self._orthography_risks(before_words, after_words)
         return {
             "status": "ok",
             "branch": branch_name,
@@ -2843,6 +4202,7 @@ class WorkspaceToolExecutor:
             "now_decodes_as": decoded,
             "changes": changes,
             "changed_words": changed,
+            "orthography_risks": orthography_risks,
             "decoded_preview": self._decoded_preview(branch_name),
             "score_delta": self._reading_score_delta(before, after),
             "note": self._READING_DECISION_NOTE,
@@ -2981,6 +4341,60 @@ class WorkspaceToolExecutor:
                 "candidate_index": idx,
             }
         return {"error": f"Unknown boundary candidate type: {candidate['type']}"}
+
+    def _tool_act_apply_word_repair(self, args: dict) -> Any:
+        branch = args["branch"]
+        plan = self._word_repair_plan(args)
+        token_mappings = plan.pop("_token_mappings", {})
+        if plan.get("error"):
+            return plan
+        if not plan.get("applicable"):
+            plan["agenda_item"] = self._upsert_repair_agenda_item(
+                plan,
+                status="blocked",
+                notes=str(plan.get("reason") or "Word repair is not directly applicable."),
+            )
+            return {
+                "error": "Word repair is not directly applicable.",
+                **plan,
+            }
+
+        before = self._compute_quick_scores(branch)
+        before_words = self._decoded_words(branch, max_words=None)
+        for token_id, pt_id in token_mappings.items():
+            self.workspace.set_mapping(branch, token_id, pt_id)
+        after = self._compute_quick_scores(branch)
+        after_words = self._decoded_words(branch, max_words=None)
+        changed_words = self._changed_words_sample(before_words, after_words)
+        score_delta = self._reading_score_delta(before, after)
+        orthography_risks = self._orthography_risks(before_words, after_words)
+        agenda_item = self._upsert_repair_agenda_item(
+            plan,
+            status="applied",
+            notes="Applied by act_apply_word_repair.",
+            last_result={
+                "mappings_set": len(token_mappings),
+                "changed_words": changed_words,
+                "score_delta": score_delta,
+                "orthography_risks": orthography_risks,
+            },
+        )
+        return {
+            "status": "ok",
+            "branch": branch,
+            "cipher_word_index": plan["cipher_word_index"],
+            "cipher_word": plan["cipher_word"],
+            "from": plan["current_decoded"],
+            "to": plan["target_word"],
+            "mappings_set": len(token_mappings),
+            "mappings": plan["proposed_mappings"],
+            "changed_words": changed_words,
+            "orthography_risks": orthography_risks,
+            "decoded_preview": self._decoded_preview(branch),
+            "score_delta": score_delta,
+            "agenda_item": agenda_item,
+            "note": self._READING_DECISION_NOTE,
+        }
 
     def _tool_act_resegment_by_reading(self, args: dict) -> Any:
         branch = args["branch"]
@@ -3134,6 +4548,188 @@ class WorkspaceToolExecutor:
                 "Applied the proposed reading's word boundaries only. The key "
                 "and decoded character stream were preserved; any mismatches "
                 "between projected_text and proposed_text are still true "
+                "letter/key repair hypotheses."
+            ),
+        }
+
+    def _nearby_resegment_window_suggestions(
+        self,
+        branch: str,
+        *,
+        start_idx: int,
+        proposed_words: list[str],
+        radius: int = 5,
+        max_word_count: int = 6,
+        limit: int = 5,
+    ) -> list[dict[str, Any]]:
+        proposed_stream = "".join(proposed_words)
+        proposed_len = len(proposed_stream)
+        if not proposed_words or proposed_len == 0:
+            return []
+        current_words = self._branch_reading_words(branch)
+        out: list[dict[str, Any]] = []
+        lo = max(0, start_idx - radius)
+        hi = min(len(current_words), start_idx + radius + 1)
+        for cand_start in range(lo, hi):
+            stream = ""
+            for cand_count in range(1, max_word_count + 1):
+                end = cand_start + cand_count
+                if end > len(current_words):
+                    break
+                stream += current_words[end - 1]
+                if len(stream) > proposed_len:
+                    break
+                if len(stream) != proposed_len:
+                    continue
+                projected_words: list[str] = []
+                pos = 0
+                for proposed_word in proposed_words:
+                    projected_words.append(stream[pos:pos + len(proposed_word)])
+                    pos += len(proposed_word)
+                mismatches = self._first_reading_mismatches(stream, proposed_stream)
+                out.append({
+                    "start_word_index": cand_start,
+                    "word_count": cand_count,
+                    "current_window_words": current_words[cand_start:end],
+                    "current_char_count": len(stream),
+                    "proposed_char_count": proposed_len,
+                    "character_preserving": stream == proposed_stream,
+                    "mismatch_count_preview": len(mismatches),
+                    "mismatches": mismatches[:6],
+                    "projected_words": projected_words,
+                    "suggested_call": (
+                        "act_resegment_window_by_reading("
+                        f"branch={branch!r}, start_word_index={cand_start}, "
+                        f"word_count={cand_count}, "
+                        f"proposed_text={' '.join(proposed_words)!r})"
+                    ),
+                })
+                break
+        out.sort(key=lambda item: (
+            not item["character_preserving"],
+            item["mismatch_count_preview"],
+            abs(int(item["start_word_index"]) - start_idx),
+            item["word_count"],
+        ))
+        return out[:limit]
+
+    def _tool_act_resegment_window_by_reading(self, args: dict) -> Any:
+        branch = args["branch"]
+        start_idx = int(args["start_word_index"])
+        word_count = int(args["word_count"])
+        proposed_text = str(args["proposed_text"])
+        if self._pt_alpha()._multisym:
+            return {
+                "error": (
+                    "act_resegment_window_by_reading currently supports "
+                    "single-character plaintext alphabets only"
+                )
+            }
+        spans = self.workspace.effective_word_spans(branch)
+        if start_idx < 0 or start_idx >= len(spans):
+            return {"error": f"start_word_index {start_idx} out of range"}
+        if word_count <= 0 or start_idx + word_count > len(spans):
+            return {
+                "error": (
+                    f"word_count {word_count} out of range for start_word_index "
+                    f"{start_idx}"
+                )
+            }
+
+        current_words = self._branch_reading_words(branch)
+        window_words = current_words[start_idx:start_idx + word_count]
+        current_stream = "".join(window_words)
+        proposed_words = self._reading_words_from_text(proposed_text)
+        proposed_stream = "".join(proposed_words)
+        same_len = len(current_stream) == len(proposed_stream)
+        same_chars = current_stream == proposed_stream
+        base: dict[str, Any] = {
+            "branch": branch,
+            "start_word_index": start_idx,
+            "old_window_word_count": word_count,
+            "current_window_words": window_words,
+            "proposed_words": proposed_words,
+            "character_preserving": same_chars,
+            "same_character_count": same_len,
+            "current_char_count": len(current_stream),
+            "proposed_char_count": len(proposed_stream),
+            "mismatches": [] if same_chars else self._first_reading_mismatches(
+                current_stream,
+                proposed_stream,
+            ),
+        }
+        if not proposed_words:
+            return {"error": "proposed_text must contain at least one word", **base}
+        if not same_len:
+            return {
+                "error": (
+                    "Local proposed reading does not have the same normalized "
+                    "character count as the selected current word window. "
+                    "Select a different word_count or revise proposed_text."
+                ),
+                **base,
+                "nearby_compatible_windows": self._nearby_resegment_window_suggestions(
+                    branch,
+                    start_idx=start_idx,
+                    proposed_words=proposed_words,
+                ),
+                "next_step": (
+                    "If nearby_compatible_windows is non-empty, retry with one "
+                    "of those suggested calls. This usually means the word index "
+                    "shifted after an earlier boundary edit."
+                ),
+            }
+
+        window_start = spans[start_idx][0]
+        window_end = spans[start_idx + word_count - 1][1]
+        if sum(len(word) for word in proposed_words) != window_end - window_start:
+            return {
+                "error": (
+                    "Local proposed word lengths do not match the selected "
+                    "ciphertext token window."
+                ),
+                **base,
+            }
+
+        projected_words: list[str] = []
+        local_spans: list[tuple[int, int]] = []
+        pos = window_start
+        stream_pos = 0
+        for word in proposed_words:
+            end = pos + len(word)
+            local_spans.append((pos, end))
+            projected_words.append(current_stream[stream_pos:stream_pos + len(word)])
+            pos = end
+            stream_pos += len(word)
+
+        before = self._compute_quick_scores(branch)
+        before_preview = self._decoded_preview(branch, max_words=80)
+        new_spans = spans[:start_idx] + local_spans + spans[start_idx + word_count:]
+        try:
+            self.workspace.set_word_spans(branch, new_spans)
+        except WorkspaceError as exc:
+            return {"error": str(exc), **base}
+        after = self._compute_quick_scores(branch)
+        after_preview = self._decoded_preview(branch, max_words=80)
+        return {
+            "status": "ok",
+            **base,
+            "applied": True,
+            "mode": "local_boundary_projection",
+            "new_window_word_count": len(proposed_words),
+            "old_total_word_count": len(spans),
+            "new_total_word_count": len(new_spans),
+            "projected_words": projected_words,
+            "window_dictionary_before": self._dictionary_summary_for_words(window_words),
+            "projected_dictionary_after": self._dictionary_summary_for_words(projected_words),
+            "proposed_dictionary": self._dictionary_summary_for_words(proposed_words),
+            "score_delta": self._reading_score_delta(before, after),
+            "decoded_preview_before": before_preview,
+            "decoded_preview": after_preview,
+            "note": (
+                "Applied a local word-boundary overlay only. The branch key "
+                "and decoded character stream were unchanged. If proposed_words "
+                "differ from projected_words, treat the mismatches as separate "
                 "letter/key repair hypotheses."
             ),
         }
@@ -3520,7 +5116,7 @@ class WorkspaceToolExecutor:
 
         ws = self.workspace
         branch = ws.get_branch(branch_name)
-        tokens = list(ws.cipher_text.tokens)
+        tokens = list(ws.effective_tokens(branch_name))
         pt_alpha = ws.plaintext_alphabet
         plaintext_ids = [
             i for i in range(pt_alpha.size)
@@ -3608,7 +5204,7 @@ class WorkspaceToolExecutor:
 
         if solver_profile == "zenith_native":
             key_repair_info = automated_runner._maybe_repair_zenith_native_key(
-                cipher_text=ws.cipher_text,
+                cipher_text=ws.effective_cipher_text(branch_name),
                 bin_path=bin_path,
                 key=selected_key,
                 plaintext=selected_plaintext,
@@ -3627,7 +5223,7 @@ class WorkspaceToolExecutor:
                 "sampler_iterations": max(1, sampler_iterations),
             }
             anchor_refine_info = automated_runner._maybe_anchor_refine_zenith_native(
-                cipher_text=ws.cipher_text,
+                cipher_text=ws.effective_cipher_text(branch_name),
                 bin_path=bin_path,
                 key=selected_key,
                 plaintext=selected_plaintext,
@@ -3708,7 +5304,7 @@ class WorkspaceToolExecutor:
 
         before = self._compute_quick_scores(branch_name)
         result = run_automated(
-            cipher_text=self.workspace.cipher_text,
+            cipher_text=self.workspace.effective_cipher_text(branch_name),
             language=self.language,
             cipher_id="agent_search",
             ground_truth=None,
@@ -3754,6 +5350,172 @@ class WorkspaceToolExecutor:
                 "This runs the same local automated stack used by the "
                 "no-LLM frontier/parity harness and installs the resulting key "
                 "onto the requested branch."
+            ),
+        }
+
+    def _tool_act_apply_transform_pipeline(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        pipeline = TransformPipeline.from_raw(args.get("pipeline"))
+        if pipeline is None:
+            return {"error": "pipeline is required"}
+        before_preview = self._decoded_preview(branch_name, max_words=20)
+        result = self.workspace.apply_transform_pipeline(branch_name, pipeline)
+        after_preview = self._decoded_preview(branch_name, max_words=20)
+        return {
+            **result,
+            "before_preview": before_preview,
+            "after_preview": after_preview,
+            "note": (
+                "The branch now has a token-order overlay. Subsequent decode "
+                "and homophonic search tools operate in this transformed order."
+            ),
+        }
+
+    def _tool_search_transform_homophonic(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        if not self.workspace.has_branch(branch_name):
+            return {"error": f"Branch not found: {branch_name}"}
+        branch = self.workspace.get_branch(branch_name)
+        if branch.token_order is not None:
+            return {
+                "status": "blocked",
+                "reason": "transform_branch_not_supported",
+                "branch": branch_name,
+                "active_transform_pipeline": branch.transform_pipeline,
+                "note": (
+                    "`search_transform_homophonic` must start from an "
+                    "untransformed branch. Searching again on a branch that "
+                    "already has a token-order transform would compose orders, "
+                    "but this tool cannot safely write that composite branch "
+                    "yet. Run the broader transform search from `main`, or "
+                    "use `search_homophonic_anneal` to polish this transformed "
+                    "branch's homophonic key."
+                ),
+                "suggested_next_tools": [
+                    "search_transform_homophonic(branch='main', profile='medium' or 'wide')",
+                    "search_homophonic_anneal",
+                    "workspace_branch_cards",
+                ],
+            }
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        profile = str(args.get("profile", "small"))
+        top_n = max(1, int(args.get("top_n", 3)))
+        write_best_branch = bool(args.get("write_best_branch", True))
+        homophonic_budget = str(args.get("homophonic_budget", "screen"))
+        base_tokens = self.workspace.effective_tokens(branch_name)
+        structural_screen = screen_transform_candidates(
+            base_tokens,
+            columns=columns,
+            profile=profile,
+            top_n=max(top_n, 5),
+            max_generated_candidates=(
+                int(args["max_generated_candidates"])
+                if args.get("max_generated_candidates") is not None
+                else 25000 if profile == "wide" else 10000 if profile == "medium" else 5000
+            ),
+            streaming=profile == "wide" and not bool(args.get("include_mutations", profile != "small")),
+            include_mutations=bool(args.get("include_mutations", profile != "small")),
+            include_program_search=bool(args.get("include_program_search", profile == "medium")),
+            program_max_depth=int(args.get("program_max_depth", 5)),
+            program_beam_width=int(args.get("program_beam_width", 24)),
+        )
+        ordered_candidate_dicts = []
+        identity = structural_screen.get("identity_candidate")
+        if identity:
+            ordered_candidate_dicts.append(identity)
+        seen_candidate_ids = {item.get("candidate_id") for item in ordered_candidate_dicts}
+        for item in structural_screen.get("top_candidates", []):
+            if item.get("candidate_id") in seen_candidate_ids:
+                continue
+            ordered_candidate_dicts.append(item)
+            seen_candidate_ids.add(item.get("candidate_id"))
+        ranked: list[dict[str, Any]] = []
+        skipped: list[dict[str, Any]] = []
+        for index, candidate in enumerate(ordered_candidate_dicts):
+            try:
+                pipeline = TransformPipeline.from_raw(candidate.get("pipeline"))
+                if pipeline is None:
+                    raise ValueError("missing transform pipeline")
+                order = apply_transform_pipeline(list(range(len(base_tokens))), pipeline).tokens
+                if sorted(order) != list(range(len(base_tokens))):
+                    raise ValueError("transform candidate is not a position permutation")
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "candidate_index": index,
+                    "candidate": candidate,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            try:
+                transformed_tokens = apply_transform_pipeline(base_tokens, pipeline).tokens
+                transformed_cipher = automated_runner._cipher_text_from_tokens(
+                    transformed_tokens,
+                    self.workspace.cipher_text.alphabet,
+                    source=f"agent_transform_candidate:{index}",
+                )
+                result = run_automated(
+                    cipher_text=transformed_cipher,
+                    language=self.language,
+                    cipher_id=f"agent_transform_candidate_{index}",
+                    ground_truth=None,
+                    cipher_system="homophonic_substitution",
+                    homophonic_budget=homophonic_budget,
+                    homophonic_solver="zenith_native",
+                )
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "candidate_index": index,
+                    "candidate": candidate,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            artifact = result.artifact or {}
+            primary_step = next(
+                (step for step in artifact.get("steps", []) if step.get("name") != "route_automated_solver"),
+                {},
+            )
+            ranked.append({
+                "candidate_index": index,
+                "candidate": candidate,
+                "pipeline": pipeline.to_raw(),
+                "status": result.status,
+                "solver": result.solver,
+                "anneal_score": primary_step.get("anneal_score"),
+                "elapsed_seconds": round(result.elapsed_seconds, 3),
+                "decoded_preview": result.final_decryption[:800],
+                "key": artifact.get("key") or {},
+            })
+        ranked.sort(
+            key=lambda item: (
+                item.get("status") == "completed",
+                float(item.get("anneal_score") or float("-inf")),
+            ),
+            reverse=True,
+        )
+        written_branch = None
+        if write_best_branch and ranked:
+            best = ranked[0]
+            written_branch = f"{branch_name}_transform_best"
+            if not self.workspace.has_branch(written_branch):
+                self.workspace.fork(written_branch, from_branch=branch_name)
+            self.workspace.apply_transform_pipeline(written_branch, best["pipeline"])
+            self.workspace.set_full_key(
+                written_branch,
+                {int(k): int(v) for k, v in (best.get("key") or {}).items()},
+            )
+        return {
+            "branch": branch_name,
+            "profile": profile,
+            "columns": columns,
+            "candidate_count": structural_screen.get("deduped_candidate_count", 0),
+            "structural_screen": structural_screen,
+            "skipped_candidates": skipped[:20],
+            "written_branch": written_branch,
+            "top_candidates": ranked[:top_n],
+            "note": (
+                "This is a bounded screen over simple transform candidates. "
+                "Read the previews and compare transformed branches before declaring."
             ),
         }
 
@@ -3811,6 +5573,321 @@ class WorkspaceToolExecutor:
         }
 
     # ------------------------------------------------------------------
+    # benchmark_*
+    # ------------------------------------------------------------------
+    def _tool_inspect_benchmark_context(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {
+                "error": "No scoped benchmark context is available for this run.",
+                "available": False,
+            }
+        include_text = bool(args.get("include_layer_text", True))
+        layers = []
+        for layer in ctx.injected_layers:
+            item = dict(layer)
+            if not include_text:
+                item.pop("text", None)
+            layers.append(item)
+        ctx.log_access("inspect_benchmark_context", content_type="metadata")
+        return {
+            "available": True,
+            "policy": ctx.policy,
+            "target_record_ids": ctx.target_record_ids,
+            "context_record_ids": ctx.context_record_ids,
+            "injected_layers": layers,
+            "related_records_available": [
+                self._benchmark_record_summary(entry)
+                for entry in ctx.related_records.values()
+            ],
+            "associated_documents_available": [
+                self._benchmark_document_summary(entry)
+                for entry in ctx.associated_documents.values()
+            ],
+            "related_solution_allowed": ctx.related_solution_allowed,
+        }
+
+    def _tool_list_related_records(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        ctx.log_access("list_related_records", content_type="metadata")
+        return {
+            "policy": ctx.policy,
+            "target_record_ids": ctx.target_record_ids,
+            "context_record_ids": ctx.context_record_ids,
+            "context_records": [
+                self._benchmark_record_summary(ctx.records[record_id])
+                for record_id in ctx.context_record_ids
+                if record_id in ctx.records
+            ],
+            "related_records": [
+                self._benchmark_record_summary(entry)
+                for entry in ctx.related_records.values()
+            ],
+            "solution_access": (
+                "enabled"
+                if ctx.related_solution_allowed
+                else "disabled by benchmark context policy"
+            ),
+        }
+
+    def _tool_inspect_related_transcription(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        record_id = str(args.get("record_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        entry = ctx.records.get(record_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_related_transcription",
+                record_id=record_id,
+                content_type="transcription",
+                allowed=False,
+                error="record_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Record `{record_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_record_ids": sorted(ctx.records),
+            }
+        rel_path = entry.get("transcription_canonical_file") or ""
+        if not rel_path:
+            return {"error": f"Record `{record_id}` has no canonical transcription file."}
+        try:
+            text = safe_read_benchmark_file(entry.get("root") or ctx.benchmark_root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_related_transcription",
+                record_id=record_id,
+                content_type="transcription",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_related_transcription",
+            record_id=record_id,
+            content_type="transcription",
+        )
+        return {
+            "record": self._benchmark_record_summary(entry),
+            "content_type": "canonical_transcription",
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _tool_inspect_related_solution(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        record_id = str(args.get("record_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        if not ctx.related_solution_allowed:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="solution_context_disabled",
+            )
+            return {
+                "error": (
+                    "Related solution access is disabled by benchmark context "
+                    f"policy `{ctx.policy}`."
+                ),
+                "policy": ctx.policy,
+            }
+        if record_id in ctx.target_record_ids:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="target_solution_blocked",
+            )
+            return {"error": "The target record's solution is never exposed to the agent."}
+        entry = ctx.records.get(record_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="record_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Record `{record_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_record_ids": sorted(ctx.records),
+            }
+        rel_path = entry.get("plaintext_file") or ""
+        if not rel_path:
+            return {"error": f"Record `{record_id}` has no plaintext/solution file."}
+        try:
+            text = safe_read_benchmark_file(entry.get("root") or ctx.benchmark_root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_related_solution",
+            record_id=record_id,
+            content_type="solution",
+        )
+        return {
+            "record": self._benchmark_record_summary(entry),
+            "content_type": "plaintext_solution",
+            "policy": ctx.policy,
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _tool_list_associated_documents(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        ctx.log_access("list_associated_documents", content_type="metadata")
+        return {
+            "policy": ctx.policy,
+            "documents": [
+                self._benchmark_document_summary(entry)
+                for entry in ctx.associated_documents.values()
+            ],
+        }
+
+    def _tool_inspect_associated_document(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        document_id = str(args.get("document_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        entry = ctx.associated_documents.get(document_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="document_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Document `{document_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_document_ids": sorted(ctx.associated_documents),
+            }
+        doc = entry.get("document", {})
+        if doc.get("contains_solution") and not ctx.related_solution_allowed:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="solution_document_disabled",
+            )
+            return {
+                "error": (
+                    "This associated document is marked solution-bearing and "
+                    f"cannot be read under policy `{ctx.policy}`."
+                ),
+                "document": self._benchmark_document_summary(entry),
+            }
+        safe_layers = set(doc.get("safe_context_layers") or [])
+        if safe_layers and ctx.policy not in safe_layers and ctx.policy != "max":
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="document_policy_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Document `{document_id}` is not allowed under policy "
+                    f"`{ctx.policy}`."
+                ),
+                "safe_context_layers": sorted(safe_layers),
+            }
+        rel_path = doc.get("text_file") or ""
+        if not rel_path:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document_metadata",
+            )
+            return {
+                "document": self._benchmark_document_summary(entry),
+                "message": "No text_file is declared for this associated document.",
+            }
+        root = ctx.benchmark_root
+        try:
+            text = safe_read_benchmark_file(root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_associated_document",
+            document_id=document_id,
+            content_type="document",
+        )
+        return {
+            "document": self._benchmark_document_summary(entry),
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _benchmark_record_summary(self, entry: dict[str, Any]) -> dict[str, Any]:
+        rel = entry.get("relationship", {})
+        return {
+            "record_id": entry.get("id"),
+            "area": entry.get("area"),
+            "source": entry.get("source"),
+            "status": entry.get("status"),
+            "plaintext_language": entry.get("plaintext_language"),
+            "cipher_type": entry.get("cipher_type", []),
+            "date_or_century": entry.get("date_or_century"),
+            "provenance": entry.get("provenance"),
+            "notes": entry.get("notes"),
+            "relationship": rel.get("relationship"),
+            "solution_available": bool(rel.get("solution_available")) or bool(entry.get("plaintext_file")),
+        }
+
+    def _benchmark_document_summary(self, entry: dict[str, Any]) -> dict[str, Any]:
+        doc = entry.get("document", {})
+        return {
+            "document_id": doc.get("id"),
+            "record_id": entry.get("record_id"),
+            "document_type": doc.get("document_type"),
+            "title": doc.get("title"),
+            "summary": doc.get("summary", ""),
+            "language": doc.get("language", ""),
+            "contains_solution": bool(doc.get("contains_solution")),
+            "contains_plaintext_hint": bool(doc.get("contains_plaintext_hint")),
+            "safe_context_layers": doc.get("safe_context_layers", []),
+            "has_text_file": bool(doc.get("text_file")),
+            "image_files": doc.get("image_files", []),
+            "source_url": doc.get("source_url", ""),
+        }
+
+    # ------------------------------------------------------------------
     # meta_*
     # ------------------------------------------------------------------
     def _tool_meta_request_tool(self, args: dict) -> Any:
@@ -3836,8 +5913,53 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         rationale = args["rationale"]
         confidence = float(args["self_confidence"])
+        further_iterations_helpful = (
+            bool(args["further_iterations_helpful"])
+            if args.get("further_iterations_helpful") is not None else None
+        )
+        further_iterations_note = str(args.get("further_iterations_note") or "")
+        forced_partial = bool(args.get("forced_partial", False))
         if not self.workspace.has_branch(branch):
             return {"error": f"Branch not found: {branch}"}
+        unresolved = self._unresolved_repair_agenda_items(branch)
+        if unresolved:
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "repair_agenda_unresolved",
+                "unresolved_repair_agenda": unresolved,
+                "note": (
+                    "This branch has open/blocked repair agenda items. Before "
+                    "declaring, apply them or mark them held/rejected with "
+                    "repair_agenda_update. If your rationale already explains "
+                    "why the repair should not be applied, make that explicit "
+                    "in the agenda with status `held` or `rejected`, then call "
+                    "meta_declare_solution again."
+                ),
+                "suggested_next_tools": [
+                    "repair_agenda_list",
+                    "repair_agenda_update",
+                    "meta_declare_solution",
+                ],
+            }
+        if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards(branch):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "branch_cards_required",
+                "note": (
+                    "Multiple branches exist, or this branch was created after "
+                    "the last branch-card review. Call workspace_branch_cards "
+                    "before declaring so you compare readable excerpts, "
+                    "internal scores, repairs, and orthography risks."
+                ),
+                "suggested_next_tools": [
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
         if self._should_guard_declaration_for_reading_workflow(branch, rationale):
             return {
                 "status": "blocked",
@@ -3861,18 +5983,132 @@ class WorkspaceToolExecutor:
                     "act_resegment_from_reading_repair",
                 ],
             }
+        if (
+            further_iterations_helpful is True
+            and self._declaration_has_untried_transform_work(rationale, further_iterations_note)
+            and not forced_partial
+            and not (self.max_iterations is not None and self._current_iteration >= self.max_iterations)
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "transform_work_untried",
+                "note": (
+                    "Your declaration says further iterations should try a "
+                    "transposition/period/poly-alphabetic style hypothesis, "
+                    "but this run has not used the available transform tools. "
+                    "Before declaring, inspect transform state and run a bounded "
+                    "transform+homophonic screen. If that screen is not useful, "
+                    "declare again with that negative result in the rationale."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_pipeline",
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_low_confidence_declaration(
+            confidence,
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "low_confidence_more_work_required",
+                "note": (
+                    "This is a low-confidence declaration and you also report "
+                    "that further iterations would likely help. Continue using "
+                    "the remaining budget instead of terminating early. Try a "
+                    "new hypothesis class, compare branches, or mark "
+                    "`further_iterations_helpful=false` only if the remaining "
+                    "work is unlikely to improve the decipherment. Use "
+                    "`forced_partial=true` only for an intentional early "
+                    "partial submission when no useful remaining tool action is "
+                    "available."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_pipeline",
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_more_work_declaration(
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "further_iterations_requested",
+                "note": (
+                    "Your declaration says further iterations would be helpful, "
+                    "and this run still has iteration budget. Continue working "
+                    "instead of terminating early. `forced_partial=true` does "
+                    "not override this: if you can name useful next work, take "
+                    "that bigger swing before submitting a partial/hypothesis "
+                    "result."
+                ),
+                "suggested_next_tools": [
+                    "workspace_branch_cards",
+                    "decode_diagnose",
+                    "search_homophonic_anneal",
+                    "observe_transform_suspicion",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_premature_partial_declaration(
+            confidence,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "partial_too_early",
+                "note": (
+                    "This is an early low-confidence partial declaration. "
+                    "Keep working and take a bigger swing before stopping: "
+                    "try a broader transform screen, promote/polish the best "
+                    "transformed branch, run a fresh automated route, or make "
+                    "a concrete reading-driven repair. Save forced partial "
+                    "declarations for the final stretch of the run unless the "
+                    "text is already plausibly readable."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "search_homophonic_anneal",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
         self.solution = SolutionDeclaration(
             branch=branch,
             rationale=rationale,
             self_confidence=confidence,
             declared_at_iteration=self._current_iteration,
+            reading_summary=str(args.get("reading_summary") or ""),
+            further_iterations_helpful=further_iterations_helpful,
+            further_iterations_note=further_iterations_note,
         )
         self.terminated = True
+        review = self._declaration_review(branch)
         return {
             "status": "ok",
             "accepted": True,
             "branch": branch,
             "declared_at_iteration": self._current_iteration,
+            "declaration_review": review,
             "note": "Run will terminate after this tool result is recorded.",
         }
 

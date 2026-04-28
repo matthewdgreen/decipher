@@ -45,6 +45,9 @@ class BranchSnapshot:
     decryption: str                             # result of applying key
     signals: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    word_spans: list[tuple[int, int]] | None = None
+    token_order: list[int] | None = None
+    transform_pipeline: dict[str, Any] | None = None
     char_accuracy: float | None = None   # vs ground truth (filled post-hoc by runner)
     word_accuracy: float | None = None
 
@@ -72,6 +75,21 @@ class SolutionDeclaration:
     rationale: str
     self_confidence: float                      # 0.0–1.0, agent's own assessment
     declared_at_iteration: int
+    reading_summary: str = ""
+    further_iterations_helpful: bool | None = None
+    further_iterations_note: str = ""
+
+
+@dataclass
+class LoopEvent:
+    """Structured agent-loop event for future inner-loop observability."""
+
+    event: str
+    payload: dict[str, Any]
+    outer_iteration: int | None = None
+    inner_step: int | None = None
+    mode: str | None = None
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -90,6 +108,9 @@ class RunArtifact:
     cipher_word_count: int = 0
     max_iterations: int = 0
     automated_preflight: dict[str, Any] | None = None
+    benchmark_context: dict[str, Any] | None = None
+    parent_run_id: str = ""
+    parent_artifact_path: str = ""
 
     # What the agent produced
     plan: str = ""                              # first-turn text (or extended-thinking trace)
@@ -98,12 +119,15 @@ class RunArtifact:
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_requests: list[dict[str, Any]] = field(default_factory=list)  # meta_request_tool calls
     subagent_runs: list[SubagentRun] = field(default_factory=list)
+    loop_events: list[LoopEvent] = field(default_factory=list)
+    repair_agenda: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)  # full message history
 
     # Termination
     solution: SolutionDeclaration | None = None
     status: str = "running"                     # running | solved | exhausted | error | stopped
     error_message: str = ""
+    final_summary: str = ""
 
     # Token usage (accumulated across all API calls in this run)
     total_input_tokens: int = 0

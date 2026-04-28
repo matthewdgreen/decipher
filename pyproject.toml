@@ -15,11 +15,16 @@ dependencies = [
     "anthropic>=0.40",
     "keyring>=25",
     "Pillow>=10",
+    "rich>=13",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+]
+providers = [
+    "openai>=1.0",
+    "google-genai>=1.0",
 ]
 
 [project.scripts]

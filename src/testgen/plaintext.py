@@ -4,7 +4,11 @@ import unicodedata
 
 from testgen.spec import TestSpec
 
-_HAIKU_MODEL = "claude-haiku-4-5-20251001"
+_DEFAULT_GENERATION_MODELS = {
+    "anthropic": "claude-haiku-4-5-20251001",
+    "openai": "gpt-5.4-mini",
+    "gemini": "gemini-3.1-flash-lite-preview",
+}
 
 _LANGUAGE_NAMES: dict[str, str] = {
     "en": "English",
@@ -16,24 +20,39 @@ _LANGUAGE_NAMES: dict[str, str] = {
 
 
 class PlaintextGenerator:
-    """Generates novel plaintext passages using Claude Haiku.
+    """Generates novel plaintext passages using a low-cost LLM.
 
-    Always uses the cheapest model. Never call with a more expensive model —
-    the model choice is intentionally baked in here to prevent accidents.
+    The default stays on Claude Haiku for backward compatibility, but callers
+    can select OpenAI or Gemini when running cross-provider experiments.
     """
 
-    def __init__(self, api_key: str) -> None:
-        from services.claude_api import ClaudeAPI
-        self._api = ClaudeAPI(api_key=api_key, model=_HAIKU_MODEL)
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        provider: str = "anthropic",
+        model: str | None = None,
+    ) -> None:
+        from agent.model_provider import canonical_provider, make_model_provider
+
+        self.provider = canonical_provider(provider)
+        self.model = model or _DEFAULT_GENERATION_MODELS[self.provider]
+        self._api = make_model_provider(
+            provider=self.provider,
+            api_key=api_key,
+            model=self.model,
+        )
 
     def generate(self, spec: TestSpec) -> str:
         """Return normalised uppercase prose matching the spec."""
         prompt = self._build_prompt(spec)
-        response = self._api.send_message(
+        response = self._api.send(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=1024,
         )
-        raw = response.content[0].text
+        raw = "\n".join(
+            block.text for block in response.content if block.type == "text"
+        )
         return self._normalize(raw)
 
     # ------------------------------------------------------------------

@@ -1,6 +1,15 @@
 # Agent Loop Redesign Plan
 
-Status: design note, no implementation yet.
+Status: Milestones 1-4 are implemented in the existing `run_v2` benchmark
+path. The English Borg analog plus Borg `0109v`, `0045v`, `0140v`, `0171v`,
+and `0077v` have been exercised, and Milestone 4 now has both no-LLM automated
+baseline smoke coverage and fake-provider LLM-agent smoke coverage. Copiale
+`p068` showed that Copiale/German should move to a separate capability plan
+rather than being treated as another Borg-style repair page. The loop now runs
+through a provider-neutral response adapter, records loop events, supports
+bounded same-iteration inspection/repair sandboxes, can retry gated or
+wrong-length boundary-projection attempts inside the same outer iteration, and
+writes final reading/process summaries.
 
 ## Why This Exists
 
@@ -62,6 +71,12 @@ Define a narrow model-provider interface:
 The rest of the harness should not know whether the backend is Claude,
 OpenAI, or another API. Provider-specific Agent SDKs can be used behind this
 adapter later, but should not own the benchmark loop.
+
+April 2026 implementation note: the CLI now exposes
+`--provider anthropic|openai|gemini` for agentic benchmark/crack/testgen/resume
+runs. The adapters translate Decipher's internal Anthropic-style tool transcript
+to OpenAI function tools or Gemini function declarations, then normalize text,
+tool calls, and usage accounting back into `ModelResponse`.
 
 ### Outer Loop
 
@@ -236,30 +251,173 @@ instead of defining the Decipher architecture.
 
 ### Milestone 1: Design Freeze
 
-- Write provider adapter interface.
-- Define outer loop vs inner loop responsibilities.
-- Define mode/tool-gating table.
-- Define artifact schema additions.
-- No behavior change yet.
+- [x] Write provider adapter interface.
+- [x] Define outer loop vs inner loop responsibilities.
+- [x] Define mode/tool-gating table.
+- [x] Define artifact schema additions.
+- [x] Decide how the next loop entry point coexists with `run_v2`: defer a
+  separate entry point until the workflow boundaries settle; keep the
+  prototype in `run_v2` so existing CLI/benchmark paths exercise it.
+- Behavior change is limited to the `run_v2` prototype path.
 
 ### Milestone 2: Inner Loop Prototype
 
-- Add inner loop for one mode: `boundary_projection`.
-- Support same-iteration retry for gated tools.
-- Run English analog and Borg `0109v`.
-- Compare tool counts, token cost, char/word accuracy, and analyzer labels.
+- [x] Add a narrow inner-loop path for one mode: `boundary_projection`.
+- [x] Support same-iteration retry for gated tools.
+- [x] Support same-iteration retry when a full-reading proposal has the wrong
+  normalized character count.
+- [x] Defer a separate next-generation harness entry point; for now, the
+  prototype is wired into `run_v2` so existing CLI tests exercise it
+  immediately.
+- [x] Run English analog.
+- [x] Run fair post-tightening Borg `0109v` trials.
+- [x] Compare tool counts, token cost, char/word accuracy, and analyzer
+  labels in `docs/agent_loop_milestone2_comparison.md`.
+
+Early validation notes:
+
+- English analog: `artifacts/english_borg_analog_001/f8c8ead3e9b2.json`
+  reached 100.0% character / 100.0% word accuracy in 6 iterations. The agent
+  used whole-reading resegmentation and one mapping repair from a 99.2% /
+  2.9% automated preflight.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/048448b15ebb.json`
+  completed before the actuator-only gate tightening and reached 13.9%
+  character / 7.5% word. It showed why validation alone must not satisfy the
+  late full-reading gate: after `decode_validate_reading_repair`, the next
+  turn dropped back to general explore tools.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/5b16b17ac4c1.json`
+  is not a capability measurement; it stopped after an API credit error and
+  auto-declared a weak partial branch.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/bb419814f0c3.json`
+  reached 13.9% character / 7.7% word after actuator-only gate tightening.
+- Borg `0109v`: `artifacts/parity_borg_latin_borg_0109v/0827d5850034.json`
+  reached 13.9% character / 6.4% word and exercised two
+  `boundary_projection_count_retry` events.
+
+Milestone 2 closeout: complete as an inner-loop prototype. The result is
+mechanically useful and well-observed, but not sufficient for Borg by itself;
+Milestone 3 owns durable reading-repair capability.
 
 ### Milestone 3: Reading Repair Workflow
 
-- Add structured repair agenda.
-- Add one-at-a-time repair application with immediate feedback.
-- Add branch cards and unresolved hypothesis summaries.
+- [x] Add a first low-friction word repair planner/action pair:
+  `decode_plan_word_repair` and `act_apply_word_repair`.
+- [x] Add structured repair agenda.
+- [x] Add one-at-a-time repair application with immediate feedback.
+- [x] Add branch cards and unresolved hypothesis summaries.
+- [x] Add bounded low-cost inspection/repair sandboxes so read-only checks,
+  repair menus, local resegmentation attempts, branch cards, and declaration
+  can happen without burning additional outer benchmark iterations.
+- [x] Add artifact resume/continuation support for follow-up iterations
+  without replaying the whole run from scratch.
+- [x] Add final reading/process summaries and render them in the pretty
+  terminal final screen.
+
+Early implementation note:
+
+- The first slice gives the agent a direct tool path for a same-length
+  reading hypothesis such as "this decoded word should be that word": plan
+  the responsible cipher-symbol changes, preview collateral `changed_words`,
+  then apply the repair if the preview reads better.
+- Word-repair plans now populate a durable `repair_agenda` in the run
+  artifact. `act_apply_word_repair` marks matching agenda items applied, and
+  `repair_agenda_list` / `repair_agenda_update` let the agent resolve held,
+  rejected, or blocked repairs before declaration.
+- `workspace_branch_cards` now exposes compact branch cards with internal
+  scores, mapped count, decoded excerpt, applied/held/open repairs, and
+  orthography-risk warnings.
+- Reading repair actions now flag broad Latin `U/V` or `I/J` shifts as
+  orthography risks, so the agent can distinguish manuscript-faithful repair
+  from modernized/classicized spelling.
+- Declaration is now gated on two bits of explicit run discipline: open or
+  blocked repair-agenda items must be applied/held/rejected before declaring,
+  and runs with multiple branches must call `workspace_branch_cards` before
+  declaring. The final action turn exposes only bookkeeping tools plus
+  `meta_declare_solution`, so the agent can perform cards/update/declare in
+  one response. If it performs final bookkeeping but forgets to declare, the
+  loop now retries inside the same final iteration with an explicit
+  declaration nudge.
+- First Borg trial with these tools:
+  `artifacts/parity_borg_latin_borg_0109v/495a27b339ba.json` reached 13.9%
+  character / 9.1% word accuracy. The agent used `act_apply_word_repair` for
+  `NREUITER -> BREUITER` and `SIMALITER -> SIMILITER`, tried
+  `RLURES -> PLURES`, then reverted after seeing broad collateral damage.
+- Follow-up Borg trial after agenda prompting:
+  `artifacts/parity_borg_latin_borg_0109v/38e3d02d7c7a.json` confirmed the
+  agenda behavior, but regressed to 11.6% character / 5.1% word because the
+  agent classicized Latin `U` forms into `V` forms (`BREVITER`, `QVOD`, etc.).
+  This motivated the orthography-risk guard.
+- Latest Borg trial before declaration gating:
+  `artifacts/parity_borg_latin_borg_0109v/260a15ce6778.json` recovered to
+  13.9% character / 7.7% word and avoided broad `U/V` classicization, but
+  left an open `RLURES -> PLURES` agenda item while explaining the rejection
+  only in prose. This motivated the repair-agenda declaration gate.
+- First Borg trial after declaration bookkeeping gates:
+  `artifacts/parity_borg_latin_borg_0109v/fca17fd203a6.json` reached 13.9%
+  character / 7.7% word. It used substantially richer repair tooling
+  (`act_apply_word_repair` on four items, `repair_agenda_list`, and
+  `workspace_branch_cards`) but spent the final turn on bookkeeping and failed
+  to call `meta_declare_solution`, causing fallback declaration. This
+  motivated the same-iteration final declaration retry.
+- Later follow-up added edit-aware word and character scoring, same-iteration
+  inspection/repair sandboxes, final-summary recovery from blocked
+  declarations, artifact continuation, and the pretty live terminal display.
+  Borg `0109v` now reliably produces readable partial Latin with a high
+  insertion-friendly local word score, though it still has inserted words and
+  unresolved spelling/boundary errors.
+- Borg `0045v` was exercised as an out-of-family Latin page and reached a
+  readable but still partial branch:
+  `artifacts/parity_borg_latin_borg_0045v/4353961ccb34.json` improved over
+  automated preflight but retained significant errors. This is useful evidence
+  that the workflow generalizes beyond a single page, but not enough to close
+  Milestone 4.
 
 ### Milestone 4: Generalization
 
-- Run Borg `0109v`, Borg `0045v`, and the English analog.
-- Confirm improvements are not just prompt overfitting.
-- Decide whether to expand to Copiale/German.
+- [x] Run Borg `0109v`.
+- [x] Run Borg `0045v`.
+- [x] Run the English Borg analog.
+- [x] Run additional Borg pages outside the current parity trio, especially
+  `borg_single_B_borg_0140v`, `borg_single_B_borg_0171v`, and/or
+  `parity_borg_latin_borg_0077v`.
+- [x] Confirm improvements are not just prompt overfitting by comparing
+  behavior and artifact labels across those additional pages.
+- [x] Decide whether to expand the immediate loop-work branch to
+  Copiale/German, after at least one stretch run such as
+  `copiale_single_B_copiale_p068`: do not treat Copiale as just another Borg
+  page. Create a separate Copiale/German capability track.
+- [x] Add a full-agent parity smoke suite so core agent-loop behavior can be
+  regression-tested without manually inspecting long artifacts every time.
+  - [x] Add the no-LLM automated baseline packet:
+    `frontier/agentic_milestone4_smoke.jsonl`.
+  - [x] Add an opt-in pytest harness that runs the automated-only solver for
+    every packet case, asserts zero LLM tokens/cost, and checks baseline
+    thresholds when `DECIPHER_RUN_MILESTONE4_SMOKE=1` is set.
+  - [x] Add the separate LLM-agent smoke layer with fake-provider/unit
+    coverage. Current smoke checks prove that the loop can preserve and
+    declare a protected `automated_preflight` branch, and can make a tiny
+    reading-driven `act_set_mapping` repair before declaration, without live
+    provider access.
+
+Latest generalization checkpoint:
+
+- Borg `0140v`, `artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`:
+  automated preflight was weak (`36.9%` char / `0.0%` word), while the agent
+  found a fresh readable branch at `85.5%` char / `54.8%` word.
+- Borg `0171v`, `artifacts/borg_single_B_borg_0171v/a43a53111e26.json`:
+  automated preflight was already strong (`90.9%` char / `72.7%` word), but
+  the agent over-repaired it to `85.8%` char / `50.8%` word by favoring more
+  classicized Latin-looking forms. This motivates the protected-preflight
+  rule: a readable `automated_preflight` branch should be preserved as the
+  baseline, and broad Latin `U/V` or `I/J` edits must be treated skeptically.
+- Borg `0077v`, `artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`:
+  automated preflight was weak (`37.2%` char / `2.8%` word), while the agent
+  reached a readable partial branch at `84.1%` char / `53.5%` word.
+- Copiale `p068`, `artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`:
+  the agent did not improve over preflight (`45.3%` char / `0.0%` word). It
+  identified German-looking islands but not coherent sentence-level German.
+  Copiale needs separate work on German homophonic/nomenclator modeling,
+  context use, and declaration discipline.
 
 ## Open Questions
 

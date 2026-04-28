@@ -12,6 +12,7 @@ import json
 import math
 import os
 import random
+import re
 import time
 import uuid
 from collections import Counter
@@ -26,6 +27,8 @@ from analysis.segment import (
     segment_text,
 )
 from analysis.solver import simulated_anneal
+from analysis.transformers import TransformPipeline, apply_transform_pipeline
+from analysis.transform_search import inspect_transform_suspicion, screen_transform_candidates
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
 from models.alphabet import Alphabet
@@ -64,6 +67,12 @@ class AutomatedBenchmarkRunner:
         homophonic_budget: str = "full",
         homophonic_refinement: str = "none",
         homophonic_solver: str = "zenith_native",
+        transform_search: str = "off",
+        transform_search_profile: str = "broad",
+        transform_search_max_generated_candidates: int | None = None,
+        transform_promote_artifact: str | None = None,
+        transform_promote_candidate_ids: list[str] | None = None,
+        transform_promote_top_n: int | None = None,
     ) -> None:
         self.artifact_dir = Path(artifact_dir)
         self.default_language = language
@@ -71,6 +80,12 @@ class AutomatedBenchmarkRunner:
         self.homophonic_budget = homophonic_budget
         self.homophonic_refinement = homophonic_refinement
         self.homophonic_solver = homophonic_solver
+        self.transform_search = transform_search
+        self.transform_search_profile = transform_search_profile
+        self.transform_search_max_generated_candidates = transform_search_max_generated_candidates
+        self.transform_promote_artifact = transform_promote_artifact
+        self.transform_promote_candidate_ids = transform_promote_candidate_ids or []
+        self.transform_promote_top_n = transform_promote_top_n
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -91,16 +106,26 @@ class AutomatedBenchmarkRunner:
                 solver="automated_only",
             )
 
-        result = run_automated(
-            cipher_text=cipher_text,
-            language=lang,
-            cipher_id=test_id,
-            ground_truth=test_data.plaintext,
-            cipher_system=test_data.test.cipher_system,
-            homophonic_budget=self.homophonic_budget,
-            homophonic_refinement=self.homophonic_refinement,
-            homophonic_solver=self.homophonic_solver,
-        )
+        run_kwargs = {
+            "cipher_text": cipher_text,
+            "language": lang,
+            "cipher_id": test_id,
+            "ground_truth": test_data.plaintext,
+            "cipher_system": test_data.test.cipher_system,
+            "homophonic_budget": self.homophonic_budget,
+            "homophonic_refinement": self.homophonic_refinement,
+            "homophonic_solver": self.homophonic_solver,
+        }
+        if self.transform_search != "off":
+            run_kwargs["transform_search"] = self.transform_search
+            run_kwargs["transform_search_profile"] = self.transform_search_profile
+            run_kwargs["transform_search_max_generated_candidates"] = self.transform_search_max_generated_candidates
+            run_kwargs["transform_promote_artifact"] = self.transform_promote_artifact
+            run_kwargs["transform_promote_candidate_ids"] = self.transform_promote_candidate_ids
+            run_kwargs["transform_promote_top_n"] = self.transform_promote_top_n
+        if test_data.transform_pipeline:
+            run_kwargs["transform_pipeline"] = test_data.transform_pipeline
+        result = run_automated(**run_kwargs)
         artifact = dict(result.artifact)
         artifact["description"] = test_data.test.description
         artifact["cipher_system"] = test_data.test.cipher_system
@@ -133,6 +158,11 @@ class _AutomatedInternalResult:
     char_accuracy: float = 0.0
     word_accuracy: float = 0.0
     error_message: str = ""
+    transform_pipeline: dict[str, Any] | None = None
+    input_transform_pipeline: dict[str, Any] | None = None
+    transform_selection: dict[str, Any] | None = None
+    original_cipher_token_count: int | None = None
+    transform_search: dict[str, Any] | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -173,6 +203,11 @@ class _AutomatedInternalResult:
             "cipher_alphabet_size": self.cipher_alphabet_size,
             "cipher_token_count": self.cipher_token_count,
             "cipher_word_count": self.cipher_word_count,
+            "transform_pipeline": self.transform_pipeline,
+            "input_transform_pipeline": self.input_transform_pipeline,
+            "transform_selection": self.transform_selection,
+            "transform_search": self.transform_search,
+            "original_cipher_token_count": self.original_cipher_token_count,
             "decryption": self.decryption,
             "key": {str(k): v for k, v in self.key.items()},
             "steps": self.steps,
@@ -192,9 +227,16 @@ def run_automated(
     cipher_id: str = "cli",
     ground_truth: str | None = None,
     cipher_system: str = "",
+    transform_pipeline: dict[str, Any] | None = None,
     homophonic_budget: str = "full",
     homophonic_refinement: str = "none",
     homophonic_solver: str = "zenith_native",
+    transform_search: str = "off",
+    transform_search_profile: str = "broad",
+    transform_search_max_generated_candidates: int | None = None,
+    transform_promote_artifact: str | None = None,
+    transform_promote_candidate_ids: list[str] | None = None,
+    transform_promote_top_n: int | None = None,
 ) -> AutomatedRunResult:
     """Run the best available local techniques without any LLM call."""
     started = time.time()
@@ -205,9 +247,121 @@ def run_automated(
     status = "error"
     solver = "automated_only"
     error = ""
-    routing = _select_solver_path(cipher_text, language, cipher_system)
+    original_cipher_text = cipher_text
+    parsed_transform = TransformPipeline.from_raw(transform_pipeline)
+    transformed_step: dict[str, Any] | None = None
+    transform_search_report: dict[str, Any] | None = None
+    effective_transform_pipeline: dict[str, Any] | None = None
+    transform_selection_report: dict[str, Any] | None = None
+    if parsed_transform is not None and not parsed_transform.is_empty():
+        transform_result = apply_transform_pipeline(cipher_text.tokens, parsed_transform)
+        cipher_text = _cipher_text_from_tokens(
+            transform_result.tokens,
+            cipher_text.alphabet,
+            source=f"{cipher_text.source}:transform",
+        )
+        effective_transform_pipeline = parsed_transform.to_raw()
+        transform_selection_report = {
+            "source": "input_transform_pipeline",
+            "pipeline": effective_transform_pipeline,
+            "original_token_count": len(original_cipher_text.tokens),
+            "transformed_token_count": len(cipher_text.tokens),
+        }
+        transformed_step = {
+            "name": "apply_cipher_transform",
+            "pipeline": parsed_transform.to_raw(),
+            "original_token_count": len(original_cipher_text.tokens),
+            "transformed_token_count": len(cipher_text.tokens),
+            "locked_positions": sum(1 for locked in transform_result.locked if locked),
+        }
+
+    if transform_search not in {"off", "auto", "screen", "wide", "rank", "full", "promote"}:
+        raise ValueError("transform_search must be one of: off, auto, screen, wide, rank, full, promote")
+    if transform_search == "promote" and not transform_promote_artifact:
+        raise ValueError("--transform-search promote requires --transform-promote-artifact")
+    transform_profile = _transform_search_profile_params(
+        transform_search,
+        transform_search_profile,
+        max_generated_candidates=transform_search_max_generated_candidates,
+    )
+    if transform_search != "off" and transformed_step is None:
+        suspicion = inspect_transform_suspicion(
+            token_count=len(cipher_text.tokens),
+            cipher_alphabet_size=cipher_text.alphabet.size,
+            plaintext_alphabet_size=_plaintext_alphabet(language).size,
+            word_group_count=len(cipher_text.words),
+            cipher_system=cipher_system,
+        )
+        should_screen = transform_search in {"screen", "wide", "rank", "full"} or suspicion["recommendation"] in {
+            "run_screen",
+            "consider_screen",
+        }
+        if transform_search == "promote":
+            screen = _promoted_transform_screen(
+                transform_promote_artifact,
+                candidate_ids=transform_promote_candidate_ids,
+                top_n=transform_promote_top_n,
+            )
+        else:
+            screen = (
+                screen_transform_candidates(
+                    cipher_text.tokens,
+                    profile=transform_profile["screen_profile"],
+                    top_n=transform_profile["top_n"],
+                    max_generated_candidates=transform_profile["max_generated_candidates"],
+                    streaming=transform_profile["streaming"],
+                    include_mutations=transform_profile["include_mutations"],
+                    mutation_seed_count=transform_profile["mutation_seed_count"],
+                    include_program_search=transform_profile["include_program_search"],
+                    program_max_depth=transform_profile["program_max_depth"],
+                    program_beam_width=transform_profile["program_beam_width"],
+                )
+                if should_screen else None
+            )
+        rank = None
+        if screen is not None and transform_search in {"rank", "full", "promote"}:
+            rank_max_candidates = transform_profile["max_candidates"]
+            if transform_search == "promote":
+                promoted_candidate_count = len(screen.get("top_candidates") or []) + len(screen.get("anchor_candidates") or [])
+                rank_max_candidates = max(rank_max_candidates, promoted_candidate_count + 1)
+            rank = _rank_transform_candidates(
+                cipher_text=cipher_text,
+                language=language,
+                screen=screen,
+                budget="full" if transform_search == "full" else "screen",
+                solver_profile=homophonic_solver,
+                max_candidates=rank_max_candidates,
+                confirm_count=transform_profile["confirm_count"],
+                adaptive_confirmations=transform_profile["adaptive_confirmations"],
+            )
+        transform_search_report = {
+            "mode": transform_search,
+            "profile": transform_search_profile,
+            "profile_params": transform_profile,
+            "suspicion": suspicion,
+            "screen": screen,
+            "rank": rank,
+            "status": "promoted" if transform_search == "promote" and screen else "screened" if screen else "not_screened",
+            "note": (
+                "Transform-search diagnostics and optional solver-backed "
+                "candidate ranking. `screen` is diagnostic-only; `rank` and "
+                "`full` may select a transformed candidate. `wide` is a "
+                "larger structural-only search intended for later promotion. "
+                "`promote` reuses candidates from an earlier structural artifact "
+                "and spends solver probes only on that shortlist."
+            ),
+        }
+
+    routing = _select_solver_path(
+        cipher_text,
+        language,
+        cipher_system,
+        has_transform_pipeline=transformed_step is not None,
+    )
 
     try:
+        if transformed_step is not None:
+            steps.append(transformed_step)
         steps.append({
             "name": "route_automated_solver",
             "solver": routing["solver"],
@@ -218,8 +372,139 @@ def run_automated(
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": homophonic_solver,
+            "transform_pipeline": parsed_transform.to_raw() if parsed_transform else None,
+            "transform_search": transform_search_report,
         })
-        if routing["route"] == "homophonic":
+        if transform_search_report is not None:
+            steps.append({
+                "name": "screen_transform_candidates",
+                **transform_search_report,
+            })
+        selected_transform_candidate = _selected_ranked_transform_candidate(transform_search_report)
+        diagnostic_transform_candidate = _diagnostic_ranked_transform_candidate(transform_search_report)
+        if selected_transform_candidate is not None:
+            solver = "transform_search_homophonic"
+            key = {
+                int(k): int(v)
+                for k, v in selected_transform_candidate.get("key", {}).items()
+            }
+            decryption = str(selected_transform_candidate.get("decryption") or "")
+            effective_transform_pipeline = _effective_selected_transform_pipeline(selected_transform_candidate)
+            transform_selection_report = _transform_selection_summary(
+                selected_transform_candidate,
+                source="transform_search_rank",
+                promotion=(transform_search_report or {}).get("screen", {}).get("promotion")
+                if isinstance((transform_search_report or {}).get("screen"), dict)
+                else None,
+                pipeline=effective_transform_pipeline,
+            )
+            steps.append({
+                "name": "select_transform_candidate",
+                "candidate_id": selected_transform_candidate.get("candidate_id"),
+                "family": selected_transform_candidate.get("family"),
+                "finalist_label": selected_transform_candidate.get("finalist_label"),
+                "selects_transform": selected_transform_candidate.get("candidate_id") != "000_identity",
+                "pipeline": selected_transform_candidate.get("pipeline"),
+                "anneal_score": selected_transform_candidate.get("anneal_score"),
+                "validated_selection_score": selected_transform_candidate.get("validated_selection_score"),
+                "confirmed_selection_score": selected_transform_candidate.get("confirmed_selection_score"),
+                "elapsed_seconds": selected_transform_candidate.get("elapsed_seconds"),
+            })
+            rank_report = (transform_search_report or {}).get("rank") or {}
+            rank_budget = rank_report.get("budget") if isinstance(rank_report, dict) else None
+            if homophonic_budget == "full" and rank_budget != "full":
+                bakeoff = _refine_transform_finalist_bakeoff(
+                    cipher_text=cipher_text,
+                    language=language,
+                    rank_report=rank_report,
+                    selected_candidate=selected_transform_candidate,
+                    budget=homophonic_budget,
+                    refinement=homophonic_refinement,
+                    solver_profile=homophonic_solver,
+                    ground_truth=ground_truth,
+                )
+                winner = bakeoff.get("winner") or {}
+                solver = "transform_search_homophonic_refined"
+                key = {
+                    int(k): int(v)
+                    for k, v in (winner.get("key") or {}).items()
+                }
+                decryption = str(winner.get("decryption") or "")
+                effective_transform_pipeline = _effective_selected_transform_pipeline(winner)
+                transform_selection_report = _transform_selection_summary(
+                    winner,
+                    source="transform_search_full_refinement",
+                    promotion=(transform_search_report or {}).get("screen", {}).get("promotion")
+                    if isinstance((transform_search_report or {}).get("screen"), dict)
+                    else None,
+                    pipeline=effective_transform_pipeline,
+                    screen_selected_candidate_id=selected_transform_candidate.get("candidate_id"),
+                    selected_candidate_changed=bakeoff.get("selected_candidate_changed"),
+                    refined_candidate_count=bakeoff.get("refined_candidate_count"),
+                )
+                steps.append({
+                    "name": "refine_selected_transform_candidate_homophonic",
+                    "candidate_id": winner.get("candidate_id"),
+                    "family": winner.get("family"),
+                    "screen_selected_candidate_id": selected_transform_candidate.get("candidate_id"),
+                    "rank_budget": rank_budget,
+                    "final_budget": homophonic_budget,
+                    "pipeline": winner.get("pipeline"),
+                    "locked_positions": winner.get("locked_positions"),
+                    "homophonic_step": winner.get("homophonic_step"),
+                    "solver": winner.get("solver"),
+                    "bakeoff": bakeoff,
+                })
+        elif routing["route"] == "unsupported_mixed_transposition" and diagnostic_transform_candidate is not None:
+            solver = "transform_search_no_robust_transform"
+            key = {
+                int(k): int(v)
+                for k, v in diagnostic_transform_candidate.get("key", {}).items()
+            }
+            decryption = str(diagnostic_transform_candidate.get("decryption") or "")
+            rank = (transform_search_report or {}).get("rank") or {}
+            diagnostics = rank.get("diagnostics") if isinstance(rank, dict) else None
+            steps.append({
+                "name": "diagnostic_transform_search_no_robust_candidate",
+                "candidate_id": diagnostic_transform_candidate.get("candidate_id"),
+                "family": diagnostic_transform_candidate.get("family"),
+                "finalist_label": diagnostic_transform_candidate.get("finalist_label"),
+                "pipeline": diagnostic_transform_candidate.get("pipeline"),
+                "anneal_score": diagnostic_transform_candidate.get("anneal_score"),
+                "validated_selection_score": diagnostic_transform_candidate.get("validated_selection_score"),
+                "confirmed_selection_score": diagnostic_transform_candidate.get("confirmed_selection_score"),
+                "diagnostic_conclusion": (diagnostics or {}).get("conclusion") if isinstance(diagnostics, dict) else None,
+                "note": (
+                    "Transform search ran but no transform candidate passed "
+                    "the confirmation/family evidence gates. This diagnostic "
+                    "candidate is recorded to complete the run without "
+                    "claiming transform recovery."
+                ),
+            })
+        elif (
+            routing["route"] == "unsupported_mixed_transposition"
+            and transform_search_report is not None
+            and transform_search_report.get("screen") is not None
+            and transform_search_report.get("rank") is None
+        ):
+            solver = "transform_search_structural_only"
+            decryption = ""
+            steps.append({
+                "name": "transform_search_structural_only",
+                "mode": transform_search_report.get("mode"),
+                "profile": transform_search_report.get("profile"),
+                "candidate_count": (transform_search_report.get("screen") or {}).get("candidate_count"),
+                "deduped_candidate_count": (transform_search_report.get("screen") or {}).get("deduped_candidate_count"),
+                "top_candidate_count": len((transform_search_report.get("screen") or {}).get("top_candidates") or []),
+                "note": (
+                    "Structural transform search completed without running "
+                    "homophonic solver probes. Promote a small finalist set "
+                    "with rank/full before claiming a decipherment."
+                ),
+            })
+        elif routing["route"] == "unsupported_mixed_transposition":
+            raise ValueError(routing["reason"])
+        elif routing["route"] == "homophonic":
             solver, key, decryption, step = _run_homophonic(
                 cipher_text,
                 language,
@@ -232,7 +517,7 @@ def run_automated(
         else:
             solver, key, decryption, step = _run_substitution(cipher_text, language)
             steps.append(step)
-        status = "completed" if decryption else "error"
+        status = "completed" if decryption or solver == "transform_search_structural_only" else "error"
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         status = "error"
@@ -268,6 +553,11 @@ def run_automated(
         char_accuracy=char_accuracy,
         word_accuracy=word_accuracy,
         error_message=error,
+        transform_pipeline=effective_transform_pipeline,
+        input_transform_pipeline=parsed_transform.to_raw() if parsed_transform else None,
+        transform_selection=transform_selection_report,
+        original_cipher_token_count=len(original_cipher_text.tokens),
+        transform_search=transform_search_report,
     )
     return internal.to_result()
 
@@ -294,6 +584,1513 @@ def save_crack_artifact(
     path.write_text(json.dumps(artifact, indent=2, ensure_ascii=False), encoding="utf-8")
     result.artifact_path = str(path)
     return str(path)
+
+
+def _selected_ranked_transform_candidate(
+    transform_search_report: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not transform_search_report:
+        return None
+    rank = transform_search_report.get("rank")
+    if not isinstance(rank, dict):
+        return None
+    selection = rank.get("selection")
+    if isinstance(selection, dict):
+        if not selection.get("selected"):
+            return None
+        selected_id = selection.get("selected_candidate_id")
+        for candidate in rank.get("top_ranked_candidates") or []:
+            if candidate.get("candidate_id") == selected_id:
+                return candidate
+        return None
+    candidates = rank.get("top_ranked_candidates") or []
+    if not candidates:
+        return None
+    best = candidates[0]
+    if best.get("status") != "completed":
+        return None
+    if not best.get("decryption"):
+        return None
+    return best
+
+
+def _effective_selected_transform_pipeline(candidate: dict[str, Any]) -> dict[str, Any] | None:
+    pipeline_raw = candidate.get("pipeline")
+    pipeline = TransformPipeline.from_raw(pipeline_raw)
+    if pipeline is None or pipeline.is_empty():
+        return None
+    return pipeline.to_raw()
+
+
+def _transform_selection_summary(
+    candidate: dict[str, Any],
+    *,
+    source: str,
+    pipeline: dict[str, Any] | None,
+    promotion: dict[str, Any] | None = None,
+    **extra: Any,
+) -> dict[str, Any]:
+    summary = {
+        "source": source,
+        "candidate_id": candidate.get("candidate_id"),
+        "family": candidate.get("family"),
+        "finalist_label": candidate.get("finalist_label"),
+        "selects_transform": bool(pipeline),
+        "pipeline": pipeline,
+        "anneal_score": candidate.get("anneal_score"),
+        "selection_score": candidate.get("selection_score"),
+        "validated_selection_score": candidate.get("validated_selection_score"),
+        "confirmed_selection_score": candidate.get("confirmed_selection_score"),
+        "elapsed_seconds": candidate.get("elapsed_seconds"),
+    }
+    if promotion:
+        summary["promotion"] = {
+            "source_artifact": promotion.get("source_artifact"),
+            "source_artifact_resolved": promotion.get("source_artifact_resolved"),
+            "source_candidate_count": promotion.get("source_candidate_count"),
+            "source_deduped_candidate_count": promotion.get("source_deduped_candidate_count"),
+            "requested_candidate_ids": promotion.get("requested_candidate_ids"),
+            "requested_top_n": promotion.get("requested_top_n"),
+            "promoted_candidate_ids": promotion.get("promoted_candidate_ids"),
+        }
+    summary.update({key: value for key, value in extra.items() if value is not None})
+    return summary
+
+
+def _diagnostic_ranked_transform_candidate(
+    transform_search_report: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not transform_search_report:
+        return None
+    rank = transform_search_report.get("rank")
+    if not isinstance(rank, dict):
+        return None
+    candidates = rank.get("top_ranked_candidates") or []
+    if not candidates:
+        return None
+    identity = next(
+        (
+            candidate for candidate in candidates
+            if candidate.get("candidate_id") == "000_identity"
+            and candidate.get("status") == "completed"
+            and candidate.get("decryption")
+        ),
+        None,
+    )
+    if identity is not None:
+        return identity
+    return next(
+        (
+            candidate for candidate in candidates
+            if candidate.get("status") == "completed"
+            and candidate.get("decryption")
+        ),
+        None,
+    )
+
+
+def _refine_transform_finalist_bakeoff(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    rank_report: dict[str, Any],
+    selected_candidate: dict[str, Any],
+    budget: str,
+    refinement: str,
+    solver_profile: str,
+    ground_truth: str | None,
+) -> dict[str, Any]:
+    candidates = _full_refinement_finalists(rank_report, selected_candidate)
+    refined: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        pipeline_raw = candidate.get("pipeline")
+        started = time.time()
+        try:
+            pipeline = TransformPipeline.from_raw(pipeline_raw) or TransformPipeline()
+            refined_cipher_text = cipher_text
+            locked_positions = 0
+            if not pipeline.is_empty():
+                transform_result = apply_transform_pipeline(cipher_text.tokens, pipeline)
+                refined_cipher_text = _cipher_text_from_tokens(
+                    transform_result.tokens,
+                    cipher_text.alphabet,
+                    source=f"{cipher_text.source}:selected_transform_refine:{index}",
+                )
+                locked_positions = sum(1 for locked in transform_result.locked if locked)
+            refined_solver, refined_key, refined_decryption, refined_step = _run_homophonic(
+                refined_cipher_text,
+                language,
+                budget=budget,
+                refinement=refinement,
+                solver_profile=solver_profile,
+                ground_truth=ground_truth,
+            )
+            anneal_score = _float_or_none(refined_step.get("anneal_score"))
+            quality_score = _plaintext_quality_score(refined_decryption, language)
+            structural_score = _float_or_none(candidate.get("structural_score"))
+            if structural_score is None:
+                structural_score = _float_or_none(candidate.get("score"))
+            mutation_penalty = _transform_mutation_penalty(candidate)
+            full_selection_score = _transform_selection_score(
+                anneal_score=anneal_score,
+                quality_score=quality_score,
+                structural_score=structural_score,
+                mutation_penalty=mutation_penalty,
+            )
+            refinement_selectable = _refinement_selectable_transform_candidate(candidate)
+            refined.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "finalist_label": candidate.get("finalist_label"),
+                "selectable_transform_candidate": bool(candidate.get("selectable_transform_candidate")),
+                "refinement_selectable": refinement_selectable,
+                "pipeline": pipeline.to_raw(),
+                "locked_positions": locked_positions,
+                "solver": refined_solver,
+                "homophonic_step": refined_step,
+                "anneal_score": anneal_score,
+                "plaintext_quality_score": round(quality_score, 6),
+                "structural_score": structural_score,
+                "full_selection_score": round(full_selection_score, 6),
+                "screen_confirmed_selection_score": candidate.get("confirmed_selection_score"),
+                "screen_validated_selection_score": candidate.get("validated_selection_score"),
+                "elapsed_seconds": round(time.time() - started, 3),
+                "decryption_preview": refined_decryption[:500],
+                "decryption": refined_decryption,
+                "key": {str(k): v for k, v in refined_key.items()},
+            })
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "pipeline": pipeline_raw,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+    refined.sort(
+        key=lambda item: (
+            bool(item.get("refinement_selectable")),
+            _float_or_none(item.get("full_selection_score")) or float("-inf"),
+            _float_or_none(item.get("anneal_score")) or float("-inf"),
+            _float_or_none(item.get("screen_confirmed_selection_score")) or float("-inf"),
+        ),
+        reverse=True,
+    )
+    winner = refined[0] if refined else {}
+    return {
+        "stage": "full_budget_transform_finalist_bakeoff",
+        "winner": winner,
+        "candidate_count": len(candidates),
+        "refined_candidate_count": len(refined),
+        "skipped_candidates": skipped,
+        "refined_candidates": refined,
+        "selected_candidate_changed": (
+            bool(winner)
+            and winner.get("candidate_id") != selected_candidate.get("candidate_id")
+        ),
+        "policy": (
+            "When a screen-budget transform rank is followed by a full-budget "
+            "run, refine the selected transform plus close/selectable "
+            "finalists. The final pick preserves the ranker's robustness gates "
+            "first, then compares full-budget selection scores, so unstable "
+            "false positives can be reported but cannot replace a robust "
+            "selected transform."
+        ),
+    }
+
+
+def _refinement_selectable_transform_candidate(candidate: dict[str, Any]) -> bool:
+    return (
+        bool(candidate.get("selectable_transform_candidate"))
+        or candidate.get("finalist_label") == "robust_candidate"
+    )
+
+
+def _full_refinement_finalists(
+    rank_report: dict[str, Any],
+    selected_candidate: dict[str, Any],
+    *,
+    limit: int = 3,
+    score_margin: float = 0.06,
+) -> list[dict[str, Any]]:
+    ranked = [
+        item for item in rank_report.get("top_ranked_candidates") or []
+        if isinstance(item, dict)
+        and item.get("status") == "completed"
+        and item.get("pipeline")
+        and item.get("candidate_id") != "000_identity"
+    ]
+    selected_id = str(selected_candidate.get("candidate_id"))
+    selected_score = (
+        _float_or_none(selected_candidate.get("confirmed_selection_score"))
+        or _float_or_none(selected_candidate.get("validated_selection_score"))
+        or _float_or_none(selected_candidate.get("selection_score"))
+        or float("-inf")
+    )
+    finalists: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add(item: dict[str, Any]) -> None:
+        if len(finalists) >= limit:
+            return
+        candidate_id = str(item.get("candidate_id"))
+        if candidate_id in seen:
+            return
+        finalists.append(item)
+        seen.add(candidate_id)
+
+    for item in ranked:
+        if str(item.get("candidate_id")) == selected_id:
+            add(item)
+            break
+    if not finalists:
+        add(selected_candidate)
+
+    for item in ranked:
+        if len(finalists) >= limit:
+            break
+        score = (
+            _float_or_none(item.get("confirmed_selection_score"))
+            or _float_or_none(item.get("validated_selection_score"))
+            or _float_or_none(item.get("selection_score"))
+            or float("-inf")
+        )
+        close = math.isfinite(selected_score) and score >= selected_score - score_margin
+        selectable = _refinement_selectable_transform_candidate(item)
+        if selectable or close:
+            add(item)
+
+    return finalists
+
+
+def _promoted_transform_screen(
+    artifact_path: str | None,
+    *,
+    candidate_ids: list[str] | None = None,
+    top_n: int | None = None,
+) -> dict[str, Any]:
+    if not artifact_path:
+        raise ValueError("transform promotion requires a source artifact path")
+    path = Path(artifact_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"transform promotion artifact not found: {path}")
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    transform_search = artifact.get("transform_search")
+    if not isinstance(transform_search, dict):
+        raise ValueError(f"artifact has no transform_search block: {path}")
+    source_screen = transform_search.get("screen")
+    if not isinstance(source_screen, dict):
+        raise ValueError(f"artifact has no transform_search.screen block: {path}")
+
+    identity = source_screen.get("identity_candidate")
+    source_top = [
+        candidate for candidate in source_screen.get("top_candidates") or []
+        if isinstance(candidate, dict)
+    ]
+    source_anchor = [
+        candidate for candidate in source_screen.get("anchor_candidates") or []
+        if isinstance(candidate, dict)
+    ]
+    source_by_id: dict[str, dict[str, Any]] = {}
+    for candidate in ([identity] if isinstance(identity, dict) else []) + source_top + source_anchor:
+        source_by_id.setdefault(str(candidate.get("candidate_id")), candidate)
+
+    requested_ids = [str(item) for item in (candidate_ids or []) if str(item).strip()]
+    if requested_ids:
+        missing = [candidate_id for candidate_id in requested_ids if candidate_id not in source_by_id]
+        if missing:
+            raise ValueError(
+                "promoted transform candidate id(s) not found in source artifact: "
+                + ", ".join(missing)
+            )
+        selected = [source_by_id[candidate_id] for candidate_id in requested_ids]
+    else:
+        limit = int(top_n) if top_n is not None else 10
+        if limit < 1:
+            raise ValueError("transform promotion top_n must be at least 1")
+        selected = source_top[:limit]
+
+    selected_by_id: dict[str, dict[str, Any]] = {}
+    for candidate in selected:
+        candidate_id = str(candidate.get("candidate_id"))
+        if candidate_id != "000_identity":
+            selected_by_id.setdefault(candidate_id, candidate)
+
+    return {
+        "profile": "promoted",
+        "source_profile": source_screen.get("profile"),
+        "candidate_count": len(selected_by_id),
+        "deduped_candidate_count": len(selected_by_id),
+        "top_candidates": list(selected_by_id.values()),
+        "anchor_candidates": [],
+        "identity_candidate": identity,
+        "promotion": {
+            "source_artifact": str(path),
+            "source_artifact_resolved": str(path.resolve()),
+            "source_mode": transform_search.get("mode"),
+            "source_profile": transform_search.get("profile"),
+            "source_status": transform_search.get("status"),
+            "source_candidate_count": source_screen.get("candidate_count"),
+            "source_deduped_candidate_count": source_screen.get("deduped_candidate_count"),
+            "requested_candidate_ids": requested_ids,
+            "requested_top_n": top_n,
+            "promoted_candidate_ids": list(selected_by_id.keys()),
+            "policy": (
+                "Promotion reuses structural candidates from a prior wide/screen "
+                "artifact, then runs bounded homophonic probes only on the "
+                "selected shortlist plus identity as a control."
+            ),
+        },
+    }
+
+
+def _transform_search_profile_params(
+    transform_search: str,
+    profile: str,
+    *,
+    max_generated_candidates: int | None = None,
+) -> dict[str, Any]:
+    profile_key = (profile or "broad").strip().lower()
+    if profile_key not in {"fast", "broad", "wide"}:
+        raise ValueError("transform_search_profile must be one of: fast, broad, wide")
+    is_rank = transform_search in {"rank", "full", "promote"}
+    is_wide = transform_search == "wide" or profile_key == "wide"
+    wide_limit = int(max_generated_candidates) if max_generated_candidates is not None else 25000
+    broad_limit = int(max_generated_candidates) if max_generated_candidates is not None else 10000
+    fast_limit = int(max_generated_candidates) if max_generated_candidates is not None else 5000
+    if not is_rank:
+        if is_wide:
+            return {
+                "profile": "wide",
+                "screen_profile": "wide",
+                "top_n": 500,
+                "max_generated_candidates": wide_limit,
+                "streaming": True,
+                "include_mutations": False,
+                "mutation_seed_count": 0,
+                "include_program_search": True,
+                "program_max_depth": 5,
+                "program_beam_width": 48,
+                "max_candidates": 0,
+                "confirm_count": 0,
+                "adaptive_confirmations": 0,
+            }
+        return {
+            "profile": profile_key,
+            "screen_profile": "small",
+            "top_n": 8,
+            "max_generated_candidates": fast_limit,
+            "streaming": False,
+            "include_mutations": False,
+            "mutation_seed_count": 0,
+            "include_program_search": False,
+            "program_max_depth": 0,
+            "program_beam_width": 0,
+            "max_candidates": 0,
+            "confirm_count": 0,
+            "adaptive_confirmations": 0,
+        }
+    if profile_key == "fast":
+        return {
+            "profile": "fast",
+            "screen_profile": "medium",
+            "top_n": 60,
+            "max_generated_candidates": fast_limit,
+            "streaming": False,
+            "include_mutations": False,
+            "mutation_seed_count": 0,
+            "include_program_search": False,
+            "program_max_depth": 0,
+            "program_beam_width": 0,
+            "max_candidates": 8,
+            "confirm_count": 3,
+            "adaptive_confirmations": 0,
+        }
+    if profile_key == "wide":
+        return {
+            "profile": "wide",
+            "screen_profile": "wide",
+            "top_n": 500,
+            "max_generated_candidates": wide_limit,
+            "streaming": True,
+            "include_mutations": False,
+            "mutation_seed_count": 0,
+            "include_program_search": True,
+            "program_max_depth": 5,
+            "program_beam_width": 48,
+            "max_candidates": 12 if transform_search == "full" else 10,
+            "confirm_count": 4,
+            "adaptive_confirmations": 2,
+        }
+    return {
+        "profile": "broad",
+        "screen_profile": "medium",
+        "top_n": 120,
+        "max_generated_candidates": broad_limit,
+        "streaming": False,
+        "include_mutations": True,
+        "mutation_seed_count": 12 if transform_search == "full" else 8,
+        "include_program_search": True,
+        "program_max_depth": 5,
+        "program_beam_width": 24,
+        "max_candidates": 8 if transform_search == "full" else 10,
+        "confirm_count": 3,
+        "adaptive_confirmations": 2,
+    }
+
+
+def _rank_transform_candidates(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    screen: dict[str, Any],
+    budget: str,
+    solver_profile: str,
+    max_candidates: int,
+    confirm_count: int = 3,
+    adaptive_confirmations: int = 2,
+) -> dict[str, Any]:
+    ranked: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    seen_pipeline: set[str] = set()
+    raw_candidates, triage_report = _two_stage_transform_rank_candidates(screen, max_candidates=max_candidates)
+    for index, candidate in enumerate(raw_candidates):
+        pipeline_raw = candidate.get("pipeline")
+        pipeline_key = json.dumps(pipeline_raw, sort_keys=True)
+        if pipeline_key in seen_pipeline:
+            continue
+        seen_pipeline.add(pipeline_key)
+        try:
+            pipeline = TransformPipeline.from_raw(pipeline_raw)
+            if pipeline is None:
+                raise ValueError("missing transform pipeline")
+            order = apply_transform_pipeline(list(range(len(cipher_text.tokens))), pipeline).tokens
+            if sorted(order) != list(range(len(cipher_text.tokens))):
+                raise ValueError("transform candidate is not a position permutation")
+            transform_result = apply_transform_pipeline(cipher_text.tokens, pipeline)
+            transformed_cipher = _cipher_text_from_tokens(
+                transform_result.tokens,
+                cipher_text.alphabet,
+                source=f"{cipher_text.source}:transform_rank:{index}",
+            )
+            started = time.time()
+            solver, key, decryption, step = _run_homophonic(
+                transformed_cipher,
+                language,
+                budget=budget,
+                refinement="none",
+                solver_profile=solver_profile,
+                ground_truth=None,
+            )
+            anneal_score = step.get("anneal_score")
+            quality_score = _plaintext_quality_score(decryption, language)
+            mutation_penalty = _transform_mutation_penalty(candidate)
+            selection_score = _transform_selection_score(
+                anneal_score=anneal_score,
+                quality_score=quality_score,
+                structural_score=candidate.get("score"),
+                mutation_penalty=mutation_penalty,
+            )
+            ranked.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "provenance": candidate.get("provenance"),
+                "params": candidate.get("params"),
+                "pipeline": pipeline.to_raw(),
+                "status": "completed",
+                "solver": solver,
+                "anneal_score": anneal_score,
+                "plaintext_quality_score": round(quality_score, 6),
+                "local_mutation_penalty": mutation_penalty,
+                "selection_score": round(selection_score, 6),
+                "elapsed_seconds": round(time.time() - started, 3),
+                "decryption_preview": decryption[:500],
+                "decryption": decryption,
+                "key": {str(k): v for k, v in key.items()},
+                "structural_score": candidate.get("score"),
+                "structural_delta_vs_identity": candidate.get("delta_vs_identity"),
+                "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
+                "best_period": (candidate.get("metrics") or {}).get("best_period"),
+                "inverse_best_period": (candidate.get("metrics") or {}).get("inverse_best_period"),
+            })
+        except Exception as exc:  # noqa: BLE001
+            skipped.append({
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "pipeline": pipeline_raw,
+                "reason": f"{type(exc).__name__}: {exc}",
+            })
+    validation_report = _validate_transform_finalists(ranked)
+    _sort_ranked_transform_candidates(ranked, score_key="validated_selection_score")
+    confirmation_report = _confirm_transform_finalists(
+        cipher_text=cipher_text,
+        language=language,
+        ranked=ranked,
+        budget=budget,
+        solver_profile=solver_profile,
+        confirm_count=confirm_count,
+        adaptive_confirmations=adaptive_confirmations,
+    )
+    finalist_report = _label_transform_finalists(ranked)
+    ranked.sort(
+        key=lambda item: (
+            bool(item.get("selectable_transform_candidate")),
+            item.get("status") == "completed",
+            float(
+                item.get("confirmed_selection_score")
+                or item.get("validated_selection_score")
+                or item.get("selection_score")
+                or float("-inf")
+            ),
+            float(item.get("anneal_score") or float("-inf")),
+            float(item.get("structural_score") or float("-inf")),
+        ),
+        reverse=True,
+    )
+    selection_report = _choose_transform_candidate(ranked)
+    diagnostic_report = _diagnose_transform_finalists(ranked, selection_report)
+    return {
+        "budget": budget,
+        "max_candidates": max_candidates,
+        "selection_policy": (
+            "Two-stage rank: a broad structural screen is reduced to a "
+            "family-diverse finalist set, then solver probes are ranked "
+            "primarily by anneal score with small quality/structural "
+            "tie-breakers, validation penalties, and an independent-seed "
+            "confirmation pass."
+        ),
+        "triage": triage_report,
+        "evaluated_candidates": len(ranked),
+        "skipped_candidates": skipped,
+        "validation": validation_report,
+        "confirmation": confirmation_report,
+        "finalists": finalist_report,
+        "selection": selection_report,
+        "diagnostics": diagnostic_report,
+        "top_ranked_candidates": ranked,
+        "note": (
+            "Candidates are ranked by solver probes after the structural screen. "
+            "This is bounded search, not exhaustive transform discovery."
+        ),
+    }
+
+
+def _validate_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any]:
+    """Validate solver finalists against identity and mutation base candidates."""
+
+    by_id = {str(item.get("candidate_id")): item for item in ranked}
+    identity = by_id.get("000_identity")
+    identity_selection = _float_or_none(identity.get("selection_score")) if identity else None
+    identity_anneal = _float_or_none(identity.get("anneal_score")) if identity else None
+    mutation_penalized = 0
+    identity_penalized = 0
+    for item in ranked:
+        selection = _float_or_none(item.get("selection_score")) or float("-inf")
+        anneal = _float_or_none(item.get("anneal_score"))
+        params = item.get("params") if isinstance(item.get("params"), dict) else {}
+        base_id = params.get("base_candidate_id")
+        base = by_id.get(str(base_id)) if base_id else None
+        penalty = 0.0
+        reasons: list[str] = []
+        item["identity_selection_delta"] = (
+            round(selection - identity_selection, 6)
+            if identity_selection is not None else None
+        )
+        item["identity_anneal_delta"] = (
+            round((anneal or float("-inf")) - identity_anneal, 6)
+            if identity_anneal is not None and anneal is not None else None
+        )
+        if item.get("provenance") == "local_mutation":
+            if base is None:
+                penalty += 0.04
+                reasons.append("mutation_base_not_evaluated")
+            else:
+                base_selection = _float_or_none(base.get("selection_score"))
+                base_anneal = _float_or_none(base.get("anneal_score"))
+                selection_delta = selection - base_selection if base_selection is not None else None
+                anneal_delta = anneal - base_anneal if anneal is not None and base_anneal is not None else None
+                item["base_candidate_id"] = base_id
+                item["base_selection_delta"] = round(selection_delta, 6) if selection_delta is not None else None
+                item["base_anneal_delta"] = round(anneal_delta, 6) if anneal_delta is not None else None
+                if selection_delta is not None and selection_delta < 0.015:
+                    penalty += 0.08
+                    reasons.append("mutation_did_not_beat_base_selection")
+                if anneal_delta is not None and anneal_delta < 0.0:
+                    penalty += 0.04
+                    reasons.append("mutation_worse_than_base_anneal")
+            if penalty:
+                mutation_penalized += 1
+        if identity_selection is not None and item.get("candidate_id") != "000_identity":
+            if selection < identity_selection - 0.02:
+                penalty += 0.05
+                reasons.append("below_identity_selection_margin")
+                identity_penalized += 1
+        item["validation_penalty"] = round(penalty, 6)
+        item["validation_reasons"] = reasons
+        item["validated_selection_score"] = round(selection - penalty, 6)
+    return {
+        "identity_candidate_id": "000_identity" if identity else None,
+        "identity_selection_score": identity_selection,
+        "identity_anneal_score": identity_anneal,
+        "mutation_penalized_candidates": mutation_penalized,
+        "identity_penalized_candidates": identity_penalized,
+        "policy": (
+            "Local mutations must beat their evaluated base candidate, and all "
+            "non-identity finalists are compared against identity. Penalties "
+            "affect finalist ordering but do not remove candidates from the artifact."
+        ),
+    }
+
+
+def _confirm_transform_finalists(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    ranked: list[dict[str, Any]],
+    budget: str,
+    solver_profile: str,
+    confirm_count: int = 3,
+    adaptive_confirmations: int = 2,
+) -> dict[str, Any]:
+    """Rerun top transform finalists with independent seeds.
+
+    Stage B ranking can over-trust a single anneal basin. This confirmation
+    pass gives the strongest finalists a fresh probe and ranks by stability.
+    """
+
+    finalists = [
+        item for item in ranked
+        if item.get("status") == "completed" and item.get("pipeline")
+    ][:confirm_count]
+    identity = next(
+        (
+            item for item in ranked
+            if item.get("candidate_id") == "000_identity"
+            and item.get("status") == "completed"
+            and item.get("pipeline")
+        ),
+        None,
+    )
+    if identity is not None and all(item.get("candidate_id") != "000_identity" for item in finalists):
+        finalists.append(identity)
+    confirmed = []
+    skipped = []
+    confirmed_ids: set[str] = set()
+
+    def confirm_item(item: dict[str, Any], index: int, reason: str) -> None:
+        seed_offset = 10_000 + index * 1_000
+        started = time.time()
+        try:
+            pipeline = TransformPipeline.from_raw(item.get("pipeline"))
+            if pipeline is None:
+                raise ValueError("missing transform pipeline")
+            transform_result = apply_transform_pipeline(cipher_text.tokens, pipeline)
+            transformed_cipher = _cipher_text_from_tokens(
+                transform_result.tokens,
+                cipher_text.alphabet,
+                source=f"{cipher_text.source}:transform_confirm:{index}",
+            )
+            solver, key, decryption, step = _run_homophonic(
+                transformed_cipher,
+                language,
+                budget=budget,
+                refinement="none",
+                solver_profile=solver_profile,
+                ground_truth=None,
+                seed_offset=seed_offset,
+            )
+            anneal_score = step.get("anneal_score")
+            quality_score = _plaintext_quality_score(decryption, language)
+            mutation_penalty = _transform_mutation_penalty(item)
+            confirmation_selection = _transform_selection_score(
+                anneal_score=anneal_score,
+                quality_score=quality_score,
+                structural_score=item.get("structural_score"),
+                mutation_penalty=mutation_penalty,
+            )
+            primary_score = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            )
+            primary_text = str(item.get("decryption") or "")
+            distance = _plaintext_distance_ratio(primary_text, decryption)
+            stability_score = max(0.0, 1.0 - distance)
+            confirmation_delta = (
+                confirmation_selection - primary_score
+                if math.isfinite(primary_score) else None
+            )
+            penalty = 0.08 * (1.0 - stability_score)
+            reasons: list[str] = []
+            if confirmation_delta is not None and confirmation_delta < -0.08:
+                penalty += 0.08
+                reasons.append("confirmation_selection_dropped")
+            if stability_score < 0.55:
+                penalty += 0.05
+                reasons.append("confirmation_plaintext_unstable")
+            confirmed_score = min(primary_score, confirmation_selection) if math.isfinite(primary_score) else confirmation_selection
+            confirmed_score -= penalty
+            confirmation = {
+                "status": "completed",
+                "solver": solver,
+                "seed_offset": seed_offset,
+                "confirmation_reason": reason,
+                "budget": budget,
+                "anneal_score": anneal_score,
+                "plaintext_quality_score": round(quality_score, 6),
+                "selection_score": round(confirmation_selection, 6),
+                "selection_delta_vs_primary": (
+                    round(confirmation_delta, 6)
+                    if confirmation_delta is not None else None
+                ),
+                "plaintext_distance_ratio": round(distance, 6),
+                "stability_score": round(stability_score, 6),
+                "confirmation_penalty": round(penalty, 6),
+                "confirmation_reasons": reasons,
+                "elapsed_seconds": round(time.time() - started, 3),
+                "decryption_preview": decryption[:500],
+                "key": {str(k): v for k, v in key.items()},
+            }
+            item["confirmation"] = confirmation
+            item["confirmed_selection_score"] = round(confirmed_score, 6)
+            confirmed_ids.add(str(item.get("candidate_id")))
+            confirmed.append({
+                "candidate_id": item.get("candidate_id"),
+                "family": item.get("family"),
+                "seed_offset": seed_offset,
+                "confirmation_reason": reason,
+                "selection_score": confirmation["selection_score"],
+                "selection_delta_vs_primary": confirmation["selection_delta_vs_primary"],
+                "stability_score": confirmation["stability_score"],
+                "confirmed_selection_score": item["confirmed_selection_score"],
+                "reasons": reasons,
+            })
+        except Exception as exc:  # noqa: BLE001
+            item["confirmation"] = {
+                "status": "error",
+                "seed_offset": seed_offset,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+            item["confirmed_selection_score"] = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            ) - 0.12
+            confirmed_ids.add(str(item.get("candidate_id")))
+            skipped.append({
+                "candidate_id": item.get("candidate_id"),
+                "family": item.get("family"),
+                "seed_offset": seed_offset,
+                "confirmation_reason": reason,
+                "reason": item["confirmation"]["error"],
+            })
+
+    for index, item in enumerate(finalists):
+        confirm_item(item, index, "initial_finalist")
+    best_confirmed = max(
+        (
+            _float_or_none(item.get("confirmed_selection_score")) or float("-inf")
+            for item in ranked
+            if str(item.get("candidate_id")) in confirmed_ids
+        ),
+        default=float("-inf"),
+    )
+    adaptive_margin = 0.04
+    adaptive_count = 0
+    max_adaptive_confirmations = max(0, adaptive_confirmations)
+    if max_adaptive_confirmations > 0 and math.isfinite(best_confirmed):
+        for item in ranked:
+            if adaptive_count >= max_adaptive_confirmations:
+                break
+            candidate_id = str(item.get("candidate_id"))
+            if candidate_id in confirmed_ids:
+                continue
+            base_score = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            )
+            if base_score < best_confirmed - adaptive_margin:
+                continue
+            confirm_item(
+                item,
+                len(confirmed_ids),
+                "adaptive_near_margin",
+            )
+            adaptive_count += 1
+    unconfirmed_penalty = 0.12
+    unconfirmed_count = 0
+    for item in ranked:
+        candidate_id = str(item.get("candidate_id"))
+        if candidate_id in confirmed_ids:
+            continue
+        base_score = (
+            _float_or_none(item.get("validated_selection_score"))
+            or _float_or_none(item.get("selection_score"))
+            or float("-inf")
+        )
+        item["confirmation"] = {
+            "status": "not_run",
+            "reason": "outside_confirmation_budget",
+            "unconfirmed_penalty": unconfirmed_penalty,
+        }
+        item["confirmed_selection_score"] = round(base_score - unconfirmed_penalty, 6)
+        unconfirmed_count += 1
+    return {
+        "stage": "independent_seed_confirmation",
+        "confirmed_candidate_count": len(confirmed),
+        "adaptive_confirmed_candidate_count": adaptive_count,
+        "adaptive_margin": adaptive_margin,
+        "unconfirmed_candidate_count": unconfirmed_count,
+        "unconfirmed_penalty": unconfirmed_penalty,
+        "skipped_candidates": skipped,
+        "confirmed_candidates": confirmed,
+        "policy": (
+            "Stage C reruns the top transform finalists with independent seed "
+            "offsets, always includes the identity control when available, "
+            "and rewards candidates whose scores and plaintexts are stable "
+            "across probes."
+        ),
+    }
+
+
+def _sort_ranked_transform_candidates(ranked: list[dict[str, Any]], *, score_key: str) -> None:
+    ranked.sort(
+        key=lambda item: (
+            item.get("status") == "completed",
+            float(item.get(score_key) or item.get("selection_score") or float("-inf")),
+            float(item.get("anneal_score") or float("-inf")),
+            float(item.get("structural_score") or float("-inf")),
+        ),
+        reverse=True,
+    )
+
+
+def _label_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any]:
+    identity = next(
+        (item for item in ranked if item.get("candidate_id") == "000_identity"),
+        None,
+    )
+    identity_score = (
+        _float_or_none(identity.get("confirmed_selection_score"))
+        if identity else None
+    )
+    label_counts: Counter[str] = Counter()
+    selectable_count = 0
+    for item in ranked:
+        gate = _transform_family_gate(item)
+        confirmation = item.get("confirmation") if isinstance(item.get("confirmation"), dict) else {}
+        status = confirmation.get("status")
+        stability = _float_or_none(confirmation.get("stability_score"))
+        score = _float_or_none(item.get("confirmed_selection_score"))
+        identity_margin = (
+            round(score - identity_score, 6)
+            if score is not None
+            and identity_score is not None
+            and item.get("candidate_id") != "000_identity"
+            else None
+        )
+        selectable = False
+        if item.get("candidate_id") == "000_identity":
+            if status == "completed" and stability is not None and stability >= gate["min_stability"]:
+                label = "robust_baseline"
+                selectable = True
+            elif status == "completed":
+                label = "unstable_baseline"
+            else:
+                label = "unconfirmed_baseline"
+        elif status != "completed":
+            label = "unconfirmed_candidate"
+        elif stability is None or stability < gate["min_stability"]:
+            label = "unstable_false_positive"
+        elif identity_margin is not None and identity_margin < gate["required_identity_margin"]:
+            label = "near_identity"
+        else:
+            label = "robust_candidate"
+            selectable = True
+        item["finalist_label"] = label
+        item["selectable_transform_candidate"] = selectable
+        item["family_gate"] = {
+            **gate,
+            "identity_margin": identity_margin,
+            "confirmation_status": status,
+            "stability_score": stability,
+        }
+        label_counts[label] += 1
+        if selectable:
+            selectable_count += 1
+    return {
+        "stage": "family_specific_evidence_gates",
+        "identity_candidate_id": "000_identity" if identity else None,
+        "identity_confirmed_selection_score": identity_score,
+        "label_counts": dict(label_counts),
+        "selectable_candidate_count": selectable_count,
+        "policy": (
+            "Finalists must survive independent-seed confirmation. Diagonal, "
+            "columnar, unwrap, and local-mutation families require larger "
+            "margins over identity than simple route/NDown families."
+        ),
+    }
+
+
+def _choose_transform_candidate(ranked: list[dict[str, Any]]) -> dict[str, Any]:
+    for item in ranked:
+        if item.get("selectable_transform_candidate"):
+            is_identity = item.get("candidate_id") == "000_identity"
+            return {
+                "selected": True,
+                "selected_candidate_id": item.get("candidate_id"),
+                "family": item.get("family"),
+                "finalist_label": item.get("finalist_label"),
+                "selection_score": item.get("confirmed_selection_score"),
+                "selects_transform": not is_identity,
+                "reason": (
+                    "identity_baseline_is_stronger_than_unstable_transforms"
+                    if is_identity else "candidate_passed_confirmation_and_family_gate"
+                ),
+            }
+    best = ranked[0] if ranked else {}
+    return {
+        "selected": False,
+        "selected_candidate_id": None,
+        "best_candidate_id": best.get("candidate_id"),
+        "best_finalist_label": best.get("finalist_label"),
+        "reason": "no_confirmed_candidate_passed_family_specific_gates",
+    }
+
+
+def _diagnose_transform_finalists(
+    ranked: list[dict[str, Any]],
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    """Summarize near-miss vs. false-positive evidence for artifacts."""
+
+    label_counts = Counter(str(item.get("finalist_label") or "unlabeled") for item in ranked)
+    family_counts = Counter(_transform_family_class(item) for item in ranked)
+    confirmed = [
+        item for item in ranked
+        if (item.get("confirmation") or {}).get("status") == "completed"
+    ]
+    robust_transforms = [
+        item for item in confirmed
+        if item.get("finalist_label") == "robust_candidate"
+    ]
+    unstable_false_positives = [
+        item for item in confirmed
+        if item.get("finalist_label") == "unstable_false_positive"
+    ]
+    near_identity = [
+        item for item in confirmed
+        if item.get("finalist_label") == "near_identity"
+    ]
+    unconfirmed = [
+        item for item in ranked
+        if (item.get("confirmation") or {}).get("status") == "not_run"
+    ]
+    if robust_transforms:
+        conclusion = "robust_transform_candidate_found"
+    elif selection.get("selected") and not selection.get("selects_transform"):
+        conclusion = "identity_baseline_preferred_over_transform_candidates"
+    elif unstable_false_positives:
+        conclusion = "no_robust_transform_unstable_false_positives"
+    elif near_identity:
+        conclusion = "no_robust_transform_near_identity_only"
+    else:
+        conclusion = "no_robust_transform_found"
+
+    top_evidence = [
+        _transform_evidence_summary(item)
+        for item in ranked[:10]
+    ]
+    return {
+        "stage": "near_miss_false_positive_diagnostics",
+        "conclusion": conclusion,
+        "selected_candidate_id": selection.get("selected_candidate_id"),
+        "selected_finalist_label": selection.get("finalist_label"),
+        "selected_is_transform": selection.get("selects_transform"),
+        "label_counts": dict(label_counts),
+        "family_class_counts": dict(family_counts),
+        "confirmed_candidate_count": len(confirmed),
+        "robust_transform_count": len(robust_transforms),
+        "unstable_false_positive_count": len(unstable_false_positives),
+        "near_identity_count": len(near_identity),
+        "unconfirmed_candidate_count": len(unconfirmed),
+        "top_evidence": top_evidence,
+        "policy": (
+            "A transform finalist is treated as a near miss only when its "
+            "plaintext quality, structural evidence, independent-seed "
+            "stability, and margin over identity point in the same direction. "
+            "High anneal score without stability is reported as a false "
+            "positive, not progress."
+        ),
+    }
+
+
+def _transform_evidence_summary(item: dict[str, Any]) -> dict[str, Any]:
+    gate = item.get("family_gate") if isinstance(item.get("family_gate"), dict) else {}
+    confirmation = item.get("confirmation") if isinstance(item.get("confirmation"), dict) else {}
+    stability = _float_or_none(gate.get("stability_score"))
+    min_stability = _float_or_none(gate.get("min_stability"))
+    identity_margin = _float_or_none(gate.get("identity_margin"))
+    required_margin = _float_or_none(gate.get("required_identity_margin"))
+    quality = _float_or_none(item.get("plaintext_quality_score"))
+    structural_delta = _float_or_none(item.get("structural_delta_vs_identity"))
+    stability_pass = (
+        stability is not None
+        and min_stability is not None
+        and stability >= min_stability
+    )
+    margin_pass = (
+        item.get("candidate_id") == "000_identity"
+        or (
+            identity_margin is not None
+            and required_margin is not None
+            and identity_margin >= required_margin
+        )
+    )
+    quality_signal = quality is not None and quality >= 0.25
+    structural_signal = structural_delta is not None and structural_delta > 0.0
+    reasons: list[str] = []
+    if confirmation.get("status") != "completed":
+        reasons.append(str(confirmation.get("reason") or confirmation.get("status") or "not_confirmed"))
+    if not stability_pass and item.get("candidate_id") != "000_identity":
+        reasons.append("failed_stability_gate")
+    if not margin_pass:
+        reasons.append("failed_identity_margin_gate")
+    if not quality_signal:
+        reasons.append("weak_plaintext_quality_signal")
+    if not structural_signal and item.get("candidate_id") != "000_identity":
+        reasons.append("weak_structural_delta")
+    agreement_score = sum([
+        bool(stability_pass),
+        bool(margin_pass),
+        bool(quality_signal),
+        bool(structural_signal),
+    ])
+    if item.get("candidate_id") == "000_identity":
+        agreement_score = sum([
+            confirmation.get("status") == "completed",
+            bool(stability_pass),
+        ])
+    return {
+        "candidate_id": item.get("candidate_id"),
+        "family": item.get("family"),
+        "family_class": gate.get("family_class") or _transform_family_class(item),
+        "finalist_label": item.get("finalist_label"),
+        "confirmation_status": confirmation.get("status"),
+        "confirmed_selection_score": item.get("confirmed_selection_score"),
+        "anneal_score": item.get("anneal_score"),
+        "plaintext_quality_score": item.get("plaintext_quality_score"),
+        "structural_score": item.get("structural_score"),
+        "structural_delta_vs_identity": item.get("structural_delta_vs_identity"),
+        "stability_score": stability,
+        "min_stability": min_stability,
+        "stability_pass": stability_pass,
+        "identity_margin": identity_margin,
+        "required_identity_margin": required_margin,
+        "identity_margin_pass": margin_pass,
+        "quality_signal": quality_signal,
+        "structural_signal": structural_signal,
+        "evidence_agreement_score": agreement_score,
+        "diagnostic_reasons": reasons,
+    }
+
+
+def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
+    family_class = _transform_family_class(candidate)
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+    if candidate.get("candidate_id") == "000_identity" or family_class == "identity":
+        required_identity_margin = 0.0
+        min_stability = 0.40
+    elif (
+        family_class == "program_search"
+        and params.get("template") == "banded_ndown_constructed"
+    ):
+        required_identity_margin = 0.08
+        min_stability = 0.45
+    elif family_class in {
+        "diagonal_route",
+        "columnar",
+        "unwrap_columnar",
+        "local_mutation",
+        "grille_route",
+        "interleave_route",
+        "progressive_shift_route",
+        "composite_route",
+        "banded_ndown_lock_shift",
+        "program_search",
+        "grid_permute",
+    }:
+        required_identity_margin = 0.08
+        min_stability = 0.65
+    elif family_class in {"route_columns", "offset_chain", "whole"}:
+        required_identity_margin = 0.05
+        min_stability = 0.60
+    elif family_class in {"ndownmacross", "route_rows", "split_grid", "row_reversals"}:
+        required_identity_margin = 0.03
+        min_stability = 0.55
+    else:
+        required_identity_margin = 0.05
+        min_stability = 0.60
+    return {
+        "family_class": family_class,
+        "required_identity_margin": required_identity_margin,
+        "min_stability": min_stability,
+    }
+
+
+def _transform_mutation_penalty(candidate: dict[str, Any]) -> float:
+    if candidate.get("provenance") == "local_mutation":
+        return 0.08
+    if candidate.get("provenance") == "program_search":
+        params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+        if params.get("template") in {"banded_ndown_constructed", "route_repair_constructed"}:
+            return 0.0
+        return min(0.12, 0.02 * int(params.get("program_depth") or 1))
+    return 0.0
+
+
+def _transform_selection_score(
+    *,
+    anneal_score: Any,
+    quality_score: float,
+    structural_score: Any,
+    mutation_penalty: float,
+) -> float:
+    return (
+        float(anneal_score or float("-inf"))
+        + quality_score * 0.05
+        + float(structural_score or 0.0) * 0.03
+        - mutation_penalty
+    )
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _two_stage_transform_rank_candidates(
+    screen: dict[str, Any],
+    *,
+    max_candidates: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Select a matrix/family-diverse finalist set for expensive solver probes."""
+
+    pool: list[dict[str, Any]] = []
+    identity = screen.get("identity_candidate")
+    if identity:
+        pool.append(identity)
+    pool.extend(
+        candidate
+        for candidate in screen.get("top_candidates", [])
+        if candidate.get("candidate_id") != "000_identity"
+    )
+    pool.extend(
+        candidate
+        for candidate in screen.get("anchor_candidates", [])
+        if candidate.get("candidate_id") != "000_identity"
+    )
+    pool_by_id = {str(candidate.get("candidate_id")): candidate for candidate in pool}
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    selection_reasons: dict[str, str] = {}
+
+    def maybe_add(candidate: dict[str, Any], reason: str) -> None:
+        if len(selected) >= max_candidates:
+            return
+        candidate_id = str(candidate.get("candidate_id"))
+        if candidate_id in seen_ids:
+            return
+        selected.append(candidate)
+        seen_ids.add(candidate_id)
+        selection_reasons[candidate_id] = reason
+
+    if identity:
+        maybe_add(identity, "identity_control")
+
+    class_buckets: dict[str, list[dict[str, Any]]] = {}
+    for candidate in pool:
+        if candidate.get("candidate_id") == "000_identity":
+            continue
+        class_buckets.setdefault(_transform_family_class(candidate), []).append(candidate)
+
+    for items in class_buckets.values():
+        items.sort(key=_transform_triage_sort_key, reverse=True)
+
+    priority = [
+        "program_search",
+        "banded_ndown_lock_shift",
+        "ndownmacross",
+        "route_columns",
+        "route_rows",
+        "row_reversals",
+        "diagonal_route",
+        "grille_route",
+        "interleave_route",
+        "progressive_shift_route",
+        "composite_route",
+        "grid_permute",
+        "split_grid",
+        "offset_chain",
+        "columnar",
+        "unwrap_columnar",
+        "whole",
+        "local_mutation",
+        "other",
+    ]
+    class_counts: Counter[str] = Counter()
+    for class_name in priority:
+        bucket = class_buckets.get(class_name, [])
+        if not bucket:
+            continue
+        limit = 6 if class_name == "program_search" else 2 if class_name in {"banded_ndown_lock_shift", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
+        candidates = (
+            _program_diverse_transform_candidates(bucket, limit=limit)
+            if class_name == "program_search"
+            else bucket[:limit]
+        )
+        for candidate in candidates:
+            if len(selected) >= max_candidates:
+                break
+            maybe_add(candidate, f"family_diverse:{class_name}")
+            class_counts[class_name] += 1
+        if len(selected) >= max_candidates:
+            break
+
+    local_limit = max(1, max_candidates // 4)
+    local_added = 0
+    for candidate in class_buckets.get("local_mutation", []):
+        if len(selected) >= max_candidates or local_added >= local_limit:
+            break
+        base_id = _transform_base_candidate_id(candidate)
+        if base_id and base_id not in seen_ids and base_id in pool_by_id:
+            maybe_add(pool_by_id[base_id], "base_for_local_mutation")
+            if len(selected) >= max_candidates:
+                break
+        before = len(selected)
+        maybe_add(candidate, "local_mutation_with_base")
+        if len(selected) > before:
+            local_added += 1
+
+    if len(selected) < max_candidates:
+        for candidate in sorted(pool, key=_transform_triage_sort_key, reverse=True):
+            maybe_add(candidate, "triage_fill")
+            if len(selected) >= max_candidates:
+                break
+
+    selected = selected[:max_candidates]
+    report = {
+        "stage": "structural_family_triage",
+        "pool_candidate_count": len(pool),
+        "screen_top_candidate_count": len(screen.get("top_candidates", []) or []),
+        "selected_candidate_count": len(selected),
+        "selected_candidates": [
+            {
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "family_class": _transform_family_class(candidate),
+                "selection_reason": selection_reasons.get(str(candidate.get("candidate_id"))),
+                "structural_score": candidate.get("score"),
+                "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
+                "best_period": (candidate.get("metrics") or {}).get("best_period"),
+            }
+            for candidate in selected
+        ],
+        "class_counts": Counter(_transform_family_class(candidate) for candidate in selected),
+        "selection_reasons": {
+            str(candidate.get("candidate_id")): selection_reasons.get(str(candidate.get("candidate_id")))
+            for candidate in selected
+        },
+        "policy": (
+            "Stage A selects family-diverse structural finalists from a broad "
+            "screen before Stage B spends homophonic solver probes."
+        ),
+    }
+    report["class_counts"] = dict(report["class_counts"])
+    return selected, report
+
+
+def _program_diverse_transform_candidates(
+    bucket: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Keep distinct program-search shapes alive through triage."""
+
+    by_shape: dict[str, list[dict[str, Any]]] = {}
+    for candidate in bucket:
+        by_shape.setdefault(_program_shape_key(candidate), []).append(candidate)
+    for items in by_shape.values():
+        items.sort(key=_transform_triage_sort_key, reverse=True)
+
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def add(shape: str) -> bool:
+        if len(selected) >= limit:
+            return False
+        for candidate in by_shape.get(shape, []):
+            candidate_id = str(candidate.get("candidate_id"))
+            if candidate_id in seen_ids:
+                continue
+            selected.append(candidate)
+            seen_ids.add(candidate_id)
+            return True
+        return False
+
+    def add_prefixed(prefix: str, max_items: int) -> None:
+        added = 0
+        keys = sorted(
+            (key for key in by_shape if key.startswith(prefix)),
+            key=lambda key: _transform_triage_sort_key(by_shape[key][0]),
+            reverse=True,
+        )
+        for key in keys:
+            if added >= max_items or len(selected) >= limit:
+                break
+            if add(key):
+                added += 1
+
+    add_prefixed("banded_ndown_constructed:", max_items=4)
+    for shape in ("route_repair_constructed", "program_other"):
+        add(shape)
+    for candidate in bucket:
+        if len(selected) >= limit:
+            break
+        candidate_id = str(candidate.get("candidate_id"))
+        if candidate_id in seen_ids:
+            continue
+        selected.append(candidate)
+        seen_ids.add(candidate_id)
+    return selected
+
+
+def _program_shape_key(candidate: dict[str, Any]) -> str:
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+    template = str(params.get("template") or "")
+    if template == "banded_ndown_constructed":
+        return f"{template}:{_banded_program_variant_key(params)}"
+    if template == "route_repair_constructed":
+        return template
+    return "program_other"
+
+
+def _banded_program_variant_key(params: dict[str, Any]) -> str:
+    labels = [str(label) for label in params.get("operation_labels") or []]
+    top_across = "a?"
+    shift = "shift?"
+    for label in labels:
+        if label.startswith("ndown_top") and "_a" in label:
+            top_across = label.rsplit("_", 1)[-1]
+        if "shift_right" in label:
+            shift = "right"
+        elif "shift_left" in label:
+            shift = "left"
+    return f"{top_across}:{shift}"
+
+
+def _transform_family_class(candidate: dict[str, Any]) -> str:
+    family = str(candidate.get("family") or "")
+    if candidate.get("provenance") == "local_mutation":
+        return "local_mutation"
+    if family == "identity":
+        return "identity"
+    if family.startswith("ndownmacross"):
+        return "ndownmacross"
+    if family.startswith("banded_ndown_lock_shift"):
+        return "banded_ndown_lock_shift"
+    if family.startswith("program_"):
+        return "program_search"
+    if family.startswith("route_columns"):
+        return "route_columns"
+    if family.startswith("route_rows"):
+        return "route_rows"
+    if family.startswith("row_reversals"):
+        return "row_reversals"
+    if family.startswith("route_diagonal"):
+        return "diagonal_route"
+    if family.startswith("route_checkerboard"):
+        return "grille_route"
+    if family.startswith("route_row_column_interleave") or family.startswith("route_column_row_interleave"):
+        return "interleave_route"
+    if family.startswith("route_rows_progressive_shift") or family.startswith("route_columns_progressive_shift"):
+        return "progressive_shift_route"
+    if family.startswith("route_offset_chain"):
+        return "offset_chain"
+    if family.startswith("split_"):
+        return "split_grid"
+    if family.startswith("composite_"):
+        return "composite_route"
+    if family.startswith("grid_permute_"):
+        return "grid_permute"
+    if family.startswith("columnar_transposition"):
+        return "columnar"
+    if family.startswith("unwrap_transposition"):
+        return "unwrap_columnar"
+    if family.startswith("whole_"):
+        return "whole"
+    return "other"
+
+
+def _transform_base_candidate_id(candidate: dict[str, Any]) -> str | None:
+    params = candidate.get("params")
+    if isinstance(params, dict) and params.get("base_candidate_id"):
+        return str(params["base_candidate_id"])
+    return None
+
+
+def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float, float, float]:
+    metrics = candidate.get("metrics") if isinstance(candidate.get("metrics"), dict) else {}
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+    structural = _float_or_none(candidate.get("score")) or 0.0
+    matrix = _float_or_none(metrics.get("matrix_rank_score")) or 0.0
+    periodic = max(
+        _float_or_none(metrics.get("periodic_redundancy")) or 0.0,
+        _float_or_none(metrics.get("inverse_periodic_redundancy")) or 0.0,
+    )
+    nontrivial = _float_or_none(metrics.get("position_nontriviality")) or 0.0
+    template_bonus = 0.0
+    if params.get("template") == "banded_ndown_constructed":
+        template_bonus = 0.18
+    elif params.get("template") == "route_repair_constructed":
+        template_bonus = 0.10
+    elif params.get("constructed_template_match") or params.get("calibration_template"):
+        template_bonus = 0.12
+    return (
+        matrix * 0.45 + periodic * 0.25 + structural * 0.2 + nontrivial * 0.1 + template_bonus,
+        matrix,
+        structural,
+        nontrivial,
+    )
+
+
+def _plaintext_quality_score(text: str, language: str) -> float:
+    """Tiny no-boundary readability signal for transform finalist ranking."""
+
+    cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
+    if len(cleaned) < 20:
+        return 0.0
+    if language.lower().startswith("en"):
+        fragments = (
+            "THE", "AND", "ING", "ION", "ENT", "THAT", "WITH", "HER", "HIS",
+            "FOR", "YOU", "NOT", "WAS", "HAVE", "THIS", "ARE",
+        )
+    else:
+        fragments = ("THE", "AND", "ING", "ION", "ENT")
+    fragment_hits = sum(cleaned.count(fragment) for fragment in fragments)
+    fragment_rate = min(1.0, fragment_hits / max(1, len(cleaned) / 18))
+    vowel_rate = sum(1 for ch in cleaned if ch in "AEIOU") / len(cleaned)
+    vowel_score = max(0.0, 1.0 - abs(vowel_rate - 0.38) / 0.25)
+    repeat_penalty = max(
+        (len(match.group(0)) - 2) / len(cleaned)
+        for match in re.finditer(r"([A-Z])\1{2,}", cleaned)
+    ) if re.search(r"([A-Z])\1{2,}", cleaned) else 0.0
+    return max(0.0, fragment_rate * 0.7 + vowel_score * 0.3 - repeat_penalty)
 
 
 def format_automated_preflight_for_llm(
@@ -388,11 +2185,26 @@ def _select_solver_path(
     cipher_text: CipherText,
     language: str,
     cipher_system: str = "",
+    has_transform_pipeline: bool = False,
 ) -> dict[str, str]:
     pt_alpha = _plaintext_alphabet(language)
     cipher_name = cipher_system.lower()
     alphabet_size = cipher_text.alphabet.size
     word_groups = len(cipher_text.words)
+    is_mixed_transposition = (
+        any(token in cipher_name for token in ("transposition", "z340", "zodiac340"))
+        and any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
+    )
+
+    if is_mixed_transposition and not has_transform_pipeline:
+        return {
+            "route": "unsupported_mixed_transposition",
+            "solver": "unsupported",
+            "reason": (
+                "mixed transposition+homophonic solving requires an explicit "
+                "ciphertext transform pipeline or a bounded transform-search profile"
+            ),
+        }
 
     if any(token in cipher_name for token in ("homophonic", "zodiac", "copiale")):
         return {
@@ -425,6 +2237,11 @@ def _select_solver_path(
     }
 
 
+def _cipher_text_from_tokens(tokens: list[int], alphabet: Alphabet, source: str = "transform") -> CipherText:
+    raw = alphabet.decode(tokens)
+    return CipherText(raw=raw, alphabet=alphabet, source=source, separator=None)
+
+
 def _run_homophonic(
     cipher_text: CipherText,
     language: str,
@@ -432,6 +2249,7 @@ def _run_homophonic(
     refinement: str = "none",
     solver_profile: str = "zenith_native",
     ground_truth: str | None = None,
+    seed_offset: int = 0,
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     pt_alpha = _plaintext_alphabet(language)
     plaintext_ids = list(range(pt_alpha.size))
@@ -447,6 +2265,13 @@ def _run_homophonic(
         short_homophonic,
         search_profile=search_profile,
     )
+    if seed_offset:
+        budget_params = dict(budget_params)
+        budget_params["seeds"] = [
+            int(seed) + seed_offset
+            for seed in budget_params["seeds"]
+        ]
+        budget_params["seed_offset"] = seed_offset
     seeds = budget_params["seeds"]
     epochs = budget_params["epochs"]
     sampler_iterations = budget_params["sampler_iterations"]
@@ -800,6 +2625,7 @@ def _run_homophonic(
         "homophonic_budget": budget,
         "budget_params": budget_params,
         "homophonic_refinement": refinement,
+        "seed_offset": seed_offset,
         "selection_profile": selection_profile,
         "early_stop_enabled": use_early_stop,
         "search_profile": search_profile,

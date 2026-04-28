@@ -69,7 +69,10 @@ def resolve_frontier_case(
     generation_api_key: str = "",
 ) -> TestData:
     if case.synthetic_spec is None:
-        return benchmark_loader.load_test_data(case.test)
+        test_data = benchmark_loader.load_test_data(case.test)
+        if case.raw.get("transform_pipeline"):
+            test_data.transform_pipeline = dict(case.raw["transform_pipeline"])
+        return test_data
 
     spec = case.synthetic_spec
     cached = cache.get(spec)
@@ -79,7 +82,10 @@ def resolve_frontier_case(
             "or pre-populate the plaintext cache"
         )
     api_key = generation_api_key if cached is None else ""
-    return build_test_case(spec, cache, api_key)
+    test_data = build_test_case(spec, cache, api_key)
+    if case.raw.get("hide_transform_pipeline_from_solver"):
+        test_data.transform_pipeline = None
+    return test_data
 
 
 def evaluate_frontier_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -363,6 +369,7 @@ def _parse_synthetic_spec(data: Any, source: str) -> TestSpec | None:
         seed=int(data["seed"]) if data.get("seed") is not None else None,
         topic=str(data.get("topic", "general")),
         frequency_style=str(data.get("frequency_style", "normal")),
+        transform_pipeline=dict(data["transform_pipeline"]) if data.get("transform_pipeline") else None,
     )
 
 

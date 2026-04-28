@@ -7,6 +7,100 @@ capability as the best available non-agentic solvers on clean benchmark tasks,
 and failures should identify a missing tool, a weak tool, a wrong agent choice,
 or a benchmark data issue.
 
+Current planning split:
+- The Agent Loop Redesign plan is considered complete after Milestone 4 smoke
+  coverage.
+- New Copiale/generalization work is tracked in
+  `docs/copiale_generalization_plan.md`.
+
+## Long-Horizon Cipher Capability Roadmap
+
+These are major future projects, not active implementation threads. Keep them
+visible as north-star capabilities while current work stays focused on
+homophonic, transposition+homophonic, and historical manuscript benchmarks.
+
+- [ ] Periodic polyalphabetic ciphers.
+  - Add first-class support for Vigenere-family, Beaufort-family, Gronsfeld,
+    running-key, periodic substitution, and sparse/light polyalphabetism.
+  - Include period detection, key-length search, crib-aware modes, and
+    automated-vs-agentic comparison fixtures.
+- [ ] Fractionation + transposition systems.
+  - Cover Bifid, Trifid, ADFGX/ADFGVX-style families, fractionated Morse, and
+    related systems where substitution, coordinate encoding, and transposition
+    interact.
+  - Design intermediate representations that preserve fractionated symbols and
+    grid coordinates, not just plaintext letters.
+- [ ] Nomenclators and codebook-cipher hybrids.
+  - Support mixed alphabets where some symbols map to letters, syllables,
+    words, names, nulls, or common phrases.
+  - Add tools for codeword clustering, repeated-code detection, partial
+    codebook induction, and context-assisted expansion.
+- [ ] Digraphic and polygraphic substitution.
+  - Add Playfair, Two-square/Four-square, Hill-like classical variants, and
+    broader polygraphic substitution diagnostics.
+  - Include digram-grid hypothesis tools and language-model scoring over
+    decoded digraph streams.
+- [ ] Nulls, errors, and noisy-transcription support.
+  - Treat null insertion, skipped symbols, OCR/transcription uncertainty,
+    scribal errors, and inconsistent symbol normalization as first-class search
+    dimensions.
+  - Add artifact reporting that distinguishes cryptanalytic uncertainty from
+    source/transcription uncertainty.
+- [ ] Geometric route and grille transpositions.
+  - Add route families beyond the current simple grid reads: diagonals,
+    knight/chain routes, spirals with offsets, masks/grilles, turning grilles,
+    split-grid transforms, and region-wise routes.
+  - Keep route candidates provenance-rich and inspectable, since these searches
+    can explode combinatorially.
+  - Scale the new wide structural transform-search layer from the current
+    cap-aware 600k-candidate generator toward practical historical Z340-scale
+    sweeps: stream/report hundreds of thousands of candidates, avoid
+    materializing every transformed token order, optimize structural metrics,
+    and promote only a small finalist set into homophonic annealing. Current
+    Current wide families include banded NDown/lock/shift programs plus
+    single- and double-repair route
+    programs and can honor an explicit 600k cap. Large wide screens use a
+    NumPy-backed position-only metric pass and compact family counters; a
+    Z340 structural-only 600k run completed in about 173s. Real
+    solver-backed validation must stay finalist-only.
+  - [x] Tighten solver-backed promotion ranking when several near-neighbor
+    transform programs are promoted together. Full-budget promotion now runs a
+    small final bakeoff over the screen-selected transform plus
+    close/selectable finalists. On the 72k-candidate Z340 wide artifact,
+    top-5 promotion now switches from the 68.2% false neighbor to the
+    96.2% banded-program candidate, at the expected cost of an extra full
+    homophonic probe.
+  - [ ] Add per-run transform-search cache/promotion state for agentic loops.
+    Today, if the agent runs a small `search_transform_homophonic` screen and
+    later escalates to a larger screen, the larger call recomputes the earlier
+    structural candidates and re-evaluates overlapping transform finalists.
+    Cache structural screens by branch token-order hash plus profile/settings,
+    and cache candidate homophonic evaluations by branch token-order hash,
+    transform token-order hash, homophonic budget, and model path. Expose this
+    either as an internal continuation path or as an explicit
+    `search_session_id` / `continue_transform_search` tool so the agent can
+    escalate from small -> medium/wide -> finalist promotion without wasting
+    solver budget.
+  - Investigate moving hot transform-search kernels to Rust/C/C++ once the
+    Python prototype stabilizes. Likely candidates: route/matrix candidate
+    enumeration, token-order permutation application, structural metric
+    scoring, top-N heap maintenance, and possibly seed-level homophonic
+    anneal loops. Keep Python as the orchestration/reporting layer unless a
+    full compiled solver rewrite becomes clearly justified.
+- [ ] Automated cipher identification and pipeline search.
+  - Build a classifier/router that ranks cipher hypotheses when cipher-type
+    metadata is absent or unreliable.
+  - Search over pipelines such as "transposition -> homophonic",
+    "fractionation -> transposition -> substitution", or
+    "polyalphabetic -> null removal", and record competing hypotheses in
+    artifacts.
+- [ ] Machine ciphers as later plugins.
+  - Treat Enigma, Hagelin, Purple-style, rotor, pinwheel, and teleprinter-era
+    systems as plugin families rather than forcing them into the core
+    classical-manuscript stack.
+  - Define plugin interfaces for stateful key schedules, machine settings,
+    crib menus, and simulator-backed scoring.
+
 ### Priority 1: Benchmark Hygiene
 
 - [x] Add a benchmark validator for `../cipher_benchmark/benchmark`.
@@ -50,6 +144,72 @@ or a benchmark data issue.
   - `context-aware`: allow benign context such as language/source family, but record exactly which solvers actually consumed it.
   - Default comparative parity reporting should make the evaluation mode explicit in summaries, dashboards, and artifacts.
   - Add a per-solver `context_capabilities` / `context_used` record so comparisons stay honest when wrappers differ.
+- [x] Add benchmark context-tier support for agentic runs.
+  - [x] Load structured `context_layers` from benchmark records once
+    `../cipher_benchmark` exposes them.
+  - [x] Add a CLI policy flag:
+    `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions|max`.
+  - [x] Default agentic benchmark runs to `max` context when unspecified, while
+    keeping long related records and related solutions tool-scoped rather than
+    dumped into the initial prompt.
+  - [x] Record the selected context policy and the exact context layer IDs in run
+    artifacts so context-aware comparisons are auditable.
+  - [x] Update `BenchmarkLoader` to use target record source metadata for symbol
+    maps/context instead of guessing from `test_id` prefixes.
+  - [x] Add agent tools for on-demand benchmark context access:
+    `inspect_benchmark_context`, `list_related_records`,
+    `inspect_related_transcription`, `list_associated_documents`,
+    `inspect_associated_document`, and policy-gated
+    `inspect_related_solution`.
+  - [x] Teach `BenchmarkRunner` to pass concise narrative context in the initial
+    prompt while leaving long related records/tool solutions available through
+    tools instead of dumping them into the first message.
+  - [x] Add tests for context isolation: no-context policy, related-solution
+    gating, target-solution blocking, allowlisted related records/documents,
+    and path-containment checks.
+  - [ ] Extend context policy reporting to automated-only comparative summaries
+    once we formalize blind vs. context-aware parity reporting.
+- [ ] Carefully test benchmark-context behavior on real documentation-rich cases.
+  - Build a small context-ablation packet with the same target ciphertext run
+    under `--benchmark-context none`, `minimal`, `standard`, `historical`,
+    `related_metadata`, `related_solutions`, and `max`.
+  - Assert artifacts record the context policy, injected layer IDs, related
+    records/documents made available, and all context-tool accesses.
+  - Add fake-provider tests where the agent notices available related
+    ciphertext, calls `inspect_benchmark_context`, calls
+    `list_related_records`, reads another ciphertext with
+    `inspect_related_transcription`, and does not request a blocked target
+    solution.
+  - Add negative tests for blocked context: target solution access, unlisted
+    record IDs, unlisted associated document IDs, solution-bearing documents
+    under non-solution policies, and path traversal in document/text files.
+  - Add CLI smoke tests that `--benchmark-context none` produces no initial
+    context prompt, while `max` injects concise layers but does not dump long
+    related plaintext or associated documents into the first message.
+  - Compare agent behavior across context tiers on at least one solved case:
+    tool use, score, declaration confidence, token count, cost, and whether
+    context genuinely changed the work rather than merely being listed.
+  - Include a README/docs update once the smoke packet is stable, with clear
+    examples of clean/blind runs versus context-aware runs.
+- [ ] Curate documentation-rich benchmark examples for context-tool testing.
+  - Prioritize the Scorpion ciphers as the first testcase family because they
+    have surrounding letters/notes that can exercise associated-document
+    access without pretending the ciphertext is isolated.
+  - [x] In `../cipher_benchmark`, add initial Scorpion S1/S5 exploratory
+    records with tiered `context_layers`, associated public images, an
+    associated released-letter excerpt, tentative v0.2 transcriptions, and
+    `related_records` linking the companion ciphertexts.
+  - [ ] Replace or supplement the tentative Scorpion v0.2 family-label
+    transcriptions with vetted global glyph-ID transcriptions before making
+    any headline solver claims.
+  - For wordy accompanying letters, store the full text as associated
+    documents rather than dumping it into manifest metadata; the agent should
+    discover and inspect them with scoped tools.
+  - Mark each document with `contains_solution`, `contains_plaintext_hint`,
+    `contains_cipher_type_hint`, and `safe_context_layers` so context-ablation
+    runs remain honest.
+  - Add at least one non-Scorpion documentation-rich family later, so the
+    context tools are not tuned to a single corpus style.
 
 ### Priority 3: Native Tool Parity
 
@@ -149,8 +309,14 @@ or a benchmark data issue.
   - Include tests for loader compatibility and scoring reproducibility.
 - [ ] Benchmark simple substitution with and without word boundaries across English/French/German/Italian.
 - [ ] Assess Borg and Copiale failures by tool gap: language model, context loading, nomenclator/codeword behavior, historical spelling, or prompt choice.
-- [ ] Borg focused follow-up: `parity_borg_latin_borg_0109v`.
-  - Current state:
+  - [ ] Borg focused follow-up: `parity_borg_latin_borg_0109v`.
+    - Current state:
+    - Case-state note: `docs/borg_0109v_case_state.md`.
+    - Latest high-level conclusion: pause intensive work on `0109v` for now.
+      The best branch is readable and reaches `95.36%` edit-aware character
+      accuracy / `77.92%` edit-aware word accuracy, but remaining issues are
+      local historical-Latin cleanup, odd inserted/split words, and
+      benchmark-alignment nuance rather than first-pass decipherment.
     - Default routing sends `0109v` down the substitution path because its symbol inventory does not exceed the Latin plaintext alphabet size.
     - Forcing `zenith_native` with the full 8-seed budget is reproducible and reaches a distinct no-boundary Latin basin at about `13.9%` character accuracy and `0.0%` word accuracy.
     - With only one seed, the forced `zenith_native` basin is much worse (~`9.0%`), so this case is notably multi-seed-sensitive.
@@ -379,22 +545,251 @@ or a benchmark data issue.
       drift.
 - [ ] Design a provider-neutral modern agent loop before further Borg-specific
   work.
-  - Keep the core Decipher harness independent of any one LLM provider.
-  - Use a small provider adapter so Claude, OpenAI, and future local/hosted
+  - [x] Keep the core Decipher harness independent of any one LLM provider.
+  - [x] Use a small provider adapter so Claude, OpenAI, and future local/hosted
     models can share the same tool/workspace/artifact state machine.
-  - Separate outer benchmark iterations from inner tool steps.
-  - Add same-iteration retry for gated/disallowed tools so a stale tool choice
+    - Cross-provider CLI support now exists for `--provider anthropic|openai|gemini`.
+      OpenAI and Gemini adapters translate Decipher's existing Anthropic-style
+      message/tool transcript into each provider's function-calling shape and
+      normalize responses back into `ModelResponse`.
+    - API keys are read from provider-specific env vars, `.env`, gitignored
+      `.decipher_keys/*_api_key` files, or macOS Keychain.
+    - Remaining work: run the live smoke packet across candidate models and
+      calibrate provider-specific reliability/cost notes.
+    - Add periodic checkpoint artifact saving during long live-provider runs.
+      Current artifacts are written only after `run_v2` returns, so an
+      interrupted or hung provider call can lose partial post-fix state, as
+      seen with the Gemini Pro packet rerun.
+  - [x] Separate outer benchmark iterations from inner tool steps.
+  - [x] Add same-iteration retry for gated/disallowed tools so a stale tool choice
     does not consume a scarce late-turn action.
-  - Make workflows first-class, especially:
+  - [x] Add same-iteration retry for boundary-projection count mismatches so a
+    truncated or overlong full-reading proposal can be revised before the
+    outer iteration advances.
+  - [ ] Make workflows first-class, especially:
     - full-reading validation and boundary projection
     - reading-driven mapping repair
     - declaration preparation
-  - Track explicit run state: active mode, branch, repair agenda, held/reverted
+    - First reading-repair slice added:
+      `decode_plan_word_repair` plans same-length word repairs and
+      `act_apply_word_repair` applies them with `changed_words` feedback.
+      Follow-up repair-menu slice added:
+      `decode_plan_word_repair_menu` compares multiple candidate readings for
+      one word without mutating the branch, flags repeated-symbol conflicts,
+      summarizes collateral changed words, and tells the agent when a direct
+      word repair should not be applied. This addresses the `RLURES -> PLURES`
+      failure mode where the agent knew a plausible target word but one
+      naive mapping changed another position in the same cipher word.
+      Planned repairs are now also tracked in a durable `repair_agenda`
+      artifact field, with `repair_agenda_list` / `repair_agenda_update`
+      available to keep open hypotheses from vanishing into transcript memory.
+      Added `workspace_branch_cards` for compact branch state before
+      declaration, plus orthography-risk warnings for broad Latin `U/V` or
+      `I/J` shifts introduced by reading repairs.
+      Declarations now require open/blocked repair agenda items to be resolved
+      with `repair_agenda_update`, and multi-branch runs must call
+      `workspace_branch_cards` before declaring. The final action turn exposes
+      those bookkeeping tools alongside `meta_declare_solution`; if the agent
+      performs final bookkeeping but forgets to declare, the loop retries
+      inside the same final iteration with an explicit declaration nudge.
+      First Borg trial:
+      `artifacts/parity_borg_latin_borg_0109v/495a27b339ba.json`, 13.9%
+      char / 9.1% word. The agent used the wrapper for two useful repairs
+      and correctly backed away from `RLURES -> PLURES` after collateral
+      damage.
+      Follow-up agenda trial:
+      `artifacts/parity_borg_latin_borg_0109v/38e3d02d7c7a.json`, 11.6%
+      char / 5.1% word. This confirmed agenda use but exposed the Latin
+      orthography trap: the agent improved its Latin-looking reading by
+      classicizing `U` to `V`, hurting the benchmark transcription.
+      Later trial:
+      `artifacts/parity_borg_latin_borg_0109v/260a15ce6778.json`, 13.9%
+      char / 7.7% word. This avoided the orthography trap but left
+      `RLURES -> PLURES` open in the agenda despite rejecting it in prose,
+      motivating the declaration gate.
+      Post-gate trial:
+      `artifacts/parity_borg_latin_borg_0109v/fca17fd203a6.json`, 13.9%
+      char / 7.7% word. This showed richer tool behavior but also exposed a
+      final-turn failure: the agent called `repair_agenda_list` and
+      `workspace_branch_cards` but forgot `meta_declare_solution`, so fallback
+      declaration fired. A same-iteration final declaration retry now covers
+      that case.
+      Later trial:
+      `artifacts/parity_borg_latin_borg_0109v/8f2993dc03a6.json`, 13.9%
+      char / 7.7% word. Final declaration retry worked and the agent recovered
+      from a bad `RLURES -> PLURES` repair by restoring `M -> R`, but the run
+      still did not use `act_resegment_window_by_reading`. This motivates two
+      active rules: uncertain word repairs should go through the repair menu,
+      and once words are readable the agent should perform local/global
+      boundary repair rather than merely describing boundary drift.
+      Scoring follow-up: word accuracy now uses edit-aware exact-word alignment
+      instead of positional zip comparison. Local extra/missing/split words are
+      shown as alignment edits, and later exact word runs can resynchronize
+      instead of being counted wrong for the rest of the text.
+      Character accuracy now uses the same principle at character level:
+      exact-character alignment with penalties for substitutions and gaps.
+      This preserves substitutions as errors while allowing local
+      insertions/deletions to resynchronize later matching text.
+      Loop/tool follow-up:
+      boundary-projection count failures now get up to three same-iteration
+      retries, and the late reading workflow has a bounded low-cost repair
+      sandbox. Within that sandbox the agent can inspect, compare repair
+      menus, apply small word repairs, try local resegmentation windows, call
+      branch cards, and declare without burning additional outer benchmark
+      iterations. Failed local resegmentation windows now also return
+      `nearby_compatible_windows`, which catches stale-index cases such as
+      asking for `BITUR | SI -> LIBEBITUR` when the matching window is really
+      `LIBE | BITUR`.
+      Continuation follow-up from
+      `artifacts/parity_borg_latin_borg_0109v/6a1b5bd9137b.json`: the agent
+      used most of its additional outer iterations on read-only inspection.
+      The loop now has a bounded read-only inspection sandbox, so
+      `decode_show`, branch cards, dictionary/corpus probes, diagnostics, and
+      score panels can continue inside the same outer iteration before the
+      agent chooses a repair/search/declaration action. Compact pages also
+      show all words in the workspace panel (currently up to 90 words), which
+      should reduce unnecessary `decode_show` calls caused by panel truncation.
+      Milestone 4 generalization checkpoint:
+      - Borg `0140v`
+        (`artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`) improved
+        from weak automated preflight (`36.9%` char / `0.0%` word) to a
+        readable agent branch (`85.5%` char / `54.8%` word).
+      - Borg `0077v`
+        (`artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`) improved
+        from weak `zenith_native` preflight (`37.2%` char / `2.8%` word) to a
+        readable partial agent branch (`84.1%` char / `53.5%` word).
+      - Borg `0171v`
+        (`artifacts/borg_single_B_borg_0171v/a43a53111e26.json`) exposed a
+        do-no-harm failure: preflight was already strong (`90.9%` char /
+        `72.7%` word), but the agent declared a more classicized repair branch
+        at `85.8%` char / `50.8%` word. The prompt, preflight context, and
+        branch cards now tell the agent to treat `automated_preflight` as a
+        protected no-LLM baseline and avoid broad manuscript-orthography drift.
+      - Copiale `p068`
+        (`artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`) did not
+        improve over preflight (`45.3%` char / `0.0%` word). The agent found
+        German-looking islands but not coherent sentence-level German, so
+        Copiale should become a separate capability track rather than a Borg
+        repair follow-up.
+  - [x] Track explicit run state: active mode, branch, repair agenda, held/reverted
     repairs, unresolved hypotheses, per-branch workflow completion.
-  - Preserve complete artifact observability for every model call, tool call,
+  - [x] Preserve complete artifact observability for every model call, tool call,
     workflow event, gate rejection, retry, and declaration.
+  - [x] Validate the boundary-projection prototype on the English Borg analog
+    and Borg `0109v`, then compare artifacts against the prior runs.
+    - English analog rerun:
+      `artifacts/english_borg_analog_001/f8c8ead3e9b2.json`, 100.0% char /
+      100.0% word in 6 iterations.
+    - Borg completed once before actuator-only gate tightening:
+      `artifacts/parity_borg_latin_borg_0109v/048448b15ebb.json`, 13.9%
+      char / 7.5% word; showed that validation-only should not end the gate.
+    - Post-tightening Borg retry was interrupted by Anthropic credit-balance
+      API error on iteration 4:
+      `artifacts/parity_borg_latin_borg_0109v/5b16b17ac4c1.json`.
+    - Milestone 2 comparison:
+      `docs/agent_loop_milestone2_comparison.md`.
+  - [x] Improve agent-loop command-line output.
+    - Added `--display {auto,pretty,raw,jsonl}` for agentic benchmark/crack/
+      testgen paths.
+    - `auto` uses pretty mode on an interactive terminal, raw mode when
+      piped, and legacy verbose output with `-v`.
+    - Pretty mode renders a live decrypt panel, agent commentary, concise tool
+      summaries, branch scores, changed-word previews, and loud API/fallback
+      errors.
+    - Final screens now include a human-readable reading/process summary built
+      from `meta_declare_solution`, including what the text appears to be
+      about, status/uncertainty notes, and whether further iterations would
+      likely help.
+    - Raw mode preserves the compact event/tool stream; JSONL mode exposes
+      structured events for GUI wrappers.
+    - Output is driven by structured `loop_events` plus `workspace_snapshot`
+      events; artifact JSON remains the source of truth.
+  - [ ] Design a richer artifact/run review GUI.
+    - The pretty terminal display is useful for live runs, but long final
+      word alignments, decrypts, and reading/process summaries need scrollable
+      panes.
+    - Desired affordances: scroll through full word/character alignment,
+      inspect branch cards and repair agenda history, compare parent/resume
+      artifacts, and copy exact tool calls or branch diffs for follow-up runs.
+  - [ ] Update the README for the current agentic interface and capabilities.
+    - Add a short testing section that points to `docs/test_inventory.md`.
+    - Include the main default test command, the opt-in Milestone 4 smoke
+      command, and the live cross-model packet command.
+    - Document cross-provider agentic configuration:
+      `--provider anthropic|openai|gemini`, model inference from `--model`,
+      and provider-specific API key locations/env vars.
+    - Include gitignored local key-file locations:
+      `.decipher_keys/anthropic_api_key`, `.decipher_keys/openai_api_key`,
+      and `.decipher_keys/gemini_api_key`.
+    - Note that `.env`, `.env.*`, `.decipher_keys/`, and `*_api_key.txt` are
+      ignored so credentials should not be committed.
+    - Document `--display {auto,pretty,raw,jsonl}`, the live decrypt view,
+      token/cost reporting, final reading/process summary, and raw/JSONL modes
+      for wrappers.
+    - Document automated preflight, the protected `automated_preflight`
+      baseline branch, branch cards, repair agenda, reading-driven repair
+      tools, boundary/resegmentation tools, and `resume-artifact`.
+    - Include current benchmark command examples for clean no-extra-context
+      agentic runs, artifact continuation, and the planned
+      `--benchmark-context` modes once implemented.
+  - [x] Add first-class artifact resume/continuation.
+    - Command shape: `decipher resume-artifact <artifact.json>
+      --extra-iterations N [--branch BRANCH]`.
+    - Resumes from workspace state and branch snapshots, not by replaying the
+      entire old provider transcript verbatim.
+    - Includes prior final summary, repair agenda, held/open repairs, branch
+      previews, missing-tool requests, and compact declaration context in the
+      new first prompt.
+    - Writes a chained artifact with `parent_run_id`/`parent_artifact_path` so
+      continued runs are auditable and comparable without overwriting the
+      original run.
+    - Current limitation: old artifacts did not persist custom branch
+      `word_spans`, so exact boundary overlays can only be restored for
+      artifacts produced after the new `word_spans` snapshot field landed.
+  - [x] Add explicit benchmark-context modes for agentic runs.
+    - Current command shape:
+      `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions|max`.
+    - Default is `max` for agentic exploratory runs, but clean parity runs
+      should explicitly use `--benchmark-context none` or another declared
+      policy so comparisons are not mixed silently.
+    - Artifacts record the selected context policy, injected layers, related
+      records/documents made available, and context-tool access logs.
+    - Follow-up context-ablation and documentation-rich testcase work is now
+      tracked under Priority 2 "Carefully test benchmark-context behavior" and
+      "Curate documentation-rich benchmark examples."
   - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
-- [ ] Add a full-agent parity smoke suite.
+- [ ] Add a Copiale/German capability track.
+  - Do not treat Copiale as "Borg in German." Current `p068` evidence shows
+    scattered German word islands are not enough for declaration.
+  - Near-term work:
+    - Add stronger declaration discipline for Copiale-like no-boundary
+      homophonic/nomenclator ciphers: require coherent sentence-level German,
+      not just common short words.
+    - Audit whether benchmark metadata/context should be opt-in for Copiale,
+      especially source family, Masonic/fraternal domain, page context, and
+      same-cipher neighboring pages.
+    - Improve German continuous n-gram/model support and consider a
+      Copiale-specific or 18th-century German model.
+    - Investigate nomenclator/codeword behavior and whether some symbols or
+      clusters should be treated as nulls, abbreviations, or multi-letter
+      tokens rather than simple letter homophones.
+    - Add a small Copiale-focused artifact packet once the above exists:
+      `p017`, `p035`, `p052`, `p068`, and `p084`, with clean
+      no-extra-context and context-aware modes separated.
+- [x] Add a full-agent parity smoke suite.
+  - [x] Add no-LLM automated baseline packet for the Milestone 4 cases:
+    `frontier/agentic_milestone4_smoke.jsonl`.
+  - [x] Add opt-in pytest coverage for the automated-only baseline pass:
+    `DECIPHER_RUN_MILESTONE4_SMOKE=1 .venv/bin/python -m pytest
+    tests/test_milestone4_smoke.py`.
+    This runs `AutomatedBenchmarkRunner` on every packet case, checks
+    `run_mode=automated_only`, zero tokens, zero estimated cost, and baseline
+    char-accuracy/elapsed expectations.
+  - [x] Add the actual agentic smoke layer separately.
+    `tests/test_milestone4_smoke.py` now includes fake-provider LLM-agent
+    coverage for declaring a protected `automated_preflight` branch and for
+    making a small reading-driven mapping repair before declaration. Keep any
+    live-provider smoke packet opt-in if we add one later.
 - [x] Add artifact checks for wrong-tool use.
   - Homophonic no-boundary should call `search_homophonic_anneal` before generic `search_anneal`.
   - High dictionary rate on no-boundary homophonic text must not trigger declaration without coherent reading.

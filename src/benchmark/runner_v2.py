@@ -6,7 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from agent.display import make_agent_renderer
+from agent.final_summary import build_final_summary
 from agent.loop_v2 import run_v2
+from benchmark.context import build_benchmark_context
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import (
     format_alignment,
@@ -16,7 +19,6 @@ from benchmark.scorer import (
     score_decryption,
 )
 from preprocessing import convert_s_tokens_to_letters, estimate_normalization_benefit
-from services.claude_api import ClaudeAPI
 
 
 @dataclass
@@ -35,6 +37,10 @@ class RunResultV2:
     tool_requests: list[dict] = field(default_factory=list)
     total_tokens: int = 0
     estimated_cost_usd: float = 0.0
+    final_branch: str = ""
+    branch_scores: list[dict[str, Any]] = field(default_factory=list)
+    alignment_report: str = ""
+    final_summary: str = ""
 
 
 class BenchmarkRunnerV2:
@@ -42,12 +48,15 @@ class BenchmarkRunnerV2:
 
     def __init__(
         self,
-        claude_api: ClaudeAPI,
+        claude_api: Any,
         max_iterations: int = 50,
         verbose: bool = False,
         language: str | None = None,
         artifact_dir: str | Path = "artifacts",
         automated_preflight: bool = True,
+        display_mode: str = "off",
+        external_context: str | None = None,
+        benchmark_context_policy: str = "max",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -55,6 +64,9 @@ class BenchmarkRunnerV2:
         self.default_language = language
         self.artifact_dir = Path(artifact_dir)
         self.automated_preflight = automated_preflight
+        self.display_mode = display_mode
+        self.external_context = external_context
+        self.benchmark_context_policy = benchmark_context_policy
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -68,6 +80,14 @@ class BenchmarkRunnerV2:
         test_id = test_data.test.test_id
         lang = language or self._resolve_language(test_data)
         start = time.time()
+        renderer = make_agent_renderer(self.display_mode)
+        if renderer is not None:
+            renderer.start_test(
+                test_id,
+                test_data.test.description,
+                model=self.api.model,
+                max_iterations=self.max_iterations,
+            )
 
         try:
             # Normalize S-tokens to letters if beneficial for API compatibility
@@ -105,7 +125,9 @@ class BenchmarkRunnerV2:
 
         automated_preflight = None
         if self.automated_preflight:
-            if not self.verbose:
+            if renderer is not None:
+                renderer.event("preflight_start", {})
+            elif not self.verbose:
                 print("  preflight(no-LLM)...", end="", flush=True)
             automated_preflight = _run_automated_preflight(
                 cipher_text,
@@ -113,7 +135,13 @@ class BenchmarkRunnerV2:
                 test_id,
                 test_data.test.cipher_system,
             )
-            if self.verbose:
+            if renderer is not None:
+                renderer.event("preflight_result", {
+                    "status": automated_preflight.get("status", "unknown"),
+                    "solver": automated_preflight.get("solver", "unknown"),
+                    "elapsed_seconds": automated_preflight.get("elapsed_seconds", 0.0),
+                })
+            elif self.verbose:
                 solver = automated_preflight.get("solver", "unknown")
                 status = automated_preflight.get("status", "unknown")
                 elapsed = automated_preflight.get("elapsed_seconds", 0.0)
@@ -128,7 +156,9 @@ class BenchmarkRunnerV2:
                 print(f" [{status}, {elapsed:.0f}s, $0.00 no LLM]", flush=True)
 
         def on_event(event: str, payload: dict) -> None:
-            if not self.verbose:
+            if renderer is not None:
+                renderer.event(event, payload)
+            elif not self.verbose:
                 if event == "iteration_start":
                     print(f"  iter {payload['iteration']}...", end="", flush=True)
                 elif event == "tool_call":
@@ -137,14 +167,32 @@ class BenchmarkRunnerV2:
                                "error", "max_iterations_reached"}:
                     print(f" [{event}]", flush=True)
 
+        # Build the prior_context block: caller-supplied > external >
+        # structured benchmark context. Long related records/documents remain
+        # tool-gated rather than being dumped into the opening prompt.
+        benchmark_context = build_benchmark_context(
+            test_data,
+            policy=self.benchmark_context_policy,
+        )
+        benchmark_ctx = benchmark_context.prompt if benchmark_context else None
+        if self.external_context:
+            auto_ctx: str | None = (
+                f"{self.external_context}\n\n{benchmark_ctx}"
+                if benchmark_ctx
+                else self.external_context
+            )
+        else:
+            auto_ctx = benchmark_ctx
+
         artifact = run_v2(
             cipher_text=cipher_text,
             claude_api=self.api,
             language=lang,
             max_iterations=self.max_iterations,
             cipher_id=test_id,
-            prior_context=prior_context or _format_benchmark_context(test_data),
+            prior_context=prior_context or auto_ctx,
             automated_preflight=automated_preflight,
+            benchmark_context=benchmark_context,
             verbose=self.verbose,
             on_event=on_event,
         )
@@ -176,9 +224,26 @@ class BenchmarkRunnerV2:
         final_score = branch_acc_map.get(final_branch or "", {})
         artifact.char_accuracy = final_score.get("char_accuracy", 0.0)
         artifact.word_accuracy = final_score.get("word_accuracy", 0.0)
+        word_boundaries = has_word_boundaries(ground_truth) if ground_truth else False
+        alignment_report = ""
+        if ground_truth:
+            if word_boundaries:
+                alignment_report = format_alignment(
+                    final_decryption,
+                    ground_truth,
+                    max_words=50,
+                )
+            else:
+                alignment_report = format_char_diff(final_decryption, ground_truth)
+
+        final_summary = build_final_summary(
+            artifact,
+            final_branch=final_branch or "",
+            final_decryption=final_decryption,
+        )
+        artifact.final_summary = final_summary
 
         if self.verbose and ground_truth:
-            word_boundaries = has_word_boundaries(ground_truth)
             print(f"\n  [{test_id}] Branch scores vs ground truth:")
             for r in branch_scores:
                 declared = " <-- declared" if (artifact.solution and r["branch"] == artifact.solution.branch) else ""
@@ -223,7 +288,7 @@ class BenchmarkRunnerV2:
             if artifact.tool_calls else 0
         )
         elapsed = time.time() - start
-        return RunResultV2(
+        result = RunResultV2(
             test_id=test_id,
             status=artifact.status,
             final_decryption=final_decryption,
@@ -239,7 +304,14 @@ class BenchmarkRunnerV2:
             tool_requests=list(artifact.tool_requests),
             total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
             estimated_cost_usd=artifact.estimated_cost_usd,
+            final_branch=final_branch or "",
+            branch_scores=branch_scores,
+            alignment_report=alignment_report,
+            final_summary=final_summary,
         )
+        if renderer is not None:
+            renderer.finish(result)
+        return result
 
 
 def _format_benchmark_context(test_data: TestData) -> str | None:

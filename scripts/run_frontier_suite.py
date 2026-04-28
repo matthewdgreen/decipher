@@ -82,6 +82,55 @@ def main() -> None:
         action="store_true",
         help="Use the older pre-zenith_native homophonic solver path for Decipher runs.",
     )
+    parser.add_argument(
+        "--transform-search",
+        choices=["off", "auto", "screen", "wide", "rank", "full", "promote"],
+        default="off",
+        help=(
+            "Run cheap transform-search diagnostics for Decipher automated runs. "
+            "`auto` screens only when router signals are promising; `screen` "
+            "records a structural candidate menu; `wide` runs a larger "
+            "structural-only search; `rank`/`full` run bounded solver probes "
+            "on top candidates; `promote` probes candidates from a prior "
+            "wide/screen artifact."
+        ),
+    )
+    parser.add_argument(
+        "--transform-search-profile",
+        choices=["fast", "broad", "wide"],
+        default="broad",
+        help=(
+            "Candidate breadth profile for Decipher transform-search rank/full. "
+            "`fast` is recommended for regression runs and trims mutations "
+            "and confirmations; "
+            "`broad` preserves the research-oriented candidate set; "
+            "`wide` expands the structural-only candidate sweep."
+        ),
+    )
+    parser.add_argument(
+        "--transform-search-max-generated-candidates",
+        type=int,
+        help=(
+            "Optional safety cap for transform-search structural candidate "
+            "generation. Use this with --transform-search wide for larger "
+            "candidate sweeps before solver promotion."
+        ),
+    )
+    parser.add_argument(
+        "--transform-promote-artifact",
+        help="Source automated artifact containing transform_search.screen candidates to promote.",
+    )
+    parser.add_argument(
+        "--transform-promote-candidate-id",
+        action="append",
+        default=[],
+        help="Specific transform candidate id to promote from the source artifact. May be repeated.",
+    )
+    parser.add_argument(
+        "--transform-promote-top-n",
+        type=int,
+        help="Promote the top N structural candidates from the source artifact.",
+    )
     args = parser.parse_args()
 
     if "external" in args.solvers and not Path(args.external_config).exists():
@@ -113,6 +162,12 @@ def main() -> None:
         homophonic_budget=args.homophonic_budget,
         homophonic_refinement=args.homophonic_refinement,
         homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
+        transform_search=args.transform_search,
+        transform_search_profile=args.transform_search_profile,
+        transform_search_max_generated_candidates=args.transform_search_max_generated_candidates,
+        transform_promote_artifact=args.transform_promote_artifact,
+        transform_promote_candidate_ids=args.transform_promote_candidate_id,
+        transform_promote_top_n=args.transform_promote_top_n,
     )
     external_configs = _load_external_configs(args.external_config, args.oracle_select) if "external" in args.solvers else []
 

@@ -46,7 +46,7 @@ src/
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 32 tools across 9 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 49 tools across 10 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -58,7 +58,8 @@ src/
   benchmark/
     loader.py             — BenchmarkLoader: reads JSONL manifest + splits + data files
     runner_v2.py          — V2 BenchmarkRunner: with artifacts and preprocessing
-    scorer.py             — score_decryption(), format_report() (char/word accuracy)
+    scorer.py             — score_decryption(), format_report(); char/word accuracy
+                            use edit-aware alignment so local drift can resync
   automated/
     runner.py             — Automated-only/no-LLM runner using native solving techniques
   services/
@@ -166,6 +167,21 @@ This closes the earlier gap where the agent had automated preflight context
 but could only actively invoke the older homophonic annealer from inside the
 tool loop.
 
+Agentic declarations now also carry a final reading/process summary. The
+`meta_declare_solution` tool requires the agent to summarize what the text
+appears to be about, record status/uncertainty notes, and say whether further
+iterations would likely help. Pretty terminal mode shows this on the final
+screen, and artifacts persist it as `final_summary` for follow-up analysis.
+
+Artifact continuation is now available through
+`decipher resume-artifact <artifact.json> --extra-iterations N [--branch BRANCH]`.
+It restores saved branch keys, branch tags, repair agenda items, and, for new
+artifacts, custom word-boundary spans. The resumed prompt uses a compact
+prior-run briefing (final summary, declaration, branch preview, open/held
+repairs, and missing-tool requests) rather than blindly replaying the entire
+old provider transcript. Continued artifacts record `parent_run_id` and
+`parent_artifact_path`.
+
 ### Key representation
 `dict[int, int]` — cipher token ID → plaintext token ID. Partial keys are fine; unmapped tokens show as `?`. `apply_key()` uses the plaintext alphabet's `_multisym` flag to determine output spacing (not the cipher alphabet's flag — important fix).
 
@@ -181,7 +197,7 @@ Benchmark auto-detects: borg→`la`, copiale→`de`.
 Decipher expects a local checkout of the benchmark repository, typically at a
 path like `/path/to/cipher_benchmark/benchmark/`.
 - Benchmark repo: `https://github.com/matthewdgreen/cipher_benchmark`
-- `manifest/records.jsonl` — currently 896 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, and tool-bundled parity records
+- `manifest/records.jsonl` — currently 898 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, tool-bundled parity records, and curated Zodiac records
 - `splits/borg_tests.jsonl` — 45 tests (15 Track B: transcription→plaintext)
 - `splits/copiale_tests.jsonl` — 45 tests (15 Track B)
 - `splits/*_ss_synth*_tests.jsonl` — multilingual synthetic simple-substitution Track B tests
@@ -215,6 +231,36 @@ path like `/path/to/cipher_benchmark/benchmark/`.
   runs fast and avoids dragging `zkdecrypto-lite` through every comparison
   unless explicitly requested with `--external-config external_baselines/local_tools.json`.
 
+### Benchmark context for agentic runs
+Benchmark records may now carry tiered `context_layers`, `related_records`, and
+`associated_documents`. Agentic benchmark runs default to
+`--benchmark-context max`, which gives the agent the richest permitted
+non-target context available from the record. Use `--benchmark-context none`
+for blind/no-context evaluations, or narrower tiers such as `minimal`,
+`standard`, `historical`, `related_metadata`, and `related_solutions` for
+controlled ablations.
+
+The v2 agent receives an initial scoped context briefing and can inspect more
+through benchmark tools:
+- `inspect_benchmark_context`
+- `list_related_records`
+- `inspect_related_transcription`
+- `inspect_related_solution`
+- `list_associated_documents`
+- `inspect_associated_document`
+
+These tools are intentionally scoped to records and documents explicitly listed
+by the benchmark JSON. They do not provide arbitrary filesystem access. The
+target record's solution is never exposed through these tools; related
+solutions are only exposed under `related_solutions` or `max`.
+
+The sibling benchmark repo also has a parallel unsolved area at
+`../cipher_benchmark/benchmark/unsolved`. Decipher can load its manifest and
+splits for exploratory runs, but those artifacts are hypothesis/qualitative
+evidence unless a solved ground truth is available. Current unsolved curation
+includes Voynich seed records, Zodiac diagnostic variants, and Scorpion S1/S5
+with tentative v0.2 transcriptions.
+
 ### Parity evaluation modes
 When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
 distinguish two evaluation modes:
@@ -236,7 +282,7 @@ make that asymmetry explicit in reporting.
 ### ✅ **V2 Agentic Framework Completed**
 Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 - **Branching workspace** with fork/merge/compare operations (src/workspace/)
-- **32 specialized tools** across 9 namespaces (src/agent/tools_v2.py)
+- **49 specialized tools** across 10 namespaces (src/agent/tools_v2.py)
 - **Multi-signal scoring** with 6 different metrics (src/analysis/signals.py)
 - **Agent-driven termination** via meta_declare_solution (no rigid phases)
 - **Full observability** via comprehensive run artifacts (src/artifact/schema.py)
@@ -331,9 +377,10 @@ Remaining open questions in this area:
 - **Broader cipher class coverage**: non-English homophonic ciphers (Copiale/German) still
   fall back to `homophonic.py` profiles unless a corresponding `models/ngram5_<lang>.bin`
   exists. A German equivalent binary model does not yet exist.
-- **Agent tool exposure**: `search_homophonic_anneal` in the agentic tool set still uses
-  the old `homophonic.py` profiles. The `zenith_native` path is automated-runner-only for
-  now; exposing it as an agent tool is future work.
+- **Agent tool exposure**: `search_automated_solver` gives the agent access to the
+  modern no-LLM solver stack, including the default `zenith_native` homophonic
+  route when the selected language/model supports it. `search_homophonic_anneal`
+  remains available for focused legacy/profile experiments.
 - **No-boundary homophonic ciphers**: `synth_en_200honb_s6` (English, no word boundaries)
   is still the hardest stress case. The `zenith_native` path runs on no-boundary ciphers
   but has not been benchmarked against these yet.
@@ -375,6 +422,41 @@ Current April 2026 state for non-English bundled models:
 Synthetic tests are useful for controlled iteration, but the historical benchmark still needs broader runs to separate synthetic overfitting from durable cryptanalytic progress. The first correctness pass is now in place: historical automated runs use benchmark language metadata instead of English fallback, and routing no longer assumes that word boundaries imply a simple bijective substitution.
 
 Additional current read:
+- The Agent Loop Redesign plan is now considered complete through Milestone 4
+  smoke coverage. New Copiale/German and broader generalization work should
+  start from `docs/copiale_generalization_plan.md`.
+- Agent-loop Milestone 4 now has broader Borg evidence:
+  - Borg `0140v`
+    (`artifacts/borg_single_B_borg_0140v/47df72a4da8b.json`) improved from
+    weak automated preflight (`36.9%` char / `0.0%` word) to a readable agent
+    branch (`85.5%` char / `54.8%` word).
+  - Borg `0077v`
+    (`artifacts/parity_borg_latin_borg_0077v/c9d17916d17f.json`) improved
+    from weak `zenith_native` preflight (`37.2%` char / `2.8%` word) to a
+    readable partial agent branch (`84.1%` char / `53.5%` word).
+  - Borg `0171v`
+    (`artifacts/borg_single_B_borg_0171v/a43a53111e26.json`) exposed a
+    do-no-harm failure: automated preflight was already strong (`90.9%` char /
+    `72.7%` word), but the agent declared a more classicized repair branch at
+    `85.8%` char / `50.8%` word. The prompt, preflight context, and branch
+    cards now tell the agent to treat `automated_preflight` as a protected
+    no-LLM baseline and avoid broad manuscript-orthography drift.
+- Copiale `p068`
+  (`artifacts/copiale_single_B_copiale_p068/7d795a0ae0a9.json`) did not
+  improve over preflight (`45.3%` char / `0.0%` word). The agent found
+  German-looking islands but not coherent sentence-level German. Treat
+  Copiale/German as a separate capability track: stronger German models,
+  context-aware modes, nomenclator/codeword behavior, and stricter declaration
+  discipline are needed before comparing it to Borg progress.
+- A no-LLM automated baseline smoke packet for these Milestone 4 cases now
+  lives at `frontier/agentic_milestone4_smoke.jsonl`. The opt-in pytest
+  command `DECIPHER_RUN_MILESTONE4_SMOKE=1 .venv/bin/python -m pytest
+  tests/test_milestone4_smoke.py` runs `AutomatedBenchmarkRunner` across the
+  packet, verifies zero LLM tokens/cost, and checks baseline thresholds.
+- The same smoke test file also includes fake-provider LLM-agent coverage.
+  These tests do not call a live API; they check that the loop can inspect and
+  declare a protected `automated_preflight` branch, and can make a small
+  reading-driven `act_set_mapping` repair before declaration.
 - Borg `0077v` routes to `zenith_native` because its symbol inventory exceeds
   the Latin plaintext alphabet size.
 - Borg `0109v` still routes to the substitution path by default because its
@@ -401,6 +483,13 @@ Additional current read:
       to dictionary words in the shipped Latin word list
     - so the remaining miss is partly an agent-policy issue and partly a real
       capability ceiling in the underlying repair primitive
+    - Recent `8f2993dc03a6` follow-up clarified a second repair primitive
+      problem: direct word repair must respect repeated cipher symbols inside
+      the same word. A target like `RLURES -> PLURES` is not a safe one-letter
+      repair when the cipher symbol producing the first `R` also produces a
+      later `R`; forcing it yields `PLUPES`-style collateral damage. The tool
+      surface now has a read-only `decode_plan_word_repair_menu` for comparing
+      candidate readings and flagging these conflicts before mutation.
   - Planned next split for Borg/Latin follow-up:
     - one branch should focus on automated repair capability:
       stronger Latin dictionary coverage, richer cleanup primitives, and
@@ -467,6 +556,19 @@ Additional current read:
       gated-tool retry, explicit workflow state, and provider-neutral model
       adapters. Detailed design note:
       `docs/agent_loop_redesign_plan.md`.
+    - Current active nudge: once a branch is readable enough to notice word
+      fragments or boundary drift, the agent should use
+      `act_resegment_window_by_reading` for local phrases or the full-reading
+      projection tools for global drift before declaring. Merely describing
+      the boundary problem is now treated as unfinished work.
+    - Latest loop/tool refinement: boundary-projection count failures now get
+      multiple same-iteration retries, and late reading repair has a bounded
+      low-cost sandbox. The sandbox lets the agent run small repair/resegment
+      experiments, inspect branch cards, and declare without consuming extra
+      outer benchmark iterations. `act_resegment_window_by_reading` also
+      suggests nearby compatible windows when a proposed local reading has the
+      wrong character count, which helps recover from stale word indices after
+      earlier boundary edits.
 
 ### 6. 📖 **Reading-driven repair discipline (open)**
 
@@ -567,18 +669,19 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 ### Core principle: Agent drives, tools assist
 ✅ **Implemented features:**
 1. **Full visibility** — observe/decode/score tools for comprehensive analysis
-2. **Rich tool set** — 32 tools across 9 namespaces (workspace, observe, decode, score, corpus, act, search, run_python, meta)
+2. **Rich tool set** — 49 tools across 10 namespaces (workspace, observe, decode, score, corpus, act, search, repair_agenda, run_python, meta)
 3. **Agent freedom** — No phases, agent plans own strategy
 4. **Hypothesis tracking** — Branching workspace preserves exploration history
 
-### Tool Arsenal (32 tools implemented)
-✅ **workspace_* (5 tools)** — fork, list, delete, compare, merge
+### Tool Arsenal (49 tools implemented)
+✅ **workspace_* (6 tools)** — fork, list, branch_cards, delete, compare, merge
 ✅ **observe_* (4 tools)** — frequency, isomorph_clusters, ic, homophone_distribution
-✅ **decode_* (8 tools)** — show, unmapped, heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix
+✅ **decode_* (12 tools)** — show, unmapped, heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix, repair_no_boundary, validate_reading_repair, plan_word_repair, plan_word_repair_menu
 ✅ **score_* (3 tools)** — panel, quadgram, dictionary
 ✅ **corpus_* (2 tools)** — lookup_word, word_candidates
-✅ **act_* (5 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded
-✅ **search_* (3 tools)** — hill_climb, anneal, homophonic_anneal
+✅ **act_* (13 tools)** — set_mapping, bulk_set, anchor_word, clear, swap_decoded, split/merge words, decoded-word merge, boundary candidate, word repair, and reading resegmentation tools
+✅ **search_* (4 tools)** — hill_climb, anneal, automated_solver, homophonic_anneal
+✅ **repair_agenda_* (2 tools)** — list, update
 ✅ **run_python (1 tool)** — allowed escape hatch with required justification
 ✅ **meta_* (2 tools)** — request_tool, declare_solution
 
@@ -686,6 +789,7 @@ PYTHONPATH=src .venv/bin/python scripts/validate_benchmark.py \
 cd ~/Dropbox/src2/decipher
 source .venv/bin/activate   # Python 3.11 venv
 pip install -e .             # Install with entry points
+pip install -e '.[providers]' # Optional: OpenAI/Gemini agent providers
 ```
 
 Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
@@ -700,12 +804,26 @@ Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
 ### Model Notes
 - **Claude Sonnet 4.6**: Strong performance on S-token sequences and Latin/German manuscript analysis
 - **Claude Opus 4.7**: More conservative with historical encoded text; use Sonnet 4.6 for decipherment
+- **OpenAI/Gemini**: Agentic runs now support `--provider openai` and
+  `--provider gemini` through the provider adapter. Use the smoke packet before
+  treating any non-Claude model as parity-quality for historical decipherment.
 - **Preprocessing**: S-token normalization (letter substitution) improves API compatibility across models
 
 ### Configuration
-Models configurable via `--model` CLI flag.
-API key stored in macOS Keychain under service `decipher`, account `anthropic_api_key`.
-Also reads `ANTHROPIC_API_KEY` env var.
+Models are configurable via `--provider` and `--model` CLI flags. If
+`--provider` is omitted, Decipher infers it from common model prefixes
+(`claude-*`, `gpt-*`, `gemini-*`) and otherwise defaults to Anthropic.
+
+API keys may be supplied by environment variable, gitignored local files, or
+macOS Keychain:
+- Anthropic: `ANTHROPIC_API_KEY`, `.decipher_keys/anthropic_api_key`,
+  keychain account `anthropic_api_key`
+- OpenAI: `OPENAI_API_KEY`, `.decipher_keys/openai_api_key`, keychain account
+  `openai_api_key`
+- Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`,
+  `.decipher_keys/gemini_api_key`, keychain account `gemini_api_key`
+
+The repo gitignores `.env`, `.env.*`, and `.decipher_keys/`.
 
 ### Performance
 Sonnet 4.6 on `synth_en_250nb_s4`: exact match in 7 iterations after reliability and segmentation fixes.
