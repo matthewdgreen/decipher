@@ -48,6 +48,7 @@ def analyze_artifact(artifact: dict[str, Any]) -> list[ArtifactFinding]:
     findings.extend(_check_declared_branch_accuracy(artifact))
     findings.extend(_check_score_overrode_reading(tool_calls, artifact))
     findings.extend(_check_unattempted_reading_fix(artifact))
+    findings.extend(_check_blocked_premature_declarations(tool_calls))
     findings.extend(_check_loop_events(artifact))
     findings.extend(_check_repair_agenda_unresolved(artifact))
     findings.extend(_check_projection_failures(tool_calls))
@@ -392,6 +393,73 @@ def _check_unattempted_reading_fix(
             ),
             iteration=iter_num,
             evidence={"sample": snippet[:300]},
+        ))
+    return findings
+
+
+_PREMATURE_DECLARATION_BLOCK_REASONS = frozenset({
+    "low_confidence_more_work_required",
+    "further_iterations_requested",
+    "premature_partial_declaration",
+    "transform_work_untried",
+    "full_reading_workflow_required",
+})
+
+
+def _check_blocked_premature_declarations(
+    tool_calls: list[dict[str, Any]],
+) -> list[ArtifactFinding]:
+    """Flag declaration attempts that guardrails blocked as premature.
+
+    These are not final-output failures, but they are agent-judgement
+    failures worth tracking: the loop saved the run, while the prompt/model
+    still tried to stop before it had done the useful next work it named.
+    """
+    findings: list[ArtifactFinding] = []
+    for call in tool_calls:
+        if call.get("tool_name") != "meta_declare_solution":
+            continue
+        result = _result_dict(call)
+        if result.get("status") != "blocked":
+            continue
+        args = call.get("arguments") or {}
+        reason = str(result.get("reason") or "")
+        confidence = args.get("self_confidence")
+        try:
+            confidence_float = float(confidence)
+        except (TypeError, ValueError):
+            confidence_float = None
+        forced_partial = bool(args.get("forced_partial"))
+        further_iterations_helpful = args.get("further_iterations_helpful") is True
+        premature_signal = (
+            reason in _PREMATURE_DECLARATION_BLOCK_REASONS
+            or forced_partial
+            or further_iterations_helpful
+            or (
+                confidence_float is not None
+                and confidence_float < 0.50
+            )
+        )
+        if not premature_signal:
+            continue
+        findings.append(ArtifactFinding(
+            label="blocked_premature_declaration",
+            severity="warning",
+            message=(
+                "The agent attempted to declare before the run was ready, and "
+                "a declaration guard blocked it. This is a saved run, but still "
+                "a prompt/model judgement weakness to measure."
+            ),
+            iteration=call.get("iteration"),
+            tool_name="meta_declare_solution",
+            evidence={
+                "reason": reason,
+                "branch": args.get("branch") or result.get("branch"),
+                "self_confidence": confidence,
+                "forced_partial": forced_partial,
+                "further_iterations_helpful": args.get("further_iterations_helpful"),
+                "further_iterations_note": args.get("further_iterations_note", ""),
+            },
         ))
     return findings
 

@@ -20,6 +20,7 @@ visible as north-star capabilities while current work stays focused on
 homophonic, transposition+homophonic, and historical manuscript benchmarks.
 
 - [ ] Periodic polyalphabetic ciphers.
+  - Detailed plan: `docs/polyalphabetic_capability_plan.md`.
   - Add first-class support for Vigenere-family, Beaufort-family, Gronsfeld,
     running-key, periodic substitution, and sparse/light polyalphabetism.
   - Include period detection, key-length search, crib-aware modes, and
@@ -30,6 +31,23 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     interact.
   - Design intermediate representations that preserve fractionated symbols and
     grid coordinates, not just plaintext letters.
+  - Add Polybius/fractionation detection to the unknown-cipher preflight:
+    repeated coordinate-pair symbols, restricted coordinate alphabets
+    (`1`-`5`, `A`-`F`, row/column alternation), even-length pressure,
+    coordinate entropy, and whether regrouping into pairs/triples produces
+    language-like symbol distributions.
+  - Add initial Polybius tooling for agentic exploration:
+    parse coordinate pairs, try 5x5/6x6 square conventions, inspect row/column
+    frequency tables, merge/split coordinate streams, swap coordinate axes,
+    and preview candidate plaintext grids without committing to a full solve.
+  - Add automated screeners for small fractionation hypotheses:
+    Polybius-only, Polybius plus simple transposition, Bifid/Trifid-style
+    period sweeps, and ADFGX/ADFGVX coordinate alphabets. Keep these as
+    bounded diagnostic screens until we have calibrated fixtures.
+  - Curate D'Agapeyeff as a qualitative/unsolved fractionation challenge once
+    provenance and transcription format are nailed down. Include both the raw
+    numeric-pair transcription and any Polybius-normalized variants, clearly
+    labeled as alternate hypotheses rather than ground truth.
 - [ ] Nomenclators and codebook-cipher hybrids.
   - Support mixed alphabets where some symbols map to letters, syllables,
     words, names, nulls, or common phrases.
@@ -95,6 +113,11 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - [x] Preserve the neutral Z340 agentic crack as a cheap regression target.
     `tests/test_z340_regression.py` now captures the successful run shape
     without requiring a live provider call.
+  - [x] Measure guardrail-saved premature declaration attempts. Artifact
+    analysis now reports `blocked_premature_declaration` when the agent tries
+    to declare a low-confidence/forced-partial/more-work-needed branch and
+    the declaration guard blocks it. Treat these as prompt/model judgement
+    weaknesses even when the final run succeeds.
   - [ ] Add an opt-in live neutral Z340 regression target. In
     `artifacts/z340_neutral_agentic_gpt54/challenge_340_context_probe_001/dbfd1b2b24c2.json`,
     GPT-5.4 solved the neutral-context 340-token challenge to about `94.1%`
@@ -127,12 +150,17 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     anneal loops. Keep Python as the orchestration/reporting layer unless a
     full compiled solver rewrite becomes clearly justified.
 - [ ] Automated cipher identification and pipeline search.
+  - Detailed plan: `docs/unknown_cipher_agent_plan.md`.
   - Build a classifier/router that ranks cipher hypotheses when cipher-type
     metadata is absent or unreliable.
   - Search over pipelines such as "transposition -> homophonic",
     "fractionation -> transposition -> substitution", or
     "polyalphabetic -> null removal", and record competing hypotheses in
     artifacts.
+  - Ensure the mode router treats Polybius/fractionation as a distinct
+    hypothesis family, not just as malformed substitution. Unknown-cipher
+    agents should be able to create a `fractionation_transposition` branch and
+    receive coordinate/grid-specific tools before trying substitution repairs.
   - Add cipher-type-specific agent prompting and tool views. The agent should
     first form an explicit cipher-type hypothesis, then receive a focused
     prompt/tool subset for that hypothesis (for example, simple substitution,
@@ -248,6 +276,17 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - [ ] Replace or supplement the tentative Scorpion v0.2 family-label
     transcriptions with vetted global glyph-ID transcriptions before making
     any headline solver claims.
+    Current S5 evidence points strongly at keeping this as the next Scorpion
+    blocker: an automated `rank` run with `--transform-search-profile wide`
+    and `--transform-search-max-generated-candidates 300000` generated
+    `300,000` structural candidates (`232,209` deduped; `231,748` scored),
+    solver-probed 10 family-diverse finalists, and found `0` robust/selectable
+    transforms. The best candidates were classified as unstable false
+    positives and decoded only to English-looking word islands. Artifact:
+    `artifacts/scorpion_s5_automated_rank_300k/automated_only/scorpion_s5_transcription_v0_2/747ef85fbd6b.json`.
+    Treat this as negative evidence for the current tentative transcription
+    and current homophonic+grid/route-transform harness, not as evidence that
+    S5 is solved or impossible.
   - For wordy accompanying letters, store the full text as associated
     documents rather than dumping it into manifest metadata; the agent should
     discover and inspect them with scoped tools.

@@ -1014,6 +1014,23 @@ def test_system_prompt_carries_reading_first_discipline():
     # Generalised dict_rate guidance — no fixed Latin threshold
     assert "0.15" not in prompt
     assert "Declare on reading" in prompt
+    assert "partial is **not** better than continued work" in prompt
+    assert "partial solution is always better" not in prompt
+
+
+def test_workspace_panel_does_not_encourage_early_partial_declaration():
+    ex = _executor_for("ABC DEF", separator=" ")
+    panel = build_workspace_panel(
+        ex.workspace,
+        iteration=10,
+        max_iterations=30,
+        language="en",
+        word_set=ex.word_set,
+    )
+
+    assert "A partial declaration is not better than continued work" in panel
+    assert "5% beats 0%" not in panel
+    assert "partial solution is always better" not in panel
 
 
 def test_decode_ambiguous_letter_groups_contexts_by_cipher_symbol():

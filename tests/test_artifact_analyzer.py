@@ -460,6 +460,87 @@ def test_analyzer_labels_gated_and_projection_retry_events():
     assert summary["labels"]["same_length_projection_failed"] == 1
 
 
+def test_analyzer_labels_blocked_premature_declaration_attempt():
+    artifact = {
+        "cipher_alphabet_size": 63,
+        "cipher_word_count": 1,
+        "tool_calls": [
+            {
+                "iteration": 8,
+                "tool_name": "meta_declare_solution",
+                "arguments": {
+                    "branch": "main_transform_best",
+                    "self_confidence": 0.23,
+                    "forced_partial": True,
+                    "further_iterations_helpful": True,
+                    "further_iterations_note": (
+                        "A wider transform search should be tried."
+                    ),
+                },
+                "result": {
+                    "status": "blocked",
+                    "reason": "further_iterations_requested",
+                    "branch": "main_transform_best",
+                },
+            },
+            {
+                "iteration": 11,
+                "tool_name": "search_transform_homophonic",
+                "arguments": {"profile": "wide"},
+                "result": {"status": "ok"},
+            },
+            {
+                "iteration": 12,
+                "tool_name": "meta_declare_solution",
+                "arguments": {
+                    "branch": "main_transform_best",
+                    "self_confidence": 0.99,
+                    "further_iterations_helpful": False,
+                },
+                "result": {"status": "ok"},
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert summary["labels"]["blocked_premature_declaration"] == 1
+    finding = next(
+        f for f in summary["findings"]
+        if f["label"] == "blocked_premature_declaration"
+    )
+    assert finding["severity"] == "warning"
+    assert finding["evidence"]["reason"] == "further_iterations_requested"
+    assert finding["evidence"]["forced_partial"] is True
+
+
+def test_analyzer_does_not_label_bookkeeping_declaration_block_as_premature():
+    artifact = {
+        "cipher_alphabet_size": 63,
+        "cipher_word_count": 1,
+        "tool_calls": [
+            {
+                "iteration": 8,
+                "tool_name": "meta_declare_solution",
+                "arguments": {
+                    "branch": "main_transform_best",
+                    "self_confidence": 0.95,
+                    "further_iterations_helpful": False,
+                },
+                "result": {
+                    "status": "blocked",
+                    "reason": "branch_cards_required",
+                    "branch": "main_transform_best",
+                },
+            },
+        ],
+    }
+
+    summary = summarize_findings(analyze_artifact(artifact))
+
+    assert "blocked_premature_declaration" not in summary["labels"]
+
+
 def test_analyzer_labels_projection_tool_count_failure():
     artifact = {
         "cipher_alphabet_size": 23,

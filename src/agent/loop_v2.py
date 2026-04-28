@@ -143,6 +143,9 @@ PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "act_resegment_from_reading_repair",
     "act_resegment_window_by_reading",
     "search_transform_homophonic",
+    "search_review_transform_finalists",
+    "act_install_transform_finalists",
+    "act_rate_transform_finalist",
     "act_apply_transform_pipeline",
     "meta_declare_solution",
 }
@@ -825,15 +828,16 @@ def build_workspace_panel(
             "cipher-symbol repairs. Merge likely suffix/piece splits too, "
             "even if the merged spelling is archaic or not in the dictionary, "
             "when leaving the split would shift all following words. "
-            "**IMPORTANT:** Declaring a partial solution is always better than "
-            "not declaring. If you can read even a few correct words "
-            "(ET, PER, IN, EST…) do not drift into many tiny edits: make one "
-            "targeted repair pass, one anchored polish pass, and then call "
-            "`meta_declare_solution` with your best branch — the benchmark "
-            "records whatever accuracy your branch achieves at the moment you "
-            "declare, so 5% beats 0% every time. Only exhaust all iterations if "
-            "you truly cannot read a single recognisable word in the target "
-            "language."
+            "**IMPORTANT:** A partial declaration is not better than continued "
+            "work while useful tools remain. A few correct words "
+            "(ET, PER, IN, EST…) are not enough to stop early. Before any "
+            "non-final partial declaration, you must have either (a) produced "
+            "a coherent paraphrasable reading, or (b) actually tried the next "
+            "high-leverage tools you would otherwise name as future work: "
+            "branch-card comparison, a targeted repair pass, anchored polish, "
+            "and, for word islands or suspected ordering problems, transform "
+            "suspicion/search. Only declare a low-confidence partial in the "
+            "final stretch or after those bigger swings have failed."
         )
 
     lines.append("")
@@ -1352,8 +1356,9 @@ def run_v2(
         )
         if artifact.status == "error":
             reason = (
-                "Automatic fallback declaration after agent/API error; a useful "
-                "partial branch still scores better than no declaration. "
+                "Automatic fallback declaration after agent/API error; preserving "
+                "the best available branch for inspection rather than losing "
+                "run state. "
                 f"Original error: {artifact.error_message}. "
             )
         else:

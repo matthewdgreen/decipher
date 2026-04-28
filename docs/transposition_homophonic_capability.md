@@ -327,6 +327,32 @@ Important limitation:
   can tell the agent that transform search is plausible, but it cannot prove a
   transform or solve a cipher by itself.
 
+Scorpion S5 negative calibration, 2026-04-28:
+
+- The tentative Scorpion S5 v0.2 family-label transcription is a useful
+  context/tooling test, but it should not be treated as a clean solver
+  benchmark yet.
+- Agentic GPT-5.4 runs correctly exposed the new transform finalist menu and
+  broadened from a medium screen to a wide screen, but remained in
+  `word_islands_only` basins. The best readings contained many English-looking
+  fragments but no paraphrasable clause.
+- A no-LLM automated S5 run with
+  `--transform-search rank --transform-search-profile wide
+  --transform-search-max-generated-candidates 300000 --homophonic-budget screen`
+  generated `300,000` structural candidates, deduped `232,209`, structurally
+  scored `231,748`, reduced the top pool to 500, solver-probed 10
+  family-diverse finalists, independently confirmed 7, and found `0`
+  robust/selectable transform candidates. The top candidates were labeled
+  unstable false positives and decoded to word-island streams such as
+  `XTTHEDINTHERETHISTOBEASTAKING...` rather than coherent plaintext.
+- Artifact:
+  `artifacts/scorpion_s5_automated_rank_300k/automated_only/scorpion_s5_transcription_v0_2/747ef85fbd6b.json`.
+- Working interpretation: this is negative evidence for the combination of
+  the current tentative transcription plus the current homophonic+bounded
+  grid/route-transform harness. Next Scorpion work should prioritize a vetted
+  global glyph-ID transcription and possibly broader cipher-family hypotheses
+  before spending much more time on local word repair.
+
 External solver audit from 2026-04-26:
 
 - AZdecrypt was cloned locally at `other_tools/azdecrypt-src` from

@@ -703,3 +703,130 @@ def test_agent_transform_search_skips_invalid_candidates(monkeypatch):
         item["reason"] == "not_a_permutation"
         for item in out["structural_screen"]["rejected_candidates"]
     )
+
+
+def test_agent_transform_search_returns_finalist_review_and_branches(monkeypatch):
+    alphabet = Alphabet(["A", "B", "C", "D", "E"])
+    workspace = Workspace(
+        CipherText(raw=("ABCDE" * 18)[:88], alphabet=alphabet, source="test", separator=None),
+        plaintext_alphabet=Alphabet(["X", "Y", "Z", "W", "V"]),
+    )
+    executor = WorkspaceToolExecutor(
+        workspace=workspace,
+        language="en",
+        word_set={"XYZ"},
+        word_list=["XYZ"],
+        pattern_dict={},
+    )
+
+    def fake_run_automated(**kwargs):
+        class Result:
+            status = "completed"
+            solver = "fake"
+            elapsed_seconds = 0.01
+            final_decryption = "XYZXYZXYZ"
+            artifact = {
+                "steps": [{"name": "search_homophonic_anneal", "anneal_score": -1.0}],
+                "key": {"0": 0, "1": 1, "2": 2},
+            }
+        return Result()
+
+    monkeypatch.setattr("agent.tools_v2.run_automated", fake_run_automated)
+
+    out = executor._tool_search_transform_homophonic({
+        "branch": "main",
+        "columns": 22,
+        "profile": "small",
+        "top_n": 3,
+        "write_best_branch": True,
+        "write_candidate_branches": True,
+        "candidate_branch_count": 2,
+        "review_chars": 120,
+        "good_score_gap": 0.25,
+    })
+
+    assert out["written_branch"] == "main_transform_best"
+    assert out["search_session_id"] == "transform_search_1"
+    assert out["written_candidate_branches"] == [
+        "main_transform_rank1",
+        "main_transform_rank2",
+    ]
+    assert executor.workspace.has_branch("main_transform_best")
+    assert executor.workspace.has_branch("main_transform_rank1")
+    assert executor.workspace.has_branch("main_transform_rank2")
+    assert out["finalist_review_count"] == 3
+    first = out["finalist_review"][0]
+    assert first["rank"] == 1
+    assert first["branch"] == "main_transform_rank1"
+    assert first["quick_scores"] is not None
+    assert first["basin"] is not None
+    assert first["decoded_preview"].startswith("XYZ")
+    assert first["readability_judgment"]["primary_signal"] == "agent_semantic_reading"
+    assert "paraphrasable clause" in first["readability_judgment"]["agent_task"]
+    assert first["ranking_score"]["primary"]["name"] == "agent_contextual_readability"
+    assert first["ranking_score"]["primary"]["must_be_supplied_by_agent"] is True
+    assert first["agent_readability_judgment"] is None
+    assert "supporting" in first["ranking_score"]
+    assert out["primary_ranking_signal"] == "agent_contextual_readability"
+    assert out["numeric_scores_role"] == "supporting_evidence"
+    card = executor._tool_workspace_branch_cards({"branch": "main_transform_rank1"})["cards"][0]
+    assert card["transform_finalist"]["rank"] == 1
+    assert card["transform_finalist"]["search_session_id"] == "transform_search_1"
+    assert card["transform_finalist"]["primary_ranking_signal"] == "agent_contextual_readability"
+    assert card["transform_finalist"]["numeric_scores_role"] == "supporting_evidence"
+    assert "transform_rank_1" in card["tags"]
+
+    blocked = executor._tool_meta_declare_solution({
+        "branch": "main_transform_rank1",
+        "rationale": "This transformed finalist looks promising.",
+        "self_confidence": 0.7,
+        "reading_summary": "Possible transformed solution.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No obvious next work.",
+    })
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "transform_finalist_readability_required"
+    assert "act_rate_transform_finalist" in blocked["suggested_next_tools"]
+
+    rating = executor._tool_act_rate_transform_finalist({
+        "search_session_id": out["search_session_id"],
+        "rank": 1,
+        "readability_score": 1,
+        "label": "word_islands_only",
+        "rationale": "The preview has fragments but no paraphrasable clause.",
+    })
+    assert rating["status"] == "ok"
+    assert rating["rating"]["readability_score"] == 1.0
+    assert "main_transform_rank1" in rating["updated_branches"]
+    assert rating["finalist"]["ranking_score"]["primary"]["value"] == 1.0
+    card_after_rating = executor._tool_workspace_branch_cards({
+        "branch": "main_transform_rank1",
+    })["cards"][0]
+    assert card_after_rating["transform_finalist"]["agent_readability_score"] == 1.0
+    assert card_after_rating["transform_finalist"]["agent_readability_label"] == "word_islands_only"
+
+    assert out["good_score_finalist_count"] >= out["finalist_review_count"]
+    assert "more_good_score_finalists" in out
+    assert "search_review_transform_finalists" in out["review_instruction"]
+    assert "act_rate_transform_finalist" in out["review_instruction"]
+
+    page = executor._tool_search_review_transform_finalists({
+        "search_session_id": out["search_session_id"],
+        "start_rank": 2,
+        "count": 2,
+    })
+    assert page["finalist_review"][0]["rank"] == 2
+    assert page["finalist_review"][0]["branch"] == "main_transform_rank2"
+    assert page["finalist_review"][0]["readability_judgment"]["primary_signal"] == "agent_semantic_reading"
+    assert page["finalist_review"][0]["ranking_score"]["ranking_rule"].startswith("Rank finalists")
+    assert page["rated_finalist_count"] == 1
+    assert page["review_instruction"]
+    assert "contextual readability score" in page["review_instruction"]
+
+    installed = executor._tool_act_install_transform_finalists({
+        "search_session_id": out["search_session_id"],
+        "ranks": [3],
+    })
+    assert installed["status"] == "ok"
+    assert installed["installed"][0]["rank"] == 3
+    assert executor.workspace.has_branch("main_transform_rank3")

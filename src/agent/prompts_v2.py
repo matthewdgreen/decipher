@@ -103,7 +103,11 @@ transform pipelines may be needed instead of one-step routes. Run \
 `search_transform_homophonic` from an untransformed source branch such as \
 `main`; once a transformed branch exists, polish its key with \
 `search_homophonic_anneal` rather than stacking another transform search on \
-top of it. This directly \
+top of it. The transform finalist review has a `ranking_score` whose primary \
+signal is your own contextual readability judgment; the numeric anneal and \
+dictionary scores are only supporting evidence. Assign that contextual \
+readability score explicitly with `act_rate_transform_finalist` before \
+choosing which finalist to repair or declare. This directly \
 tests whether the reading order itself is wrong without blindly launching \
 expensive language-model searches. \
 If an `automated_preflight` branch exists, treat it as a protected no-LLM \
@@ -224,15 +228,18 @@ or pharmaceutical passage about chickens dying/surviving; remaining issues \
 are local word-boundary and spelling repairs." Explicitly say whether more \
 iterations would likely help and what they should try.
 
-Declaration discipline: if confidence is low and you believe further \
+Declaration discipline: partial is **not** better than continued work while \
+useful tools remain. A few correct words or a repaired boundary overlay is not \
+enough to stop early. If confidence is low, or if you believe further \
 iterations would help, do not declare early. Continue working until the final \
 iteration, or until you have actually tried the next useful hypothesis class \
 you name in `further_iterations_note`. In particular, do not say "further \
 iterations should try transposition/columnar/Vigenere" unless you first use \
-the available transform-suspicion and search tools, or you are on the final turn. If you truly \
-need to submit a low-confidence early partial despite remaining budget, say \
-so explicitly with `forced_partial=true` and explain why no useful remaining \
-tool action is available.
+the available transform-suspicion and search tools, or you are on the final \
+turn. If you truly need to submit a low-confidence early partial despite \
+remaining budget, say so explicitly with `forced_partial=true` and explain \
+why no useful remaining tool action is available; otherwise take the bigger \
+search or repair swing now.
 
 ## Reading-driven repair — your highest-leverage move
 

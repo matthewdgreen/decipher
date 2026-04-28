@@ -16,6 +16,7 @@ class Branch:
     parent: str | None = None
     created_iteration: int = 0
     tags: list[str] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
 
     def copy_as(self, new_name: str, iteration: int) -> "Branch":
         return Branch(
@@ -27,6 +28,7 @@ class Branch:
             parent=self.name,
             created_iteration=iteration,
             tags=list(self.tags),
+            metadata=dict(self.metadata),
         )
 
     def snapshot_dict(self) -> dict[str, object]:
@@ -40,4 +42,5 @@ class Branch:
             "word_count": len(self.word_spans) if self.word_spans is not None else None,
             "created_iteration": self.created_iteration,
             "tags": list(self.tags),
+            "metadata": dict(self.metadata),
         }

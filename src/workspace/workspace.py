@@ -250,6 +250,7 @@ class Workspace:
         word_spans: list[tuple[int, int]] | None = None,
         token_order: list[int] | None = None,
         transform_pipeline: dict | None = None,
+        metadata: dict | None = None,
     ) -> Branch:
         """Restore a branch from an artifact snapshot.
 
@@ -273,6 +274,7 @@ class Workspace:
             parent=parent,
             created_iteration=created_iteration,
             tags=list(tags or []),
+            metadata=dict(metadata or {}),
         )
         self._branches[name] = branch
         return branch
@@ -433,4 +435,5 @@ class Workspace:
             "mapped_count": len(branch.key),
             "decryption": self.apply_key(name),
             "tags": list(branch.tags),
+            "metadata": dict(branch.metadata),
         }

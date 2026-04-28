@@ -972,6 +972,89 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "act_install_transform_finalists",
+        "description": (
+            "Install selected finalists from a previous search_transform_homophonic "
+            "session as workspace branches by rank. Use this after reviewing "
+            "multiple finalist pages; it avoids rerunning the wide search."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "ranks": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "1-based finalist ranks to install as branches.",
+                },
+                "branch_prefix": {
+                    "type": "string",
+                    "description": (
+                        "Optional branch prefix. Defaults to "
+                        "<source_branch>_transform_rank."
+                    ),
+                },
+            },
+            "required": ["search_session_id", "ranks"],
+        },
+    },
+    {
+        "name": "act_rate_transform_finalist",
+        "description": (
+            "Record the agent's contextual readability judgment for one "
+            "transform-search finalist. This is the primary ranking signal "
+            "for transform finalists: rate whether the preview reads as "
+            "coherent plaintext in context, not merely whether numeric scores "
+            "look strong. The rating is stored on the search session and "
+            "mirrored onto any installed finalist branches."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "rank": {
+                    "type": "integer",
+                    "description": "1-based finalist rank to rate.",
+                },
+                "readability_score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 4,
+                    "description": (
+                        "0=garbage, 1=word islands only, 2=word islands with "
+                        "some structure, 3=partial coherent clause, "
+                        "4=coherent plaintext."
+                    ),
+                },
+                "label": {
+                    "type": "string",
+                    "enum": [
+                        "coherent_plaintext",
+                        "partial_clause",
+                        "word_islands_with_some_structure",
+                        "word_islands_only",
+                        "garbage",
+                    ],
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": (
+                        "Short contextual reading evidence: quote/paraphrase "
+                        "what it appears to say, or why it is only islands."
+                    ),
+                },
+                "coherent_clause": {
+                    "type": "string",
+                    "description": (
+                        "Optional paraphrasable clause if one exists; leave "
+                        "empty for word-island/garbage ratings."
+                    ),
+                },
+            },
+            "required": ["search_session_id", "rank", "readability_score", "label", "rationale"],
+        },
+    },
+    {
         "name": "search_transform_homophonic",
         "description": (
             "Try a bounded set of ciphertext transform candidates. For each "
@@ -992,12 +1075,61 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "Safety cap for structural candidate generation before solver promotion.",
                 },
                 "write_best_branch": {"type": "boolean", "default": True},
+                "write_candidate_branches": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Also write separate branches for the top finalist "
+                        "candidates, e.g. main_transform_rank1, "
+                        "main_transform_rank2. Use this for wide searches "
+                        "where the agent should compare finalists."
+                    ),
+                },
+                "candidate_branch_count": {
+                    "type": "integer",
+                    "default": 3,
+                    "description": "How many top finalists to write when write_candidate_branches=true.",
+                },
+                "review_chars": {
+                    "type": "integer",
+                    "default": 600,
+                    "description": "Maximum decoded preview characters per finalist in finalist_review.",
+                },
+                "good_score_gap": {
+                    "type": "number",
+                    "default": 0.25,
+                    "description": (
+                        "Finalists within this anneal-score gap of the best "
+                        "candidate are counted as good-score finalists."
+                    ),
+                },
                 "homophonic_budget": {"type": "string", "enum": ["screen", "full"], "default": "screen"},
                 "include_program_search": {"type": "boolean", "default": False},
                 "program_max_depth": {"type": "integer", "default": 5},
                 "program_beam_width": {"type": "integer", "default": 24},
             },
             "required": ["branch"],
+        },
+    },
+    {
+        "name": "search_review_transform_finalists",
+        "description": (
+            "Page through finalists from a previous search_transform_homophonic "
+            "session without rerunning the search. Returns compact previews, "
+            "scores, basin status for installed branches, a required agent "
+            "readability-judgment slot, and whether more good-score finalists "
+            "exist beyond this page."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "start_rank": {"type": "integer", "default": 1},
+                "count": {"type": "integer", "default": 5},
+                "review_chars": {"type": "integer", "default": 600},
+                "good_score_gap": {"type": "number", "default": 0.25},
+            },
+            "required": ["search_session_id"],
         },
     },
     {
@@ -1548,10 +1680,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "default": False,
                     "description": (
                         "Set true only when you are intentionally submitting a "
-                        "partial hypothesis near the end of the run because no "
-                        "useful remaining tool action is available. This does "
-                        "not override `further_iterations_helpful=true`, and it "
-                        "is not a way to stop early on scattered word islands."
+                        "partial hypothesis near the end of the run, or after "
+                        "the high-leverage remaining tools have actually been "
+                        "tried and failed. This does not override "
+                        "`further_iterations_helpful=true`, and it is not a "
+                        "way to stop early on scattered word islands, a few "
+                        "correct words, or a merely repaired boundary overlay."
                     ),
                 },
             },
@@ -1623,6 +1757,12 @@ class WorkspaceToolExecutor:
         # they serialize directly into run artifacts and tool results.
         self.repair_agenda: list[dict[str, Any]] = []
         self._next_repair_agenda_id: int = 1
+
+        # In-memory wide-search sessions. These let the agent page through
+        # finalist reviews and install selected branches without rerunning an
+        # expensive transform+homophonic screen in the same run.
+        self._transform_search_sessions: dict[str, dict[str, Any]] = {}
+        self._next_transform_search_session_id: int = 1
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -2667,6 +2807,8 @@ class WorkspaceToolExecutor:
             "mapped_count": len(branch.key),
             "cipher_alphabet_size": self._alpha().size,
             "tags": list(branch.tags),
+            "metadata": dict(branch.metadata),
+            "transform_finalist": branch.metadata.get("transform_finalist"),
             "protected_baseline": branch_name == "automated_preflight",
             "scores": self._compute_quick_scores(branch_name),
             "basin": self._branch_basin_status(branch_name),
@@ -2843,6 +2985,17 @@ class WorkspaceToolExecutor:
         if self._current_iteration >= final_stretch:
             return False
         return confidence < 0.50
+
+    def _unrated_transform_finalist_metadata(self, branch_name: str) -> dict[str, Any] | None:
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return None
+        branch = self.workspace.get_branch(branch_name)
+        metadata = branch.metadata.get("transform_finalist")
+        if not isinstance(metadata, dict):
+            return None
+        if metadata.get("agent_readability_score") is not None:
+            return None
+        return metadata
 
     # ------------------------------------------------------------------
     # workspace_*
@@ -5175,9 +5328,11 @@ class WorkspaceToolExecutor:
                 )
             return (
                 "hill_climb has converged. If decoded text shows any "
-                f"recognisable {self.language} words, declare now. If still "
-                "stuck, fork and restart with search_anneal — it escapes "
-                "local optima that hill_climb can't."
+                f"coherent {self.language} phrases, consider declaring; a "
+                "few recognisable words alone are not enough if useful search "
+                "or repair tools remain. If still stuck, fork and restart "
+                "with search_anneal — it escapes local optima that hill_climb "
+                "can't."
             )
         # search_kind == "anneal"
         if no_boundaries:
@@ -5195,9 +5350,11 @@ class WorkspaceToolExecutor:
                 "grows the context."
             )
         return (
-            f"Read decoded_preview carefully. If ANY recognisable {self.language} "
-            "words appear, call meta_declare_solution now — a partial solution "
-            "scores better than no declaration. If a few residual errors remain, "
+            f"Read decoded_preview carefully. If coherent {self.language} "
+            "phrases appear, repair obvious residual errors and then consider "
+            "declaring. Do not declare early merely because a few recognizable "
+            "words appear; if useful tools remain, continued exploration beats "
+            "a low-confidence partial. If a few residual errors remain, "
             "call decode_diagnose_and_fix(branch) to fix them all in one call, "
             "then do one anchored polish run with "
             "search_anneal(preserve_existing=true, score_fn='combined') before "
@@ -5679,6 +5836,369 @@ class WorkspaceToolExecutor:
             ),
         }
 
+    def _new_transform_search_session(
+        self,
+        *,
+        source_branch: str,
+        profile: str,
+        columns: int | None,
+        ranked: list[dict[str, Any]],
+        structural_screen: dict[str, Any],
+    ) -> str:
+        session_id = f"transform_search_{self._next_transform_search_session_id}"
+        self._next_transform_search_session_id += 1
+        self._transform_search_sessions[session_id] = {
+            "source_branch": source_branch,
+            "profile": profile,
+            "columns": columns,
+            "ranked": ranked,
+            "structural_screen_summary": {
+                "candidate_count": structural_screen.get("candidate_count"),
+                "deduped_candidate_count": structural_screen.get("deduped_candidate_count"),
+                "generation_limit_reached": structural_screen.get("generation_limit_reached"),
+                "top_family_counts": structural_screen.get("top_family_counts", {}),
+            },
+        }
+        return session_id
+
+    def _transform_session(self, session_id: str) -> dict[str, Any] | None:
+        return self._transform_search_sessions.get(str(session_id))
+
+    def _transform_score_value(self, candidate: dict[str, Any]) -> float | None:
+        raw = candidate.get("anneal_score")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _transform_readability_judgment() -> dict[str, Any]:
+        return {
+            "primary_signal": "agent_semantic_reading",
+            "agent_task": (
+                "Read decoded_preview using all permitted benchmark/context "
+                "knowledge. Judge semantic coherence before trusting numeric "
+                "scores: does it form a paraphrasable clause or only word "
+                "islands?"
+            ),
+            "scale": [
+                {"score": 4, "label": "coherent_plaintext"},
+                {"score": 3, "label": "partial_clause"},
+                {"score": 2, "label": "word_islands_with_some_structure"},
+                {"score": 1, "label": "word_islands_only"},
+                {"score": 0, "label": "garbage"},
+            ],
+            "record_in_reasoning": (
+                "State a 0-4 contextual readability score, label, and short "
+                "paraphrase/evidence before repairing, installing more "
+                "branches, or declaring."
+            ),
+        }
+
+    @staticmethod
+    def _default_transform_label_for_score(score: float) -> str:
+        if score >= 3.5:
+            return "coherent_plaintext"
+        if score >= 2.5:
+            return "partial_clause"
+        if score >= 1.5:
+            return "word_islands_with_some_structure"
+        if score >= 0.5:
+            return "word_islands_only"
+        return "garbage"
+
+    def _transform_candidate_rating(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        rating = candidate.get("agent_readability_judgment")
+        return rating if isinstance(rating, dict) else None
+
+    def _transform_ranking_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        quick_scores: dict[str, Any] | None,
+        score_gap_from_best: float | None,
+    ) -> dict[str, Any]:
+        rating = self._transform_candidate_rating(candidate)
+        return {
+            "primary": {
+                "name": "agent_contextual_readability",
+                "value": rating.get("readability_score") if rating else None,
+                "label": rating.get("label") if rating else None,
+                "rationale": rating.get("rationale") if rating else None,
+                "coherent_clause": rating.get("coherent_clause") if rating else None,
+                "must_be_supplied_by_agent": rating is None,
+                "scale": "0..4",
+                "note": (
+                    "This is intentionally not computed by the tool. The "
+                    "agent must judge whether the preview reads coherently "
+                    "given the available context."
+                ),
+            },
+            "supporting": {
+                "anneal_score": candidate.get("anneal_score"),
+                "score_gap_from_best": score_gap_from_best,
+                "quick_scores": quick_scores,
+            },
+            "ranking_rule": (
+                "Rank finalists by agent_contextual_readability first. Use "
+                "anneal_score, quick_scores, and basin status only as "
+                "supporting evidence or tie-breakers."
+            ),
+        }
+
+    def _mirror_transform_rating_to_branches(
+        self,
+        *,
+        session_id: str,
+        rank: int,
+        rating: dict[str, Any],
+    ) -> list[str]:
+        updated: list[str] = []
+        for branch_name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(branch_name)
+            metadata = branch.metadata.get("transform_finalist")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("search_session_id") != session_id:
+                continue
+            if int(metadata.get("rank") or -1) != rank:
+                continue
+            metadata["agent_readability_score"] = rating["readability_score"]
+            metadata["agent_readability_label"] = rating["label"]
+            metadata["agent_readability_rationale"] = rating["rationale"]
+            metadata["agent_coherent_clause"] = rating.get("coherent_clause", "")
+            metadata["agent_readability_iteration"] = rating.get("iteration")
+            updated.append(branch_name)
+        return updated
+
+    def _install_transform_finalist_branch(
+        self,
+        *,
+        session: dict[str, Any],
+        rank: int,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        ranked = session.get("ranked") or []
+        if rank < 1 or rank > len(ranked):
+            raise WorkspaceError(f"rank {rank} out of range (1..{len(ranked)})")
+        candidate = ranked[rank - 1]
+        source_branch = str(session["source_branch"])
+        if not self.workspace.has_branch(branch_name):
+            self.workspace.fork(branch_name, from_branch=source_branch)
+        self.workspace.apply_transform_pipeline(branch_name, candidate["pipeline"])
+        self.workspace.set_full_key(
+            branch_name,
+            {int(k): int(v) for k, v in (candidate.get("key") or {}).items()},
+        )
+        candidate["branch"] = branch_name
+        branch = self.workspace.get_branch(branch_name)
+        candidate_info = candidate.get("candidate") or {}
+        params = candidate_info.get("params") or {}
+        source_branch = str(session["source_branch"])
+        for tag in (
+            "transform_finalist",
+            f"transform_rank_{rank}",
+            f"transform_profile_{session.get('profile')}",
+        ):
+            if tag not in branch.tags:
+                branch.tags.append(tag)
+        branch.metadata["transform_finalist"] = {
+            "search_session_id": next(
+                (
+                    sid for sid, stored in self._transform_search_sessions.items()
+                    if stored is session
+                ),
+                None,
+            ),
+            "source_branch": source_branch,
+            "rank": rank,
+            "candidate_id": candidate_info.get("candidate_id"),
+            "family": candidate_info.get("family"),
+            "template": params.get("template"),
+            "operation_labels": params.get("operation_labels", [])[:10],
+            "anneal_score": candidate.get("anneal_score"),
+            "status": candidate.get("status"),
+            "elapsed_seconds": candidate.get("elapsed_seconds"),
+            "score_gap_from_best": (
+                round(
+                    (self._transform_score_value((session.get("ranked") or [candidate])[0]) or 0.0)
+                    - (self._transform_score_value(candidate) or 0.0),
+                    4,
+                )
+                if session.get("ranked") else None
+            ),
+            "primary_ranking_signal": "agent_contextual_readability",
+            "agent_readability_score": (
+                (self._transform_candidate_rating(candidate) or {}).get("readability_score")
+            ),
+            "agent_readability_label": (
+                (self._transform_candidate_rating(candidate) or {}).get("label")
+            ),
+            "agent_readability_rationale": (
+                (self._transform_candidate_rating(candidate) or {}).get("rationale")
+            ),
+            "agent_coherent_clause": (
+                (self._transform_candidate_rating(candidate) or {}).get("coherent_clause")
+            ),
+            "numeric_scores_role": "supporting_evidence",
+        }
+        score = self._transform_score_value(candidate)
+        best_score = self._transform_score_value((session.get("ranked") or [candidate])[0])
+        score_gap = (
+            round(best_score - score, 4)
+            if best_score is not None and score is not None else None
+        )
+        quick_scores = self._compute_quick_scores(branch_name)
+        return {
+            "rank": rank,
+            "branch": branch_name,
+            "candidate_id": (candidate.get("candidate") or {}).get("candidate_id"),
+            "anneal_score": candidate.get("anneal_score"),
+            "quick_scores": quick_scores,
+            "ranking_score": self._transform_ranking_score(
+                candidate=candidate,
+                quick_scores=quick_scores,
+                score_gap_from_best=score_gap,
+            ),
+            "basin": self._branch_basin_status(branch_name),
+            "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+        }
+
+    def _transform_finalist_review(
+        self,
+        *,
+        session_id: str,
+        start_rank: int = 1,
+        count: int = 5,
+        review_chars: int = 600,
+        good_score_gap: float = 0.25,
+    ) -> dict[str, Any]:
+        session = self._transform_session(session_id)
+        if session is None:
+            return {"error": f"Unknown transform search session: {session_id}"}
+        ranked = list(session.get("ranked") or [])
+        if not ranked:
+            return {
+                "search_session_id": session_id,
+                "finalist_review": [],
+                "finalist_review_count": 0,
+                "total_finalist_count": 0,
+            }
+        start_rank = max(1, int(start_rank))
+        count = max(1, min(int(count), 50))
+        review_chars = max(120, min(int(review_chars), 1600))
+        good_score_gap = max(0.0, float(good_score_gap))
+        best_score = self._transform_score_value(ranked[0])
+        good_threshold = best_score - good_score_gap if best_score is not None else None
+        good_ranked_finalists = [
+            (rank, candidate)
+            for rank, candidate in enumerate(ranked, start=1)
+            if candidate.get("status") == "completed"
+            and self._transform_score_value(candidate) is not None
+            and good_threshold is not None
+            and self._transform_score_value(candidate) >= good_threshold
+        ]
+        page_start = start_rank - 1
+        page = ranked[page_start:page_start + count]
+        finalist_review: list[dict[str, Any]] = []
+        for offset, candidate in enumerate(page):
+            rank = start_rank + offset
+            branch_for_candidate = candidate.get("branch")
+            quick_scores: dict[str, Any] | None = None
+            basin: dict[str, Any] | None = None
+            if branch_for_candidate and self.workspace.has_branch(branch_for_candidate):
+                quick_scores = self._compute_quick_scores(branch_for_candidate)
+                basin = self._branch_basin_status(branch_for_candidate)
+            candidate_info = candidate.get("candidate") or {}
+            params = candidate_info.get("params") or {}
+            pipeline = candidate.get("pipeline") or {}
+            score = self._transform_score_value(candidate)
+            if basin and basin.get("status") == "coherent_basin":
+                recommended_next = "inspect_or_declare_if_preview_reads_coherently"
+            elif basin and self._repair_policy_blocks_word_repair(basin):
+                recommended_next = "treat_as_word_islands_or_request_more_finalists"
+            elif branch_for_candidate:
+                recommended_next = "inspect_branch_or_compare_branch_cards"
+            else:
+                recommended_next = "install_if_preview_promising_or_review_next_page"
+            score_gap = (
+                round(best_score - score, 4)
+                if best_score is not None and score is not None else None
+            )
+            readability_judgment = self._transform_readability_judgment()
+            finalist_review.append({
+                "rank": rank,
+                "branch": branch_for_candidate,
+                "candidate_id": candidate_info.get("candidate_id"),
+                "family": candidate_info.get("family"),
+                "template": params.get("template"),
+                "operation_labels": params.get("operation_labels", [])[:10],
+                "status": candidate.get("status"),
+                "anneal_score": candidate.get("anneal_score"),
+                "score_gap_from_best": score_gap,
+                "elapsed_seconds": candidate.get("elapsed_seconds"),
+                "quick_scores": quick_scores,
+                "basin": basin,
+                "ranking_score": self._transform_ranking_score(
+                    candidate=candidate,
+                    quick_scores=quick_scores,
+                    score_gap_from_best=score_gap,
+                ),
+                "pipeline_step_count": len(pipeline.get("steps", [])),
+                "pipeline_columns": pipeline.get("columns"),
+                "pipeline_rows": pipeline.get("rows"),
+                "decoded_preview": str(candidate.get("decoded_preview") or "")[:review_chars],
+                "readability_judgment": readability_judgment,
+                "agent_readability_judgment": self._transform_candidate_rating(candidate),
+                "recommended_next": recommended_next,
+            })
+        reviewed_ranks = set(range(start_rank, start_rank + len(page)))
+        more_good_after_page = [
+            rank for rank, _candidate in good_ranked_finalists
+            if rank not in reviewed_ranks and rank > start_rank + len(page) - 1
+        ]
+        return {
+            "search_session_id": session_id,
+            "source_branch": session.get("source_branch"),
+            "profile": session.get("profile"),
+            "columns": session.get("columns"),
+            "start_rank": start_rank,
+            "count": count,
+            "finalist_review": finalist_review,
+            "finalist_review_count": len(finalist_review),
+            "total_finalist_count": len(ranked),
+            "has_more_finalists": start_rank + len(page) <= len(ranked),
+            "next_start_rank": (
+                start_rank + len(page)
+                if start_rank + len(page) <= len(ranked) else None
+            ),
+            "good_score_gap": good_score_gap,
+            "good_score_threshold": (
+                round(good_threshold, 4)
+                if good_threshold is not None else None
+            ),
+            "good_score_finalist_count": len(good_ranked_finalists),
+            "more_good_score_finalists": bool(more_good_after_page),
+            "more_good_score_finalist_count": len(more_good_after_page),
+            "next_good_score_ranks": more_good_after_page[:12],
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+            "rated_finalist_count": sum(
+                1 for candidate in ranked
+                if self._transform_candidate_rating(candidate) is not None
+            ),
+            "review_instruction": (
+                "Review these previews first. To inspect more without "
+                "rerunning search, call search_review_transform_finalists "
+                "with next_start_rank. To install promising candidates, call "
+                "act_install_transform_finalists with the desired ranks. "
+                "Use act_rate_transform_finalist to record your contextual "
+                "readability score for promising or rejected finalists; that "
+                "agent judgment is the primary ranking signal and numeric "
+                "scores are supporting evidence."
+            ),
+        }
+
     def _tool_act_apply_transform_pipeline(self, args: dict) -> Any:
         branch_name = args["branch"]
         pipeline = TransformPipeline.from_raw(args.get("pipeline"))
@@ -5696,6 +6216,120 @@ class WorkspaceToolExecutor:
                 "and homophonic search tools operate in this transformed order."
             ),
         }
+
+    def _tool_act_rate_transform_finalist(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._transform_session(session_id)
+        if session is None:
+            return {"error": f"Unknown transform search session: {session_id}"}
+        ranked = session.get("ranked") or []
+        rank = int(args["rank"])
+        if rank < 1 or rank > len(ranked):
+            return {
+                "error": f"rank {rank} out of range (1..{len(ranked)})",
+                "search_session_id": session_id,
+            }
+        score = float(args["readability_score"])
+        if score < 0 or score > 4:
+            return {"error": "readability_score must be between 0 and 4"}
+        allowed_labels = {
+            "coherent_plaintext",
+            "partial_clause",
+            "word_islands_with_some_structure",
+            "word_islands_only",
+            "garbage",
+        }
+        label = str(args.get("label") or self._default_transform_label_for_score(score))
+        if label not in allowed_labels:
+            return {
+                "error": f"label must be one of {sorted(allowed_labels)}",
+                "search_session_id": session_id,
+            }
+        rationale = str(args.get("rationale") or "").strip()
+        if not rationale:
+            return {"error": "rationale is required"}
+        coherent_clause = str(args.get("coherent_clause") or "").strip()
+        candidate = ranked[rank - 1]
+        rating = {
+            "readability_score": round(score, 2),
+            "label": label,
+            "rationale": rationale,
+            "coherent_clause": coherent_clause,
+            "iteration": self._current_iteration,
+            "primary_ranking_signal": "agent_contextual_readability",
+        }
+        candidate["agent_readability_judgment"] = rating
+        updated_branches = self._mirror_transform_rating_to_branches(
+            session_id=session_id,
+            rank=rank,
+            rating=rating,
+        )
+        review = self._transform_finalist_review(
+            session_id=session_id,
+            start_rank=rank,
+            count=1,
+        )
+        return {
+            "status": "ok",
+            "search_session_id": session_id,
+            "rank": rank,
+            "rating": rating,
+            "updated_branches": updated_branches,
+            "finalist": (review.get("finalist_review") or [None])[0],
+            "note": (
+                "Recorded the agent's contextual readability judgment. This "
+                "rating is now the finalist's primary ranking signal; numeric "
+                "anneal/dictionary scores remain supporting evidence."
+            ),
+        }
+
+    def _tool_act_install_transform_finalists(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._transform_session(session_id)
+        if session is None:
+            return {"error": f"Unknown transform search session: {session_id}"}
+        ranks = args.get("ranks") or []
+        if not isinstance(ranks, list) or not ranks:
+            return {"error": "ranks must be a non-empty list of 1-based finalist ranks"}
+        source_branch = str(session["source_branch"])
+        prefix = str(args.get("branch_prefix") or f"{source_branch}_transform_rank")
+        installed: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for raw_rank in ranks:
+            try:
+                rank = int(raw_rank)
+                branch_name = f"{prefix}{rank}"
+                installed.append(self._install_transform_finalist_branch(
+                    session=session,
+                    rank=rank,
+                    branch_name=branch_name,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "rank": raw_rank,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "status": "ok" if installed else "error",
+            "search_session_id": session_id,
+            "installed_count": len(installed),
+            "installed": installed,
+            "errors": errors,
+            "note": (
+                "Installed selected transform finalists as branches without "
+                "rerunning the search. Use workspace_branch_cards to compare "
+                "installed branches if the finalist_review was ambiguous."
+            ),
+        }
+
+    def _tool_search_review_transform_finalists(self, args: dict) -> Any:
+        return self._transform_finalist_review(
+            session_id=str(args["search_session_id"]),
+            start_rank=int(args.get("start_rank", 1)),
+            count=int(args.get("count", 5)),
+            review_chars=int(args.get("review_chars", 600)),
+            good_score_gap=float(args.get("good_score_gap", 0.25)),
+        )
 
     def _tool_search_transform_homophonic(self, args: dict) -> Any:
         branch_name = args["branch"]
@@ -5728,6 +6362,10 @@ class WorkspaceToolExecutor:
         profile = str(args.get("profile", "small"))
         top_n = max(1, int(args.get("top_n", 3)))
         write_best_branch = bool(args.get("write_best_branch", True))
+        write_candidate_branches = bool(args.get("write_candidate_branches", False))
+        candidate_branch_count = max(0, int(args.get("candidate_branch_count", 3)))
+        review_chars = max(120, min(int(args.get("review_chars", 600)), 1600))
+        good_score_gap = max(0.0, float(args.get("good_score_gap", 0.25)))
         homophonic_budget = str(args.get("homophonic_budget", "screen"))
         base_tokens = self.workspace.effective_tokens(branch_name)
         structural_screen = screen_transform_candidates(
@@ -5819,29 +6457,64 @@ class WorkspaceToolExecutor:
             ),
             reverse=True,
         )
+        search_session_id = self._new_transform_search_session(
+            source_branch=branch_name,
+            profile=profile,
+            columns=columns,
+            ranked=ranked,
+            structural_screen=structural_screen,
+        )
+        session = self._transform_session(search_session_id)
+        assert session is not None
         written_branch = None
+        written_candidate_branches: list[str] = []
+
         if write_best_branch and ranked:
-            best = ranked[0]
             written_branch = f"{branch_name}_transform_best"
-            if not self.workspace.has_branch(written_branch):
-                self.workspace.fork(written_branch, from_branch=branch_name)
-            self.workspace.apply_transform_pipeline(written_branch, best["pipeline"])
-            self.workspace.set_full_key(
-                written_branch,
-                {int(k): int(v) for k, v in (best.get("key") or {}).items()},
+            self._install_transform_finalist_branch(
+                session=session,
+                rank=1,
+                branch_name=written_branch,
             )
+
+        if write_candidate_branches and ranked and candidate_branch_count:
+            for rank in range(1, min(candidate_branch_count, len(ranked)) + 1):
+                branch_out = f"{branch_name}_transform_rank{rank}"
+                self._install_transform_finalist_branch(
+                    session=session,
+                    rank=rank,
+                    branch_name=branch_out,
+                )
+                written_candidate_branches.append(branch_out)
+        review_limit = max(
+            top_n,
+            candidate_branch_count if write_candidate_branches else 0,
+        )
+        review = self._transform_finalist_review(
+            session_id=search_session_id,
+            start_rank=1,
+            count=review_limit,
+            review_chars=review_chars,
+            good_score_gap=good_score_gap,
+        )
         return {
             "branch": branch_name,
             "profile": profile,
             "columns": columns,
+            "search_session_id": search_session_id,
             "candidate_count": structural_screen.get("deduped_candidate_count", 0),
             "structural_screen": structural_screen,
             "skipped_candidates": skipped[:20],
             "written_branch": written_branch,
+            "written_candidate_branches": written_candidate_branches,
             "top_candidates": ranked[:top_n],
+            **review,
             "note": (
                 "This is a bounded screen over simple transform candidates. "
-                "Read the previews and compare transformed branches before declaring."
+                "Read finalist_review and compare transformed branches before declaring. "
+                "Use search_review_transform_finalists to page through more "
+                "finalists, and act_install_transform_finalists to install "
+                "specific ranks without rerunning search."
             ),
         }
 
@@ -6266,6 +6939,29 @@ class WorkspaceToolExecutor:
                 "suggested_next_tools": [
                     "repair_agenda_list",
                     "repair_agenda_update",
+                    "meta_declare_solution",
+                ],
+            }
+        unrated_transform = self._unrated_transform_finalist_metadata(branch)
+        if unrated_transform is not None:
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "transform_finalist_readability_required",
+                "transform_finalist": unrated_transform,
+                "note": (
+                    "This branch came from transform finalist search, but the "
+                    "agent has not recorded its contextual readability score. "
+                    "Before declaring, call act_rate_transform_finalist for "
+                    "this search_session_id/rank. The rating should say "
+                    "whether the text is coherent prose, a partial clause, "
+                    "word islands, or garbage; numeric scores are not enough."
+                ),
+                "suggested_next_tools": [
+                    "act_rate_transform_finalist",
+                    "search_review_transform_finalists",
+                    "workspace_branch_cards",
                     "meta_declare_solution",
                 ],
             }

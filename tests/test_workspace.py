@@ -41,6 +41,16 @@ class TestBranchLifecycle:
         assert ws.get_branch("main").key == {0: 0}
         assert ws.get_branch("exp").key == {0: 0, 1: 1}
 
+    def test_fork_copies_but_isolates_branch_metadata(self):
+        ws = _build_ws()
+        ws.get_branch("main").metadata["rank"] = 1
+        ws.fork("exp")
+        ws.get_branch("exp").metadata["rank"] = 2
+
+        assert ws.get_branch("main").metadata["rank"] == 1
+        assert ws.get_branch("exp").metadata["rank"] == 2
+        assert ws.snapshot_branch("exp")["metadata"]["rank"] == 2
+
     def test_duplicate_fork_errors(self):
         ws = _build_ws()
         ws.fork("exp")
