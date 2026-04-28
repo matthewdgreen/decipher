@@ -1692,7 +1692,7 @@ def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
         min_stability = 0.40
     elif (
         family_class == "program_search"
-        and params.get("template") == "z340_constructed_shape"
+        and params.get("template") == "banded_ndown_constructed"
     ):
         required_identity_margin = 0.10
         min_stability = 0.45
@@ -1732,7 +1732,7 @@ def _transform_mutation_penalty(candidate: dict[str, Any]) -> float:
         return 0.08
     if candidate.get("provenance") == "program_search":
         params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
-        if params.get("template") in {"z340_constructed_shape", "banded_ndown_constructed", "route_repair_constructed"}:
+        if params.get("template") in {"banded_ndown_constructed", "route_repair_constructed"}:
             return 0.0
         return min(0.12, 0.02 * int(params.get("program_depth") or 1))
     return 0.0
@@ -1955,9 +1955,7 @@ def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float,
     )
     nontrivial = _float_or_none(metrics.get("position_nontriviality")) or 0.0
     template_bonus = 0.0
-    if params.get("template") == "z340_constructed_shape":
-        template_bonus = 0.30
-    elif params.get("template") == "banded_ndown_constructed":
+    if params.get("template") == "banded_ndown_constructed":
         template_bonus = 0.18
     elif params.get("template") == "route_repair_constructed":
         template_bonus = 0.10

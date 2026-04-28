@@ -504,7 +504,7 @@ def test_streaming_transform_screen_matches_materialized_top_candidates():
     ]
 
 
-def test_program_search_constructs_z340_shape_from_grammar():
+def test_program_search_constructs_banded_ndown_shape_from_grammar():
     screen = screen_transform_candidates(
         list(range(340)),
         columns=17,
@@ -516,7 +516,13 @@ def test_program_search_constructs_z340_shape_from_grammar():
     )
     constructed = next(
         candidate for candidate in screen["top_candidates"]
-        if candidate["family"] == "program_z340_constructed_shape"
+        if candidate["params"].get("operation_labels") == [
+            "ndown_top_a2",
+            "late_shift_right",
+            "mid_late_lock",
+            "ndown_lower_a2",
+            "tail_repair_pack",
+        ]
     )
     raw = constructed["pipeline"]
     step_names = [step["name"] for step in raw["steps"]]
@@ -531,7 +537,8 @@ def test_program_search_constructs_z340_shape_from_grammar():
         "ndown_lower_a2",
         "tail_repair_pack",
     ]
-    assert constructed["params"]["template"] == "z340_constructed_shape"
+    assert constructed["family"] == "program_banded_ndown_constructed"
+    assert constructed["params"]["template"] == "banded_ndown_constructed"
     assert raw["columns"] == 17
     assert raw["rows"] == 20
     assert step_names[:4] == [

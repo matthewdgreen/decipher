@@ -276,9 +276,9 @@ Calibration notes from 2026-04-26:
 
   Calibration:
   - On `zodiac340_transform_search_rank` with the external Zenith model and
-    `--transform-search-profile broad`, the program beam selects
-    `program_z340_constructed_shape` as the robust transform finalist after
-    grammar expansion. Its operation labels are:
+    `--transform-search-profile broad`, the program beam selected a
+    constructed banded `NDownMAcross` program as the robust transform finalist
+    after grammar expansion. Its operation labels were:
     `ndown_top_a2 -> late_shift_right -> mid_late_lock -> ndown_lower_a2 -> tail_repair_pack`.
   - With the final full-budget homophonic refinement, this constructed program
     reaches 96.2% char accuracy in 168.1s

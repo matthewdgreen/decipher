@@ -455,8 +455,8 @@ def test_transform_rank_triage_prefers_constructed_program_before_generic_banded
             ),
             candidate(
                 "constructed",
-                "program_z340_constructed_shape",
-                {"template": "z340_constructed_shape", "calibration_template": True},
+                "program_banded_ndown_constructed",
+                {"template": "banded_ndown_constructed", "calibration_template": True},
             ),
         ],
     }
@@ -512,9 +512,9 @@ def test_transform_family_gates_reject_unstable_false_positive():
 def test_z340_known_shape_gate_allows_moderate_stability_with_large_margin():
     ranked = [
         {
-            "candidate_id": "z340",
-            "family": "program_z340_constructed_shape",
-            "params": {"template": "z340_constructed_shape", "calibration_template": True},
+            "candidate_id": "banded",
+            "family": "program_banded_ndown_constructed",
+            "params": {"template": "banded_ndown_constructed", "calibration_template": True},
             "status": "completed",
             "confirmed_selection_score": -7.55,
             "confirmation": {
@@ -544,8 +544,8 @@ def test_z340_known_shape_gate_allows_moderate_stability_with_large_margin():
     )
     selection = automated_runner._choose_transform_candidate(ranked)
 
-    assert ranked[0]["candidate_id"] == "z340"
-    assert selection["selected_candidate_id"] == "z340"
+    assert ranked[0]["candidate_id"] == "banded"
+    assert selection["selected_candidate_id"] == "banded"
     assert selection["selects_transform"] is True
 
 
@@ -634,7 +634,7 @@ def test_full_final_refinement_bakeoff_can_replace_screen_winner(monkeypatch):
     }
     close_neighbor = {
         "candidate_id": "close_neighbor",
-        "family": "program_z340_constructed_shape",
+        "family": "program_banded_ndown_constructed",
         "status": "completed",
         "decryption": "SCREEN_NEIGHBOR",
         "key": {"0": 0},

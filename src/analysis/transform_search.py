@@ -2275,14 +2275,6 @@ def _program_split_for_label(label: str) -> int | None:
 
 
 def _program_template_label(labels: list[str], *, width: int | None, rows: int | None) -> str | None:
-    if width == 17 and rows == 20 and labels == [
-        "ndown_top_a2",
-        "late_shift_right",
-        "mid_late_lock",
-        "ndown_lower_a2",
-        "tail_repair_pack",
-    ]:
-        return "z340_constructed_shape"
     groups = [_program_label_group(label) for label in labels]
     if (
         groups == ["ndown_top", "shift", "lock", "ndown_lower", "tail_repair"]
@@ -2296,25 +2288,11 @@ def _program_template_label(labels: list[str], *, width: int | None, rows: int |
 
 def _program_shape_bonus(candidate: TransformCandidate) -> float:
     labels = candidate.params.get("operation_labels") or []
-    if candidate.params.get("template") == "z340_constructed_shape":
-        return 0.45
     if candidate.params.get("template") == "banded_ndown_constructed":
         return 0.30
     if candidate.params.get("template") == "route_repair_constructed":
         return 0.18
     expected_prefix = ["ndown_top", "shift", "lock", "ndown_lower", "tail_repair"]
-    z340_prefix = [
-        "ndown_top_a2",
-        "late_shift_right",
-        "mid_late_lock",
-        "ndown_lower_a2",
-        "tail_repair_pack",
-    ]
-    exact_prefix_len = 0
-    for observed, expected in zip(labels, z340_prefix):
-        if observed != expected:
-            break
-        exact_prefix_len += 1
     groups = [_program_label_group(label) for label in labels]
     prefix_len = 0
     for observed, expected in zip(groups, expected_prefix):
@@ -2326,7 +2304,7 @@ def _program_shape_bonus(candidate: TransformCandidate) -> float:
         if observed != expected:
             break
         route_prefix += 1
-    return max(exact_prefix_len * 0.08, prefix_len * 0.06, route_prefix * 0.05)
+    return max(prefix_len * 0.06, route_prefix * 0.05)
 
 
 def _append_mutation(
