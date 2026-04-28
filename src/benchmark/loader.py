@@ -42,12 +42,14 @@ class TestData:
     test: BenchmarkTest
     canonical_transcription: str  # full canonical transcription text
     plaintext: str  # ground truth plaintext
+    target_records: list[BenchmarkRecord] = field(default_factory=list)
     plaintext_language: str = ""
     context_canonical_transcription: str = ""
     context_plaintext: str = ""
     context_records: list[BenchmarkRecord] = field(default_factory=list)
     symbol_map: dict | None = None  # optional symbol map metadata
     transform_pipeline: dict | None = None
+    benchmark_root: str = ""
 
 
 class BenchmarkLoader:
@@ -123,12 +125,14 @@ class BenchmarkLoader:
             test.context_records
         )
 
-        # Try to load symbol map
-        source = test.test_id.split("_")[0]  # e.g. "borg" from "borg_single_B_..."
+        # Try to load symbol map from the target source first. Falling back to
+        # the legacy test-id prefix keeps older synthetic fixtures working.
+        source = target_records[0].source if target_records else test.test_id.split("_")[0]
         symbol_map = self._load_symbol_map(source)
 
         return TestData(
             test=test,
+            target_records=target_records,
             canonical_transcription=canonical,
             plaintext=plaintext,
             plaintext_language=_resolve_plaintext_language(target_records),
@@ -136,6 +140,7 @@ class BenchmarkLoader:
             context_plaintext=context_plaintext,
             context_records=context_records,
             symbol_map=symbol_map,
+            benchmark_root=str(self.root),
         )
 
     def _load_record_texts(

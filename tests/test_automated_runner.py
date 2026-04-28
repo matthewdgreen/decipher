@@ -516,6 +516,126 @@ def test_transform_rank_triage_keeps_banded_program_when_route_repairs_dominate(
     assert report["selection_reasons"]["banded_program"] == "family_diverse:program_search"
 
 
+def test_transform_rank_triage_keeps_multiple_banded_program_variants():
+    def candidate(candidate_id, labels, score):
+        return {
+            "candidate_id": candidate_id,
+            "family": "program_banded_ndown_constructed",
+            "pipeline": {"steps": []},
+            "params": {
+                "template": "banded_ndown_constructed",
+                "operation_labels": labels,
+            },
+            "score": score,
+            "metrics": {
+                "matrix_rank_score": score,
+                "periodic_redundancy": score,
+                "inverse_periodic_redundancy": score,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "pipeline": {"steps": []},
+            "params": {},
+            "score": 0.0,
+            "metrics": {},
+        },
+        "top_candidates": [
+            candidate(
+                "banded_a1_left",
+                ["ndown_top_a1", "late_shift_left", "mid_late_lock", "ndown_lower_a1", "tail_repair_pack"],
+                0.63,
+            ),
+            candidate(
+                "banded_a2_right",
+                ["ndown_top_a2", "late_shift_right", "mid_late_lock", "ndown_lower_a2", "tail_repair_pack"],
+                0.61,
+            ),
+            candidate(
+                "banded_a2_left",
+                ["ndown_top_a2", "late_shift_left", "mid_late_lock", "ndown_lower_a2", "tail_repair_pack"],
+                0.60,
+            ),
+        ],
+    }
+
+    selected, _report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=6,
+    )
+    selected_ids = {item["candidate_id"] for item in selected}
+
+    assert {"banded_a1_left", "banded_a2_right", "banded_a2_left"} <= selected_ids
+
+
+def test_transform_rank_triage_keeps_banded_across_shift_cells():
+    def candidate(candidate_id, labels, score):
+        return {
+            "candidate_id": candidate_id,
+            "family": "program_banded_ndown_constructed",
+            "pipeline": {"steps": []},
+            "params": {
+                "template": "banded_ndown_constructed",
+                "operation_labels": labels,
+            },
+            "score": score,
+            "metrics": {
+                "matrix_rank_score": score,
+                "periodic_redundancy": score,
+                "inverse_periodic_redundancy": score,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "pipeline": {"steps": []},
+            "params": {},
+            "score": 0.0,
+            "metrics": {},
+        },
+        "top_candidates": [
+            candidate(
+                f"a1_left_{i}",
+                ["ndown_top_a1", "late_shift_left", "mid_late_lock", "ndown_lower_a1", "tail_repair_pack"],
+                0.80 - i * 0.01,
+            )
+            for i in range(3)
+        ] + [
+            candidate(
+                "a1_right",
+                ["ndown_top_a1", "late_shift_right", "mid_late_lock", "ndown_lower_a1", "tail_repair_pack"],
+                0.70,
+            ),
+            candidate(
+                "a2_left",
+                ["ndown_top_a2", "late_shift_left", "mid_late_lock", "ndown_lower_a2", "tail_repair_pack"],
+                0.69,
+            ),
+            candidate(
+                "a2_right",
+                ["ndown_top_a2", "late_shift_right", "mid_late_lock", "ndown_lower_a2", "tail_repair_pack"],
+                0.68,
+            ),
+        ],
+    }
+
+    selected, _report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=5,
+    )
+    selected_ids = {item["candidate_id"] for item in selected}
+
+    assert {"a1_left_0", "a1_right", "a2_left", "a2_right"} <= selected_ids
+    assert "a1_left_1" not in selected_ids
+
+
 def test_transform_family_gates_reject_unstable_false_positive():
     ranked = [
         {
@@ -759,6 +879,98 @@ def test_full_final_refinement_bakeoff_can_replace_screen_winner(monkeypatch):
     assert result.artifact["transform_selection"]["selected_candidate_changed"] is True
 
 
+def test_full_final_refinement_cannot_replace_robust_winner_with_unstable_false_positive(monkeypatch):
+    cipher_text = parse_canonical_transcription("A B C")
+    screen_winner = {
+        "candidate_id": "screen_winner",
+        "family": "program_banded_ndown_constructed",
+        "status": "completed",
+        "decryption": "SCREEN_WINNER",
+        "key": {"0": 0},
+        "pipeline": {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 2}}]},
+        "anneal_score": -7.50,
+        "validated_selection_score": -7.50,
+        "confirmed_selection_score": -7.50,
+        "finalist_label": "robust_candidate",
+        "selectable_transform_candidate": True,
+    }
+    unstable_neighbor = {
+        "candidate_id": "unstable_neighbor",
+        "family": "wide_route_repair_columns_boustrophedon_Reverse_row0_full",
+        "status": "completed",
+        "decryption": "SCREEN_FALSE_POSITIVE",
+        "key": {"0": 0},
+        "pipeline": {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 1}}]},
+        "anneal_score": -7.48,
+        "validated_selection_score": -7.48,
+        "confirmed_selection_score": -7.48,
+        "finalist_label": "unstable_false_positive",
+        "selectable_transform_candidate": False,
+    }
+
+    monkeypatch.setattr(
+        automated_runner,
+        "inspect_transform_suspicion",
+        lambda **_kwargs: {"recommendation": "run_screen"},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "screen_transform_candidates",
+        lambda *_args, **_kwargs: {"identity_candidate": {}, "top_candidates": []},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_rank_transform_candidates",
+        lambda **_kwargs: {
+            "budget": "screen",
+            "selection": {
+                "selected": True,
+                "selected_candidate_id": "screen_winner",
+            },
+            "top_ranked_candidates": [unstable_neighbor, screen_winner],
+        },
+    )
+
+    def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        if cipher_text.source.endswith(":1"):
+            return (
+                "fake_homophonic",
+                {0: 0},
+                "FULL_FALSE_POSITIVE",
+                {"name": "search_homophonic_anneal", "anneal_score": -6.0},
+            )
+        return (
+            "fake_homophonic",
+            {0: 0},
+            "FULL_ROBUST",
+            {"name": "search_homophonic_anneal", "anneal_score": -7.0},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_homophonic)
+
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="refine_unstable_guard",
+        cipher_system="transposition_homophonic",
+        transform_search="rank",
+        homophonic_budget="full",
+    )
+
+    assert result.final_decryption == "FULL_ROBUST"
+    refine_step = next(
+        step for step in result.artifact["steps"]
+        if step["name"] == "refine_selected_transform_candidate_homophonic"
+    )
+    assert refine_step["candidate_id"] == "screen_winner"
+    assert refine_step["bakeoff"]["selected_candidate_changed"] is False
+    refined = refine_step["bakeoff"]["refined_candidates"]
+    assert {item["candidate_id"] for item in refined} == {"screen_winner", "unstable_neighbor"}
+    assert next(
+        item for item in refined if item["candidate_id"] == "unstable_neighbor"
+    )["refinement_selectable"] is False
+
+
 def test_transform_diagnostics_summarize_false_positive_evidence():
     ranked = [
         {
@@ -912,6 +1124,7 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
 
     def fake_run_v2(**kwargs):
         seen["automated_preflight"] = kwargs["automated_preflight"]
+        seen["benchmark_context"] = kwargs["benchmark_context"]
         from artifact.schema import BranchSnapshot, RunArtifact
 
         artifact = RunArtifact(
@@ -947,6 +1160,7 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     assert seen["language"] == "en"
     assert seen["cipher_system"] == "simple_substitution"
     assert seen["automated_preflight"]["summary"] == "preflight summary"
+    assert seen["benchmark_context"].policy == "max"
 
 
 def test_collapsed_plaintext_detector_flags_single_letter_failure():

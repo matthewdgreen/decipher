@@ -41,6 +41,7 @@ from analysis.transform_search import (
 from automated import runner as automated_runner
 from automated.runner import run_automated
 from artifact.schema import SolutionDeclaration, ToolCall
+from benchmark.context import ScopedBenchmarkContext, safe_read_benchmark_file
 from models.session import Session  # only used for search tools that take a Session
 from workspace import Workspace, WorkspaceError
 
@@ -1305,6 +1306,108 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "required": ["item_id", "status"],
         },
     },
+    # ----- benchmark_* -----
+    {
+        "name": "inspect_benchmark_context",
+        "description": (
+            "Inspect the scoped benchmark context made available for this run: "
+            "selected policy, injected layers, target/context records, related "
+            "records, and associated documents. This does not read arbitrary "
+            "files and only exposes manifest-declared context for the current "
+            "benchmark test."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "include_layer_text": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include the short text of injected context layers.",
+                },
+            },
+        },
+    },
+    {
+        "name": "list_related_records",
+        "description": (
+            "List benchmark records that this test explicitly allows as "
+            "related/context material. Does not expose plaintext; use "
+            "`inspect_related_solution` only when policy permits solution access."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_related_transcription",
+        "description": (
+            "Read the canonical transcription of an allowed context or related "
+            "record. The record must be listed by the benchmark split or by the "
+            "record's `related_records` metadata; arbitrary filesystem paths "
+            "are not accepted."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "record_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["record_id"],
+        },
+    },
+    {
+        "name": "inspect_related_solution",
+        "description": (
+            "Read plaintext/solution text for an allowed related record, but "
+            "only when the benchmark context policy explicitly permits "
+            "solution-bearing related context. This is for controlled "
+            "context-ablation runs, not blind parity."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "record_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["record_id"],
+        },
+    },
+    {
+        "name": "list_associated_documents",
+        "description": (
+            "List long-form documents explicitly associated with the current "
+            "benchmark record, such as letters, plaintext notes, envelopes, or "
+            "source commentary. Use `inspect_associated_document` to read an "
+            "allowed document."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "inspect_associated_document",
+        "description": (
+            "Read an explicitly associated benchmark document by document ID. "
+            "Only manifest-declared files under the benchmark root are allowed; "
+            "arbitrary paths are rejected."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string"},
+                "max_chars": {
+                    "type": "integer",
+                    "default": 6000,
+                    "description": "Maximum characters to return.",
+                },
+            },
+            "required": ["document_id"],
+        },
+    },
     # ----- run_python -----
     {
         "name": "run_python",
@@ -1447,6 +1550,12 @@ def _json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
+
+
 class WorkspaceToolExecutor:
     """Dispatches v2 tool calls against a Workspace + language resources."""
 
@@ -1457,12 +1566,14 @@ class WorkspaceToolExecutor:
         word_set: set[str],
         word_list: list[str],
         pattern_dict: dict[str, list[str]],
+        benchmark_context: ScopedBenchmarkContext | None = None,
     ) -> None:
         self.workspace = workspace
         self.language = language
         self.word_set = word_set
         self.word_list = word_list
         self.pattern_dict = pattern_dict
+        self.benchmark_context = benchmark_context
 
         # Frequency rank for lookup (1-based; lower = more common)
         self._freq_rank: dict[str, int] = {
@@ -5374,6 +5485,321 @@ class WorkspaceToolExecutor:
                     "a possible missing-tool signal."
                 ),
             },
+        }
+
+    # ------------------------------------------------------------------
+    # benchmark_*
+    # ------------------------------------------------------------------
+    def _tool_inspect_benchmark_context(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {
+                "error": "No scoped benchmark context is available for this run.",
+                "available": False,
+            }
+        include_text = bool(args.get("include_layer_text", True))
+        layers = []
+        for layer in ctx.injected_layers:
+            item = dict(layer)
+            if not include_text:
+                item.pop("text", None)
+            layers.append(item)
+        ctx.log_access("inspect_benchmark_context", content_type="metadata")
+        return {
+            "available": True,
+            "policy": ctx.policy,
+            "target_record_ids": ctx.target_record_ids,
+            "context_record_ids": ctx.context_record_ids,
+            "injected_layers": layers,
+            "related_records_available": [
+                self._benchmark_record_summary(entry)
+                for entry in ctx.related_records.values()
+            ],
+            "associated_documents_available": [
+                self._benchmark_document_summary(entry)
+                for entry in ctx.associated_documents.values()
+            ],
+            "related_solution_allowed": ctx.related_solution_allowed,
+        }
+
+    def _tool_list_related_records(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        ctx.log_access("list_related_records", content_type="metadata")
+        return {
+            "policy": ctx.policy,
+            "target_record_ids": ctx.target_record_ids,
+            "context_record_ids": ctx.context_record_ids,
+            "context_records": [
+                self._benchmark_record_summary(ctx.records[record_id])
+                for record_id in ctx.context_record_ids
+                if record_id in ctx.records
+            ],
+            "related_records": [
+                self._benchmark_record_summary(entry)
+                for entry in ctx.related_records.values()
+            ],
+            "solution_access": (
+                "enabled"
+                if ctx.related_solution_allowed
+                else "disabled by benchmark context policy"
+            ),
+        }
+
+    def _tool_inspect_related_transcription(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        record_id = str(args.get("record_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        entry = ctx.records.get(record_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_related_transcription",
+                record_id=record_id,
+                content_type="transcription",
+                allowed=False,
+                error="record_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Record `{record_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_record_ids": sorted(ctx.records),
+            }
+        rel_path = entry.get("transcription_canonical_file") or ""
+        if not rel_path:
+            return {"error": f"Record `{record_id}` has no canonical transcription file."}
+        try:
+            text = safe_read_benchmark_file(entry.get("root") or ctx.benchmark_root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_related_transcription",
+                record_id=record_id,
+                content_type="transcription",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_related_transcription",
+            record_id=record_id,
+            content_type="transcription",
+        )
+        return {
+            "record": self._benchmark_record_summary(entry),
+            "content_type": "canonical_transcription",
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _tool_inspect_related_solution(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        record_id = str(args.get("record_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        if not ctx.related_solution_allowed:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="solution_context_disabled",
+            )
+            return {
+                "error": (
+                    "Related solution access is disabled by benchmark context "
+                    f"policy `{ctx.policy}`."
+                ),
+                "policy": ctx.policy,
+            }
+        if record_id in ctx.target_record_ids:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="target_solution_blocked",
+            )
+            return {"error": "The target record's solution is never exposed to the agent."}
+        entry = ctx.records.get(record_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error="record_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Record `{record_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_record_ids": sorted(ctx.records),
+            }
+        rel_path = entry.get("plaintext_file") or ""
+        if not rel_path:
+            return {"error": f"Record `{record_id}` has no plaintext/solution file."}
+        try:
+            text = safe_read_benchmark_file(entry.get("root") or ctx.benchmark_root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_related_solution",
+                record_id=record_id,
+                content_type="solution",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_related_solution",
+            record_id=record_id,
+            content_type="solution",
+        )
+        return {
+            "record": self._benchmark_record_summary(entry),
+            "content_type": "plaintext_solution",
+            "policy": ctx.policy,
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _tool_list_associated_documents(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        ctx.log_access("list_associated_documents", content_type="metadata")
+        return {
+            "policy": ctx.policy,
+            "documents": [
+                self._benchmark_document_summary(entry)
+                for entry in ctx.associated_documents.values()
+            ],
+        }
+
+    def _tool_inspect_associated_document(self, args: dict) -> Any:
+        ctx = self.benchmark_context
+        document_id = str(args.get("document_id") or "")
+        max_chars = max(1, int(args.get("max_chars", 6000)))
+        if ctx is None:
+            return {"error": "No scoped benchmark context is available for this run."}
+        entry = ctx.associated_documents.get(document_id)
+        if entry is None:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="document_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Document `{document_id}` is not in this run's benchmark "
+                    "context allowlist."
+                ),
+                "allowed_document_ids": sorted(ctx.associated_documents),
+            }
+        doc = entry.get("document", {})
+        if doc.get("contains_solution") and not ctx.related_solution_allowed:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="solution_document_disabled",
+            )
+            return {
+                "error": (
+                    "This associated document is marked solution-bearing and "
+                    f"cannot be read under policy `{ctx.policy}`."
+                ),
+                "document": self._benchmark_document_summary(entry),
+            }
+        safe_layers = set(doc.get("safe_context_layers") or [])
+        if safe_layers and ctx.policy not in safe_layers and ctx.policy != "max":
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error="document_policy_not_allowed",
+            )
+            return {
+                "error": (
+                    f"Document `{document_id}` is not allowed under policy "
+                    f"`{ctx.policy}`."
+                ),
+                "safe_context_layers": sorted(safe_layers),
+            }
+        rel_path = doc.get("text_file") or ""
+        if not rel_path:
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document_metadata",
+            )
+            return {
+                "document": self._benchmark_document_summary(entry),
+                "message": "No text_file is declared for this associated document.",
+            }
+        root = ctx.benchmark_root
+        try:
+            text = safe_read_benchmark_file(root, rel_path)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log_access(
+                "inspect_associated_document",
+                document_id=document_id,
+                content_type="document",
+                allowed=False,
+                error=str(exc),
+            )
+            return {"error": f"{type(exc).__name__}: {exc}"}
+        ctx.log_access(
+            "inspect_associated_document",
+            document_id=document_id,
+            content_type="document",
+        )
+        return {
+            "document": self._benchmark_document_summary(entry),
+            "truncated": len(text) > max_chars,
+            "text": _truncate_text(text, max_chars),
+        }
+
+    def _benchmark_record_summary(self, entry: dict[str, Any]) -> dict[str, Any]:
+        rel = entry.get("relationship", {})
+        return {
+            "record_id": entry.get("id"),
+            "area": entry.get("area"),
+            "source": entry.get("source"),
+            "status": entry.get("status"),
+            "plaintext_language": entry.get("plaintext_language"),
+            "cipher_type": entry.get("cipher_type", []),
+            "date_or_century": entry.get("date_or_century"),
+            "provenance": entry.get("provenance"),
+            "notes": entry.get("notes"),
+            "relationship": rel.get("relationship"),
+            "solution_available": bool(rel.get("solution_available")) or bool(entry.get("plaintext_file")),
+        }
+
+    def _benchmark_document_summary(self, entry: dict[str, Any]) -> dict[str, Any]:
+        doc = entry.get("document", {})
+        return {
+            "document_id": doc.get("id"),
+            "record_id": entry.get("record_id"),
+            "document_type": doc.get("document_type"),
+            "title": doc.get("title"),
+            "summary": doc.get("summary", ""),
+            "language": doc.get("language", ""),
+            "contains_solution": bool(doc.get("contains_solution")),
+            "contains_plaintext_hint": bool(doc.get("contains_plaintext_hint")),
+            "safe_context_layers": doc.get("safe_context_layers", []),
+            "has_text_file": bool(doc.get("text_file")),
+            "image_files": doc.get("image_files", []),
+            "source_url": doc.get("source_url", ""),
         }
 
     # ------------------------------------------------------------------

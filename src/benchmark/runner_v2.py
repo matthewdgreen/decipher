@@ -9,6 +9,7 @@ from typing import Any
 from agent.display import make_agent_renderer
 from agent.final_summary import build_final_summary
 from agent.loop_v2 import run_v2
+from benchmark.context import build_benchmark_context
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import (
     format_alignment,
@@ -55,6 +56,7 @@ class BenchmarkRunnerV2:
         automated_preflight: bool = True,
         display_mode: str = "off",
         external_context: str | None = None,
+        benchmark_context_policy: str = "max",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -64,6 +66,7 @@ class BenchmarkRunnerV2:
         self.automated_preflight = automated_preflight
         self.display_mode = display_mode
         self.external_context = external_context
+        self.benchmark_context_policy = benchmark_context_policy
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -164,8 +167,14 @@ class BenchmarkRunnerV2:
                                "error", "max_iterations_reached"}:
                     print(f" [{event}]", flush=True)
 
-        # Build the prior_context block: caller-supplied > external > benchmark
-        benchmark_ctx = _format_benchmark_context(test_data)
+        # Build the prior_context block: caller-supplied > external >
+        # structured benchmark context. Long related records/documents remain
+        # tool-gated rather than being dumped into the opening prompt.
+        benchmark_context = build_benchmark_context(
+            test_data,
+            policy=self.benchmark_context_policy,
+        )
+        benchmark_ctx = benchmark_context.prompt if benchmark_context else None
         if self.external_context:
             auto_ctx: str | None = (
                 f"{self.external_context}\n\n{benchmark_ctx}"
@@ -183,6 +192,7 @@ class BenchmarkRunnerV2:
             cipher_id=test_id,
             prior_context=prior_context or auto_ctx,
             automated_preflight=automated_preflight,
+            benchmark_context=benchmark_context,
             verbose=self.verbose,
             on_event=on_event,
         )

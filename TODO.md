@@ -133,28 +133,72 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - `context-aware`: allow benign context such as language/source family, but record exactly which solvers actually consumed it.
   - Default comparative parity reporting should make the evaluation mode explicit in summaries, dashboards, and artifacts.
   - Add a per-solver `context_capabilities` / `context_used` record so comparisons stay honest when wrappers differ.
-- [ ] Add benchmark context-tier support for agentic and automated runs.
-  - Load structured `context_layers` from benchmark records once
+- [x] Add benchmark context-tier support for agentic runs.
+  - [x] Load structured `context_layers` from benchmark records once
     `../cipher_benchmark` exposes them.
-  - Add a CLI policy flag such as
-    `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions`.
-  - Keep default behavior conservative: no solution-bearing related context
-    unless explicitly requested.
-  - Record the selected context policy and the exact context layer IDs in run
+  - [x] Add a CLI policy flag:
+    `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions|max`.
+  - [x] Default agentic benchmark runs to `max` context when unspecified, while
+    keeping long related records and related solutions tool-scoped rather than
+    dumped into the initial prompt.
+  - [x] Record the selected context policy and the exact context layer IDs in run
     artifacts so context-aware comparisons are auditable.
-  - Update `BenchmarkLoader` to use target record source metadata for symbol
+  - [x] Update `BenchmarkLoader` to use target record source metadata for symbol
     maps/context instead of guessing from `test_id` prefixes.
-  - Add agent tools for on-demand benchmark context access:
+  - [x] Add agent tools for on-demand benchmark context access:
     `inspect_benchmark_context`, `list_related_records`,
     `inspect_related_transcription`, `list_associated_documents`,
     `inspect_associated_document`, and policy-gated
     `inspect_related_solution`.
-  - Teach `BenchmarkRunner` to pass concise narrative context in the initial
+  - [x] Teach `BenchmarkRunner` to pass concise narrative context in the initial
     prompt while leaving long related records/tool solutions available through
     tools instead of dumping them into the first message.
-  - Add tests for context isolation: minimal context must not include
-    plaintext hints, related-solution context must be opt-in, and artifacts
-    must disclose all provided context.
+  - [x] Add tests for context isolation: no-context policy, related-solution
+    gating, target-solution blocking, allowlisted related records/documents,
+    and path-containment checks.
+  - [ ] Extend context policy reporting to automated-only comparative summaries
+    once we formalize blind vs. context-aware parity reporting.
+- [ ] Carefully test benchmark-context behavior on real documentation-rich cases.
+  - Build a small context-ablation packet with the same target ciphertext run
+    under `--benchmark-context none`, `minimal`, `standard`, `historical`,
+    `related_metadata`, `related_solutions`, and `max`.
+  - Assert artifacts record the context policy, injected layer IDs, related
+    records/documents made available, and all context-tool accesses.
+  - Add fake-provider tests where the agent notices available related
+    ciphertext, calls `inspect_benchmark_context`, calls
+    `list_related_records`, reads another ciphertext with
+    `inspect_related_transcription`, and does not request a blocked target
+    solution.
+  - Add negative tests for blocked context: target solution access, unlisted
+    record IDs, unlisted associated document IDs, solution-bearing documents
+    under non-solution policies, and path traversal in document/text files.
+  - Add CLI smoke tests that `--benchmark-context none` produces no initial
+    context prompt, while `max` injects concise layers but does not dump long
+    related plaintext or associated documents into the first message.
+  - Compare agent behavior across context tiers on at least one solved case:
+    tool use, score, declaration confidence, token count, cost, and whether
+    context genuinely changed the work rather than merely being listed.
+  - Include a README/docs update once the smoke packet is stable, with clear
+    examples of clean/blind runs versus context-aware runs.
+- [ ] Curate documentation-rich benchmark examples for context-tool testing.
+  - Prioritize the Scorpion ciphers as the first testcase family because they
+    have surrounding letters/notes that can exercise associated-document
+    access without pretending the ciphertext is isolated.
+  - [x] In `../cipher_benchmark`, add initial Scorpion S1/S5 exploratory
+    records with tiered `context_layers`, associated public images, an
+    associated released-letter excerpt, tentative v0.2 transcriptions, and
+    `related_records` linking the companion ciphertexts.
+  - [ ] Replace or supplement the tentative Scorpion v0.2 family-label
+    transcriptions with vetted global glyph-ID transcriptions before making
+    any headline solver claims.
+  - For wordy accompanying letters, store the full text as associated
+    documents rather than dumping it into manifest metadata; the agent should
+    discover and inspect them with scoped tools.
+  - Mark each document with `contains_solution`, `contains_plaintext_hint`,
+    `contains_cipher_type_hint`, and `safe_context_layers` so context-ablation
+    runs remain honest.
+  - Add at least one non-Scorpion documentation-rich family later, so the
+    context tools are not tuned to a single corpus style.
 
 ### Priority 3: Native Tool Parity
 
@@ -691,23 +735,17 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     - Current limitation: old artifacts did not persist custom branch
       `word_spans`, so exact boundary overlays can only be restored for
       artifacts produced after the new `word_spans` snapshot field landed.
-  - [ ] Add explicit benchmark-context modes for agentic runs.
-    - Proposed command shape:
-      `--benchmark-context none|metadata|ciphertext|metadata+ciphertext`,
-      defaulting to `none`.
-    - `metadata` should pass benign manifest context such as source family,
-      plaintext language, date/century, provenance, manuscript page, cipher
-      type, symbol count, curation notes, and source URL. Do not include
-      solution plaintext or solution-derived hints.
-    - `ciphertext` should pass same-cipher context records from benchmark
-      split definitions, as the current `10page`/`full` cases already can,
-      but make this explicit in artifacts instead of implicit.
-    - Artifacts must record the selected context mode and a compact summary of
-      the exact context supplied, so clean parity runs and context-aware runs
-      are never mixed silently.
-    - Keep this off until the current no-extra-context generalization pass is
-      documented for Borg `0140v`, Borg `0171v`, Borg `0077v`, and at least
-      one Copiale/German stretch case.
+  - [x] Add explicit benchmark-context modes for agentic runs.
+    - Current command shape:
+      `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions|max`.
+    - Default is `max` for agentic exploratory runs, but clean parity runs
+      should explicitly use `--benchmark-context none` or another declared
+      policy so comparisons are not mixed silently.
+    - Artifacts record the selected context policy, injected layers, related
+      records/documents made available, and context-tool access logs.
+    - Follow-up context-ablation and documentation-rich testcase work is now
+      tracked under Priority 2 "Carefully test benchmark-context behavior" and
+      "Curate documentation-rich benchmark examples."
   - Detailed no-code plan: `docs/agent_loop_redesign_plan.md`.
 - [ ] Add a Copiale/German capability track.
   - Do not treat Copiale as "Borg in German." Current `p068` evidence shows

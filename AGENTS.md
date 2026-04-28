@@ -197,7 +197,7 @@ Benchmark auto-detects: borg→`la`, copiale→`de`.
 Decipher expects a local checkout of the benchmark repository, typically at a
 path like `/path/to/cipher_benchmark/benchmark/`.
 - Benchmark repo: `https://github.com/matthewdgreen/cipher_benchmark`
-- `manifest/records.jsonl` — currently 896 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, and tool-bundled parity records
+- `manifest/records.jsonl` — currently 898 records: Borg, Copiale, DECODE/Gallica, multilingual synthetic substitution, tool-bundled parity records, and curated Zodiac records
 - `splits/borg_tests.jsonl` — 45 tests (15 Track B: transcription→plaintext)
 - `splits/copiale_tests.jsonl` — 45 tests (15 Track B)
 - `splits/*_ss_synth*_tests.jsonl` — multilingual synthetic simple-substitution Track B tests
@@ -230,6 +230,36 @@ path like `/path/to/cipher_benchmark/benchmark/`.
   through `external_baselines/zenith_only.json`. This keeps routine frontier
   runs fast and avoids dragging `zkdecrypto-lite` through every comparison
   unless explicitly requested with `--external-config external_baselines/local_tools.json`.
+
+### Benchmark context for agentic runs
+Benchmark records may now carry tiered `context_layers`, `related_records`, and
+`associated_documents`. Agentic benchmark runs default to
+`--benchmark-context max`, which gives the agent the richest permitted
+non-target context available from the record. Use `--benchmark-context none`
+for blind/no-context evaluations, or narrower tiers such as `minimal`,
+`standard`, `historical`, `related_metadata`, and `related_solutions` for
+controlled ablations.
+
+The v2 agent receives an initial scoped context briefing and can inspect more
+through benchmark tools:
+- `inspect_benchmark_context`
+- `list_related_records`
+- `inspect_related_transcription`
+- `inspect_related_solution`
+- `list_associated_documents`
+- `inspect_associated_document`
+
+These tools are intentionally scoped to records and documents explicitly listed
+by the benchmark JSON. They do not provide arbitrary filesystem access. The
+target record's solution is never exposed through these tools; related
+solutions are only exposed under `related_solutions` or `max`.
+
+The sibling benchmark repo also has a parallel unsolved area at
+`../cipher_benchmark/benchmark/unsolved`. Decipher can load its manifest and
+splits for exploratory runs, but those artifacts are hypothesis/qualitative
+evidence unless a solved ground truth is available. Current unsolved curation
+includes Voynich seed records, Zodiac diagnostic variants, and Scorpion S1/S5
+with tentative v0.2 transcriptions.
 
 ### Parity evaluation modes
 When comparing Decipher against Zenith, zkdecrypto-lite, or future baselines,
@@ -347,9 +377,10 @@ Remaining open questions in this area:
 - **Broader cipher class coverage**: non-English homophonic ciphers (Copiale/German) still
   fall back to `homophonic.py` profiles unless a corresponding `models/ngram5_<lang>.bin`
   exists. A German equivalent binary model does not yet exist.
-- **Agent tool exposure**: `search_homophonic_anneal` in the agentic tool set still uses
-  the old `homophonic.py` profiles. The `zenith_native` path is automated-runner-only for
-  now; exposing it as an agent tool is future work.
+- **Agent tool exposure**: `search_automated_solver` gives the agent access to the
+  modern no-LLM solver stack, including the default `zenith_native` homophonic
+  route when the selected language/model supports it. `search_homophonic_anneal`
+  remains available for focused legacy/profile experiments.
 - **No-boundary homophonic ciphers**: `synth_en_200honb_s6` (English, no word boundaries)
   is still the hardest stress case. The `zenith_native` path runs on no-boundary ciphers
   but has not been benchmarked against these yet.

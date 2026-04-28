@@ -869,6 +869,7 @@ def run_v2(
     cipher_id: str = "unknown",
     prior_context: str | None = None,
     automated_preflight: dict[str, Any] | None = None,
+    benchmark_context: Any = None,
     resume_from_artifact: dict[str, Any] | None = None,
     resume_branch: str | None = None,
     parent_artifact_path: str = "",
@@ -890,6 +891,11 @@ def run_v2(
         cipher_word_count=len(cipher_text.words),
         max_iterations=max_iterations,
         automated_preflight=automated_preflight,
+        benchmark_context=(
+            benchmark_context.to_artifact_dict()
+            if hasattr(benchmark_context, "to_artifact_dict")
+            else benchmark_context
+        ),
         parent_run_id=str((resume_from_artifact or {}).get("run_id") or ""),
         parent_artifact_path=parent_artifact_path,
     )
@@ -941,6 +947,7 @@ def run_v2(
         word_set=word_set,
         word_list=word_list,
         pattern_dict=pattern_dict,
+        benchmark_context=benchmark_context,
     )
     executor.set_max_iterations(max_iterations)
     if resume_from_artifact:
@@ -966,6 +973,8 @@ def run_v2(
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": context_msg}]
     artifact.messages = messages  # reference, will grow
+    if benchmark_context is not None and hasattr(benchmark_context, "to_artifact_dict"):
+        artifact.benchmark_context = benchmark_context.to_artifact_dict()
 
     system = get_system_prompt(language)
 
@@ -1361,6 +1370,8 @@ def run_v2(
     artifact.tool_calls = list(executor.call_log)
     artifact.tool_requests = list(executor.tool_requests)
     artifact.repair_agenda = [dict(item) for item in executor.repair_agenda]
+    if benchmark_context is not None and hasattr(benchmark_context, "to_artifact_dict"):
+        artifact.benchmark_context = benchmark_context.to_artifact_dict()
     artifact.solution = executor.solution
     artifact.branches = [
         _branch_snapshot_for(workspace, name) for name in workspace.branch_names()

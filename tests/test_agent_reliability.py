@@ -42,6 +42,7 @@ from agent.orchestration import AgentMode, AgentRunState, MODE_ALLOWED_TOOLS
 from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
+from benchmark.context import ScopedBenchmarkContext
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
 from services.claude_api import ClaudeAPIError
@@ -58,6 +59,107 @@ def _executor_for(raw: str, separator: str | None = None) -> WorkspaceToolExecut
         word_list=["THE", "OLD", "BAKERY", "ON", "MAPLE", "STREET"],
         pattern_dict={},
     )
+
+
+def _context_executor_for(
+    tmp_path,
+    *,
+    policy: str = "max",
+) -> WorkspaceToolExecutor:
+    root = tmp_path / "benchmark"
+    (root / "sources" / "test" / "transcriptions").mkdir(parents=True)
+    (root / "sources" / "test" / "plaintext").mkdir(parents=True)
+    (root / "sources" / "test" / "documents").mkdir(parents=True)
+    (root / "sources" / "test" / "transcriptions" / "related.canonical.txt").write_text(
+        "S001 S002 S003\n"
+    )
+    (root / "sources" / "test" / "plaintext" / "related.txt").write_text(
+        "KNOWN SOLVED TEXT\n"
+    )
+    (root / "sources" / "test" / "documents" / "context.txt").write_text(
+        "This is a longer associated context document.\n"
+    )
+    (root / "sources" / "test" / "documents" / "solution.txt").write_text(
+        "This document contains a solution and should be gated.\n"
+    )
+
+    ctx = ScopedBenchmarkContext(
+        policy=policy,
+        prompt="## Benchmark Context\nTest context",
+        injected_layers=[
+            {
+                "record_id": "target",
+                "layer": "minimal",
+                "label": "Basic context",
+                "text": "A handwritten cipher note.",
+            }
+        ],
+        target_record_ids=["target"],
+        context_record_ids=[],
+        benchmark_root=str(root),
+        records={
+            "target": {
+                "id": "target",
+                "area": "benchmark",
+                "source": "test",
+                "transcription_canonical_file": "sources/test/transcriptions/target.canonical.txt",
+                "plaintext_file": "sources/test/plaintext/target.txt",
+                "root": str(root),
+            },
+            "related": {
+                "id": "related",
+                "area": "benchmark",
+                "source": "test",
+                "transcription_canonical_file": "sources/test/transcriptions/related.canonical.txt",
+                "plaintext_file": "sources/test/plaintext/related.txt",
+                "root": str(root),
+                "relationship": {
+                    "relationship": "same_source_known_solution",
+                    "solution_available": True,
+                },
+            },
+        },
+        related_records={
+            "related": {
+                "id": "related",
+                "area": "benchmark",
+                "source": "test",
+                "transcription_canonical_file": "sources/test/transcriptions/related.canonical.txt",
+                "plaintext_file": "sources/test/plaintext/related.txt",
+                "root": str(root),
+                "relationship": {
+                    "relationship": "same_source_known_solution",
+                    "solution_available": True,
+                },
+            }
+        },
+        associated_documents={
+            "context_doc": {
+                "record_id": "target",
+                "document": {
+                    "id": "context_doc",
+                    "title": "Context document",
+                    "document_type": "letter",
+                    "text_file": "sources/test/documents/context.txt",
+                    "safe_context_layers": ["historical", "related_metadata", "max"],
+                },
+            },
+            "solution_doc": {
+                "record_id": "target",
+                "document": {
+                    "id": "solution_doc",
+                    "title": "Solution document",
+                    "document_type": "solution_note",
+                    "text_file": "sources/test/documents/solution.txt",
+                    "contains_solution": True,
+                    "safe_context_layers": ["related_solutions", "max"],
+                },
+            },
+        },
+    )
+    ex = _executor_for("ABC")
+    ex.benchmark_context = ctx
+    return ex
 
 
 def _homophonic_executor() -> WorkspaceToolExecutor:
@@ -78,6 +180,68 @@ def _homophonic_executor() -> WorkspaceToolExecutor:
         letter = "H" if i < 5 else "E"
         ex.workspace.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
     return ex
+
+
+def test_benchmark_context_tool_lists_scoped_material(tmp_path):
+    ex = _context_executor_for(tmp_path, policy="max")
+
+    out = json.loads(ex.execute("inspect_benchmark_context", {}))
+
+    assert out["available"] is True
+    assert out["policy"] == "max"
+    assert out["target_record_ids"] == ["target"]
+    assert out["related_solution_allowed"] is True
+    assert out["related_records_available"][0]["record_id"] == "related"
+    assert out["associated_documents_available"][0]["document_id"] in {
+        "context_doc",
+        "solution_doc",
+    }
+    assert ex.benchmark_context.access_log[-1]["tool"] == "inspect_benchmark_context"
+
+
+def test_related_solution_tool_blocks_when_policy_disallows(tmp_path):
+    ex = _context_executor_for(tmp_path, policy="historical")
+
+    out = json.loads(ex.execute("inspect_related_solution", {"record_id": "related"}))
+
+    assert "disabled by benchmark context policy" in out["error"]
+    assert ex.benchmark_context.access_log[-1]["allowed"] is False
+    assert ex.benchmark_context.access_log[-1]["error"] == "solution_context_disabled"
+
+
+def test_related_solution_tool_allows_related_but_never_target(tmp_path):
+    ex = _context_executor_for(tmp_path, policy="max")
+
+    related = json.loads(ex.execute("inspect_related_solution", {"record_id": "related"}))
+    target = json.loads(ex.execute("inspect_related_solution", {"record_id": "target"}))
+
+    assert related["content_type"] == "plaintext_solution"
+    assert related["text"] == "KNOWN SOLVED TEXT"
+    assert "target record's solution is never exposed" in target["error"]
+
+
+def test_related_transcription_rejects_unlisted_record(tmp_path):
+    ex = _context_executor_for(tmp_path, policy="max")
+
+    out = json.loads(ex.execute("inspect_related_transcription", {"record_id": "not_allowed"}))
+
+    assert "not in this run's benchmark context allowlist" in out["error"]
+    assert out["allowed_record_ids"] == ["related", "target"]
+    assert ex.benchmark_context.access_log[-1]["allowed"] is False
+
+
+def test_associated_document_tool_respects_solution_gate(tmp_path):
+    ex = _context_executor_for(tmp_path, policy="historical")
+
+    context_doc = json.loads(
+        ex.execute("inspect_associated_document", {"document_id": "context_doc"})
+    )
+    solution_doc = json.loads(
+        ex.execute("inspect_associated_document", {"document_id": "solution_doc"})
+    )
+
+    assert context_doc["text"] == "This is a longer associated context document."
+    assert "solution-bearing" in solution_doc["error"]
 
 
 def test_score_delta_reports_mixed_when_signals_disagree():
@@ -698,6 +862,17 @@ def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
     assert "search_automated_solver" in system
     assert "automated_preflight" in system
     assert "Do not spend early turns re-measuring facts" in system
+
+
+def test_system_prompt_mentions_scoped_benchmark_context_tools():
+    system = get_system_prompt("en")
+
+    assert "`benchmark_*`" in system
+    assert "inspect_benchmark_context" in system
+    assert "list_related_records" in system
+    assert "inspect_related_transcription" in system
+    assert "inspect_related_solution" in system
+    assert "target record's solution is never" in system
 
 
 def test_workspace_panel_shows_all_words_for_compact_pages():

@@ -45,6 +45,15 @@ distribution, etc.
 a quantitative reading. No score triggers anything automatically; you \
 consult them.
 - `corpus_*` — query the target-language wordlist and pattern dictionary.
+- `benchmark_*` — inspect scoped benchmark context when it is available. \
+If the opening context says related records, context records, or associated \
+documents are available, use `inspect_benchmark_context` and \
+`list_related_records` early enough to decide whether another ciphertext, \
+related transcription, or permitted source document can inform the solve. \
+Read other ciphertext with `inspect_related_transcription`. Only use \
+`inspect_related_solution` when the benchmark context policy explicitly \
+permits related-solution access; the target record's solution is never \
+available.
 - `act_*` — mutate a branch: set_mapping, bulk_set, anchor_word, clear, \
 swap_decoded. **These tools encode what you have read.** Whenever you \
 recognise a word or letter from the decoded text, prefer one of these tools \

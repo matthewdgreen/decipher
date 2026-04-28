@@ -204,6 +204,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             automated_preflight=not args.no_automated_preflight,
             display_mode=display_mode,
             external_context=_read_external_context(args),
+            benchmark_context_policy=args.benchmark_context,
         )
         mode_label = f"agentic ({provider}/{model})"
 
@@ -773,6 +774,25 @@ def main() -> None:
         "--context-file",
         metavar="PATH",
         help="Path to a text file containing external context (combined with --context if both given).",
+    )
+    bench.add_argument(
+        "--benchmark-context",
+        choices=[
+            "none",
+            "minimal",
+            "standard",
+            "historical",
+            "related_metadata",
+            "related_solutions",
+            "max",
+        ],
+        default="max",
+        help=(
+            "Benchmark manifest context available to agentic runs. Default "
+            "`max` injects concise record context and allows manifest-declared "
+            "related records/documents through scoped tools; it does not dump "
+            "long related plaintexts into the opening prompt."
+        ),
     )
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")

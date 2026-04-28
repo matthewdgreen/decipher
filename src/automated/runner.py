@@ -738,10 +738,13 @@ def _refine_transform_finalist_bakeoff(
                 structural_score=structural_score,
                 mutation_penalty=mutation_penalty,
             )
+            refinement_selectable = _refinement_selectable_transform_candidate(candidate)
             refined.append({
                 "candidate_id": candidate.get("candidate_id"),
                 "family": candidate.get("family"),
                 "finalist_label": candidate.get("finalist_label"),
+                "selectable_transform_candidate": bool(candidate.get("selectable_transform_candidate")),
+                "refinement_selectable": refinement_selectable,
                 "pipeline": pipeline.to_raw(),
                 "locked_positions": locked_positions,
                 "solver": refined_solver,
@@ -766,8 +769,9 @@ def _refine_transform_finalist_bakeoff(
             })
     refined.sort(
         key=lambda item: (
-            _float_or_none(item.get("anneal_score")) or float("-inf"),
+            bool(item.get("refinement_selectable")),
             _float_or_none(item.get("full_selection_score")) or float("-inf"),
+            _float_or_none(item.get("anneal_score")) or float("-inf"),
             _float_or_none(item.get("screen_confirmed_selection_score")) or float("-inf"),
         ),
         reverse=True,
@@ -787,11 +791,19 @@ def _refine_transform_finalist_bakeoff(
         "policy": (
             "When a screen-budget transform rank is followed by a full-budget "
             "run, refine the selected transform plus close/selectable "
-            "finalists. The final pick is made from full-budget anneal scores, "
-            "which protects against near-neighbor transform false positives "
-            "that only differ slightly in cheap rank mode."
+            "finalists. The final pick preserves the ranker's robustness gates "
+            "first, then compares full-budget selection scores, so unstable "
+            "false positives can be reported but cannot replace a robust "
+            "selected transform."
         ),
     }
+
+
+def _refinement_selectable_transform_candidate(candidate: dict[str, Any]) -> bool:
+    return (
+        bool(candidate.get("selectable_transform_candidate"))
+        or candidate.get("finalist_label") == "robust_candidate"
+    )
 
 
 def _full_refinement_finalists(
@@ -844,7 +856,7 @@ def _full_refinement_finalists(
             or float("-inf")
         )
         close = math.isfinite(selected_score) and score >= selected_score - score_margin
-        selectable = item.get("selectable_transform_candidate") or item.get("finalist_label") == "robust_candidate"
+        selectable = _refinement_selectable_transform_candidate(item)
         if selectable or close:
             add(item)
 
@@ -1836,7 +1848,7 @@ def _two_stage_transform_rank_candidates(
         bucket = class_buckets.get(class_name, [])
         if not bucket:
             continue
-        limit = 3 if class_name == "program_search" else 2 if class_name in {"banded_ndown_lock_shift", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
+        limit = 6 if class_name == "program_search" else 2 if class_name in {"banded_ndown_lock_shift", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
         candidates = (
             _program_diverse_transform_candidates(bucket, limit=limit)
             if class_name == "program_search"
@@ -1919,18 +1931,33 @@ def _program_diverse_transform_candidates(
     selected: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
-    def add(shape: str) -> None:
+    def add(shape: str) -> bool:
         if len(selected) >= limit:
-            return
+            return False
         for candidate in by_shape.get(shape, []):
             candidate_id = str(candidate.get("candidate_id"))
             if candidate_id in seen_ids:
                 continue
             selected.append(candidate)
             seen_ids.add(candidate_id)
-            return
+            return True
+        return False
 
-    for shape in ("banded_ndown_constructed", "route_repair_constructed", "program_other"):
+    def add_prefixed(prefix: str, max_items: int) -> None:
+        added = 0
+        keys = sorted(
+            (key for key in by_shape if key.startswith(prefix)),
+            key=lambda key: _transform_triage_sort_key(by_shape[key][0]),
+            reverse=True,
+        )
+        for key in keys:
+            if added >= max_items or len(selected) >= limit:
+                break
+            if add(key):
+                added += 1
+
+    add_prefixed("banded_ndown_constructed:", max_items=4)
+    for shape in ("route_repair_constructed", "program_other"):
         add(shape)
     for candidate in bucket:
         if len(selected) >= limit:
@@ -1946,9 +1973,25 @@ def _program_diverse_transform_candidates(
 def _program_shape_key(candidate: dict[str, Any]) -> str:
     params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
     template = str(params.get("template") or "")
-    if template in {"banded_ndown_constructed", "route_repair_constructed"}:
+    if template == "banded_ndown_constructed":
+        return f"{template}:{_banded_program_variant_key(params)}"
+    if template == "route_repair_constructed":
         return template
     return "program_other"
+
+
+def _banded_program_variant_key(params: dict[str, Any]) -> str:
+    labels = [str(label) for label in params.get("operation_labels") or []]
+    top_across = "a?"
+    shift = "shift?"
+    for label in labels:
+        if label.startswith("ndown_top") and "_a" in label:
+            top_across = label.rsplit("_", 1)[-1]
+        if "shift_right" in label:
+            shift = "right"
+        elif "shift_left" in label:
+            shift = "left"
+    return f"{top_across}:{shift}"
 
 
 def _transform_family_class(candidate: dict[str, Any]) -> str:
