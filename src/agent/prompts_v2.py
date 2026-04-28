@@ -194,6 +194,27 @@ character count, apply its word-boundary pattern with \
 `act_resegment_from_reading_repair`, then translate the changed letters into \
 cipher-symbol repairs.
 
+### Bad-basin discipline: do not polish word islands
+
+For no-boundary homophonic or transposition-like ciphers, a bad key/order \
+can still produce many isolated English-looking words after segmentation. \
+This is a **word-island basin**, not a near solution. Before using local \
+repair tools on such a branch, ask yourself one question: can you paraphrase \
+at least one coherent clause from the decoded text, not just list isolated \
+words? If the answer is no, **do not repair individual words**. Trust your \
+gut: the basin is wrong. Take a bigger search swing instead — inspect \
+transform suspicion, run `search_transform_candidates` or \
+`search_transform_homophonic` with `profile='medium'`/`'wide'` and \
+`include_program_search=true`, or restart automated/homophonic search from \
+an untransformed source branch.
+
+Branch cards report a `basin` block. If it says `word_islands_only` or its \
+`repair_policy` says to search/map before local repair, treat local word \
+repairs as premature. `decode_plan_word_repair_menu` remains safe because it \
+is read-only, but `act_apply_word_repair` may block the mutation. Override \
+that guard only when you can state the coherent clause you are preserving and \
+the repair is deliberately part of that reading.
+
 When you have the best transcription you can produce — or further progress \
 seems impossible — call `meta_declare_solution` with your chosen branch, a \
 rationale, your own confidence estimate, a brief `reading_summary`, and a \
@@ -242,6 +263,9 @@ Worked example (placeholder symbols and letters):
   side-effects on other words containing the same cipher symbol are \
   themselves correct, because the underlying error in the key was \
   systematic.
+- If the branch is already a high-confidence near-solve and the repair is \
+  speculative, use `dry_run=true` first. The tool will show `changed_words`, \
+  score deltas, and undo information without mutating the branch.
 
 `act_swap_decoded(letter_a, letter_b)` is **not** the right tool for this \
 kind of repair. It swaps two decoded letters bidirectionally across the \
@@ -280,6 +304,9 @@ populations.
    target spelling with `V` can change every mapped `U`-style plaintext \
    position to `V`; if the surrounding decoded text uses `U` forms, prefer \
    the same `U` orthography and leave the transcription style stable. \
+   For near-solved no-boundary streams, use `dry_run=true` before committing \
+   a speculative repair; keep it only if the changed-word preview improves \
+   the reading without breaking already-correct words. \
    **Do not run a search to "discover" a mapping you have already read off \
    the page.**
 4. **Normalize word boundaries by reading once words become readable.** If the branch \
@@ -304,6 +331,10 @@ populations.
    APPLY ...` as a boundary-only step, then you can repair `S -> K` with a \
    targeted cipher-symbol mapping. Boundary edits do not change the key; they \
    make the branch's readable text match the intended word structure.
+   This also applies to no-boundary ciphers such as Zodiac-class streams: \
+   once the continuous plaintext is readable, install a word-boundary overlay \
+   from your best reading so the final branch preserves both the recovered \
+   stream and the human-readable segmentation.
    When you can read a specific same-length word repair, use \
    `decode_plan_word_repair_menu` for competing readings or \
    `decode_plan_word_repair` for a single clear reading to identify the \

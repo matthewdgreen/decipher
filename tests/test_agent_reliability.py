@@ -324,6 +324,38 @@ def test_act_set_mapping_returns_changed_words_and_no_verdict():
     assert "changed_words" in out["note"]
 
 
+def test_act_set_mapping_dry_run_restores_branch_and_reports_undo():
+    raw = "AB | AC"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"AT", "AX"},
+        word_list=["AT", "AX"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("X"))
+
+    out = ex._tool_act_set_mapping({
+        "branch": "main",
+        "cipher_symbol": "A",
+        "plain_letter": "B",
+        "dry_run": True,
+    })
+
+    assert out["status"] == "preview"
+    assert out["dry_run"] is True
+    assert out["previous_mapping"] == "A -> A"
+    assert "act_set_mapping" in out["undo_call"]
+    assert ws.apply_key("main") == "AT | AX"
+    assert {"index": 0, "before": "AT", "after": "BT"} in out["changed_words"]
+
+
 def test_act_set_mapping_keeps_reading_positive_negative_score_advisory(monkeypatch):
     """Discipline regression: a reading-positive mapping may lower the
     scorer. The tool must not label that as worse; it must surface the
@@ -450,6 +482,40 @@ def test_act_apply_word_repair_applies_mapping_with_changed_words():
     assert out["agenda_item"]["last_result"]["mappings_set"] == 1
 
 
+def test_act_apply_word_repair_dry_run_restores_branch_and_agenda():
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    ws.set_mapping("main", alpha.id_for("A"), pt.id_for("C"))
+    ws.set_mapping("main", alpha.id_for("B"), pt.id_for("A"))
+    ws.set_mapping("main", alpha.id_for("C"), pt.id_for("T"))
+    ws.set_mapping("main", alpha.id_for("D"), pt.id_for("R"))
+
+    out = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+        "dry_run": True,
+    })
+
+    assert out["status"] == "preview"
+    assert out["dry_run"] is True
+    assert out["mappings"] == {"A": "B"}
+    assert out["undo_mappings"] == {"A": "C"}
+    assert ws.apply_key("main") == "CAT | CAR"
+    assert ex.repair_agenda == []
+    assert {"index": 0, "before": "CAT", "after": "BAT"} in out["changed_words"]
+
+
 def test_word_repair_blocks_repeated_symbol_conflict_before_mutating():
     raw = "MKGMAQ"
     alpha = Alphabet.from_text(raw, ignore_chars=set())
@@ -534,6 +600,162 @@ def test_decode_plan_word_repair_menu_compares_options_without_agenda_mutation()
     assert plures["effect_summary"]["changed_words_preview"][0]["after"] == "PLUPES"
     assert rlures["recommendation"].startswith("already_matches")
     assert ex.repair_agenda == []
+
+
+def test_branch_cards_surface_basin_status(monkeypatch):
+    ex = _executor_for("ABC")
+
+    monkeypatch.setattr(
+        ex,
+        "_branch_basin_status",
+        lambda branch: {
+            "status": "word_islands_only",
+            "repair_policy": "search_before_local_repair",
+            "reason": "test basin warning",
+            "suggested_next_tools": ["search_transform_homophonic"],
+        },
+    )
+
+    cards = ex._tool_workspace_branch_cards({"branch": "main"})
+
+    assert cards["cards"][0]["basin"]["status"] == "word_islands_only"
+    assert cards["cards"][0]["basin"]["repair_policy"] == "search_before_local_repair"
+    assert "basin status" in cards["note"]
+
+
+def test_decode_plan_word_repair_menu_warns_on_bad_basin(monkeypatch):
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    for cipher_sym, plain in {
+        "A": "C",
+        "B": "A",
+        "C": "T",
+        "D": "R",
+    }.items():
+        ex.workspace.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    monkeypatch.setattr(
+        ex,
+        "_branch_basin_status",
+        lambda branch: {
+            "status": "word_islands_only",
+            "repair_policy": "search_before_local_repair",
+            "reason": "isolated dictionary words without a coherent clause",
+            "suggested_next_tools": ["search_transform_homophonic"],
+        },
+    )
+
+    menu = ex._tool_decode_plan_word_repair_menu({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_words": ["BAT"],
+    })
+
+    assert menu["status"] == "ok"
+    assert menu["basin_warning"]["status"] == "word_islands_only"
+    option = menu["options"][0]
+    assert option["applicable"] is True
+    assert option["recommendation"].startswith("search_before_apply")
+    assert "allow_bad_basin_repair=true" in option["recommendation"]
+    assert ex.repair_agenda == []
+
+
+def test_act_apply_word_repair_blocks_bad_basin_without_override(monkeypatch):
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    for cipher_sym, plain in {
+        "A": "C",
+        "B": "A",
+        "C": "T",
+        "D": "R",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    monkeypatch.setattr(
+        ex,
+        "_branch_basin_status",
+        lambda branch: {
+            "status": "word_islands_only",
+            "repair_policy": "search_before_local_repair",
+            "reason": "isolated dictionary words without a coherent clause",
+            "suggested_next_tools": ["search_transform_homophonic"],
+        },
+    )
+
+    out = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "bad_basin_word_repair_blocked"
+    assert ws.apply_key("main") == "CAT | CAR"
+    assert out["agenda_item"]["status"] == "blocked"
+    assert "search_transform_homophonic" in out["suggested_next_tools"]
+
+
+def test_act_apply_word_repair_allows_bad_basin_with_explicit_override(monkeypatch):
+    raw = "ABC | ABD"
+    alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" | ")
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"BAT", "BAR"},
+        word_list=["BAT", "BAR"],
+        pattern_dict={},
+    )
+    pt = ex.workspace.plaintext_alphabet
+    ws = ex.workspace
+    for cipher_sym, plain in {
+        "A": "C",
+        "B": "A",
+        "C": "T",
+        "D": "R",
+    }.items():
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(plain))
+
+    monkeypatch.setattr(
+        ex,
+        "_branch_basin_status",
+        lambda branch: {
+            "status": "word_islands_only",
+            "repair_policy": "search_before_local_repair",
+            "reason": "isolated dictionary words without a coherent clause",
+            "suggested_next_tools": ["search_transform_homophonic"],
+        },
+    )
+
+    out = ex._tool_act_apply_word_repair({
+        "branch": "main",
+        "decoded_word": "CAT",
+        "target_word": "BAT",
+        "allow_bad_basin_repair": True,
+    })
+
+    assert out["status"] == "ok"
+    assert ws.apply_key("main") == "BAT | BAR"
+    assert out["basin_before"]["status"] == "word_islands_only"
 
 
 def test_repair_agenda_list_and_update_track_word_repair_state():
@@ -2211,6 +2433,36 @@ def test_act_resegment_by_reading_applies_character_preserving_boundaries():
     assert out["new_word_count"] == 9
     assert out["dictionary_after"]["dictionary_rate"] == 1.0
     assert ws.apply_key("main") == proposed
+
+
+def test_act_resegment_by_reading_shows_overlay_on_no_boundary_cipher():
+    raw = "THEREFORE"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THERE", "FORE", "THEREFORE"},
+        word_list=["THERE", "FORE", "THEREFORE"],
+        pattern_dict={},
+    )
+    ws = ex.workspace
+    pt = ws.plaintext_alphabet
+    for cipher_sym in alpha.symbols:
+        ws.set_mapping("main", alpha.id_for(cipher_sym), pt.id_for(cipher_sym))
+
+    out = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": "THERE FORE",
+    })
+
+    assert out["status"] == "ok"
+    assert out["old_word_count"] == 1
+    assert out["new_word_count"] == 2
+    assert ws.apply_key("main") == "THERE FORE"
+    snap = ws.snapshot_branch("main")
+    assert snap["custom_word_boundaries"] is True
+    assert snap["decryption"] == "THERE FORE"
 
 
 def test_act_resegment_by_reading_rejects_letter_changing_proposal():

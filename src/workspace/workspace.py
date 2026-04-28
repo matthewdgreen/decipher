@@ -295,9 +295,22 @@ class Workspace:
 
     def apply_key(self, branch_name: str) -> str:
         branch = self.get_branch(branch_name)
-        return self._decode_with(branch.key, self.effective_words(branch_name))
+        word_sep = self.cipher_text.separator or (
+            " " if branch.word_spans is not None else ""
+        )
+        return self._decode_with(
+            branch.key,
+            self.effective_words(branch_name),
+            word_sep=word_sep,
+        )
 
-    def _decode_with(self, key: dict[int, int], words: list[list[int]] | None = None) -> str:
+    def _decode_with(
+        self,
+        key: dict[int, int],
+        words: list[list[int]] | None = None,
+        *,
+        word_sep: str | None = None,
+    ) -> str:
         ct = self.cipher_text
         pt_alpha = self.plaintext_alphabet
         sep_inner = " " if pt_alpha._multisym else ""
@@ -311,7 +324,8 @@ class Workspace:
                     parts.append("?")
             return sep_inner.join(parts)
 
-        word_sep = ct.separator or ""
+        if word_sep is None:
+            word_sep = ct.separator or ""
         use_words = words if words is not None else ct.words
         return word_sep.join(decode_word(w) for w in use_words)
 

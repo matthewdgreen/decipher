@@ -81,6 +81,45 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     `search_session_id` / `continue_transform_search` tool so the agent can
     escalate from small -> medium/wide -> finalist promotion without wasting
     solver budget.
+  - [x] Add initial agent-driven word-boundary recovery support as a
+    first-class post-solve task for Zodiac-class no-boundary ciphers.
+    `act_resegment_by_reading` / `act_resegment_from_reading_repair` can now
+    install and display word-boundary overlays even when the original cipher
+    had no separators.
+  - [ ] Extend no-boundary boundary recovery into scoring/reporting.
+    After a branch has a readable continuous plaintext stream, artifacts
+    should distinguish character recovery, transform/key recovery, and
+    boundary recovery, so no-boundary fixtures do not misleadingly report
+    `0%` word accuracy merely because both plaintext and decrypt are stored
+    as one continuous token stream.
+  - [x] Preserve the neutral Z340 agentic crack as a cheap regression target.
+    `tests/test_z340_regression.py` now captures the successful run shape
+    without requiring a live provider call.
+  - [ ] Add an opt-in live neutral Z340 regression target. In
+    `artifacts/z340_neutral_agentic_gpt54/challenge_340_context_probe_001/dbfd1b2b24c2.json`,
+    GPT-5.4 solved the neutral-context 340-token challenge to about `94.1%`
+    character accuracy after the bad-basin guard blocked a premature forced
+    partial and pushed the agent from a medium `529`-candidate
+    transform+homophonic screen to a wide `24,380`-candidate screen with
+    program search and full homophonic promotion. This is the first strong
+    evidence that the agent can infer "homophonic plus reading-order search"
+    from neutral technical context rather than from a Zodiac-labelled fixture.
+    Add an opt-in regression/smoke target that checks the tool sequence
+    shape: automated/homophonic baseline -> transform suspicion -> medium
+    screen -> declaration blocked as word-islands/needs-more-work -> wide
+    transform+homophonic search -> coherent stream declaration.
+  - [x] Add initial reversible repair mechanics for near-solved no-boundary
+    branches. `act_set_mapping` and `act_apply_word_repair` support
+    `dry_run=true`, returning changed-word previews and undo information
+    without mutating branch state.
+  - [ ] Add full trial/revert workflow support for speculative repairs. In
+    the neutral Z340 crack, the agent correctly noticed that a
+    targeted `Z006 -> U` repair broke already-correct words (`THAT -> THUT`,
+    `CHAMBER -> CHUMBER`) and said it should not be kept, but the declared
+    branch still contained that mutation. Provide low-friction trial/revert
+    support for `act_set_mapping`/`act_apply_word_repair`, or require repair
+    branches for speculative local edits once a branch is already a high-
+    confidence solve.
   - Investigate moving hot transform-search kernels to Rust/C/C++ once the
     Python prototype stabilizes. Likely candidates: route/matrix candidate
     enumeration, token-order permutation application, structural metric
@@ -94,6 +133,13 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     "fractionation -> transposition -> substitution", or
     "polyalphabetic -> null removal", and record competing hypotheses in
     artifacts.
+  - Add cipher-type-specific agent prompting and tool views. The agent should
+    first form an explicit cipher-type hypothesis, then receive a focused
+    prompt/tool subset for that hypothesis (for example, simple substitution,
+    homophonic, transposition+homophonic, polyalphabetic, fractionation).
+    It must still be free to mark the hypothesis wrong, switch modes, and
+    request a different tool/prompt profile. This should reduce the current
+    one-size-fits-all prompt bulk and make tool choice less noisy.
 - [ ] Machine ciphers as later plugins.
   - Treat Enigma, Hagelin, Purple-style, rotor, pinwheel, and teleprinter-era
     systems as plugin families rather than forcing them into the core

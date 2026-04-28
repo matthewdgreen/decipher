@@ -430,6 +430,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "cipher_symbol": {"type": "string"},
                 "plain_letter": {"type": "string"},
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Preview the mapping and changed_words without "
+                        "mutating the branch. Use this for speculative "
+                        "near-solved repairs before committing them."
+                    ),
+                },
             },
             "required": ["branch", "cipher_symbol", "plain_letter"],
         },
@@ -617,6 +626,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "cipher_word_index": {"type": "integer"},
                 "decoded_word": {"type": "string"},
                 "occurrence": {"type": "integer", "default": 0},
+                "dry_run": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Preview the same-length word repair without mutating "
+                        "the branch or repair agenda."
+                    ),
+                },
+                "allow_bad_basin_repair": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Override the bad-basin repair guard. Use only when "
+                        "you can paraphrase a coherent clause and intentionally "
+                        "want this local word repair despite the warning."
+                    ),
+                },
             },
             "required": ["branch", "target_word"],
         },
@@ -2276,6 +2302,178 @@ class WorkspaceToolExecutor:
             "unrecognized_sample": unrecognized[:20],
         }
 
+    def _has_escalated_transform_search(self) -> bool:
+        """Return true once the run has tried more than a tiny transform probe."""
+        for call in self.call_log:
+            args = call.arguments or {}
+            if call.tool_name == "search_transform_homophonic":
+                profile = str(args.get("profile") or "small").lower()
+                if profile in {"medium", "wide"}:
+                    return True
+                if bool(args.get("include_program_search")):
+                    return True
+                generated = args.get("max_generated_candidates")
+                if generated is not None:
+                    try:
+                        if int(generated) >= 10000:
+                            return True
+                    except (TypeError, ValueError):
+                        pass
+            if call.tool_name == "search_transform_candidates":
+                breadth = str(args.get("breadth") or "").lower()
+                if breadth in {"broad", "wide"}:
+                    return True
+                if bool(args.get("include_program_search")):
+                    return True
+        return False
+
+    def _repair_policy_blocks_word_repair(self, basin: dict[str, Any]) -> bool:
+        return basin.get("repair_policy") in {
+            "search_before_local_repair",
+            "search_or_map_before_repair",
+        }
+
+    def _longest_dictionary_run(self, words: list[str]) -> dict[str, Any]:
+        best: list[str] = []
+        current: list[str] = []
+        for word in words:
+            if word in self.word_set:
+                current.append(word)
+                if len("".join(current)) > len("".join(best)):
+                    best = list(current)
+            else:
+                current = []
+        return {
+            "word_count": len(best),
+            "char_count": len("".join(best)),
+            "sample": best[:12],
+        }
+
+    def _branch_basin_status(self, branch_name: str) -> dict[str, Any]:
+        """Classify whether a branch is suitable for local reading repair.
+
+        This is deliberately conservative. It is not trying to prove semantic
+        coherence; it flags the common failure mode where a no-boundary
+        homophonic/transposition candidate has been segmented into many short
+        English-looking islands while the language-model score still says the
+        continuous text is poor.
+        """
+        scores = self._compute_quick_scores(branch_name)
+        dict_rate = scores.get("dict_rate")
+        quad = scores.get("quad")
+        branch = self.workspace.get_branch(branch_name)
+        words = [
+            self._reading_char_stream(word)
+            for word in self._decoded_words(branch_name, max_words=None)
+            if self._reading_char_stream(word)
+        ]
+        scored = [word for word in words if any(ch.isalpha() for ch in word)]
+        hits = [word for word in scored if word in self.word_set]
+        long_hits = [word for word in hits if len(word) >= 5]
+        short_hit_fraction = (
+            sum(1 for word in hits if len(word) <= 3) / len(hits)
+            if hits else 0.0
+        )
+        avg_word_len = (
+            sum(len(word) for word in scored) / len(scored)
+            if scored else 0.0
+        )
+        longest_run = self._longest_dictionary_run(scored)
+        original_no_boundary = len(self.workspace.cipher_text.words) <= 1
+        no_boundary_family = original_no_boundary and self._is_homophonic_cipher()
+        quad_poor = not isinstance(quad, (int, float)) or quad < -4.05
+        dict_numeric = float(dict_rate) if isinstance(dict_rate, (int, float)) else 0.0
+        coverage = (
+            len(branch.key) / self._alpha().size
+            if self._alpha().size else 0.0
+        )
+
+        status = "unknown"
+        repair_policy = "normal"
+        reason = (
+            "Not enough evidence to classify semantic basin quality. Use "
+            "decoded text and branch comparison."
+        )
+        suggested_next_tools: list[str] = ["decode_show", "score_panel"]
+
+        if coverage < 0.25:
+            status = "garbage"
+            repair_policy = "search_or_map_before_repair"
+            reason = "Very little of the cipher alphabet is mapped."
+            suggested_next_tools = [
+                "search_automated_solver",
+                "search_homophonic_anneal",
+                "observe_transform_suspicion",
+            ]
+        elif no_boundary_family and dict_numeric >= 0.30 and quad_poor:
+            status = "word_islands_only"
+            repair_policy = "search_before_local_repair"
+            reason = (
+                "This no-boundary homophonic branch has dictionary-looking "
+                "segments but poor continuous-language score. That pattern is "
+                "typical of word islands in a bad basin, not a near-solved "
+                "plaintext. Only do local repairs if you can paraphrase a "
+                "coherent clause."
+            )
+            suggested_next_tools = [
+                "observe_transform_suspicion",
+                (
+                    "search_transform_homophonic(profile='medium', "
+                    "include_program_search=true)"
+                    if not self._has_escalated_transform_search()
+                    else "search_transform_homophonic(profile='wide', include_program_search=true)"
+                ),
+                "search_automated_solver",
+                "workspace_branch_cards",
+            ]
+        elif no_boundary_family and dict_numeric < 0.18 and quad_poor:
+            status = "garbage"
+            repair_policy = "search_before_local_repair"
+            reason = (
+                "This no-boundary homophonic branch has weak dictionary and "
+                "quadgram signals. It is not ready for word-level repair."
+            )
+            suggested_next_tools = [
+                "observe_transform_suspicion",
+                "search_transform_homophonic(profile='medium', include_program_search=true)",
+                "search_automated_solver",
+            ]
+        elif (
+            isinstance(quad, (int, float)) and quad >= -4.05
+            and (longest_run["char_count"] >= 14 or len(long_hits) >= 3)
+        ):
+            status = "coherent_basin"
+            repair_policy = "local_repair_ok"
+            reason = (
+                "Internal language score and dictionary runs are consistent "
+                "with a branch that may be close enough for reading-driven "
+                "repair."
+            )
+            suggested_next_tools = [
+                "decode_plan_word_repair_menu",
+                "act_apply_word_repair",
+                "decode_validate_reading_repair",
+            ]
+
+        return {
+            "status": status,
+            "repair_policy": repair_policy,
+            "reason": reason,
+            "original_no_boundary": original_no_boundary,
+            "homophonic_like": self._is_homophonic_cipher(),
+            "mapping_coverage": round(coverage, 4),
+            "dictionary_rate": dict_rate,
+            "quad": quad,
+            "word_count": len(scored),
+            "recognized_word_count": len(hits),
+            "long_recognized_word_count": len(long_hits),
+            "average_word_length": round(avg_word_len, 2),
+            "short_hit_fraction": round(short_hit_fraction, 4),
+            "longest_dictionary_run": longest_run,
+            "escalated_transform_search_seen": self._has_escalated_transform_search(),
+            "suggested_next_tools": suggested_next_tools,
+        }
+
     def _first_reading_mismatches(
         self,
         current_stream: str,
@@ -2471,6 +2669,7 @@ class WorkspaceToolExecutor:
             "tags": list(branch.tags),
             "protected_baseline": branch_name == "automated_preflight",
             "scores": self._compute_quick_scores(branch_name),
+            "basin": self._branch_basin_status(branch_name),
             "repair_agenda": agenda,
             "repair_counts": {
                 status: sum(1 for item in agenda if item.get("status") == status)
@@ -2719,7 +2918,10 @@ class WorkspaceToolExecutor:
             "cards": cards,
             "note": (
                 "Use these cards before declaration: compare readability, "
-                "internal scores, applied/held repairs, and orthography risks. "
+                "internal scores, basin status, applied/held repairs, and "
+                "orthography risks. If a branch card says `word_islands_only`, "
+                "do not spend iterations on local word repairs unless you can "
+                "paraphrase a coherent clause; escalate search instead. "
                 "Treat `automated_preflight` as a protected no-LLM baseline; "
                 "do not discard it in favor of a modernized/classicized edit "
                 "unless the edited branch is clearly better in the manuscript "
@@ -3812,6 +4014,22 @@ class WorkspaceToolExecutor:
         targets = args.get("target_words") or []
         if not isinstance(targets, list) or not targets:
             return {"error": "target_words must be a non-empty list"}
+        branch = args["branch"]
+        basin = self._branch_basin_status(branch)
+        basin_warning: dict[str, Any] | None = None
+        if self._repair_policy_blocks_word_repair(basin):
+            basin_warning = {
+                "status": basin.get("status"),
+                "repair_policy": basin.get("repair_policy"),
+                "reason": basin.get("reason"),
+                "suggested_next_tools": basin.get("suggested_next_tools", []),
+                "note": (
+                    "This menu is still safe because it is read-only, but do "
+                    "not apply a local word repair from this branch unless you "
+                    "can paraphrase a coherent clause in the decoded text. "
+                    "Prefer the suggested search tools first."
+                ),
+            }
 
         normalized_targets: list[str] = []
         seen: set[str] = set()
@@ -3840,7 +4058,7 @@ class WorkspaceToolExecutor:
                 cipher_word_index = plan.get("cipher_word_index", cipher_word_index)
             if token_mappings:
                 plan["effect_summary"] = self._word_repair_effect_summary(
-                    args["branch"],
+                    branch,
                     token_mappings,
                 )
             else:
@@ -3853,23 +4071,35 @@ class WorkspaceToolExecutor:
             if plan.get("applicable"):
                 plan["suggested_call"] = (
                     "act_apply_word_repair("
-                    f"branch={args['branch']!r}, "
+                    f"branch={branch!r}, "
                     f"cipher_word_index={plan['cipher_word_index']}, "
                     f"target_word={plan['target_word']!r})"
                 )
+                if basin_warning:
+                    plan["recommendation"] = (
+                        "search_before_apply: branch looks like word islands "
+                        "rather than a coherent basin; apply only with "
+                        "allow_bad_basin_repair=true after you can paraphrase "
+                        "a coherent clause."
+                    )
             options.append(plan)
 
         return {
             "status": "ok",
-            "branch": args["branch"],
+            "branch": branch,
             "cipher_word_index": cipher_word_index,
             "current_decoded": current_decoded,
             "option_count": len(options),
             "options": options,
+            "basin": basin,
+            "basin_warning": basin_warning,
             "note": (
                 "This is a read-only menu. Apply only options whose preview "
                 "reads better and whose recommendation does not say "
-                "do_not_apply_directly. For conflicting repeated-symbol cases, "
+                "do_not_apply_directly. If basin_warning is present, local "
+                "word repairs are probably premature: first take a bigger "
+                "search/transform swing unless you can paraphrase a coherent "
+                "clause. For conflicting repeated-symbol cases, "
                 "prefer boundary repair or a different reading rather than "
                 "forcing a single mapping."
             ),
@@ -4092,36 +4322,68 @@ class WorkspaceToolExecutor:
         branch = args["branch"]
         cipher_sym = args["cipher_symbol"]
         plain_letter = args["plain_letter"].upper()
+        dry_run = bool(args.get("dry_run", False))
         alpha = self._alpha()
         pt_alpha = self._pt_alpha()
         if not alpha.has_symbol(cipher_sym):
             return {"error": f"Unknown cipher symbol: {cipher_sym}"}
         if not pt_alpha.has_symbol(plain_letter):
             return {"error": f"Unknown plaintext letter: {plain_letter}"}
+        ct_id = alpha.id_for(cipher_sym)
+        pt_id = pt_alpha.id_for(plain_letter)
+        branch_state = self.workspace.get_branch(branch)
+        had_previous = ct_id in branch_state.key
+        previous_pt_id = branch_state.key.get(ct_id)
+        previous_plain = (
+            pt_alpha.symbol_for(previous_pt_id)
+            if previous_pt_id is not None else None
+        )
         before = self._compute_quick_scores(branch)
         before_words = self._decoded_words(branch)
-        self.workspace.set_mapping(
-            branch,
-            alpha.id_for(cipher_sym),
-            pt_alpha.id_for(plain_letter),
-        )
+        self.workspace.set_mapping(branch, ct_id, pt_id)
         after = self._compute_quick_scores(branch)
         after_words = self._decoded_words(branch)
         changed = self._changed_words_sample(before_words, after_words)
         orthography_risks = self._orthography_risks(before_words, after_words)
+        decoded_preview = self._decoded_preview(branch)
+        if dry_run:
+            if had_previous and previous_pt_id is not None:
+                self.workspace.set_mapping(branch, ct_id, previous_pt_id)
+            else:
+                self.workspace.clear_mapping(branch, ct_id)
         return {
-            "status": "ok",
+            "status": "preview" if dry_run else "ok",
             "branch": branch,
             "mapping": f"{cipher_sym} -> {plain_letter}",
+            "dry_run": dry_run,
+            "previous_mapping": (
+                f"{cipher_sym} -> {previous_plain}"
+                if previous_plain is not None else None
+            ),
             "occurrences_changed": sum(
                 1 for w in self.workspace.cipher_text.tokens
                 if alpha.symbol_for(w) == cipher_sym
             ),
             "changed_words": changed,
             "orthography_risks": orthography_risks,
-            "decoded_preview": self._decoded_preview(branch),
+            "decoded_preview": decoded_preview,
             "score_delta": self._reading_score_delta(before, after),
-            "note": self._READING_DECISION_NOTE,
+            "undo_call": (
+                f"act_set_mapping(branch={branch!r}, cipher_symbol={cipher_sym!r}, "
+                f"plain_letter={previous_plain!r})"
+                if previous_plain is not None
+                else f"act_clear_mapping(branch={branch!r}, cipher_symbol={cipher_sym!r})"
+            ),
+            "note": (
+                "Dry run only: branch state was restored after preview. "
+                "Call again with dry_run=false to keep this mapping. "
+                + self._READING_DECISION_NOTE
+                if dry_run else
+                "If this speculative repair broke already-correct words, use "
+                "`undo_call` immediately or make such trials on a forked "
+                "repair branch. "
+                + self._READING_DECISION_NOTE
+            ),
         }
 
     def _tool_act_bulk_set(self, args: dict) -> Any:
@@ -4344,6 +4606,7 @@ class WorkspaceToolExecutor:
 
     def _tool_act_apply_word_repair(self, args: dict) -> Any:
         branch = args["branch"]
+        dry_run = bool(args.get("dry_run", False))
         plan = self._word_repair_plan(args)
         token_mappings = plan.pop("_token_mappings", {})
         if plan.get("error"):
@@ -4358,9 +4621,45 @@ class WorkspaceToolExecutor:
                 "error": "Word repair is not directly applicable.",
                 **plan,
             }
+        basin = self._branch_basin_status(branch)
+        allow_bad_basin_repair = bool(args.get("allow_bad_basin_repair", False))
+        if (
+            self._repair_policy_blocks_word_repair(basin)
+            and not allow_bad_basin_repair
+        ):
+            plan["agenda_item"] = self._upsert_repair_agenda_item(
+                plan,
+                status="blocked",
+                notes=(
+                    "Blocked by bad-basin guard: branch looks like word "
+                    "islands, not a coherent reading basin."
+                ),
+            )
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "bad_basin_word_repair_blocked",
+                "basin": basin,
+                **plan,
+                "note": (
+                    "The branch currently looks like isolated dictionary word "
+                    "islands rather than coherent prose. Do not polish local "
+                    "words yet. First run the suggested broader search tools, "
+                    "or call this tool again with allow_bad_basin_repair=true "
+                    "only if you can paraphrase a coherent clause and are "
+                    "intentionally overriding the guard."
+                ),
+                "suggested_next_tools": basin.get("suggested_next_tools", []),
+            }
 
         before = self._compute_quick_scores(branch)
         before_words = self._decoded_words(branch, max_words=None)
+        branch_state = self.workspace.get_branch(branch)
+        previous_mappings: dict[int, int | None] = {
+            token_id: branch_state.key.get(token_id)
+            for token_id in token_mappings
+        }
         for token_id, pt_id in token_mappings.items():
             self.workspace.set_mapping(branch, token_id, pt_id)
         after = self._compute_quick_scores(branch)
@@ -4368,32 +4667,59 @@ class WorkspaceToolExecutor:
         changed_words = self._changed_words_sample(before_words, after_words)
         score_delta = self._reading_score_delta(before, after)
         orthography_risks = self._orthography_risks(before_words, after_words)
-        agenda_item = self._upsert_repair_agenda_item(
-            plan,
-            status="applied",
-            notes="Applied by act_apply_word_repair.",
-            last_result={
-                "mappings_set": len(token_mappings),
-                "changed_words": changed_words,
-                "score_delta": score_delta,
-                "orthography_risks": orthography_risks,
-            },
-        )
+        decoded_preview = self._decoded_preview(branch)
+        if dry_run:
+            for token_id, previous_pt_id in previous_mappings.items():
+                if previous_pt_id is None:
+                    self.workspace.clear_mapping(branch, token_id)
+                else:
+                    self.workspace.set_mapping(branch, token_id, previous_pt_id)
+            agenda_item = None
+        else:
+            agenda_item = self._upsert_repair_agenda_item(
+                plan,
+                status="applied",
+                notes="Applied by act_apply_word_repair.",
+                last_result={
+                    "mappings_set": len(token_mappings),
+                    "changed_words": changed_words,
+                    "score_delta": score_delta,
+                    "orthography_risks": orthography_risks,
+                },
+            )
+        pt_alpha = self._pt_alpha()
+        alpha = self._alpha()
+        undo_mappings = {
+            alpha.symbol_for(token_id): (
+                pt_alpha.symbol_for(previous_pt_id)
+                if previous_pt_id is not None else None
+            )
+            for token_id, previous_pt_id in previous_mappings.items()
+        }
         return {
-            "status": "ok",
+            "status": "preview" if dry_run else "ok",
             "branch": branch,
+            "dry_run": dry_run,
             "cipher_word_index": plan["cipher_word_index"],
             "cipher_word": plan["cipher_word"],
             "from": plan["current_decoded"],
             "to": plan["target_word"],
             "mappings_set": len(token_mappings),
             "mappings": plan["proposed_mappings"],
+            "undo_mappings": undo_mappings,
             "changed_words": changed_words,
             "orthography_risks": orthography_risks,
-            "decoded_preview": self._decoded_preview(branch),
+            "decoded_preview": decoded_preview,
             "score_delta": score_delta,
+            "basin_before": basin,
+            "basin_after": self._branch_basin_status(branch),
             "agenda_item": agenda_item,
-            "note": self._READING_DECISION_NOTE,
+            "note": (
+                "Dry run only: branch state and repair agenda were unchanged. "
+                "Call again with dry_run=false to keep this repair. "
+                + self._READING_DECISION_NOTE
+                if dry_run else self._READING_DECISION_NOTE
+            ),
         }
 
     def _tool_act_resegment_by_reading(self, args: dict) -> Any:
