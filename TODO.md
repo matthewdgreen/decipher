@@ -133,6 +133,28 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - `context-aware`: allow benign context such as language/source family, but record exactly which solvers actually consumed it.
   - Default comparative parity reporting should make the evaluation mode explicit in summaries, dashboards, and artifacts.
   - Add a per-solver `context_capabilities` / `context_used` record so comparisons stay honest when wrappers differ.
+- [ ] Add benchmark context-tier support for agentic and automated runs.
+  - Load structured `context_layers` from benchmark records once
+    `../cipher_benchmark` exposes them.
+  - Add a CLI policy flag such as
+    `--benchmark-context none|minimal|standard|historical|related_metadata|related_solutions`.
+  - Keep default behavior conservative: no solution-bearing related context
+    unless explicitly requested.
+  - Record the selected context policy and the exact context layer IDs in run
+    artifacts so context-aware comparisons are auditable.
+  - Update `BenchmarkLoader` to use target record source metadata for symbol
+    maps/context instead of guessing from `test_id` prefixes.
+  - Add agent tools for on-demand benchmark context access:
+    `inspect_benchmark_context`, `list_related_records`,
+    `inspect_related_transcription`, `list_associated_documents`,
+    `inspect_associated_document`, and policy-gated
+    `inspect_related_solution`.
+  - Teach `BenchmarkRunner` to pass concise narrative context in the initial
+    prompt while leaving long related records/tool solutions available through
+    tools instead of dumping them into the first message.
+  - Add tests for context isolation: minimal context must not include
+    plaintext hints, related-solution context must be opt-in, and artifacts
+    must disclose all provided context.
 
 ### Priority 3: Native Tool Parity
 
