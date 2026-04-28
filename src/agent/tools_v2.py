@@ -1522,10 +1522,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "default": False,
                     "description": (
                         "Set true only when you are intentionally submitting a "
-                        "low-confidence partial hypothesis before the final "
-                        "iteration because no useful remaining tool action is "
-                        "available. If further_iterations_helpful is true, this "
-                        "is usually false."
+                        "partial hypothesis near the end of the run because no "
+                        "useful remaining tool action is available. This does "
+                        "not override `further_iterations_helpful=true`, and it "
+                        "is not a way to stop early on scattered word islands."
                     ),
                 },
             },
@@ -2621,8 +2621,6 @@ class WorkspaceToolExecutor:
         further_iterations_helpful: bool,
         forced_partial: bool,
     ) -> bool:
-        if forced_partial:
-            return False
         if not further_iterations_helpful:
             return False
         if self.max_iterations is None:
@@ -2630,6 +2628,22 @@ class WorkspaceToolExecutor:
         if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
             return False
         return True
+
+    def _should_guard_premature_partial_declaration(
+        self,
+        confidence: float,
+        forced_partial: bool,
+    ) -> bool:
+        if not forced_partial:
+            return False
+        if self.max_iterations is None:
+            return False
+        if self._current_iteration >= self.max_iterations:
+            return False
+        final_stretch = max(1, int(self.max_iterations * 0.8))
+        if self._current_iteration >= final_stretch:
+            return False
+        return confidence < 0.50
 
     # ------------------------------------------------------------------
     # workspace_*
@@ -6038,16 +6052,43 @@ class WorkspaceToolExecutor:
                 "note": (
                     "Your declaration says further iterations would be helpful, "
                     "and this run still has iteration budget. Continue working "
-                    "instead of terminating early. If you intentionally want to "
-                    "stop with a partial/hypothesis result, call "
-                    "meta_declare_solution again with `forced_partial=true` "
-                    "and make the partial status explicit."
+                    "instead of terminating early. `forced_partial=true` does "
+                    "not override this: if you can name useful next work, take "
+                    "that bigger swing before submitting a partial/hypothesis "
+                    "result."
                 ),
                 "suggested_next_tools": [
                     "workspace_branch_cards",
                     "decode_diagnose",
                     "search_homophonic_anneal",
                     "observe_transform_suspicion",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_premature_partial_declaration(
+            confidence,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "partial_too_early",
+                "note": (
+                    "This is an early low-confidence partial declaration. "
+                    "Keep working and take a bigger swing before stopping: "
+                    "try a broader transform screen, promote/polish the best "
+                    "transformed branch, run a fresh automated route, or make "
+                    "a concrete reading-driven repair. Save forced partial "
+                    "declarations for the final stretch of the run unless the "
+                    "text is already plausibly readable."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "search_homophonic_anneal",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
                     "meta_declare_solution",
                 ],
             }

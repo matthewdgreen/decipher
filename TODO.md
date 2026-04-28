@@ -70,6 +70,17 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     top-5 promotion now switches from the 68.2% false neighbor to the
     96.2% banded-program candidate, at the expected cost of an extra full
     homophonic probe.
+  - [ ] Add per-run transform-search cache/promotion state for agentic loops.
+    Today, if the agent runs a small `search_transform_homophonic` screen and
+    later escalates to a larger screen, the larger call recomputes the earlier
+    structural candidates and re-evaluates overlapping transform finalists.
+    Cache structural screens by branch token-order hash plus profile/settings,
+    and cache candidate homophonic evaluations by branch token-order hash,
+    transform token-order hash, homophonic budget, and model path. Expose this
+    either as an internal continuation path or as an explicit
+    `search_session_id` / `continue_transform_search` tool so the agent can
+    escalate from small -> medium/wide -> finalist promotion without wasting
+    solver budget.
   - Investigate moving hot transform-search kernels to Rust/C/C++ once the
     Python prototype stabilizes. Likely candidates: route/matrix candidate
     enumeration, token-order permutation application, structural metric

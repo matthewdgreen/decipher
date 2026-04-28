@@ -2698,6 +2698,69 @@ def test_meta_declare_blocks_helpful_declaration_before_final_turn_even_when_con
     assert ex.terminated is False
 
 
+def test_meta_declare_forced_partial_does_not_override_more_work_needed():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(26)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "This is only a partial result.",
+        "self_confidence": 0.30,
+        "reading_summary": "Only scattered word islands are visible.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "A broader transform search would likely help.",
+        "forced_partial": True,
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert out["reason"] == "further_iterations_requested"
+    assert ex.terminated is False
+
+
+def test_meta_declare_blocks_early_low_confidence_forced_partial():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(6)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Best current partial, but it is not readable.",
+        "self_confidence": 0.18,
+        "reading_summary": "No trustworthy plaintext recovered.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No immediate small repair is obvious.",
+        "forced_partial": True,
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert out["reason"] == "partial_too_early"
+    assert "search_transform_homophonic" in out["suggested_next_tools"]
+    assert ex.terminated is False
+
+
+def test_meta_declare_allows_low_confidence_forced_partial_in_final_stretch():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(25)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Late-run partial after larger swings failed.",
+        "self_confidence": 0.18,
+        "reading_summary": "No trustworthy plaintext recovered.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "Remaining work is unlikely to help within this run.",
+        "forced_partial": True,
+    })
+
+    assert out["status"] == "ok"
+    assert out["accepted"] is True
+    assert ex.terminated is True
+
+
 def test_meta_declare_blocks_untried_transform_work_when_note_names_it():
     ex = _executor_for("ABC", separator=None)
     ex.set_max_iterations(30)
