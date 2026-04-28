@@ -587,7 +587,7 @@ def _composite_route_candidates(width: int, rows: int, token_count: int) -> list
 
 
 def _z340_composite_candidates(width: int, rows: int, token_count: int) -> list[dict[str, Any]]:
-    """Bounded Z340-shaped templates: banded NDown, lock/shift, tail repairs."""
+    """Bounded banded NDown templates with local repair probes."""
 
     usable = min(width * rows, token_count)
     if width < 10 or rows < 10 or usable < 160:
@@ -631,56 +631,6 @@ def _z340_composite_candidates(width: int, rows: int, token_count: int) -> list[
             },
         })
 
-    if width == 17 and rows == 20 and token_count >= 335:
-        exact_steps = [
-            TransformStep("NDownMAcross", {"rangeStart": 0, "rangeEnd": 8, "down": 1, "across": 2}),
-            TransformStep("ShiftCharactersRight", {"rangeStart": 241, "rangeEnd": 254}),
-            TransformStep("LockCharacters", {"rangeStart": 164, "rangeEnd": 169}),
-            TransformStep("NDownMAcross", {"rangeStart": 9, "rangeEnd": 17, "down": 1, "across": 2}),
-        ]
-        tail_repairs = [
-            (306, 309),
-            (314, 315),
-            (316, 317),
-            (322, 324),
-            (325, 326),
-            (327, 334),
-        ]
-        exact_steps.extend(
-            TransformStep("Reverse", {"rangeStart": start, "rangeEnd": end})
-            for start, end in tail_repairs
-        )
-        candidates.append({
-            "family": "z340_composite_zenith_template",
-            "steps": exact_steps,
-            "params": {
-                "template": "z340_zenith_known_shape",
-                "calibration_template": True,
-                "down": 1,
-                "across": 2,
-                "tail_repairs": tail_repairs,
-            },
-        })
-        candidates.append({
-            "family": "z340_composite_zenith_template_no_tail_repairs",
-            "steps": exact_steps[:4],
-            "params": {
-                "template": "z340_zenith_known_shape_no_tail_repairs",
-                "calibration_template": True,
-                "down": 1,
-                "across": 2,
-            },
-        })
-        candidates.append({
-            "family": "z340_composite_zenith_template_without_lock",
-            "steps": [exact_steps[0], exact_steps[1], exact_steps[3], *exact_steps[4:]],
-            "params": {
-                "template": "z340_zenith_known_shape_without_lock",
-                "calibration_template": True,
-                "down": 1,
-                "across": 2,
-            },
-        })
     return candidates[:6]
 
 

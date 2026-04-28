@@ -429,53 +429,7 @@ def test_transform_rank_triage_preserves_family_breadth():
     assert report["class_counts"]["diagonal_route"] < 8
 
 
-def test_transform_rank_triage_prefers_full_z340_calibration_template():
-    def candidate(candidate_id, family, score, matrix, params=None):
-        return {
-            "candidate_id": candidate_id,
-            "family": family,
-            "pipeline": {"steps": []},
-            "params": params or {},
-            "score": score,
-            "metrics": {
-                "matrix_rank_score": matrix,
-                "periodic_redundancy": score,
-                "inverse_periodic_redundancy": score,
-                "position_nontriviality": 1.0,
-            },
-        }
-
-    screen = {
-        "identity_candidate": candidate("000_identity", "identity", 0.0, 0.0),
-        "top_candidates": [
-            candidate(
-                "without_lock",
-                "z340_composite_zenith_template_without_lock",
-                0.90,
-                0.70,
-                {"calibration_template": True},
-            ),
-        ],
-        "anchor_candidates": [
-            candidate(
-                "full_template",
-                "z340_composite_zenith_template",
-                0.88,
-                0.66,
-                {"template": "z340_zenith_known_shape", "calibration_template": True},
-            ),
-        ],
-    }
-
-    selected, _report = automated_runner._two_stage_transform_rank_candidates(
-        screen,
-        max_candidates=3,
-    )
-
-    assert selected[1]["candidate_id"] == "full_template"
-
-
-def test_transform_rank_triage_prefers_constructed_program_before_injected_template():
+def test_transform_rank_triage_prefers_constructed_program_before_generic_banded_template():
     def candidate(candidate_id, family, params):
         return {
             "candidate_id": candidate_id,
@@ -495,9 +449,9 @@ def test_transform_rank_triage_prefers_constructed_program_before_injected_templ
         "identity_candidate": candidate("000_identity", "identity", {}),
         "top_candidates": [
             candidate(
-                "injected",
-                "z340_composite_zenith_template",
-                {"template": "z340_zenith_known_shape", "calibration_template": True},
+                "generic_banded",
+                "z340_composite_banded_ndown_across_2",
+                {"template": "banded_ndown_lock_shift"},
             ),
             candidate(
                 "constructed",
@@ -559,8 +513,8 @@ def test_z340_known_shape_gate_allows_moderate_stability_with_large_margin():
     ranked = [
         {
             "candidate_id": "z340",
-            "family": "z340_composite_zenith_template",
-            "params": {"template": "z340_zenith_known_shape", "calibration_template": True},
+            "family": "program_z340_constructed_shape",
+            "params": {"template": "z340_constructed_shape", "calibration_template": True},
             "status": "completed",
             "confirmed_selection_score": -7.55,
             "confirmation": {

@@ -419,7 +419,7 @@ def test_transform_candidate_generation_includes_breadth_families():
     assert any(family.startswith("split_horizontal_") for family in families)
     assert any(family.startswith("split_vertical_") for family in families)
     assert any(family.startswith("composite_") for family in families)
-    assert "z340_composite_zenith_template" in families
+    assert "z340_composite_banded_ndown_across_2" in families
     assert "grid_permute_rows_reverse" in families
     assert "grid_permute_columns_outside_in" in families
     assert "columnar_transposition_reverse_key" in families
@@ -504,49 +504,6 @@ def test_streaming_transform_screen_matches_materialized_top_candidates():
     ]
 
 
-def test_z340_composite_template_matches_known_pipeline_shape():
-    candidates = generate_transform_candidates(token_count=340, columns=17, profile="medium")
-    template = next(
-        candidate
-        for candidate in candidates
-        if candidate.family == "z340_composite_zenith_template"
-    )
-
-    validation = validate_transform_candidate(340, template)
-    raw = template.pipeline.to_raw()
-    step_names = [step["name"] for step in raw["steps"]]
-
-    assert validation["valid"] is True
-    assert raw["columns"] == 17
-    assert raw["rows"] == 20
-    assert template.params["template"] == "z340_zenith_known_shape"
-    assert step_names[:4] == [
-        "NDownMAcross",
-        "ShiftCharactersRight",
-        "LockCharacters",
-        "NDownMAcross",
-    ]
-    assert raw["steps"][0]["data"] == {"rangeStart": 0, "rangeEnd": 8, "down": 1, "across": 2}
-    assert raw["steps"][1]["data"] == {"rangeStart": 241, "rangeEnd": 254}
-    assert raw["steps"][2]["data"] == {"rangeStart": 164, "rangeEnd": 169}
-    assert raw["steps"][3]["data"] == {"rangeStart": 9, "rangeEnd": 17, "down": 1, "across": 2}
-    assert step_names[4:] == ["Reverse"] * 6
-
-
-def test_z340_composite_template_is_anchored_in_structural_screen():
-    screen = screen_transform_candidates(
-        list(range(340)),
-        columns=17,
-        profile="medium",
-        top_n=5,
-    )
-
-    assert any(
-        candidate["family"] == "z340_composite_zenith_template"
-        for candidate in screen["anchor_candidates"]
-    )
-
-
 def test_program_search_constructs_z340_shape_from_grammar():
     screen = screen_transform_candidates(
         list(range(340)),
@@ -561,14 +518,8 @@ def test_program_search_constructs_z340_shape_from_grammar():
         candidate for candidate in screen["top_candidates"]
         if candidate["family"] == "program_z340_constructed_shape"
     )
-    known = next(
-        candidate for candidate in generate_transform_candidates(
-            token_count=340,
-            columns=17,
-            profile="medium",
-        )
-        if candidate.family == "z340_composite_zenith_template"
-    )
+    raw = constructed["pipeline"]
+    step_names = [step["name"] for step in raw["steps"]]
 
     assert screen["program_candidate_count"] > 0
     assert screen["program_scored_candidate_count"] > 0
@@ -581,7 +532,19 @@ def test_program_search_constructs_z340_shape_from_grammar():
         "tail_repair_pack",
     ]
     assert constructed["params"]["template"] == "z340_constructed_shape"
-    assert constructed["pipeline"] == known.pipeline.to_raw()
+    assert raw["columns"] == 17
+    assert raw["rows"] == 20
+    assert step_names[:4] == [
+        "NDownMAcross",
+        "ShiftCharactersRight",
+        "LockCharacters",
+        "NDownMAcross",
+    ]
+    assert raw["steps"][0]["data"] == {"rangeStart": 0, "rangeEnd": 8, "down": 1, "across": 2}
+    assert raw["steps"][1]["data"] == {"rangeStart": 241, "rangeEnd": 254}
+    assert raw["steps"][2]["data"] == {"rangeStart": 164, "rangeEnd": 169}
+    assert raw["steps"][3]["data"] == {"rangeStart": 9, "rangeEnd": 17, "down": 1, "across": 2}
+    assert step_names[4:] == ["Reverse"] * 6
 
 
 def test_program_search_constructs_non_z340_banded_shape_from_grammar():

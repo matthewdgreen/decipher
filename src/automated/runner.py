@@ -1691,12 +1691,6 @@ def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
         required_identity_margin = 0.0
         min_stability = 0.40
     elif (
-        family_class == "z340_composite"
-        and params.get("template") == "z340_zenith_known_shape"
-    ):
-        required_identity_margin = 0.10
-        min_stability = 0.45
-    elif (
         family_class == "program_search"
         and params.get("template") == "z340_constructed_shape"
     ):
@@ -1961,9 +1955,7 @@ def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float,
     )
     nontrivial = _float_or_none(metrics.get("position_nontriviality")) or 0.0
     template_bonus = 0.0
-    if params.get("template") == "z340_zenith_known_shape":
-        template_bonus = 0.30
-    elif params.get("template") == "z340_constructed_shape":
+    if params.get("template") == "z340_constructed_shape":
         template_bonus = 0.30
     elif params.get("template") == "banded_ndown_constructed":
         template_bonus = 0.18

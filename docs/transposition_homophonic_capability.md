@@ -175,11 +175,11 @@ Calibration notes from 2026-04-26:
     even/odd, odd/even, outside-in, and inside-out.
   - Medium candidate generation now includes small composite route templates
     such as route-then-head/tail reverse and route-then-head shift.
-  - Medium candidate generation also includes a bounded
-    `z340_composite_*` family: banded `NDownMAcross`, optional lock/shift
-    structure, and Z340 tail-repair reversals. The exact
-    `z340_composite_zenith_template` is marked as a calibration template, not
-    as evidence that open-ended Z340 transform discovery is solved.
+  - Medium candidate generation also includes bounded banded
+    `NDownMAcross` families with optional lock/shift structure and local
+    tail-style reversals. Earlier versions included an exact
+    `z340_composite_zenith_template` calibration candidate; that direct
+    injection has now been removed from generic candidate generation.
   - Structural screens record `family_counts`, `scored_family_counts`,
     `top_family_counts`, `rejected_reason_counts`, and an `anchor_candidates`
     lane that keeps simple canonical route families visible even when broad
@@ -237,18 +237,18 @@ Calibration notes from 2026-04-26:
     `no_robust_transform_unstable_false_positives`, rather than raising a
     capability-gap error or pretending to recover a transform
     (`artifacts/zodiac340_transform_search_rank_zenith_model_fast_profile3/...`).
-- First bounded Z340-template pass, 2026-04-26:
+- First bounded Z340-template pass, 2026-04-26, now superseded:
   generic breadth was not sufficient to make the known Z340 transform occur
-  naturally in the finalist set. The search now has an explicit bounded
-  Z340-shaped family: two banded `NDownMAcross` passes, optional
-  `LockCharacters` / `ShiftCharactersRight`, and small tail reversals. The
-  family is anchored so Stage A cannot crowd it out with generic route/grid
-  false positives, and triage prefers the full known-shape calibration
-  template over looser variants.
+  naturally in the finalist set. An earlier search revision added an explicit
+  exact Z340 template candidate as a calibration control. That proved useful
+  for validating the solver handoff, but it was too close to answer injection
+  for ongoing search work and has been removed from generic candidate
+  generation. The remaining path constructs the shape through the transform
+  program grammar.
 
   Calibration split:
   - With fast rank and screen-budget homophonic probes, the hidden-transform
-    Z340 fixture now selects `z340_composite_zenith_template` as a
+    Z340 fixture selected `z340_composite_zenith_template` as a
     `robust_candidate` and reaches 55.3% char accuracy in 66.9s
     (`artifacts/zodiac340_transform_search_rank_zenith_model_z340template_fast3/...`).
     The preview is visibly on the right text (`...YOU ARE...`), but the screen
@@ -256,13 +256,13 @@ Calibration notes from 2026-04-26:
   - Known-template replay with the external Zenith binary model and full
     homophonic budget reaches 96.2% char accuracy in 55.8s
     (`artifacts/zodiac340_known_replay_zenith_model_full_budget1/...`).
-  - The automated runner now performs a final full-budget homophonic
+  - The automated runner performs a final full-budget homophonic
     refinement after cheap rank-mode transform selection when
     `--homophonic-budget full` is requested. With this path, hidden-transform
-    Z340 rank selects the template and reaches 96.2% char accuracy in 120.5s
+    Z340 rank selected the template and reached 96.2% char accuracy in 120.5s
     (`artifacts/zodiac340_transform_search_rank_zenith_model_z340template_fast_refine1/...`).
-    This is bounded template recovery plus full solve, not open-ended
-    discovery.
+    This was bounded template recovery plus full solve, not open-ended
+    discovery; it is retained here as a historical calibration result.
 - First transform-program beam pass, 2026-04-26:
   broad transform search now has a `program_search` layer. It composes small
   legal operations from a grammar, structurally prunes each depth with a beam,
@@ -283,9 +283,9 @@ Calibration notes from 2026-04-26:
   - With the final full-budget homophonic refinement, this constructed program
     reaches 96.2% char accuracy in 168.1s
     (`artifacts/zodiac340_transform_search_rank_zenith_model_program_broad3/...`).
-  - The exact injected `z340_composite_zenith_template` still exists as a
-    calibration control, but broad Stage A now prefers the constructed
-    `program_search` candidate when both are present.
+  - The exact injected `z340_composite_zenith_template` calibration candidate
+    has since been removed. The current generic path must construct the
+    Z340-like shape through `program_search`.
   - A transient failure mode appeared when generic local mutations were allowed
     to stack on top of already-composite program-search candidates: the ranker
     selected a stable but wrong mutated program. Program candidates now carry
@@ -406,10 +406,9 @@ Current implementation slice:
   each depth before solver-backed ranking.
 - The candidate generator currently covers identity, whole reverse, whole
   shifts, row reversals, route reads, split-grid route reads, bounded
-  `NDownMAcross`, simple columnar/unwrap probes, composite route repairs,
-  Z340-shaped calibration templates, and grammar-built transform programs for
-  broad profiles. This is deliberately smaller than AZdecrypt's full family
-  list.
+  `NDownMAcross`, simple columnar/unwrap probes, composite route repairs, and
+  grammar-built transform programs for broad profiles. This is deliberately
+  smaller than AZdecrypt's full family list.
 - The candidate generator also has an explicit `wide` structural profile. It
   expands route offset chains, progressive row/column shifts, split-grid
   route combinations, row/column grid permutations, affine/cyclic columnar key
