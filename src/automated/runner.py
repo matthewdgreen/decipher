@@ -1694,7 +1694,7 @@ def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
         family_class == "program_search"
         and params.get("template") == "banded_ndown_constructed"
     ):
-        required_identity_margin = 0.10
+        required_identity_margin = 0.08
         min_stability = 0.45
     elif family_class in {
         "diagonal_route",
@@ -1705,7 +1705,7 @@ def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
         "interleave_route",
         "progressive_shift_route",
         "composite_route",
-        "z340_composite",
+        "banded_ndown_lock_shift",
         "program_search",
         "grid_permute",
     }:
@@ -1812,7 +1812,7 @@ def _two_stage_transform_rank_candidates(
 
     priority = [
         "program_search",
-        "z340_composite",
+        "banded_ndown_lock_shift",
         "ndownmacross",
         "route_columns",
         "route_rows",
@@ -1836,8 +1836,13 @@ def _two_stage_transform_rank_candidates(
         bucket = class_buckets.get(class_name, [])
         if not bucket:
             continue
-        limit = 2 if class_name in {"z340_composite", "program_search", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
-        for candidate in bucket[:limit]:
+        limit = 3 if class_name == "program_search" else 2 if class_name in {"banded_ndown_lock_shift", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
+        candidates = (
+            _program_diverse_transform_candidates(bucket, limit=limit)
+            if class_name == "program_search"
+            else bucket[:limit]
+        )
+        for candidate in candidates:
             if len(selected) >= max_candidates:
                 break
             maybe_add(candidate, f"family_diverse:{class_name}")
@@ -1885,6 +1890,10 @@ def _two_stage_transform_rank_candidates(
             for candidate in selected
         ],
         "class_counts": Counter(_transform_family_class(candidate) for candidate in selected),
+        "selection_reasons": {
+            str(candidate.get("candidate_id")): selection_reasons.get(str(candidate.get("candidate_id")))
+            for candidate in selected
+        },
         "policy": (
             "Stage A selects family-diverse structural finalists from a broad "
             "screen before Stage B spends homophonic solver probes."
@@ -1892,6 +1901,54 @@ def _two_stage_transform_rank_candidates(
     }
     report["class_counts"] = dict(report["class_counts"])
     return selected, report
+
+
+def _program_diverse_transform_candidates(
+    bucket: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Keep distinct program-search shapes alive through triage."""
+
+    by_shape: dict[str, list[dict[str, Any]]] = {}
+    for candidate in bucket:
+        by_shape.setdefault(_program_shape_key(candidate), []).append(candidate)
+    for items in by_shape.values():
+        items.sort(key=_transform_triage_sort_key, reverse=True)
+
+    selected: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+
+    def add(shape: str) -> None:
+        if len(selected) >= limit:
+            return
+        for candidate in by_shape.get(shape, []):
+            candidate_id = str(candidate.get("candidate_id"))
+            if candidate_id in seen_ids:
+                continue
+            selected.append(candidate)
+            seen_ids.add(candidate_id)
+            return
+
+    for shape in ("banded_ndown_constructed", "route_repair_constructed", "program_other"):
+        add(shape)
+    for candidate in bucket:
+        if len(selected) >= limit:
+            break
+        candidate_id = str(candidate.get("candidate_id"))
+        if candidate_id in seen_ids:
+            continue
+        selected.append(candidate)
+        seen_ids.add(candidate_id)
+    return selected
+
+
+def _program_shape_key(candidate: dict[str, Any]) -> str:
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+    template = str(params.get("template") or "")
+    if template in {"banded_ndown_constructed", "route_repair_constructed"}:
+        return template
+    return "program_other"
 
 
 def _transform_family_class(candidate: dict[str, Any]) -> str:
@@ -1902,8 +1959,8 @@ def _transform_family_class(candidate: dict[str, Any]) -> str:
         return "identity"
     if family.startswith("ndownmacross"):
         return "ndownmacross"
-    if family.startswith("z340_composite"):
-        return "z340_composite"
+    if family.startswith("banded_ndown_lock_shift"):
+        return "banded_ndown_lock_shift"
     if family.startswith("program_"):
         return "program_search"
     if family.startswith("route_columns"):

@@ -302,7 +302,7 @@ Calibration notes from 2026-04-26:
     a high-quality transformed solve: 95.8% char accuracy in 97.5s
     (`artifacts/transform_hidden_banded_program_broad_screen1/...`). The
     selected finalist was a direct banded candidate
-    (`z340_composite_banded_ndown_across_2`), while a grammar-built
+    (`banded_ndown_lock_shift_across_2`), while a grammar-built
     `program_tail_repair_pack` candidate with the same visible reading was the
     next serious contender. This is a positive breadth signal, but not yet a
     pure program-selection win.
@@ -320,7 +320,7 @@ Important limitation:
 - Open-ended transform discovery is not solved yet. The current
   `search_transform_homophonic` tool is a bounded solver-backed screen over
   explicit candidate families plus an initial transform-program grammar. It can
-  now construct the known Z340-shaped calibration template from smaller
+  now construct the known banded NDown/lock/shift calibration shape from smaller
   operations, but this should still be described as grammar-bounded program
   search rather than general transposition discovery.
 - `observe_transform_suspicion` is intentionally cheap and conservative. It
@@ -495,8 +495,8 @@ Recommended next step:
 
 - Use `--transform-search-profile fast` for routine hidden-route regression
   checks. Under `broad` and `wide`, continue generalizing the program grammar
-  beyond the Z340-shaped first slice: add more route families, split-grid
-  programs, periodic row/column operations, and non-Z340 local repair packs,
+  beyond the current banded NDown/lock/shift slice: add more route families,
+  split-grid programs, periodic row/column operations, and non-Zodiac local repair packs,
   using diagnostics to decide whether new families are robust candidates or
   just unstable false positives. The next scale milestone is to make the wide
   layer stream/report hundreds of thousands of structural candidates with

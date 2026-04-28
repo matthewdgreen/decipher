@@ -450,7 +450,7 @@ def test_transform_rank_triage_prefers_constructed_program_before_generic_banded
         "top_candidates": [
             candidate(
                 "generic_banded",
-                "z340_composite_banded_ndown_across_2",
+                "banded_ndown_lock_shift_across_2",
                 {"template": "banded_ndown_lock_shift"},
             ),
             candidate(
@@ -467,6 +467,53 @@ def test_transform_rank_triage_prefers_constructed_program_before_generic_banded
     )
 
     assert selected[1]["candidate_id"] == "constructed"
+
+
+def test_transform_rank_triage_keeps_banded_program_when_route_repairs_dominate():
+    def candidate(candidate_id, family, params=None, score=1.0):
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "pipeline": {"steps": []},
+            "params": params or {},
+            "score": score,
+            "metrics": {
+                "matrix_rank_score": score,
+                "periodic_redundancy": score,
+                "inverse_periodic_redundancy": score,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": candidate("000_identity", "identity", score=0.0),
+        "top_candidates": [
+            candidate(
+                f"route_repair_{i}",
+                "program_route_repair_constructed",
+                {"template": "route_repair_constructed"},
+                score=1.0 - i * 0.01,
+            )
+            for i in range(8)
+        ],
+        "anchor_candidates": [
+            candidate(
+                "banded_program",
+                "program_banded_ndown_constructed",
+                {"template": "banded_ndown_constructed"},
+                score=0.60,
+            ),
+        ],
+    }
+
+    selected, report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=5,
+    )
+    selected_ids = {item["candidate_id"] for item in selected}
+
+    assert "banded_program" in selected_ids
+    assert report["selection_reasons"]["banded_program"] == "family_diverse:program_search"
 
 
 def test_transform_family_gates_reject_unstable_false_positive():
@@ -509,7 +556,7 @@ def test_transform_family_gates_reject_unstable_false_positive():
     assert selection["selects_transform"] is False
 
 
-def test_z340_known_shape_gate_allows_moderate_stability_with_large_margin():
+def test_banded_program_gate_allows_moderate_stability_with_clear_margin():
     ranked = [
         {
             "candidate_id": "banded",

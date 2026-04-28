@@ -57,7 +57,8 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     sweeps: stream/report hundreds of thousands of candidates, avoid
     materializing every transformed token order, optimize structural metrics,
     and promote only a small finalist set into homophonic annealing. Current
-    Z340-shaped wide families include single- and double-repair route
+    Current wide families include banded NDown/lock/shift programs plus
+    single- and double-repair route
     programs and can honor an explicit 600k cap. Large wide screens use a
     NumPy-backed position-only metric pass and compact family counters; a
     Z340 structural-only 600k run completed in about 173s. Real
@@ -67,7 +68,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     small final bakeoff over the screen-selected transform plus
     close/selectable finalists. On the 72k-candidate Z340 wide artifact,
     top-5 promotion now switches from the 68.2% false neighbor to the
-    96.2% known-shape candidate, at the expected cost of an extra full
+    96.2% banded-program candidate, at the expected cost of an extra full
     homophonic probe.
   - Investigate moving hot transform-search kernels to Rust/C/C++ once the
     Python prototype stabilizes. Likely candidates: route/matrix candidate

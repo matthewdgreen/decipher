@@ -451,7 +451,7 @@ def iter_transform_candidates(
                 )
                 if candidate is not None:
                     yield candidate
-            for composite in _z340_composite_candidates(width, rows, token_count):
+            for composite in _banded_ndown_lock_shift_candidates(width, rows, token_count):
                 candidate = make(
                     composite["family"],
                     composite["steps"],
@@ -586,7 +586,7 @@ def _composite_route_candidates(width: int, rows: int, token_count: int) -> list
     return candidates[:12]
 
 
-def _z340_composite_candidates(width: int, rows: int, token_count: int) -> list[dict[str, Any]]:
+def _banded_ndown_lock_shift_candidates(width: int, rows: int, token_count: int) -> list[dict[str, Any]]:
     """Bounded banded NDown templates with local repair probes."""
 
     usable = min(width * rows, token_count)
@@ -620,7 +620,7 @@ def _z340_composite_candidates(width: int, rows: int, token_count: int) -> list[
             TransformStep("NDownMAcross", {"rangeStart": split, "rangeEnd": second_end, "down": 1, "across": across}),
         ]
         candidates.append({
-            "family": f"z340_composite_banded_ndown_across_{across}",
+            "family": f"banded_ndown_lock_shift_across_{across}",
             "steps": steps,
             "params": {
                 "template": "banded_ndown_lock_shift",
@@ -1491,7 +1491,7 @@ def _anchor_candidate_key(item: CandidateScore) -> tuple[str, int | None, int | 
         "route_columns_down",
         "route_columns_up",
         "ndownmacross",
-        "z340_composite",
+        "banded_ndown_lock_shift",
         "program_",
         "row_reversals",
     )
@@ -1552,7 +1552,7 @@ def _anchor_transform_candidates(
         "route_columns_down",
         "route_columns_up",
         "ndownmacross",
-        "z340_composite",
+        "banded_ndown_lock_shift",
         "program_",
         "row_reversals",
     )

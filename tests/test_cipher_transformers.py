@@ -419,7 +419,7 @@ def test_transform_candidate_generation_includes_breadth_families():
     assert any(family.startswith("split_horizontal_") for family in families)
     assert any(family.startswith("split_vertical_") for family in families)
     assert any(family.startswith("composite_") for family in families)
-    assert "z340_composite_banded_ndown_across_2" in families
+    assert "banded_ndown_lock_shift_across_2" in families
     assert "grid_permute_rows_reverse" in families
     assert "grid_permute_columns_outside_in" in families
     assert "columnar_transposition_reverse_key" in families
