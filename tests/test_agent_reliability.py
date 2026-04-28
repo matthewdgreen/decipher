@@ -21,6 +21,7 @@ from agent.loop_v2 import (
     READING_WORKFLOW_GATE_PREFLIGHT,
     _is_boundary_projection_count_failure,
     _is_tool_gated_result,
+    _branch_snapshot_for,
     build_workspace_panel,
     run_v2,
 )
@@ -2598,6 +2599,27 @@ def test_meta_declare_requires_branch_cards_when_multiple_branches_exist():
     assert ex.terminated is True
 
 
+def test_meta_declare_requires_fresh_branch_cards_for_new_branch():
+    ex = _executor_for("ABC", separator=None)
+    ex.workspace.fork("old_candidate", from_branch="main")
+    ex.call_log.append(SimpleNamespace(
+        tool_name="workspace_branch_cards",
+        arguments={},
+        iteration=1,
+    ))
+    ex.workspace.set_iteration(5)
+    ex.workspace.fork("new_candidate", from_branch="main")
+
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "new_candidate",
+        "rationale": "Best newly-created branch.",
+        "self_confidence": 0.8,
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "branch_cards_required"
+
+
 def test_meta_declare_allows_final_turn_even_without_reading_workflow():
     ex = _executor_for("AP PLY", separator=" ")
     ex.set_max_iterations(10)
@@ -2656,6 +2678,26 @@ def test_meta_declare_blocks_low_confidence_helpful_declaration_before_final_tur
     assert ex.terminated is False
 
 
+def test_meta_declare_blocks_helpful_declaration_before_final_turn_even_when_confident():
+    ex = _executor_for("ABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(13)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Readable but still rough.",
+        "self_confidence": 0.74,
+        "reading_summary": "The broad topic is visible, but exact text is not clean.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "More iterations should repair obvious words.",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert out["reason"] == "further_iterations_requested"
+    assert ex.terminated is False
+
+
 def test_meta_declare_blocks_untried_transform_work_when_note_names_it():
     ex = _executor_for("ABC", separator=None)
     ex.set_max_iterations(30)
@@ -2694,6 +2736,35 @@ def test_meta_declare_allows_low_confidence_helpful_on_final_turn():
     assert out["status"] == "ok"
     assert out["accepted"] is True
     assert ex.terminated is True
+
+
+def test_search_transform_homophonic_blocks_already_transformed_branch():
+    ex = _executor_for("ABCDE", separator=None)
+    ex.workspace.apply_transform_pipeline(
+        "main",
+        {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 4}}]},
+    )
+
+    out = ex._tool_search_transform_homophonic({
+        "branch": "main",
+        "profile": "small",
+        "homophonic_budget": "screen",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "transform_branch_not_supported"
+    assert "search_homophonic_anneal" in out["suggested_next_tools"]
+
+
+def test_branch_snapshot_records_transform_overlay_metadata():
+    ex = _executor_for("ABCDE", separator=None)
+    pipeline = {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 4}}]}
+    ex.workspace.apply_transform_pipeline("main", pipeline)
+
+    snapshot = _branch_snapshot_for(ex.workspace, "main")
+
+    assert snapshot.token_order == [4, 3, 2, 1, 0]
+    assert snapshot.transform_pipeline == pipeline
 
 
 def test_execute_rejects_tools_not_allowed_on_gated_turn():

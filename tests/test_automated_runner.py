@@ -456,7 +456,11 @@ def test_transform_rank_triage_prefers_constructed_program_before_generic_banded
             candidate(
                 "constructed",
                 "program_banded_ndown_constructed",
-                {"template": "banded_ndown_constructed", "calibration_template": True},
+                {
+                    "template": "banded_ndown_constructed",
+                    "constructed_template_match": True,
+                    "template_source": "program_grammar",
+                },
             ),
         ],
     }
@@ -681,7 +685,11 @@ def test_banded_program_gate_allows_moderate_stability_with_clear_margin():
         {
             "candidate_id": "banded",
             "family": "program_banded_ndown_constructed",
-            "params": {"template": "banded_ndown_constructed", "calibration_template": True},
+            "params": {
+                "template": "banded_ndown_constructed",
+                "constructed_template_match": True,
+                "template_source": "program_grammar",
+            },
             "status": "completed",
             "confirmed_selection_score": -7.55,
             "confirmation": {

@@ -2212,7 +2212,8 @@ def _append_program_operation(
     }
     if template:
         params["template"] = template
-        params["calibration_template"] = True
+        params["constructed_template_match"] = True
+        params["template_source"] = "program_grammar"
     family_suffix = template or operation["label"]
     return TransformCandidate(
         candidate_id=f"program_{candidate_index:04d}_d{depth}_{operation['label']}",

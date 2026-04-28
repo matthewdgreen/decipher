@@ -4,7 +4,9 @@ from __future__ import annotations
 import json
 import re
 import sys
+import threading
 import textwrap
+import time
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -70,6 +72,38 @@ def summarize_tool_call(tool: str, result: dict[str, Any]) -> str:
     return " ".join(parts)
 
 
+def describe_tool_process(tool: str, args: dict[str, Any] | None = None) -> str:
+    """Human-sized label for a running tool call."""
+    args = args or {}
+    branch = args.get("branch")
+    suffix = f" on `{branch}`" if branch else ""
+    if tool == "search_transform_homophonic":
+        profile = args.get("profile", "small")
+        budget = args.get("homophonic_budget", "screen")
+        program = " + program search" if args.get("include_program_search") else ""
+        return f"transform+homophonic search ({profile}, {budget}{program}){suffix}"
+    if tool == "search_transform_candidates":
+        breadth = args.get("breadth", "broad")
+        return f"structural transform candidate screen ({breadth}){suffix}"
+    if tool == "search_homophonic_anneal":
+        solver = args.get("solver_profile") or args.get("homophonic_solver") or "zenith_native"
+        return f"homophonic anneal ({solver}){suffix}"
+    if tool == "search_automated_solver":
+        budget = args.get("homophonic_budget", "full")
+        return f"automated local solver ({budget}){suffix}"
+    if tool == "search_anneal":
+        return f"substitution anneal{suffix}"
+    if tool == "decode_diagnose_and_fix":
+        return f"diagnose and apply safe text repairs{suffix}"
+    if tool == "decode_validate_reading_repair":
+        return f"validate proposed reading repair{suffix}"
+    if tool == "act_resegment_by_reading":
+        return f"apply reading-based resegmentation{suffix}"
+    if tool == "meta_declare_solution":
+        return "declare final/partial solution"
+    return f"{tool}{suffix}"
+
+
 class RawAgentRenderer:
     """Current compact event stream for scripts and debugging."""
 
@@ -91,8 +125,12 @@ class RawAgentRenderer:
             )
         elif event == "iteration_start":
             print(f"  iter {payload['iteration']}...", end="", flush=True, file=self.stream)
+        elif event == "tool_start":
+            tool = str(payload.get("tool", "tool"))
+            args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            print(f" [{describe_tool_process(tool, args)}", end="", flush=True, file=self.stream)
         elif event == "tool_call":
-            print(".", end="", flush=True, file=self.stream)
+            print(" done]", end="", flush=True, file=self.stream)
         elif event in {"declared_solution", "run_complete", "error", "max_iterations_reached"}:
             print(f" [{event}]", flush=True, file=self.stream)
 
@@ -158,6 +196,9 @@ class _PrettyState:
     log: list[str] = field(default_factory=list)
     commentary: str = ""
     error: str = ""
+    active_tool: str = ""
+    active_tool_started_at: float = 0.0
+    active_tool_ticks: int = 0
 
 
 class PrettyAgentRenderer:
@@ -172,6 +213,8 @@ class PrettyAgentRenderer:
         self.state = _PrettyState()
         self._rich = self._load_rich()
         self._live = None
+        self._heartbeat_stop: threading.Event | None = None
+        self._heartbeat_thread: threading.Thread | None = None
 
     def start_test(self, test_id: str, description: str, *, model: str, max_iterations: int) -> None:
         self.state = _PrettyState(
@@ -208,10 +251,25 @@ class PrettyAgentRenderer:
             text = _clean_text(str(payload.get("text", "")))
             self.state.commentary = text
             self._add_log(f"agent: {text[:140]}")
+        elif event == "tool_start":
+            tool = str(payload.get("tool", "tool"))
+            args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else {}
+            self.state.active_tool = describe_tool_process(tool, args)
+            self.state.active_tool_started_at = time.monotonic()
+            self.state.active_tool_ticks = 0
+            self._add_log(f"running: {self.state.active_tool}")
+            self._start_heartbeat()
         elif event == "tool_call":
+            self._stop_heartbeat()
             tool = str(payload.get("tool", "tool"))
             summary = summarize_tool_call(tool, payload.get("result_summary") or {})
-            self._add_log(f"tool: {summary}")
+            elapsed = ""
+            if self.state.active_tool_started_at:
+                elapsed = f" {time.monotonic() - self.state.active_tool_started_at:.1f}s"
+            self._add_log(f"done{elapsed}: {summary}")
+            self.state.active_tool = ""
+            self.state.active_tool_started_at = 0.0
+            self.state.active_tool_ticks = 0
             changed = (payload.get("result_summary") or {}).get("changed_words")
             if changed:
                 pieces = [
@@ -234,6 +292,7 @@ class PrettyAgentRenderer:
             attempted = ", ".join(payload.get("attempted_tools") or [])
             self._add_log(f"warning: gated tool rejected ({attempted}); retrying in-place")
         elif event == "error":
+            self._stop_heartbeat()
             self.state.error = str(payload.get("message", "API/provider error"))
             self._add_log("ERROR: " + self.state.error)
         elif event == "auto_declared_solution":
@@ -246,6 +305,7 @@ class PrettyAgentRenderer:
         self._refresh()
 
     def finish(self, result: Any) -> None:
+        self._stop_heartbeat()
         if self._live:
             self._live.update(self._render_final(result))
             self._live.stop()
@@ -270,6 +330,32 @@ class PrettyAgentRenderer:
         self.state.log.append(line)
         self.state.log = self.state.log[-12:]
 
+    def _start_heartbeat(self) -> None:
+        if not self._rich or not self._live:
+            return
+        self._stop_heartbeat()
+        stop = threading.Event()
+        self._heartbeat_stop = stop
+
+        def run() -> None:
+            while not stop.wait(1.0):
+                self.state.active_tool_ticks += 1
+                self._refresh()
+
+        self._heartbeat_thread = threading.Thread(
+            target=run,
+            name="decipher-pretty-heartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        stop = self._heartbeat_stop
+        if stop is not None:
+            stop.set()
+        self._heartbeat_stop = None
+        self._heartbeat_thread = None
+
     def _render(self) -> Any:
         if not self._rich:
             return ""
@@ -293,6 +379,14 @@ class PrettyAgentRenderer:
         agent_lines = []
         if self.state.commentary:
             agent_lines.append(self.state.commentary)
+            agent_lines.append("")
+        if self.state.active_tool:
+            elapsed = max(0.0, time.monotonic() - self.state.active_tool_started_at)
+            dots = "." * (1 + (self.state.active_tool_ticks % 6))
+            agent_lines.append(
+                f"[bold]Running:[/bold] {self.state.active_tool}  "
+                f"[dim]{elapsed:.0f}s {dots}[/dim]"
+            )
             agent_lines.append("")
         agent_lines.extend(self.state.log)
         if self.state.error:

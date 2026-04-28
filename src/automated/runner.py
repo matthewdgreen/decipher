@@ -2059,7 +2059,7 @@ def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float,
         template_bonus = 0.18
     elif params.get("template") == "route_repair_constructed":
         template_bonus = 0.10
-    elif params.get("calibration_template"):
+    elif params.get("constructed_template_match") or params.get("calibration_template"):
         template_bonus = 0.12
     return (
         matrix * 0.45 + periodic * 0.25 + structural * 0.2 + nontrivial * 0.1 + template_bonus,

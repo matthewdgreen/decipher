@@ -46,6 +46,8 @@ class BranchSnapshot:
     signals: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     word_spans: list[tuple[int, int]] | None = None
+    token_order: list[int] | None = None
+    transform_pipeline: dict[str, Any] | None = None
     char_accuracy: float | None = None   # vs ground truth (filled post-hoc by runner)
     word_accuracy: float | None = None
 

@@ -1087,6 +1087,18 @@ def run_v2(
             final_declare_needed = False
             final_declare_blocked = False
             for tu in tool_uses:
+                emit(
+                    "tool_start",
+                    {
+                        "tool": tu["name"],
+                        "arguments": tu.get("input") or {},
+                        "inner_step": inner_step,
+                        "mode": turn_mode.value,
+                    },
+                    outer_iteration=iteration,
+                    inner_step=inner_step,
+                    mode=turn_mode,
+                )
                 result = executor.execute(tu["name"], tu["input"], tool_use_id=tu["id"])
                 if _is_tool_gated_result(result):
                     gated_tools.append(tu["name"])
@@ -1401,6 +1413,12 @@ def _branch_snapshot_for(workspace: Workspace, name: str) -> Any:
         signals={},  # panel not computed here; caller can add post-hoc
         tags=list(branch.tags),
         word_spans=list(branch.word_spans) if branch.word_spans is not None else None,
+        token_order=list(branch.token_order) if branch.token_order is not None else None,
+        transform_pipeline=(
+            dict(branch.transform_pipeline)
+            if branch.transform_pipeline is not None
+            else None
+        ),
     )
 
 
@@ -1411,16 +1429,19 @@ def _preflight_context(automated_preflight: dict[str, Any] | None) -> str | None
     if isinstance(summary, str) and summary.strip():
         body = summary
     else:
-        body = "Automated native solver preflight is available as branch `automated_preflight`."
+        body = "Automated native solver preflight ran before the agent loop."
     return (
         f"{body}\n\n"
-        "Protected baseline rule: `automated_preflight` is a no-LLM branch. "
-        "Inspect it before fresh search. If it already reads coherently, fork "
-        "from it for experiments and keep the original branch unchanged for "
-        "comparison. Do not declare an edited branch over a readable preflight "
-        "branch just because the spelling looks more modern/classical; prefer "
-        "the manuscript-faithful transcription style unless the edited branch "
-        "clearly reads better."
+        "Protected baseline rule: when an `automated_preflight` branch exists, "
+        "it is a no-LLM branch. Inspect it before fresh search. If it already "
+        "reads coherently, fork from it for experiments and keep the original "
+        "branch unchanged for comparison. If that branch is absent, the "
+        "preflight did not produce an installable key; continue from `main` "
+        "and use the preflight summary only as diagnostic context. Do not "
+        "declare an edited branch over a readable preflight branch just because "
+        "the spelling looks more modern/classical; prefer the manuscript-"
+        "faithful transcription style unless the edited branch clearly reads "
+        "better."
     )
 
 

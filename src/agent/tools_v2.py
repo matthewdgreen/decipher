@@ -1672,6 +1672,22 @@ class WorkspaceToolExecutor:
     def _pt_alpha(self):
         return self.workspace.plaintext_alphabet
 
+    def _resolve_observation_branch(self, requested: str | None) -> tuple[str, dict[str, Any]]:
+        branch_name = requested or "main"
+        if self.workspace.has_branch(branch_name):
+            return branch_name, {}
+        if branch_name == "automated_preflight" and self.workspace.has_branch("main"):
+            return "main", {
+                "requested_branch": branch_name,
+                "branch_fallback": "main",
+                "warning": (
+                    "`automated_preflight` is not installed. This usually means "
+                    "the no-LLM preflight ran but did not produce a usable key. "
+                    "I used `main` for this observation instead."
+                ),
+            }
+        return branch_name, {}
+
     def _cipher_word_str(self, word_tokens: list[int]) -> str:
         alpha = self._alpha()
         sep = " " if alpha._multisym else ""
@@ -2600,6 +2616,21 @@ class WorkspaceToolExecutor:
             return False
         return confidence < 0.50 and further_iterations_helpful
 
+    def _should_guard_more_work_declaration(
+        self,
+        further_iterations_helpful: bool,
+        forced_partial: bool,
+    ) -> bool:
+        if forced_partial:
+            return False
+        if not further_iterations_helpful:
+            return False
+        if self.max_iterations is None:
+            return False
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # workspace_*
     # ------------------------------------------------------------------
@@ -2682,8 +2713,21 @@ class WorkspaceToolExecutor:
             ),
         }
 
-    def _has_seen_branch_cards(self) -> bool:
-        return any(call.tool_name == "workspace_branch_cards" for call in self.call_log)
+    def _has_seen_branch_cards(self, branch_name: str | None = None) -> bool:
+        min_iteration = 0
+        if branch_name and self.workspace.has_branch(branch_name):
+            min_iteration = int(self.workspace.get_branch(branch_name).created_iteration or 0)
+        for call in self.call_log:
+            if call.tool_name != "workspace_branch_cards":
+                continue
+            if int(getattr(call, "iteration", 0) or 0) < min_iteration:
+                continue
+            args = call.arguments or {}
+            requested_branch = args.get("branch")
+            if branch_name and requested_branch not in {None, "", branch_name}:
+                continue
+            return True
+        return False
 
     def _unresolved_repair_agenda_items(self, branch: str) -> list[dict[str, Any]]:
         return [
@@ -2828,12 +2872,13 @@ class WorkspaceToolExecutor:
         }
 
     def _tool_observe_transform_pipeline(self, args: dict) -> Any:
-        branch_name = args.get("branch") or "main"
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
         branch = self.workspace.get_branch(branch_name)
         effective_tokens = self.workspace.effective_tokens(branch_name)
         preview_symbols = self.workspace.cipher_text.alphabet.decode(effective_tokens[:80])
         return {
             "branch": branch_name,
+            **branch_note,
             "token_count": len(self.workspace.cipher_text.tokens),
             "has_transform": branch.token_order is not None,
             "transform_pipeline": branch.transform_pipeline,
@@ -2846,7 +2891,7 @@ class WorkspaceToolExecutor:
         }
 
     def _tool_observe_transform_suspicion(self, args: dict) -> Any:
-        branch_name = args.get("branch") or "main"
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
         tokens = self.workspace.effective_tokens(branch_name)
         columns = args.get("columns")
         columns = int(columns) if columns is not None else None
@@ -2871,6 +2916,7 @@ class WorkspaceToolExecutor:
         )
         return {
             "branch": branch_name,
+            **branch_note,
             **report,
             "candidate_screen": screen,
             "recommended_next_tool": (
@@ -2886,7 +2932,7 @@ class WorkspaceToolExecutor:
         }
 
     def _tool_search_transform_candidates(self, args: dict) -> Any:
-        branch_name = args.get("branch") or "main"
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
         tokens = self.workspace.effective_tokens(branch_name)
         columns = args.get("columns")
         columns = int(columns) if columns is not None else None
@@ -2914,6 +2960,7 @@ class WorkspaceToolExecutor:
         )
         return {
             "branch": branch_name,
+            **branch_note,
             "breadth": breadth,
             "profile": profile,
             "columns": columns,
@@ -5312,6 +5359,30 @@ class WorkspaceToolExecutor:
 
     def _tool_search_transform_homophonic(self, args: dict) -> Any:
         branch_name = args["branch"]
+        if not self.workspace.has_branch(branch_name):
+            return {"error": f"Branch not found: {branch_name}"}
+        branch = self.workspace.get_branch(branch_name)
+        if branch.token_order is not None:
+            return {
+                "status": "blocked",
+                "reason": "transform_branch_not_supported",
+                "branch": branch_name,
+                "active_transform_pipeline": branch.transform_pipeline,
+                "note": (
+                    "`search_transform_homophonic` must start from an "
+                    "untransformed branch. Searching again on a branch that "
+                    "already has a token-order transform would compose orders, "
+                    "but this tool cannot safely write that composite branch "
+                    "yet. Run the broader transform search from `main`, or "
+                    "use `search_homophonic_anneal` to polish this transformed "
+                    "branch's homophonic key."
+                ),
+                "suggested_next_tools": [
+                    "search_transform_homophonic(branch='main', profile='medium' or 'wide')",
+                    "search_homophonic_anneal",
+                    "workspace_branch_cards",
+                ],
+            }
         columns = args.get("columns")
         columns = int(columns) if columns is not None else None
         profile = str(args.get("profile", "small"))
@@ -5858,16 +5929,17 @@ class WorkspaceToolExecutor:
                     "meta_declare_solution",
                 ],
             }
-        if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards():
+        if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards(branch):
             return {
                 "status": "blocked",
                 "accepted": False,
                 "branch": branch,
                 "reason": "branch_cards_required",
                 "note": (
-                    "Multiple branches exist. Call workspace_branch_cards before "
-                    "declaring so you compare readable excerpts, internal "
-                    "scores, repairs, and orthography risks."
+                    "Multiple branches exist, or this branch was created after "
+                    "the last branch-card review. Call workspace_branch_cards "
+                    "before declaring so you compare readable excerpts, "
+                    "internal scores, repairs, and orthography risks."
                 ),
                 "suggested_next_tools": [
                     "workspace_branch_cards",
@@ -5951,6 +6023,31 @@ class WorkspaceToolExecutor:
                     "search_transform_homophonic",
                     "search_automated_solver",
                     "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        if self._should_guard_more_work_declaration(
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "further_iterations_requested",
+                "note": (
+                    "Your declaration says further iterations would be helpful, "
+                    "and this run still has iteration budget. Continue working "
+                    "instead of terminating early. If you intentionally want to "
+                    "stop with a partial/hypothesis result, call "
+                    "meta_declare_solution again with `forced_partial=true` "
+                    "and make the partial status explicit."
+                ),
+                "suggested_next_tools": [
+                    "workspace_branch_cards",
+                    "decode_diagnose",
+                    "search_homophonic_anneal",
+                    "observe_transform_suspicion",
                     "meta_declare_solution",
                 ],
             }

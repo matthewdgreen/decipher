@@ -99,7 +99,11 @@ budget. For grid-like no-boundary homophonic ciphers, use `breadth='wide'` \
 only when the cheap evidence justifies a large search; wide search is a \
 candidate menu, not a solve. Promote only a small finalist set with \
 `search_transform_homophonic`, using `include_program_search=true` when small \
-transform pipelines may be needed instead of one-step routes. This directly \
+transform pipelines may be needed instead of one-step routes. Run \
+`search_transform_homophonic` from an untransformed source branch such as \
+`main`; once a transformed branch exists, polish its key with \
+`search_homophonic_anneal` rather than stacking another transform search on \
+top of it. This directly \
 tests whether the reading order itself is wrong without blindly launching \
 expensive language-model searches. \
 If an `automated_preflight` branch exists, treat it as a protected no-LLM \
