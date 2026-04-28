@@ -54,6 +54,7 @@ class BenchmarkRunnerV2:
         artifact_dir: str | Path = "artifacts",
         automated_preflight: bool = True,
         display_mode: str = "off",
+        external_context: str | None = None,
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -62,6 +63,7 @@ class BenchmarkRunnerV2:
         self.artifact_dir = Path(artifact_dir)
         self.automated_preflight = automated_preflight
         self.display_mode = display_mode
+        self.external_context = external_context
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -162,13 +164,24 @@ class BenchmarkRunnerV2:
                                "error", "max_iterations_reached"}:
                     print(f" [{event}]", flush=True)
 
+        # Build the prior_context block: caller-supplied > external > benchmark
+        benchmark_ctx = _format_benchmark_context(test_data)
+        if self.external_context:
+            auto_ctx: str | None = (
+                f"{self.external_context}\n\n{benchmark_ctx}"
+                if benchmark_ctx
+                else self.external_context
+            )
+        else:
+            auto_ctx = benchmark_ctx
+
         artifact = run_v2(
             cipher_text=cipher_text,
             claude_api=self.api,
             language=lang,
             max_iterations=self.max_iterations,
             cipher_id=test_id,
-            prior_context=prior_context or _format_benchmark_context(test_data),
+            prior_context=prior_context or auto_ctx,
             automated_preflight=automated_preflight,
             verbose=self.verbose,
             on_event=on_event,

@@ -138,6 +138,20 @@ def _make_agent_provider(args: argparse.Namespace):
     )
 
 
+def _read_external_context(args: argparse.Namespace) -> str | None:
+    """Return the external context string, loading from file if --context-file given."""
+    ctx = getattr(args, "context", None)
+    ctx_file = getattr(args, "context_file", None)
+    if ctx_file:
+        try:
+            file_text = Path(ctx_file).read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            print(f"Error reading context file {ctx_file!r}: {exc}", file=sys.stderr)
+            sys.exit(1)
+        return f"{ctx}\n\n{file_text}" if ctx else file_text
+    return ctx or None
+
+
 def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
 
@@ -168,6 +182,12 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
             homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
+            transform_search=args.transform_search,
+            transform_search_profile=args.transform_search_profile,
+            transform_search_max_generated_candidates=args.transform_search_max_generated_candidates,
+            transform_promote_artifact=args.transform_promote_artifact,
+            transform_promote_candidate_ids=args.transform_promote_candidate_id,
+            transform_promote_top_n=args.transform_promote_top_n,
         )
         mode_label = "automated"
     else:
@@ -183,6 +203,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir or "artifacts",
             automated_preflight=not args.no_automated_preflight,
             display_mode=display_mode,
+            external_context=_read_external_context(args),
         )
         mode_label = f"agentic ({provider}/{model})"
 
@@ -260,14 +281,26 @@ def cmd_crack(args: argparse.Namespace) -> None:
         print("Running automated solver (no LLM API calls)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
-        artifact = run_automated(
-            cipher_text=ct,
-            language=args.language,
-            cipher_id=cipher_id,
-            homophonic_budget=homophonic_budget,
-            homophonic_refinement=homophonic_refinement,
-            homophonic_solver="legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
-        )
+        run_kwargs = {
+            "cipher_text": ct,
+            "language": args.language,
+            "cipher_id": cipher_id,
+            "homophonic_budget": homophonic_budget,
+            "homophonic_refinement": homophonic_refinement,
+            "homophonic_solver": "legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
+        }
+        if getattr(args, "transform_search", "off") != "off":
+            run_kwargs["transform_search"] = args.transform_search
+            run_kwargs["transform_search_profile"] = getattr(args, "transform_search_profile", "broad")
+            run_kwargs["transform_search_max_generated_candidates"] = getattr(
+                args,
+                "transform_search_max_generated_candidates",
+                None,
+            )
+            run_kwargs["transform_promote_artifact"] = getattr(args, "transform_promote_artifact", None)
+            run_kwargs["transform_promote_candidate_ids"] = getattr(args, "transform_promote_candidate_id", [])
+            run_kwargs["transform_promote_top_n"] = getattr(args, "transform_promote_top_n", None)
+        artifact = run_automated(**run_kwargs)
         path = save_crack_artifact(artifact, ct, args.language, artifact_dir)
         print(f"\nArtifact saved: {path}")
         print(f"Status: {artifact.status}")
@@ -303,14 +336,26 @@ def cmd_crack(args: argparse.Namespace) -> None:
             print("Running automated preflight (no LLM access)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
-        preflight = run_automated(
-            cipher_text=ct,
-            language=args.language,
-            cipher_id=cipher_id,
-            homophonic_budget=homophonic_budget,
-            homophonic_refinement=homophonic_refinement,
-            homophonic_solver="legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
-        )
+        run_kwargs = {
+            "cipher_text": ct,
+            "language": args.language,
+            "cipher_id": cipher_id,
+            "homophonic_budget": homophonic_budget,
+            "homophonic_refinement": homophonic_refinement,
+            "homophonic_solver": "legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
+        }
+        if getattr(args, "transform_search", "off") != "off":
+            run_kwargs["transform_search"] = args.transform_search
+            run_kwargs["transform_search_profile"] = getattr(args, "transform_search_profile", "broad")
+            run_kwargs["transform_search_max_generated_candidates"] = getattr(
+                args,
+                "transform_search_max_generated_candidates",
+                None,
+            )
+            run_kwargs["transform_promote_artifact"] = getattr(args, "transform_promote_artifact", None)
+            run_kwargs["transform_promote_candidate_ids"] = getattr(args, "transform_promote_candidate_id", [])
+            run_kwargs["transform_promote_top_n"] = getattr(args, "transform_promote_top_n", None)
+        preflight = run_automated(**run_kwargs)
         automated_preflight = dict(preflight.artifact)
         automated_preflight["summary"] = format_automated_preflight_for_llm(preflight)
         automated_preflight["enabled"] = True
@@ -342,6 +387,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
         language=args.language,
         max_iterations=args.max_iterations,
         cipher_id=cipher_id,
+        prior_context=_read_external_context(args),
         automated_preflight=automated_preflight,
         verbose=args.verbose and display_mode == "off",
         on_event=on_event,
@@ -715,6 +761,19 @@ def main() -> None:
         help="LLM model name. Defaults by provider.",
     )
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
+    bench.add_argument(
+        "--context",
+        metavar="TEXT",
+        help=(
+            "Free-form external context injected into the agent's initial context "
+            "(e.g. date, source, suspected technique). Prepended before any benchmark context."
+        ),
+    )
+    bench.add_argument(
+        "--context-file",
+        metavar="PATH",
+        help="Path to a text file containing external context (combined with --context if both given).",
+    )
     bench.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     bench.add_argument("--verbose", "-v", action="store_true")
     bench.add_argument(
@@ -755,6 +814,52 @@ def main() -> None:
         action="store_true",
         help="Use the older pre-zenith_native homophonic solver path for comparison.",
     )
+    bench.add_argument(
+        "--transform-search",
+        choices=["off", "auto", "screen", "wide", "rank", "full", "promote"],
+        default="off",
+        help=(
+            "Run cheap transform-search diagnostics for automated runs. "
+            "`auto` screens only when router signals are promising; `screen` "
+            "records a structural candidate menu; `wide` runs a larger "
+            "structural-only search; `rank`/`full` run bounded solver probes "
+            "on top candidates; `promote` probes candidates from a prior "
+            "wide/screen artifact."
+        ),
+    )
+    bench.add_argument(
+        "--transform-search-profile",
+        choices=["fast", "broad", "wide"],
+        default="broad",
+        help=(
+            "Candidate breadth profile for transform-search rank/full. "
+            "`fast` is recommended for regression runs and trims mutations "
+            "and confirmations; `wide` expands the structural-only candidate sweep."
+        ),
+    )
+    bench.add_argument(
+        "--transform-search-max-generated-candidates",
+        type=int,
+        help=(
+            "Optional safety cap for transform-search structural candidate "
+            "generation. Use with --transform-search wide for larger sweeps."
+        ),
+    )
+    bench.add_argument(
+        "--transform-promote-artifact",
+        help="Source automated artifact containing transform_search.screen candidates to promote.",
+    )
+    bench.add_argument(
+        "--transform-promote-candidate-id",
+        action="append",
+        default=[],
+        help="Specific transform candidate id to promote from the source artifact. May be repeated.",
+    )
+    bench.add_argument(
+        "--transform-promote-top-n",
+        type=int,
+        help="Promote the top N structural candidates from the source artifact.",
+    )
 
     # crack
     crack = subparsers.add_parser("crack", help="Crack a cipher from file or stdin")
@@ -770,6 +875,19 @@ def main() -> None:
     crack.add_argument("--model", "-m", help="LLM model name. Defaults by provider.")
     crack.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"],
                        default="en")
+    crack.add_argument(
+        "--context",
+        metavar="TEXT",
+        help=(
+            "Free-form external context injected into the agent's initial context "
+            "(e.g. date, source, suspected technique)."
+        ),
+    )
+    crack.add_argument(
+        "--context-file",
+        metavar="PATH",
+        help="Path to a text file containing external context (combined with --context if both given).",
+    )
     crack.add_argument("--artifact-dir", help="Artifact output directory (default: ./artifacts)")
     crack.add_argument("--cipher-id", help="Identifier for this cipher (default: 'cli')")
     crack.add_argument("--verbose", "-v", action="store_true")
@@ -803,6 +921,50 @@ def main() -> None:
         "--legacy-homophonic",
         action="store_true",
         help="Use the older pre-zenith_native homophonic solver path for comparison.",
+    )
+    crack.add_argument(
+        "--transform-search",
+        choices=["off", "auto", "screen", "wide", "rank", "full", "promote"],
+        default="off",
+        help=(
+            "Run cheap transform-search diagnostics in automated/preflight runs. "
+            "`wide` runs a larger structural-only search; `rank`/`full` run "
+            "bounded solver probes on top transform candidates; `promote` "
+            "probes candidates from a prior wide/screen artifact."
+        ),
+    )
+    crack.add_argument(
+        "--transform-search-profile",
+        choices=["fast", "broad", "wide"],
+        default="broad",
+        help=(
+            "Candidate breadth profile for transform-search rank/full. "
+            "`fast` is recommended for regression runs and trims mutations "
+            "and confirmations; `wide` expands the structural-only candidate sweep."
+        ),
+    )
+    crack.add_argument(
+        "--transform-search-max-generated-candidates",
+        type=int,
+        help=(
+            "Optional safety cap for transform-search structural candidate "
+            "generation. Use with --transform-search wide for larger sweeps."
+        ),
+    )
+    crack.add_argument(
+        "--transform-promote-artifact",
+        help="Source automated artifact containing transform_search.screen candidates to promote.",
+    )
+    crack.add_argument(
+        "--transform-promote-candidate-id",
+        action="append",
+        default=[],
+        help="Specific transform candidate id to promote from the source artifact. May be repeated.",
+    )
+    crack.add_argument(
+        "--transform-promote-top-n",
+        type=int,
+        help="Promote the top N structural candidates from the source artifact.",
     )
 
     # resume-artifact

@@ -19,7 +19,7 @@ import automated.runner as automated_runner
 import analysis.zenith_solver as zenith_solver
 import benchmark.runner_v2 as runner_v2
 from benchmark.runner_v2 import BenchmarkRunnerV2
-from benchmark.loader import BenchmarkTest, TestData as BenchmarkTestData
+from benchmark.loader import BenchmarkTest, TestData as BenchmarkTestData, parse_canonical_transcription
 
 
 def _test_data() -> BenchmarkTestData:
@@ -163,6 +163,729 @@ def test_preflight_summary_omits_ground_truth_accuracy():
     assert "word_accuracy" not in summary
     assert "1.0" not in summary
     assert "$0.00 (no LLM access)" in summary
+
+
+def test_automated_transform_search_screen_records_router_artifact(monkeypatch):
+    cipher_text = parse_canonical_transcription("S001 S002 S003 S004 S005 S006")
+
+    def fake_substitution(cipher_text, language):
+        return (
+            "fake_substitution",
+            {0: 0, 1: 1, 2: 2},
+            "ABCDEF",
+            {"name": "search_anneal", "score": -1.0},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_substitution", fake_substitution)
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="transform_screen_demo",
+        cipher_system="simple_substitution",
+        transform_search="screen",
+    )
+
+    screen_step = next(
+        step for step in result.artifact["steps"]
+        if step["name"] == "screen_transform_candidates"
+    )
+    assert result.status == "completed"
+    assert result.artifact["transform_search"]["status"] == "screened"
+    assert screen_step["screen"]["top_candidates"]
+    assert screen_step["suspicion"]["recommendation"] in {
+        "stay_baseline",
+        "consider_screen",
+        "run_screen",
+    }
+
+
+def test_automated_transform_search_rank_can_select_candidate(monkeypatch):
+    cipher_text = parse_canonical_transcription("S001 S002 S003 S004 S005 S006")
+
+    def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        return (
+            "fake_homophonic",
+            {0: 0, 1: 1},
+            "TRANSFORMED",
+            {"name": "search_homophonic_anneal", "anneal_score": -0.5},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_homophonic)
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="transform_rank_demo",
+        cipher_system="zodiac_transposition_homophonic",
+        transform_search="rank",
+        homophonic_budget="screen",
+    )
+
+    assert result.status == "completed"
+    assert result.solver == "transform_search_homophonic"
+    assert result.final_decryption == "TRANSFORMED"
+    rank = result.artifact["transform_search"]["rank"]
+    assert rank["top_ranked_candidates"]
+    assert rank["validation"]["policy"]
+    assert rank["confirmation"]["policy"]
+    assert rank["finalists"]["policy"]
+    assert rank["selection"]["selected"] is True
+    assert rank["diagnostics"]["policy"]
+    assert "validated_selection_score" in rank["top_ranked_candidates"][0]
+    assert "confirmed_selection_score" in rank["top_ranked_candidates"][0]
+    assert "finalist_label" in rank["top_ranked_candidates"][0]
+    assert any(step["name"] == "select_transform_candidate" for step in result.artifact["steps"])
+
+
+def test_automated_wide_transform_search_is_structural_only():
+    cipher_text = parse_canonical_transcription(" ".join(f"S{i:03d}" for i in range(1, 121)))
+
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="wide_structural_demo",
+        cipher_system="zodiac_transposition_homophonic",
+        transform_search="wide",
+        transform_search_profile="wide",
+    )
+
+    assert result.status == "completed"
+    assert result.solver == "transform_search_structural_only"
+    assert result.final_decryption == ""
+    report = result.artifact["transform_search"]
+    assert report["rank"] is None
+    assert report["screen"]["profile"] == "wide"
+    assert report["screen"]["top_candidates"]
+    assert any(step["name"] == "transform_search_structural_only" for step in result.artifact["steps"])
+
+
+def test_automated_transform_promote_artifact_feeds_rank_stage(tmp_path, monkeypatch):
+    cipher_text = parse_canonical_transcription("S001 S002 S003 S004 S005 S006")
+    promoted_candidate = {
+        "candidate_id": "cand_reverse",
+        "family": "reverse_whole",
+        "provenance": "unit_test",
+        "params": {},
+        "pipeline": {
+            "steps": [
+                {"transformer_name": "reverse_ranges", "data": {"ranges": [[0, 6]]}},
+            ],
+        },
+        "score": 1.25,
+        "metrics": {"matrix_rank_score": 1.0},
+    }
+    artifact_path = tmp_path / "wide.json"
+    artifact_path.write_text(
+        json.dumps({
+            "transform_search": {
+                "mode": "wide",
+                "profile": "wide",
+                "status": "screened",
+                "screen": {
+                    "profile": "wide",
+                    "candidate_count": 2,
+                    "deduped_candidate_count": 2,
+                    "identity_candidate": {
+                        "candidate_id": "000_identity",
+                        "family": "identity",
+                        "pipeline": {"steps": []},
+                        "score": 0.0,
+                    },
+                    "top_candidates": [
+                        promoted_candidate,
+                        {
+                            "candidate_id": "cand_other",
+                            "family": "route_rows",
+                            "pipeline": {"steps": []},
+                            "score": 0.5,
+                        },
+                    ],
+                    "anchor_candidates": [],
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    seen: dict[str, object] = {}
+
+    def fake_rank(**kwargs):
+        screen = kwargs["screen"]
+        seen["screen"] = screen
+        seen["max_candidates"] = kwargs["max_candidates"]
+        candidate = dict(screen["top_candidates"][0])
+        candidate.update({
+            "status": "completed",
+            "key": {"0": 0},
+            "decryption": "PROMOTED",
+            "anneal_score": -0.1,
+            "validated_selection_score": 1.0,
+            "confirmed_selection_score": 1.0,
+            "finalist_label": "robust_candidate",
+        })
+        return {
+            "budget": kwargs["budget"],
+            "selection": {
+                "selected": True,
+                "selected_candidate_id": candidate["candidate_id"],
+            },
+            "top_ranked_candidates": [candidate],
+        }
+
+    monkeypatch.setattr(automated_runner, "_rank_transform_candidates", fake_rank)
+
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="promote_demo",
+        cipher_system="zodiac_transposition_homophonic",
+        transform_search="promote",
+        transform_promote_artifact=str(artifact_path),
+        transform_promote_candidate_ids=["cand_reverse"],
+        homophonic_budget="screen",
+    )
+
+    assert result.status == "completed"
+    assert result.solver == "transform_search_homophonic"
+    assert result.final_decryption == "PROMOTED"
+    report = result.artifact["transform_search"]
+    assert report["status"] == "promoted"
+    assert report["screen"]["promotion"]["source_artifact"].endswith("wide.json")
+    assert report["screen"]["promotion"]["promoted_candidate_ids"] == ["cand_reverse"]
+    assert seen["screen"]["top_candidates"][0]["candidate_id"] == "cand_reverse"
+    assert seen["max_candidates"] >= 2
+    assert result.artifact["transform_pipeline"] == {
+        "steps": [{"name": "reverse_ranges", "data": {"ranges": [[0, 6]]}}],
+    }
+    assert result.artifact["input_transform_pipeline"] is None
+    assert result.artifact["transform_selection"]["source"] == "transform_search_rank"
+    assert result.artifact["transform_selection"]["candidate_id"] == "cand_reverse"
+    assert result.artifact["transform_selection"]["promotion"]["source_artifact"].endswith("wide.json")
+
+
+def test_transform_search_fast_profile_trims_rank_work():
+    fast = automated_runner._transform_search_profile_params("rank", "fast")
+    broad = automated_runner._transform_search_profile_params("rank", "broad")
+    promote = automated_runner._transform_search_profile_params("promote", "fast")
+    wide_screen = automated_runner._transform_search_profile_params("wide", "wide")
+    wide_50k = automated_runner._transform_search_profile_params(
+        "wide",
+        "wide",
+        max_generated_candidates=50000,
+    )
+
+    assert fast["screen_profile"] == "medium"
+    assert fast["include_mutations"] is False
+    assert fast["top_n"] < broad["top_n"]
+    assert fast["max_candidates"] < broad["max_candidates"]
+    assert fast["adaptive_confirmations"] == 0
+    assert fast["include_program_search"] is False
+    assert broad["include_mutations"] is True
+    assert broad["include_program_search"] is True
+    assert broad["program_max_depth"] >= 5
+    assert promote["max_candidates"] == fast["max_candidates"]
+    assert wide_screen["screen_profile"] == "wide"
+    assert wide_screen["max_candidates"] == 0
+    assert wide_screen["max_generated_candidates"] > broad["max_generated_candidates"]
+    assert wide_screen["include_program_search"] is True
+    assert wide_50k["max_generated_candidates"] == 50000
+
+
+def test_transform_rank_triage_preserves_family_breadth():
+    def candidate(candidate_id, family, score=1.0, matrix=1.0):
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "pipeline": {"steps": []},
+            "score": score,
+            "metrics": {
+                "matrix_rank_score": matrix,
+                "periodic_redundancy": matrix,
+                "inverse_periodic_redundancy": 0.0,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": candidate("000_identity", "identity", score=0.0, matrix=0.0),
+        "top_candidates": [
+            candidate(f"diag_{i}", "route_diagonal_down_right", score=2.0 - i * 0.01, matrix=2.0)
+            for i in range(8)
+        ] + [
+            candidate("columns", "route_columns_down", score=0.5, matrix=0.5),
+            candidate("ndown", "ndownmacross_1_2", score=0.4, matrix=0.4),
+            candidate("split", "split_horizontal_10_swap", score=0.3, matrix=0.3),
+        ],
+    }
+
+    selected, report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=6,
+    )
+    selected_ids = {item["candidate_id"] for item in selected}
+
+    assert "000_identity" in selected_ids
+    assert "columns" in selected_ids
+    assert "ndown" in selected_ids
+    assert "split" in selected_ids
+    assert report["class_counts"]["diagonal_route"] < 8
+
+
+def test_transform_rank_triage_prefers_full_z340_calibration_template():
+    def candidate(candidate_id, family, score, matrix, params=None):
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "pipeline": {"steps": []},
+            "params": params or {},
+            "score": score,
+            "metrics": {
+                "matrix_rank_score": matrix,
+                "periodic_redundancy": score,
+                "inverse_periodic_redundancy": score,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": candidate("000_identity", "identity", 0.0, 0.0),
+        "top_candidates": [
+            candidate(
+                "without_lock",
+                "z340_composite_zenith_template_without_lock",
+                0.90,
+                0.70,
+                {"calibration_template": True},
+            ),
+        ],
+        "anchor_candidates": [
+            candidate(
+                "full_template",
+                "z340_composite_zenith_template",
+                0.88,
+                0.66,
+                {"template": "z340_zenith_known_shape", "calibration_template": True},
+            ),
+        ],
+    }
+
+    selected, _report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=3,
+    )
+
+    assert selected[1]["candidate_id"] == "full_template"
+
+
+def test_transform_rank_triage_prefers_constructed_program_before_injected_template():
+    def candidate(candidate_id, family, params):
+        return {
+            "candidate_id": candidate_id,
+            "family": family,
+            "pipeline": {"steps": []},
+            "params": params,
+            "score": 0.90,
+            "metrics": {
+                "matrix_rank_score": 0.70,
+                "periodic_redundancy": 0.70,
+                "inverse_periodic_redundancy": 0.70,
+                "position_nontriviality": 1.0,
+            },
+        }
+
+    screen = {
+        "identity_candidate": candidate("000_identity", "identity", {}),
+        "top_candidates": [
+            candidate(
+                "injected",
+                "z340_composite_zenith_template",
+                {"template": "z340_zenith_known_shape", "calibration_template": True},
+            ),
+            candidate(
+                "constructed",
+                "program_z340_constructed_shape",
+                {"template": "z340_constructed_shape", "calibration_template": True},
+            ),
+        ],
+    }
+
+    selected, _report = automated_runner._two_stage_transform_rank_candidates(
+        screen,
+        max_candidates=3,
+    )
+
+    assert selected[1]["candidate_id"] == "constructed"
+
+
+def test_transform_family_gates_reject_unstable_false_positive():
+    ranked = [
+        {
+            "candidate_id": "candidate_unwrap",
+            "family": "unwrap_transposition_reverse_key",
+            "status": "completed",
+            "confirmed_selection_score": -7.70,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.10,
+            },
+        },
+        {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "status": "completed",
+            "confirmed_selection_score": -7.90,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.50,
+            },
+        },
+    ]
+
+    report = automated_runner._label_transform_finalists(ranked)
+    ranked.sort(
+        key=lambda item: (
+            bool(item.get("selectable_transform_candidate")),
+            item.get("confirmed_selection_score", float("-inf")),
+        ),
+        reverse=True,
+    )
+    selection = automated_runner._choose_transform_candidate(ranked)
+
+    assert report["label_counts"]["unstable_false_positive"] == 1
+    assert ranked[0]["candidate_id"] == "000_identity"
+    assert selection["selected_candidate_id"] == "000_identity"
+    assert selection["selects_transform"] is False
+
+
+def test_z340_known_shape_gate_allows_moderate_stability_with_large_margin():
+    ranked = [
+        {
+            "candidate_id": "z340",
+            "family": "z340_composite_zenith_template",
+            "params": {"template": "z340_zenith_known_shape", "calibration_template": True},
+            "status": "completed",
+            "confirmed_selection_score": -7.55,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.50,
+            },
+        },
+        {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "status": "completed",
+            "confirmed_selection_score": -7.89,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.45,
+            },
+        },
+    ]
+
+    automated_runner._label_transform_finalists(ranked)
+    ranked.sort(
+        key=lambda item: (
+            bool(item.get("selectable_transform_candidate")),
+            item.get("confirmed_selection_score", float("-inf")),
+        ),
+        reverse=True,
+    )
+    selection = automated_runner._choose_transform_candidate(ranked)
+
+    assert ranked[0]["candidate_id"] == "z340"
+    assert selection["selected_candidate_id"] == "z340"
+    assert selection["selects_transform"] is True
+
+
+def test_selected_transform_candidate_gets_full_final_refinement(monkeypatch):
+    cipher_text = parse_canonical_transcription("A B C")
+    selected = {
+        "candidate_id": "reverse_candidate",
+        "family": "whole_reverse",
+        "status": "completed",
+        "decryption": "SCREEN",
+        "key": {"0": 0, "1": 1, "2": 2},
+        "pipeline": {"steps": [{"name": "Reverse", "data": {}}]},
+        "anneal_score": -8.0,
+        "validated_selection_score": -8.0,
+        "confirmed_selection_score": -8.0,
+        "elapsed_seconds": 1.0,
+    }
+    calls = []
+
+    monkeypatch.setattr(
+        automated_runner,
+        "inspect_transform_suspicion",
+        lambda **_kwargs: {"recommendation": "run_screen"},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "screen_transform_candidates",
+        lambda *_args, **_kwargs: {"identity_candidate": {}, "top_candidates": []},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_rank_transform_candidates",
+        lambda **_kwargs: {
+            "budget": "screen",
+            "selection": {
+                "selected": True,
+                "selected_candidate_id": "reverse_candidate",
+            },
+            "top_ranked_candidates": [selected],
+        },
+    )
+
+    def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        calls.append({"tokens": list(cipher_text.tokens), "budget": budget})
+        return (
+            "fake_homophonic",
+            {0: 0, 1: 1, 2: 2},
+            "FULL",
+            {"name": "search_homophonic_anneal", "solver": "fake", "budget": budget},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_homophonic)
+
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="refine_transform",
+        cipher_system="transposition_homophonic",
+        transform_search="rank",
+        homophonic_budget="full",
+    )
+
+    assert result.solver == "transform_search_homophonic_refined"
+    assert result.final_decryption == "FULL"
+    assert calls == [{"tokens": [2, 1, 0], "budget": "full"}]
+    assert any(
+        step["name"] == "refine_selected_transform_candidate_homophonic"
+        for step in result.artifact["steps"]
+    )
+
+
+def test_full_final_refinement_bakeoff_can_replace_screen_winner(monkeypatch):
+    cipher_text = parse_canonical_transcription("A B C")
+    screen_winner = {
+        "candidate_id": "screen_winner",
+        "family": "program_banded_ndown_constructed",
+        "status": "completed",
+        "decryption": "SCREEN_WINNER",
+        "key": {"0": 0},
+        "pipeline": {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 2}}]},
+        "anneal_score": -7.50,
+        "validated_selection_score": -7.50,
+        "confirmed_selection_score": -7.50,
+        "finalist_label": "robust_candidate",
+        "selectable_transform_candidate": True,
+    }
+    close_neighbor = {
+        "candidate_id": "close_neighbor",
+        "family": "program_z340_constructed_shape",
+        "status": "completed",
+        "decryption": "SCREEN_NEIGHBOR",
+        "key": {"0": 0},
+        "pipeline": {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 1}}]},
+        "anneal_score": -7.52,
+        "validated_selection_score": -7.52,
+        "confirmed_selection_score": -7.52,
+        "finalist_label": "robust_candidate",
+        "selectable_transform_candidate": True,
+    }
+
+    monkeypatch.setattr(
+        automated_runner,
+        "inspect_transform_suspicion",
+        lambda **_kwargs: {"recommendation": "run_screen"},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "screen_transform_candidates",
+        lambda *_args, **_kwargs: {"identity_candidate": {}, "top_candidates": []},
+    )
+    monkeypatch.setattr(
+        automated_runner,
+        "_rank_transform_candidates",
+        lambda **_kwargs: {
+            "budget": "screen",
+            "selection": {
+                "selected": True,
+                "selected_candidate_id": "screen_winner",
+            },
+            "top_ranked_candidates": [screen_winner, close_neighbor],
+        },
+    )
+
+    def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        if cipher_text.source.endswith(":1"):
+            return (
+                "fake_homophonic",
+                {0: 0},
+                "FULL_NEIGHBOR",
+                {"name": "search_homophonic_anneal", "anneal_score": -6.0},
+            )
+        return (
+            "fake_homophonic",
+            {0: 0},
+            "FULL_SCREEN_WINNER",
+            {"name": "search_homophonic_anneal", "anneal_score": -7.0},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_homophonic)
+
+    result = automated_runner.run_automated(
+        cipher_text=cipher_text,
+        language="en",
+        cipher_id="refine_bakeoff",
+        cipher_system="transposition_homophonic",
+        transform_search="rank",
+        homophonic_budget="full",
+    )
+
+    assert result.solver == "transform_search_homophonic_refined"
+    assert result.final_decryption == "FULL_NEIGHBOR"
+    refine_step = next(
+        step for step in result.artifact["steps"]
+        if step["name"] == "refine_selected_transform_candidate_homophonic"
+    )
+    assert refine_step["screen_selected_candidate_id"] == "screen_winner"
+    assert refine_step["candidate_id"] == "close_neighbor"
+    assert refine_step["bakeoff"]["selected_candidate_changed"] is True
+    assert refine_step["bakeoff"]["refined_candidate_count"] == 2
+    assert result.artifact["transform_pipeline"] == close_neighbor["pipeline"]
+    assert result.artifact["transform_selection"]["source"] == "transform_search_full_refinement"
+    assert result.artifact["transform_selection"]["candidate_id"] == "close_neighbor"
+    assert result.artifact["transform_selection"]["screen_selected_candidate_id"] == "screen_winner"
+    assert result.artifact["transform_selection"]["selected_candidate_changed"] is True
+
+
+def test_transform_diagnostics_summarize_false_positive_evidence():
+    ranked = [
+        {
+            "candidate_id": "candidate_unwrap",
+            "family": "unwrap_transposition_reverse_key",
+            "status": "completed",
+            "confirmed_selection_score": -7.70,
+            "anneal_score": -7.65,
+            "plaintext_quality_score": 0.8,
+            "structural_score": 1.0,
+            "structural_delta_vs_identity": 0.5,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.10,
+            },
+        },
+        {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "status": "completed",
+            "confirmed_selection_score": -7.90,
+            "anneal_score": -7.85,
+            "plaintext_quality_score": 0.2,
+            "structural_score": 0.4,
+            "structural_delta_vs_identity": 0.0,
+            "confirmation": {
+                "status": "completed",
+                "stability_score": 0.50,
+            },
+        },
+    ]
+
+    automated_runner._label_transform_finalists(ranked)
+    ranked.sort(
+        key=lambda item: (
+            bool(item.get("selectable_transform_candidate")),
+            item.get("confirmed_selection_score", float("-inf")),
+        ),
+        reverse=True,
+    )
+    selection = automated_runner._choose_transform_candidate(ranked)
+    diagnostics = automated_runner._diagnose_transform_finalists(ranked, selection)
+
+    assert diagnostics["conclusion"] == "identity_baseline_preferred_over_transform_candidates"
+    assert diagnostics["unstable_false_positive_count"] == 1
+    false_positive = next(
+        item for item in diagnostics["top_evidence"]
+        if item["candidate_id"] == "candidate_unwrap"
+    )
+    assert false_positive["quality_signal"] is True
+    assert false_positive["stability_pass"] is False
+    assert "failed_stability_gate" in false_positive["diagnostic_reasons"]
+
+
+def test_transform_diagnostic_candidate_prefers_identity_baseline():
+    report = {
+        "rank": {
+            "top_ranked_candidates": [
+                {
+                    "candidate_id": "unstable",
+                    "status": "completed",
+                    "decryption": "FALSEPOSITIVE",
+                },
+                {
+                    "candidate_id": "000_identity",
+                    "status": "completed",
+                    "decryption": "BASELINE",
+                },
+            ],
+        },
+    }
+
+    candidate = automated_runner._diagnostic_ranked_transform_candidate(report)
+
+    assert candidate["candidate_id"] == "000_identity"
+
+
+def test_transform_confirmation_honors_zero_adaptive_budget(monkeypatch):
+    ranked = [
+        {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "status": "completed",
+            "pipeline": {"steps": []},
+            "selection_score": -10.0,
+            "validated_selection_score": -10.0,
+            "structural_score": 0.0,
+            "decryption": "BASELINE",
+        },
+        {
+            "candidate_id": "near",
+            "family": "route_columns_down",
+            "status": "completed",
+            "pipeline": {"steps": []},
+            "selection_score": -10.01,
+            "validated_selection_score": -10.01,
+            "structural_score": 0.0,
+            "decryption": "NEAR",
+        },
+    ]
+    ct = parse_canonical_transcription("S001 S002 S003")
+    calls = []
+
+    def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        calls.append(seed_offset)
+        return (
+            "fake_homophonic",
+            {0: 0},
+            "BASELINE",
+            {"name": "search_homophonic_anneal", "anneal_score": -10.0},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_homophonic)
+
+    report = automated_runner._confirm_transform_finalists(
+        cipher_text=ct,
+        language="en",
+        ranked=ranked,
+        budget="screen",
+        solver_profile="zenith_native",
+        confirm_count=1,
+        adaptive_confirmations=0,
+    )
+
+    assert calls == [10000]
+    assert report["confirmed_candidate_count"] == 1
+    assert report["adaptive_confirmed_candidate_count"] == 0
+    assert ranked[1]["confirmation"]["status"] == "not_run"
 
 
 def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_path):

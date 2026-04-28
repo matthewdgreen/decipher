@@ -82,7 +82,10 @@ def resolve_frontier_case(
             "or pre-populate the plaintext cache"
         )
     api_key = generation_api_key if cached is None else ""
-    return build_test_case(spec, cache, api_key)
+    test_data = build_test_case(spec, cache, api_key)
+    if case.raw.get("hide_transform_pipeline_from_solver"):
+        test_data.transform_pipeline = None
+    return test_data
 
 
 def evaluate_frontier_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

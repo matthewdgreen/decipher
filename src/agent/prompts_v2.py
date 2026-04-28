@@ -83,10 +83,16 @@ and just re-confirms the prior local optimum. \
 If simple substitution / homophonic search produces only isolated word \
 islands on a short text, and especially if you are thinking "columnar", \
 "transposition", "period", "polyalphabetic", or "Vigenere", do not declare \
-yet. First call `observe_transform_pipeline`, then run a bounded \
-`search_transform_homophonic` screen. This is cheap relative to another long \
-language-model turn and directly tests whether the reading order itself is \
-wrong. \
+yet. First call `observe_transform_pipeline` and \
+`observe_transform_suspicion`; if the suspicion report recommends a screen, \
+then run structural-only `search_transform_candidates` before spending solver \
+budget. For grid-like no-boundary homophonic ciphers, use `breadth='wide'` \
+only when the cheap evidence justifies a large search; wide search is a \
+candidate menu, not a solve. Promote only a small finalist set with \
+`search_transform_homophonic`, using `include_program_search=true` when small \
+transform pipelines may be needed instead of one-step routes. This directly \
+tests whether the reading order itself is wrong without blindly launching \
+expensive language-model searches. \
 If an `automated_preflight` branch exists, treat it as a protected no-LLM \
 baseline. Inspect it before launching fresh search. If it already reads as \
 coherent target-language text, fork from it before experimenting and keep \
@@ -189,7 +195,7 @@ iterations would help, do not declare early. Continue working until the final \
 iteration, or until you have actually tried the next useful hypothesis class \
 you name in `further_iterations_note`. In particular, do not say "further \
 iterations should try transposition/columnar/Vigenere" unless you first use \
-the available transform tools, or you are on the final turn. If you truly \
+the available transform-suspicion and search tools, or you are on the final turn. If you truly \
 need to submit a low-confidence early partial despite remaining budget, say \
 so explicitly with `forced_partial=true` and explain why no useful remaining \
 tool action is available.

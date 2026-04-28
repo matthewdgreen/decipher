@@ -33,7 +33,10 @@ from analysis.solver import hill_climb_swaps, simulated_anneal
 from analysis.transformers import (
     TransformPipeline,
     apply_transform_pipeline,
-    candidate_transform_pipelines,
+)
+from analysis.transform_search import (
+    inspect_transform_suspicion,
+    screen_transform_candidates,
 )
 from automated import runner as automated_runner
 from automated.runner import run_automated
@@ -228,6 +231,67 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "input_schema": {
             "type": "object",
             "properties": {"branch": {"type": "string", "default": "main"}},
+        },
+    },
+    {
+        "name": "observe_transform_suspicion",
+        "description": (
+            "Cheap diagnostic for deciding whether transform search is worth "
+            "trying on a cipher with unknown or incomplete type metadata. It "
+            "reports plausible grid dimensions, homophonic/order-scramble "
+            "signals, and a conservative recommendation. Use this before "
+            "spending solver budget on search_transform_homophonic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "columns": {
+                    "type": "integer",
+                    "description": "Optional suspected grid width.",
+                },
+                "baseline_status": {
+                    "type": "string",
+                    "description": "Optional status from a baseline solve.",
+                },
+                "baseline_score": {
+                    "type": "number",
+                    "description": "Optional normalized baseline quality score if available.",
+                },
+            },
+        },
+    },
+    {
+        "name": "search_transform_candidates",
+        "description": (
+            "Run a structural-only transform candidate search. This can use "
+            "fast, broad, or wide breadth without spending homophonic solver "
+            "budget. Use it when deciding whether a large transform search is "
+            "worth promoting into search_transform_homophonic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "columns": {
+                    "type": "integer",
+                    "description": "Optional suspected grid width.",
+                },
+                "breadth": {
+                    "type": "string",
+                    "enum": ["fast", "broad", "wide"],
+                    "default": "broad",
+                },
+                "top_n": {"type": "integer", "default": 40},
+                "max_generated_candidates": {
+                    "type": "integer",
+                    "default": 25000,
+                    "description": "Safety cap for structural candidate generation.",
+                },
+                "include_program_search": {"type": "boolean", "default": False},
+                "program_max_depth": {"type": "integer", "default": 5},
+                "program_beam_width": {"type": "integer", "default": 48},
+            },
         },
     },
     # ----- decode_* -----
@@ -883,21 +947,28 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "search_transform_homophonic",
         "description": (
-            "Try a bounded set of simple ciphertext transform candidates. For "
-            "each candidate, apply the transform, run a short homophonic search, "
+            "Try a bounded set of ciphertext transform candidates. For each "
+            "candidate, apply the transform, run a short homophonic search, "
             "rank the candidates, and optionally write the best transformed "
-            "branch. This is for early transposition+homophonic experiments, "
-            "not exhaustive open-ended transposition solving."
+            "branch. With include_program_search=true, also construct small "
+            "transform pipelines from a grammar before probing finalists."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
                 "columns": {"type": "integer"},
-                "profile": {"type": "string", "enum": ["small", "medium"], "default": "small"},
+                "profile": {"type": "string", "enum": ["small", "medium", "wide"], "default": "small"},
                 "top_n": {"type": "integer", "default": 3},
+                "max_generated_candidates": {
+                    "type": "integer",
+                    "description": "Safety cap for structural candidate generation before solver promotion.",
+                },
                 "write_best_branch": {"type": "boolean", "default": True},
                 "homophonic_budget": {"type": "string", "enum": ["screen", "full"], "default": "screen"},
+                "include_program_search": {"type": "boolean", "default": False},
+                "program_max_depth": {"type": "integer", "default": 5},
+                "program_beam_width": {"type": "integer", "default": 24},
             },
             "required": ["branch"],
         },
@@ -2400,6 +2471,8 @@ class WorkspaceToolExecutor:
             return False
         return not self._has_seen_any_tool({
             "observe_transform_pipeline",
+            "observe_transform_suspicion",
+            "search_transform_candidates",
             "act_apply_transform_pipeline",
             "search_transform_homophonic",
         })
@@ -2658,6 +2731,95 @@ class WorkspaceToolExecutor:
             "note": (
                 "For transposition+homophonic ciphers, apply or search a "
                 "ciphertext transform before judging the homophonic key."
+            ),
+        }
+
+    def _tool_observe_transform_suspicion(self, args: dict) -> Any:
+        branch_name = args.get("branch") or "main"
+        tokens = self.workspace.effective_tokens(branch_name)
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        report = inspect_transform_suspicion(
+            token_count=len(tokens),
+            cipher_alphabet_size=self._alpha().size,
+            plaintext_alphabet_size=self._pt_alpha().size,
+            word_group_count=len(self.workspace.cipher_text.words),
+            cipher_system=getattr(self.workspace.cipher_text, "cipher_system", "") or "",
+            columns=columns,
+            baseline_status=args.get("baseline_status"),
+            baseline_score=args.get("baseline_score"),
+        )
+        screen_profile = "medium" if report["recommendation"] == "run_screen" else "small"
+        screen = screen_transform_candidates(
+            tokens,
+            columns=columns,
+            profile=screen_profile,
+            top_n=5,
+            include_mutations=screen_profile != "small",
+            include_program_search=bool(args.get("include_program_search", False)),
+        )
+        return {
+            "branch": branch_name,
+            **report,
+            "candidate_screen": screen,
+            "recommended_next_tool": (
+                "search_transform_homophonic"
+                if report["recommendation"] in {"run_screen", "consider_screen"}
+                else "continue_baseline_or_mapping_diagnostics"
+            ),
+            "note": (
+                "This tool is meant to help the agent decide whether the "
+                "ciphertext order itself is suspicious. Escalate only if the "
+                "diagnostic reasons and candidate menu look coherent."
+            ),
+        }
+
+    def _tool_search_transform_candidates(self, args: dict) -> Any:
+        branch_name = args.get("branch") or "main"
+        tokens = self.workspace.effective_tokens(branch_name)
+        columns = args.get("columns")
+        columns = int(columns) if columns is not None else None
+        breadth = str(args.get("breadth") or "broad").strip().lower()
+        if breadth not in {"fast", "broad", "wide"}:
+            return {"error": "breadth must be one of: fast, broad, wide"}
+        profile = "small" if breadth == "fast" else "medium" if breadth == "broad" else "wide"
+        top_n = max(1, min(int(args.get("top_n", 40)), 1000))
+        max_generated = args.get("max_generated_candidates")
+        max_generated_candidates = int(max_generated) if max_generated is not None else (
+            5000 if breadth == "fast" else 10000 if breadth == "broad" else 25000
+        )
+        include_program_search = bool(args.get("include_program_search", breadth == "wide"))
+        screen = screen_transform_candidates(
+            tokens,
+            columns=columns,
+            profile=profile,
+            top_n=top_n,
+            max_generated_candidates=max_generated_candidates,
+            streaming=breadth == "wide",
+            include_mutations=False,
+            include_program_search=include_program_search,
+            program_max_depth=int(args.get("program_max_depth", 5)),
+            program_beam_width=int(args.get("program_beam_width", 48 if breadth == "wide" else 24)),
+        )
+        return {
+            "branch": branch_name,
+            "breadth": breadth,
+            "profile": profile,
+            "columns": columns,
+            "candidate_count": screen.get("candidate_count", 0),
+            "deduped_candidate_count": screen.get("deduped_candidate_count", 0),
+            "generation_limit_reached": screen.get("generation_limit_reached", False),
+            "family_counts": screen.get("family_counts", {}),
+            "top_family_counts": screen.get("top_family_counts", {}),
+            "anchor_candidates": screen.get("anchor_candidates", [])[:40],
+            "top_candidates": screen.get("top_candidates", [])[:top_n],
+            "program_search": screen.get("program_search"),
+            "structural_screen": screen,
+            "recommended_next_tool": "search_transform_homophonic",
+            "note": (
+                "This is structural-only. It performs no language-model "
+                "annealing and should be used to decide which small set of "
+                "candidates deserves solver-backed promotion."
             ),
         }
 
@@ -5046,28 +5208,72 @@ class WorkspaceToolExecutor:
         write_best_branch = bool(args.get("write_best_branch", True))
         homophonic_budget = str(args.get("homophonic_budget", "screen"))
         base_tokens = self.workspace.effective_tokens(branch_name)
-        candidates = candidate_transform_pipelines(
-            token_count=len(base_tokens),
+        structural_screen = screen_transform_candidates(
+            base_tokens,
             columns=columns,
             profile=profile,
+            top_n=max(top_n, 5),
+            max_generated_candidates=(
+                int(args["max_generated_candidates"])
+                if args.get("max_generated_candidates") is not None
+                else 25000 if profile == "wide" else 10000 if profile == "medium" else 5000
+            ),
+            streaming=profile == "wide" and not bool(args.get("include_mutations", profile != "small")),
+            include_mutations=bool(args.get("include_mutations", profile != "small")),
+            include_program_search=bool(args.get("include_program_search", profile == "medium")),
+            program_max_depth=int(args.get("program_max_depth", 5)),
+            program_beam_width=int(args.get("program_beam_width", 24)),
         )
+        ordered_candidate_dicts = []
+        identity = structural_screen.get("identity_candidate")
+        if identity:
+            ordered_candidate_dicts.append(identity)
+        seen_candidate_ids = {item.get("candidate_id") for item in ordered_candidate_dicts}
+        for item in structural_screen.get("top_candidates", []):
+            if item.get("candidate_id") in seen_candidate_ids:
+                continue
+            ordered_candidate_dicts.append(item)
+            seen_candidate_ids.add(item.get("candidate_id"))
         ranked: list[dict[str, Any]] = []
-        for index, pipeline in enumerate(candidates):
-            transformed_tokens = apply_transform_pipeline(base_tokens, pipeline).tokens
-            transformed_cipher = automated_runner._cipher_text_from_tokens(
-                transformed_tokens,
-                self.workspace.cipher_text.alphabet,
-                source=f"agent_transform_candidate:{index}",
-            )
-            result = run_automated(
-                cipher_text=transformed_cipher,
-                language=self.language,
-                cipher_id=f"agent_transform_candidate_{index}",
-                ground_truth=None,
-                cipher_system="homophonic_substitution",
-                homophonic_budget=homophonic_budget,
-                homophonic_solver="zenith_native",
-            )
+        skipped: list[dict[str, Any]] = []
+        for index, candidate in enumerate(ordered_candidate_dicts):
+            try:
+                pipeline = TransformPipeline.from_raw(candidate.get("pipeline"))
+                if pipeline is None:
+                    raise ValueError("missing transform pipeline")
+                order = apply_transform_pipeline(list(range(len(base_tokens))), pipeline).tokens
+                if sorted(order) != list(range(len(base_tokens))):
+                    raise ValueError("transform candidate is not a position permutation")
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "candidate_index": index,
+                    "candidate": candidate,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+                continue
+            try:
+                transformed_tokens = apply_transform_pipeline(base_tokens, pipeline).tokens
+                transformed_cipher = automated_runner._cipher_text_from_tokens(
+                    transformed_tokens,
+                    self.workspace.cipher_text.alphabet,
+                    source=f"agent_transform_candidate:{index}",
+                )
+                result = run_automated(
+                    cipher_text=transformed_cipher,
+                    language=self.language,
+                    cipher_id=f"agent_transform_candidate_{index}",
+                    ground_truth=None,
+                    cipher_system="homophonic_substitution",
+                    homophonic_budget=homophonic_budget,
+                    homophonic_solver="zenith_native",
+                )
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "candidate_index": index,
+                    "candidate": candidate,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+                continue
             artifact = result.artifact or {}
             primary_step = next(
                 (step for step in artifact.get("steps", []) if step.get("name") != "route_automated_solver"),
@@ -5075,6 +5281,7 @@ class WorkspaceToolExecutor:
             )
             ranked.append({
                 "candidate_index": index,
+                "candidate": candidate,
                 "pipeline": pipeline.to_raw(),
                 "status": result.status,
                 "solver": result.solver,
@@ -5105,7 +5312,9 @@ class WorkspaceToolExecutor:
             "branch": branch_name,
             "profile": profile,
             "columns": columns,
-            "candidate_count": len(candidates),
+            "candidate_count": structural_screen.get("deduped_candidate_count", 0),
+            "structural_screen": structural_screen,
+            "skipped_candidates": skipped[:20],
             "written_branch": written_branch,
             "top_candidates": ranked[:top_n],
             "note": (
@@ -5283,6 +5492,7 @@ class WorkspaceToolExecutor:
                 ),
                 "suggested_next_tools": [
                     "observe_transform_pipeline",
+                    "observe_transform_suspicion",
                     "search_transform_homophonic",
                     "workspace_branch_cards",
                     "meta_declare_solution",
@@ -5311,6 +5521,7 @@ class WorkspaceToolExecutor:
                 ),
                 "suggested_next_tools": [
                     "observe_transform_pipeline",
+                    "observe_transform_suspicion",
                     "search_transform_homophonic",
                     "search_automated_solver",
                     "workspace_branch_cards",

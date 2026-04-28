@@ -13,6 +13,82 @@ Current planning split:
 - New Copiale/generalization work is tracked in
   `docs/copiale_generalization_plan.md`.
 
+## Long-Horizon Cipher Capability Roadmap
+
+These are major future projects, not active implementation threads. Keep them
+visible as north-star capabilities while current work stays focused on
+homophonic, transposition+homophonic, and historical manuscript benchmarks.
+
+- [ ] Periodic polyalphabetic ciphers.
+  - Add first-class support for Vigenere-family, Beaufort-family, Gronsfeld,
+    running-key, periodic substitution, and sparse/light polyalphabetism.
+  - Include period detection, key-length search, crib-aware modes, and
+    automated-vs-agentic comparison fixtures.
+- [ ] Fractionation + transposition systems.
+  - Cover Bifid, Trifid, ADFGX/ADFGVX-style families, fractionated Morse, and
+    related systems where substitution, coordinate encoding, and transposition
+    interact.
+  - Design intermediate representations that preserve fractionated symbols and
+    grid coordinates, not just plaintext letters.
+- [ ] Nomenclators and codebook-cipher hybrids.
+  - Support mixed alphabets where some symbols map to letters, syllables,
+    words, names, nulls, or common phrases.
+  - Add tools for codeword clustering, repeated-code detection, partial
+    codebook induction, and context-assisted expansion.
+- [ ] Digraphic and polygraphic substitution.
+  - Add Playfair, Two-square/Four-square, Hill-like classical variants, and
+    broader polygraphic substitution diagnostics.
+  - Include digram-grid hypothesis tools and language-model scoring over
+    decoded digraph streams.
+- [ ] Nulls, errors, and noisy-transcription support.
+  - Treat null insertion, skipped symbols, OCR/transcription uncertainty,
+    scribal errors, and inconsistent symbol normalization as first-class search
+    dimensions.
+  - Add artifact reporting that distinguishes cryptanalytic uncertainty from
+    source/transcription uncertainty.
+- [ ] Geometric route and grille transpositions.
+  - Add route families beyond the current simple grid reads: diagonals,
+    knight/chain routes, spirals with offsets, masks/grilles, turning grilles,
+    split-grid transforms, and region-wise routes.
+  - Keep route candidates provenance-rich and inspectable, since these searches
+    can explode combinatorially.
+  - Scale the new wide structural transform-search layer from the current
+    cap-aware 600k-candidate generator toward practical historical Z340-scale
+    sweeps: stream/report hundreds of thousands of candidates, avoid
+    materializing every transformed token order, optimize structural metrics,
+    and promote only a small finalist set into homophonic annealing. Current
+    Z340-shaped wide families include single- and double-repair route
+    programs and can honor an explicit 600k cap. Large wide screens use a
+    NumPy-backed position-only metric pass and compact family counters; a
+    Z340 structural-only 600k run completed in about 173s. Real
+    solver-backed validation must stay finalist-only.
+  - [x] Tighten solver-backed promotion ranking when several near-neighbor
+    transform programs are promoted together. Full-budget promotion now runs a
+    small final bakeoff over the screen-selected transform plus
+    close/selectable finalists. On the 72k-candidate Z340 wide artifact,
+    top-5 promotion now switches from the 68.2% false neighbor to the
+    96.2% known-shape candidate, at the expected cost of an extra full
+    homophonic probe.
+  - Investigate moving hot transform-search kernels to Rust/C/C++ once the
+    Python prototype stabilizes. Likely candidates: route/matrix candidate
+    enumeration, token-order permutation application, structural metric
+    scoring, top-N heap maintenance, and possibly seed-level homophonic
+    anneal loops. Keep Python as the orchestration/reporting layer unless a
+    full compiled solver rewrite becomes clearly justified.
+- [ ] Automated cipher identification and pipeline search.
+  - Build a classifier/router that ranks cipher hypotheses when cipher-type
+    metadata is absent or unreliable.
+  - Search over pipelines such as "transposition -> homophonic",
+    "fractionation -> transposition -> substitution", or
+    "polyalphabetic -> null removal", and record competing hypotheses in
+    artifacts.
+- [ ] Machine ciphers as later plugins.
+  - Treat Enigma, Hagelin, Purple-style, rotor, pinwheel, and teleprinter-era
+    systems as plugin families rather than forcing them into the core
+    classical-manuscript stack.
+  - Define plugin interfaces for stateful key schedules, machine settings,
+    crib menus, and simulator-backed scoring.
+
 ### Priority 1: Benchmark Hygiene
 
 - [x] Add a benchmark validator for `../cipher_benchmark/benchmark`.
