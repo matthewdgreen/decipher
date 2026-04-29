@@ -6,6 +6,19 @@ metadata. It coordinates the more specific capability plans, especially
 `docs/polyalphabetic_capability_plan.md` and
 `docs/transposition_homophonic_capability.md`.
 
+Implementation note, April 2026: the first shared branch/tool conventions are
+partially implemented. The agent can now call `observe_cipher_id`,
+`observe_periodic_ic`, `workspace_create_hypothesis_branch`,
+`workspace_reject_hypothesis`, `workspace_hypothesis_cards`, and
+`search_periodic_polyalphabetic`. Periodic candidates are represented as
+mode-tagged metadata branches rather than fake substitution keys.
+Automated preflight artifacts now also carry `cipher_id_report`, and the
+LLM-safe preflight summary includes a compact cipher-type fingerprint.
+For periodic-polyalphabetic branches, the agent can inspect and repair the
+mode-specific key state with `decode_show_phases`,
+`act_set_periodic_key`, `act_set_periodic_shift`, and
+`act_adjust_periodic_shift`.
+
 ## Goal
 
 Give the agent a disciplined way to approach an unknown cipher:
@@ -424,22 +437,23 @@ Live/opt-in tests:
 
 Recommended first branch:
 
-1. Promote `analysis.cipher_id` into a standard `cipher_id_report` attached to
-   automated preflight artifacts and agent initial context.
-2. Add `observe_cipher_id` and `observe_cipher_shape` tools.
-3. Add `cipher_mode`, `mode_evidence`, and `mode_status` metadata conventions
+1. [x] Promote `analysis.cipher_id` into a standard `cipher_id_report` attached to
+   automated artifacts. Agent initial-context injection remains planned, but
+   the report is available on demand through `observe_cipher_id`.
+2. [x] Add `observe_cipher_id` and `observe_cipher_shape`.
+3. [x] Add `cipher_mode`, `mode_evidence`, and `mode_status` metadata conventions
    for workspace branches.
-4. Add `workspace_create_hypothesis_branch`,
+4. [x] Add `workspace_create_hypothesis_branch`,
    `workspace_reject_hypothesis`, and `workspace_hypothesis_cards`.
-5. Update the prompt so unknown-cipher runs explicitly start with hypothesis
+5. [x] Update the prompt so unknown-cipher runs explicitly start with hypothesis
    selection and bad-basin recognition.
-6. Add fake-provider tests for:
+6. [ ] Add broader fake-provider tests for:
    - selecting a mode
    - rejecting a mode
    - switching modes
    - not using substitution repair on a branch tagged
      `periodic_polyalphabetic`
-7. Only then add the first new child solver capability, likely the
+7. [x] Add the first new child solver capability, the bounded
    Vigenere-family slice from `polyalphabetic_capability_plan.md`.
 
 ## Open Questions
@@ -454,4 +468,3 @@ Recommended first branch:
   a wrong-mode partial plaintext?
 - What is the minimum artifact schema change that preserves backward
   compatibility with existing runs?
-

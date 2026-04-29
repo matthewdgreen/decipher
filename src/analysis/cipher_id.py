@@ -314,6 +314,84 @@ def format_fingerprint_for_context(fp: CipherFingerprint) -> str:
     return "\n".join(lines)
 
 
+def kasiski_report(
+    tokens: list[int],
+    *,
+    min_n: int = 3,
+    max_n: int = 5,
+    max_period: int = 40,
+    top_n: int = 20,
+    max_pairs_per_ngram: int = 20,
+) -> dict[str, Any]:
+    """Return repeated n-gram spacing evidence for periodic keys."""
+    if len(tokens) < min_n:
+        return {
+            "status": "unsupported",
+            "reason": "too_few_tokens",
+            "token_count": len(tokens),
+            "repeated_sequences": [],
+            "factor_counts": {},
+            "best_period": None,
+        }
+
+    factor_counts: Counter[int] = Counter()
+    repeated: list[dict[str, Any]] = []
+    for ngram_len in range(min_n, max_n + 1):
+        positions: dict[tuple[int, ...], list[int]] = defaultdict(list)
+        for i in range(len(tokens) - ngram_len + 1):
+            positions[tuple(tokens[i : i + ngram_len])].append(i)
+
+        for gram, pos_list in positions.items():
+            if len(pos_list) < 2:
+                continue
+            spacings: list[int] = []
+            local_factors: Counter[int] = Counter()
+            for j in range(len(pos_list)):
+                for k in range(j + 1, min(j + max_pairs_per_ngram, len(pos_list))):
+                    spacing = pos_list[k] - pos_list[j]
+                    if spacing < 2:
+                        continue
+                    spacings.append(spacing)
+                    for factor in range(2, min(spacing, max_period) + 1):
+                        if spacing % factor == 0:
+                            factor_counts[factor] += 1
+                            local_factors[factor] += 1
+            if spacings:
+                repeated.append({
+                    "ngram": list(gram),
+                    "ngram_length": ngram_len,
+                    "positions": pos_list[:20],
+                    "occurrences": len(pos_list),
+                    "spacings": spacings[:30],
+                    "top_factors": [
+                        {"period": period, "count": count}
+                        for period, count in local_factors.most_common(8)
+                    ],
+                })
+
+    repeated.sort(
+        key=lambda item: (
+            item["occurrences"],
+            len(item["spacings"]),
+            item["ngram_length"],
+        ),
+        reverse=True,
+    )
+    best_period = factor_counts.most_common(1)[0][0] if factor_counts else None
+    return {
+        "status": "completed",
+        "token_count": len(tokens),
+        "min_ngram_length": min_n,
+        "max_ngram_length": max_n,
+        "max_period": max_period,
+        "repeated_sequences": repeated[: max(1, top_n)],
+        "factor_counts": {
+            str(period): count for period, count in factor_counts.most_common(max_period)
+        },
+        "best_period": best_period,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------

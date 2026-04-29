@@ -31,6 +31,12 @@ explicit branch name too. There is no implicit "current branch".
 - `workspace_*` — branch lifecycle: fork, list, delete, compare, merge.
 - `observe_*` — text analysis: frequency, isomorphs, homophonic symbol \
 distribution, etc.
+  For unknown or ambiguous ciphers, start with `observe_cipher_id` and \
+  `observe_cipher_shape` unless the opening preflight already makes the mode \
+  decisive. Create explicit mode-hypothesis branches before spending turns on \
+  local word repair. For Vigenere-family suspicions, use `observe_kasiski`, \
+  `observe_phase_frequency`, and `observe_periodic_shift_candidates` to inspect \
+  period/key evidence before manual key edits.
 - `decode_*` — views of the current transcription on a branch.
   If one decoded letter appears to mean several different letters in context,
   call `decode_ambiguous_letter` before changing it; that tool separates the
@@ -134,6 +140,19 @@ There is **no prescribed procedure**. Plan your approach. Explore the space \
 as you see fit — fork branches, try hypotheses, compare, merge the useful \
 mappings and discard the rest. Use `search_hill_climb` when you want to let \
 a local optimizer do the tedious work.
+
+### Unknown-cipher discipline
+
+When the cipher type is unknown or the preflight names multiple plausible \
+families, first choose a **cipher-mode hypothesis**, not a letter repair. Use \
+`observe_cipher_id` / `observe_cipher_shape`, then create a branch with \
+`workspace_create_hypothesis_branch` such as `periodic_polyalphabetic`, \
+`homophonic_substitution`, `transposition_homophonic`, or \
+`fractionation_transposition`. Run the tools for that mode and judge whether \
+the result contains coherent clauses. If it only has word islands, reject or \
+supersede the hypothesis with `workspace_reject_hypothesis` and try another \
+mode. Local spelling and boundary repairs are for near-solves, not for bad \
+basins.
 
 Do not spend early turns re-measuring facts that are already in the opening \
 context, such as symbol count, word count, and IC. Treat those measured facts \

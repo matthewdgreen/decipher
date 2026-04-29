@@ -39,6 +39,26 @@ def test_load_frontier_suite_accepts_benchmark_and_synthetic_cases(tmp_path):
         })
         + "\n"
         + json.dumps({
+            "test_id": "poly_case",
+            "track": "transcription2plaintext",
+            "cipher_system": "vigenere",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic periodic",
+            "frontier_class": "known_good",
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 60,
+                "word_boundaries": False,
+                "seed": 3,
+                "topic": "general",
+                "frequency_style": "normal",
+                "polyalphabetic_variant": "vigenere",
+                "polyalphabetic_key": "LEMON",
+            },
+        })
+        + "\n"
+        + json.dumps({
             "test_id": "synth_case",
             "track": "transcription2plaintext",
             "cipher_system": "homophonic_substitution",
@@ -62,10 +82,13 @@ def test_load_frontier_suite_accepts_benchmark_and_synthetic_cases(tmp_path):
 
     cases = load_frontier_suite(suite)
 
-    assert len(cases) == 2
+    assert len(cases) == 3
     assert cases[0].synthetic_spec is None
     assert cases[1].synthetic_spec is not None
-    assert cases[1].synthetic_spec.seed == 2
+    assert cases[1].synthetic_spec.polyalphabetic_variant == "vigenere"
+    assert cases[1].synthetic_spec.polyalphabetic_key == "LEMON"
+    assert cases[2].synthetic_spec is not None
+    assert cases[2].synthetic_spec.seed == 2
 
 
 def test_load_frontier_suite_rejects_invalid_entries(tmp_path):

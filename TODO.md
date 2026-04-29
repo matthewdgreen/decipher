@@ -21,10 +21,56 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 
 - [ ] Periodic polyalphabetic ciphers.
   - Detailed plan: `docs/polyalphabetic_capability_plan.md`.
+  - First slice implemented: A-Z Vigenere-family screen, explicit automated
+    metadata route for Vigenere/Beaufort/Gronsfeld-style cases, and agent
+    tools for cipher-ID observation, periodic-IC inspection, mode-hypothesis
+    branches, and `search_periodic_polyalphabetic`.
+  - Missing diagnostic tools from the first plan are now implemented:
+    `observe_kasiski`, `observe_phase_frequency`, and
+    `observe_periodic_shift_candidates`.
+  - Synthetic generator support is now wired through `decipher testgen`:
+    `--cipher-system vigenere|beaufort|variant_beaufort|gronsfeld`,
+    optional `--poly-key`, and optional `--poly-period`.
+  - First curated synthetic packet: `frontier/polyalphabetic_ladder.jsonl`.
+  - Known-parameter keyed Vigenere replay is implemented for calibration
+    fixtures such as Kryptos K1/K2. This uses `PeriodicAlphabetKey`
+    metadata (`known_cipher_parameters`) and records
+    `keyed_vigenere_known_replay` in artifacts; it is not yet unknown-key
+    recovery.
+  - Candidate-tableau keyed Vigenere periodic-key search is now implemented:
+    set `DECIPHER_KEYED_VIGENERE_MODE=search` to recover the periodic key
+    over supplied candidate alphabets/tableau keywords. This solves Kryptos
+    K2 when the `KRYPTOS` keyed alphabet is supplied by metadata, but K1
+    remains underconstrained for the current scorer because it is only 63
+    letters.
+  - Keyword-tableau search now has a first-pass automated mode:
+    `DECIPHER_KEYED_VIGENERE_MODE=tableau_search` always tests the standard
+    A-Z tableau first, then keyword-derived tableaux from
+    `DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS`. With `KRYPTOS` in that list,
+    it recovers K2's tableau choice and periodic key without consuming
+    solution-bearing benchmark parameters.
+  - Experimental shared-tableau mutation search is available as
+    `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`. It mutates the tableau,
+    re-optimizes periodic shifts, and scores whole-text n-grams. Current
+    scope is near-basin refinement and research diagnostics; short-budget
+    standard-A-Z starts do not yet recover the Kryptos tableau.
+  - Periodic A-Z tooling now skips ignorable non-letter symbols, such as
+    Kryptos K2 `?` tokens, without advancing the key.
+  - Agent-side periodic branch manipulation is partially implemented:
+    `decode_show_phases`, `act_set_periodic_key`,
+    `act_set_periodic_shift`, and `act_adjust_periodic_shift`.
+  - Unknown-cipher prompt/preflight integration has started: automated
+    artifacts include `cipher_id_report`, preflight summaries expose ranked
+    mode suspicions, and the agent has `observe_cipher_shape` plus explicit
+    mode-first guidance before local repairs.
   - Add first-class support for Vigenere-family, Beaufort-family, Gronsfeld,
     running-key, periodic substitution, and sparse/light polyalphabetism.
   - Include period detection, key-length search, crib-aware modes, and
     automated-vs-agentic comparison fixtures.
+  - Next Kryptos capability step: keyed-alphabet discovery and short-text
+    support. Start with candidate tableau keyword generation, crib-aware
+    scoring, and an explicit distinction between known-tableau key recovery
+    and genuine ciphertext-only recovery.
 - [ ] Fractionation + transposition systems.
   - Cover Bifid, Trifid, ADFGX/ADFGVX-style families, fractionated Morse, and
     related systems where substitution, coordinate encoding, and transposition

@@ -20,6 +20,7 @@ _PRESET_PARAMS: dict[DifficultyPreset, dict] = {
 }
 
 SUPPORTED_LANGUAGES = frozenset({"en", "it", "de", "fr", "la"})
+POLYALPHABETIC_VARIANTS = frozenset({"vigenere", "beaufort", "variant_beaufort", "gronsfeld"})
 
 
 @dataclass
@@ -31,11 +32,30 @@ class TestSpec:
     seed: int | None = None
     frequency_style: Literal["normal", "unusual"] = "normal"
     homophonic: bool = False
+    polyalphabetic_variant: str | None = None
+    polyalphabetic_key: str | None = None
+    polyalphabetic_period: int | None = None
     transform_pipeline: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.language not in SUPPORTED_LANGUAGES:
             raise ValueError(f"Unsupported language: {self.language!r}. Use one of {sorted(SUPPORTED_LANGUAGES)}")
+        if self.polyalphabetic_variant is not None:
+            self.polyalphabetic_variant = self.polyalphabetic_variant.strip().lower()
+            if self.polyalphabetic_variant not in POLYALPHABETIC_VARIANTS:
+                raise ValueError(
+                    f"Unsupported polyalphabetic variant: {self.polyalphabetic_variant!r}. "
+                    f"Use one of {sorted(POLYALPHABETIC_VARIANTS)}"
+                )
+            if self.homophonic:
+                raise ValueError("Synthetic specs cannot be both homophonic and polyalphabetic")
+            if self.transform_pipeline:
+                raise ValueError(
+                    "Synthetic polyalphabetic specs do not yet support transform_pipeline; "
+                    "keep transposition+homophonic ladder cases separate for now"
+                )
+        if self.polyalphabetic_period is not None and self.polyalphabetic_period < 1:
+            raise ValueError("polyalphabetic_period must be >= 1")
 
     @classmethod
     def from_preset(

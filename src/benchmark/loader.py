@@ -49,6 +49,7 @@ class TestData:
     context_records: list[BenchmarkRecord] = field(default_factory=list)
     symbol_map: dict | None = None  # optional symbol map metadata
     transform_pipeline: dict | None = None
+    solver_hints: dict | None = None
     benchmark_root: str = ""
 
 
@@ -140,6 +141,7 @@ class BenchmarkLoader:
             context_plaintext=context_plaintext,
             context_records=context_records,
             symbol_map=symbol_map,
+            solver_hints=_resolve_solver_hints(target_records),
             benchmark_root=str(self.root),
         )
 
@@ -233,3 +235,11 @@ def _resolve_plaintext_language(records: list[BenchmarkRecord]) -> str:
     for language in languages:
         counts[language] = counts.get(language, 0) + 1
     return max(sorted(counts), key=lambda language: counts[language])
+
+
+def _resolve_solver_hints(records: list[BenchmarkRecord]) -> dict | None:
+    for record in records:
+        hints = record.raw.get("known_cipher_parameters") or record.raw.get("solver_hints")
+        if isinstance(hints, dict):
+            return hints
+    return None

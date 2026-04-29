@@ -165,6 +165,48 @@ def test_preflight_summary_omits_ground_truth_accuracy():
     assert "$0.00 (no LLM access)" in summary
 
 
+def test_preflight_summary_includes_cipher_id_report_without_accuracy():
+    result = AutomatedRunResult(
+        test_id="vigenere_hint",
+        status="completed",
+        final_decryption="SOMEPLAINTEXT",
+        elapsed_seconds=1.0,
+        char_accuracy=1.0,
+        word_accuracy=1.0,
+        solver="periodic_polyalphabetic_screen",
+        run_id="run123",
+    )
+    result.artifact = {
+        "solver": "periodic_polyalphabetic_screen",
+        "cipher_alphabet_size": 26,
+        "cipher_token_count": 100,
+        "cipher_word_count": 1,
+        "cipher_id_report": {
+            "natural_language_summary": "Depressed IC with periodic recovery.",
+            "best_period": 5,
+            "best_period_ic": 0.064,
+            "suspicion_scores": {
+                "polyalphabetic_vigenere": 0.72,
+                "homophonic_substitution": 0.31,
+            },
+        },
+        "ground_truth": "SOMEPLAINTEXT",
+        "char_accuracy": 1.0,
+        "word_accuracy": 1.0,
+        "steps": [{"name": "search_periodic_polyalphabetic", "score": -5.0}],
+    }
+
+    summary = format_automated_preflight_for_llm(result)
+
+    assert "Cipher-type fingerprint" in summary
+    assert "polyalphabetic_vigenere=0.72" in summary
+    assert "Periodic IC best period: 5" in summary
+    assert "observe_cipher_shape" in summary
+    assert "ground_truth" not in summary
+    assert "char_accuracy" not in summary
+    assert "word_accuracy" not in summary
+
+
 def test_automated_transform_search_screen_records_router_artifact(monkeypatch):
     cipher_text = parse_canonical_transcription("S001 S002 S003 S004 S005 S006")
 

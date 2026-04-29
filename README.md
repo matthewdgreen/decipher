@@ -459,6 +459,21 @@ drill into `observe_kasiski`, `observe_phase_frequency`, and
 `observe_periodic_shift_candidates` before running or repairing a periodic
 solver branch.
 
+The automated periodic path also supports known-parameter keyed Vigenere
+calibration records, such as Kryptos K1/K2, using a `PeriodicAlphabetKey`
+model. Artifacts label this as `keyed_vigenere_known_replay` so it is clear
+that the run is verifying supplied tableau/key metadata rather than recovering
+an unknown key from ciphertext. For supplied-tableau key recovery, set
+`DECIPHER_KEYED_VIGENERE_MODE=search`; this searches the periodic key over
+candidate keyed alphabets/tableau keywords and records
+`keyed_vigenere_periodic_key_search`. For keyword-tableau enumeration, set
+`DECIPHER_KEYED_VIGENERE_MODE=tableau_search`; this tests the standard A-Z
+tableau first, then keyword-derived tableaux from
+`DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS`. An experimental
+`DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal` mode mutates the shared tableau
+and re-optimizes phase shifts after each mutation; treat it as a research
+diagnostic rather than a robust blind Kryptos solver.
+
 ### External context injection
 
 You can inject free-form context (date, source, suspected technique) into the

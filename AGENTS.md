@@ -40,6 +40,9 @@ src/
     dictionary.py         — load_word_set(), score_plaintext(), get_dictionary_path(lang)
     solver.py             — Algorithmic solver: hill_climb_swaps(), auto_solve()
     ngram.py              — N-gram language models with lazy caching
+    polyalphabetic.py     — Vigenere/Beaufort/Gronsfeld solvers, keyed
+                            Vigenere replay/search, and experimental shared
+                            tableau mutation search
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
     zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
@@ -86,6 +89,7 @@ tests/
   test_workspace.py       — branch workspace tests
   test_signals.py         — scoring panel tests
   test_segment.py         — no-boundary segmentation tests
+  test_polyalphabetic.py  — periodic polyalphabetic and keyed-Vigenere tests
   test_automated_runner.py — no-LLM automated runner and CLI bypass tests
   test_agent_reliability.py — loop fallback and reliability behavior tests
   test_zenith_solver.py   — binary model loading, entropy/score formula, SA recovery (23 tests)
@@ -351,6 +355,32 @@ Key implementation details:
 - No modifications to `homophonic.py`; imports `HomophonicAnnealResult` for compatibility.
 - Requires numpy (already used in `signals.py`); binary model at
   `other_tools/zenith-2026.2/zenith-model.array.bin` (git-ignored, see provenance note).
+
+### ✅ **Periodic Polyalphabetic First Slice**
+Implemented `src/analysis/polyalphabetic.py` and routed explicit
+Vigenere-family metadata through the automated runner. Current scope:
+- Clean A-Z Vigenere, Beaufort, Variant Beaufort, and Gronsfeld search.
+- Synthetic ladder at `frontier/polyalphabetic_ladder.jsonl`; current
+  automated run is 4/4 at 100% character accuracy.
+- Agent diagnostics for periodic ciphers: `observe_kasiski`,
+  `observe_phase_frequency`, and `observe_periodic_shift_candidates`.
+- Keyed-Vigenere calibration and research modes:
+  - `keyed_vigenere_known_replay`: known key + known tableau replay.
+  - `DECIPHER_KEYED_VIGENERE_MODE=search`: recover periodic key over supplied
+    candidate keyed alphabets/tableau keywords.
+  - `DECIPHER_KEYED_VIGENERE_MODE=tableau_search`: test standard A-Z first,
+    then keyword-derived tableaux from
+    `DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS`.
+  - `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`: experimental shared-tableau
+    mutation search; useful as a scaffold/diagnostic, not yet robust blind
+    Kryptos recovery.
+
+Kryptos status:
+- K1/K2 are imported in `../cipher_benchmark` as solved calibration records.
+- K2 can recover `ABSCISSA` and plaintext when `KRYPTOS` is supplied as a
+  candidate tableau keyword.
+- K1 remains a short-text stress case; current scorer can prefer false
+  English-ish basins without crib/context-aware scoring.
 
 ---
 

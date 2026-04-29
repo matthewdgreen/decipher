@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from analysis import dictionary, homophonic, ic, ngram, pattern
+from analysis import cipher_id as cipher_id_analysis
+from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
 from analysis.segment import (
     repair_key_with_dictionary,
     repair_no_boundary_text,
@@ -116,6 +117,8 @@ class AutomatedBenchmarkRunner:
             "homophonic_refinement": self.homophonic_refinement,
             "homophonic_solver": self.homophonic_solver,
         }
+        if test_data.solver_hints:
+            run_kwargs["solver_hints"] = test_data.solver_hints
         if self.transform_search != "off":
             run_kwargs["transform_search"] = self.transform_search
             run_kwargs["transform_search_profile"] = self.transform_search_profile
@@ -163,6 +166,7 @@ class _AutomatedInternalResult:
     transform_selection: dict[str, Any] | None = None
     original_cipher_token_count: int | None = None
     transform_search: dict[str, Any] | None = None
+    cipher_id_report: dict[str, Any] | None = None
 
     @property
     def elapsed_seconds(self) -> float:
@@ -207,6 +211,7 @@ class _AutomatedInternalResult:
             "input_transform_pipeline": self.input_transform_pipeline,
             "transform_selection": self.transform_selection,
             "transform_search": self.transform_search,
+            "cipher_id_report": self.cipher_id_report,
             "original_cipher_token_count": self.original_cipher_token_count,
             "decryption": self.decryption,
             "key": {str(k): v for k, v in self.key.items()},
@@ -227,6 +232,7 @@ def run_automated(
     cipher_id: str = "cli",
     ground_truth: str | None = None,
     cipher_system: str = "",
+    solver_hints: dict[str, Any] | None = None,
     transform_pipeline: dict[str, Any] | None = None,
     homophonic_budget: str = "full",
     homophonic_refinement: str = "none",
@@ -251,6 +257,8 @@ def run_automated(
     parsed_transform = TransformPipeline.from_raw(transform_pipeline)
     transformed_step: dict[str, Any] | None = None
     transform_search_report: dict[str, Any] | None = None
+    cipher_id_report: dict[str, Any] | None = None
+    solver_hints = solver_hints or {}
     effective_transform_pipeline: dict[str, Any] | None = None
     transform_selection_report: dict[str, Any] | None = None
     if parsed_transform is not None and not parsed_transform.is_empty():
@@ -358,6 +366,13 @@ def run_automated(
         cipher_system,
         has_transform_pipeline=transformed_step is not None,
     )
+    fingerprint = cipher_id_analysis.compute_cipher_fingerprint(
+        cipher_text.tokens,
+        cipher_text.alphabet.size,
+        language=language,
+        word_group_count=len(cipher_text.words),
+    )
+    cipher_id_report = fingerprint.to_dict()
 
     try:
         if transformed_step is not None:
@@ -369,6 +384,7 @@ def run_automated(
             "reason": routing["reason"],
             "cipher_system": cipher_system,
             "language": language,
+            "cipher_id_report": cipher_id_report,
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": homophonic_solver,
@@ -514,6 +530,14 @@ def run_automated(
                 ground_truth=ground_truth,
             )
             steps.append(step)
+        elif routing["route"] == "periodic_polyalphabetic":
+            solver, key, decryption, step = _run_periodic_polyalphabetic(
+                cipher_text,
+                language,
+                cipher_system=cipher_system,
+                solver_hints=solver_hints,
+            )
+            steps.append(step)
         else:
             solver, key, decryption, step = _run_substitution(cipher_text, language)
             steps.append(step)
@@ -558,6 +582,7 @@ def run_automated(
         transform_selection=transform_selection_report,
         original_cipher_token_count=len(original_cipher_text.tokens),
         transform_search=transform_search_report,
+        cipher_id_report=cipher_id_report,
     )
     return internal.to_result()
 
@@ -2129,6 +2154,37 @@ def format_automated_preflight_for_llm(
     if result.error_message:
         lines.append(f"- Error: {result.error_message}")
 
+    cipher_report = artifact.get("cipher_id_report")
+    if isinstance(cipher_report, dict):
+        scores = cipher_report.get("suspicion_scores") or {}
+        ranked = sorted(
+            ((str(mode), float(score)) for mode, score in scores.items()),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        lines += [
+            "",
+            "Cipher-type fingerprint:",
+        ]
+        summary = cipher_report.get("natural_language_summary")
+        if isinstance(summary, str) and summary.strip():
+            lines.append(f"- Summary: {summary}")
+        if ranked:
+            lines.append(
+                "- Ranked mode suspicions: "
+                + "; ".join(f"{mode}={score:.2f}" for mode, score in ranked[:5])
+            )
+        if cipher_report.get("best_period") is not None:
+            lines.append(
+                f"- Periodic IC best period: {cipher_report.get('best_period')} "
+                f"(mean IC {cipher_report.get('best_period_ic')})"
+            )
+        lines.append(
+            "- Agent tools: use `observe_cipher_id`, `observe_cipher_shape`, "
+            "and mode-specific hypothesis branches before local repairs when "
+            "the leading mode is uncertain."
+        )
+
     primary_step = next(
         (step for step in steps if step.get("name") != "route_automated_solver"),
         steps[0] if steps else None,
@@ -2195,6 +2251,12 @@ def _select_solver_path(
         any(token in cipher_name for token in ("transposition", "z340", "zodiac340"))
         and any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
     )
+    if any(token in cipher_name for token in ("vigenere", "vigenère", "beaufort", "gronsfeld", "polyalphabetic")):
+        return {
+            "route": "periodic_polyalphabetic",
+            "solver": "periodic_polyalphabetic_screen",
+            "reason": f"cipher_system={cipher_system or 'unknown'}",
+        }
 
     if is_mixed_transposition and not has_transform_pipeline:
         return {
@@ -2235,6 +2297,228 @@ def _select_solver_path(
         "solver": "native_substitution_continuous_anneal" if language == "en" else "native_substitution_anneal",
         "reason": "default substitution path",
     }
+
+
+def _run_periodic_polyalphabetic(
+    cipher_text: CipherText,
+    language: str,
+    cipher_system: str = "",
+    solver_hints: dict[str, Any] | None = None,
+) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    solver_hints = solver_hints or {}
+    known_params = solver_hints.get("known_cipher_parameters") if "known_cipher_parameters" in solver_hints else solver_hints
+    keyed_mode = os.environ.get("DECIPHER_KEYED_VIGENERE_MODE", "replay").strip().lower()
+    if keyed_mode in {"alphabet_anneal", "tableau_anneal", "anneal"}:
+        keywords = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS")
+        explicit_alphabets = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAUS")
+        result = polyalphabetic.search_keyed_vigenere_alphabet_anneal(
+            cipher_text,
+            language=language,
+            max_period=int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "20")),
+            initial_alphabets=explicit_alphabets,
+            alphabet_keywords=keywords,
+            include_standard_alphabet=True,
+            steps=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_STEPS", "2000")),
+            restarts=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_RESTARTS", "4")),
+            seed=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_SEED", "1")),
+            top_n=10,
+        )
+        best = result.get("best_candidate") if isinstance(result, dict) else None
+        if not best:
+            raise ValueError(result.get("reason", "keyed Vigenere alphabet anneal produced no candidate"))
+        metadata = best.get("metadata") or {}
+        step = {
+            "name": "search_keyed_vigenere_alphabet_anneal",
+            "solver": "keyed_vigenere_alphabet_anneal",
+            "status": result.get("status"),
+            "variant": best.get("variant"),
+            "period": best.get("period"),
+            "key_type": "PeriodicAlphabetKey",
+            "key": best.get("key"),
+            "shifts": best.get("shifts"),
+            "score": best.get("score"),
+            "keyed_alphabet": metadata.get("keyed_alphabet"),
+            "alphabet_keyword": metadata.get("alphabet_keyword"),
+            "initial_keyed_alphabet": metadata.get("initial_keyed_alphabet"),
+            "initial_candidate_type": metadata.get("initial_candidate_type"),
+            "periods_tested": result.get("periods_tested"),
+            "initial_alphabets_tested": result.get("initial_alphabets_tested"),
+            "steps_per_period": result.get("steps_per_period"),
+            "restarts_per_alphabet": result.get("restarts_per_alphabet"),
+            "top_candidates": result.get("top_candidates"),
+            "note": (
+                "Experimental shared-tableau mutation search. It re-optimizes "
+                "periodic shifts after alphabet mutations; current scope is "
+                "near-basin refinement and research diagnostics, not robust "
+                "blind Kryptos recovery."
+            ),
+        }
+        return "keyed_vigenere_alphabet_anneal", {}, str(best.get("plaintext") or ""), step
+
+    if keyed_mode in {"tableau_search", "keyword_search", "alphabet_search"}:
+        keywords = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS")
+        explicit_alphabets = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAUS")
+        result = polyalphabetic.search_keyed_vigenere(
+            cipher_text,
+            language=language,
+            max_period=int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "20")),
+            keyed_alphabets=explicit_alphabets,
+            alphabet_keywords=keywords,
+            include_standard_alphabet=True,
+            top_n=10,
+            refine=True,
+        )
+        best = result.get("best_candidate") if isinstance(result, dict) else None
+        if not best:
+            raise ValueError(result.get("reason", "keyed Vigenere tableau search produced no candidate"))
+        metadata = best.get("metadata") or {}
+        step = {
+            "name": "search_keyed_vigenere_tableaux",
+            "solver": "keyed_vigenere_tableau_search",
+            "status": result.get("status"),
+            "variant": best.get("variant"),
+            "period": best.get("period"),
+            "key_type": "PeriodicAlphabetKey",
+            "key": best.get("key"),
+            "shifts": best.get("shifts"),
+            "score": best.get("score"),
+            "keyed_alphabet": metadata.get("keyed_alphabet"),
+            "alphabet_keyword": metadata.get("alphabet_keyword"),
+            "periods_tested": result.get("periods_tested"),
+            "alphabet_candidates_tested": result.get("alphabet_candidates_tested"),
+            "top_candidates": result.get("top_candidates"),
+            "note": (
+                "Searched standard Vigenere first, then keyword/explicit "
+                "candidate keyed alphabets from environment. This recovers a "
+                "tableau only within the provided candidate list."
+            ),
+        }
+        return "keyed_vigenere_tableau_search", {}, str(best.get("plaintext") or ""), step
+
+    if (
+        isinstance(known_params, dict)
+        and str(known_params.get("type") or "").lower() in {"keyed_vigenere", "kryptos_keyed_vigenere"}
+        and keyed_mode in {"search", "solve"}
+    ):
+        result = polyalphabetic.search_keyed_vigenere(
+            cipher_text,
+            language=language,
+            max_period=int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "20")),
+            keyed_alphabets=[str(known_params["keyed_alphabet"])] if known_params.get("keyed_alphabet") else None,
+            alphabet_keywords=[str(known_params["alphabet_keyword"])] if known_params.get("alphabet_keyword") else None,
+            top_n=10,
+            refine=True,
+        )
+        best = result.get("best_candidate") if isinstance(result, dict) else None
+        if not best:
+            raise ValueError(result.get("reason", "keyed Vigenere search produced no candidate"))
+        metadata = best.get("metadata") or {}
+        step = {
+            "name": "search_keyed_vigenere",
+            "solver": "keyed_vigenere_periodic_key_search",
+            "status": result.get("status"),
+            "variant": best.get("variant"),
+            "period": best.get("period"),
+            "key_type": "PeriodicAlphabetKey",
+            "key": best.get("key"),
+            "shifts": best.get("shifts"),
+            "score": best.get("score"),
+            "keyed_alphabet": metadata.get("keyed_alphabet"),
+            "alphabet_keyword": metadata.get("alphabet_keyword"),
+            "periods_tested": result.get("periods_tested"),
+            "alphabet_candidates_tested": result.get("alphabet_candidates_tested"),
+            "top_candidates": result.get("top_candidates"),
+            "note": (
+                "Recovered the periodic key over supplied candidate keyed "
+                "alphabet/tableau metadata. This is not arbitrary keyed-alphabet discovery."
+            ),
+        }
+        return "keyed_vigenere_periodic_key_search", {}, str(best.get("plaintext") or ""), step
+
+    if (
+        isinstance(known_params, dict)
+        and str(known_params.get("type") or "").lower() in {"keyed_vigenere", "kryptos_keyed_vigenere"}
+        and known_params.get("periodic_key")
+    ):
+        result = polyalphabetic.replay_keyed_vigenere(
+            cipher_text,
+            key=str(known_params.get("periodic_key") or ""),
+            keyed_alphabet=known_params.get("keyed_alphabet"),
+            alphabet_keyword=known_params.get("alphabet_keyword"),
+        )
+        if result.get("status") != "completed":
+            raise ValueError(result.get("reason", "keyed Vigenere replay failed"))
+        step = {
+            "name": "replay_keyed_vigenere",
+            "solver": "keyed_vigenere_known_replay",
+            "status": result.get("status"),
+            "variant": result.get("variant"),
+            "period": result.get("period"),
+            "key_type": result.get("key_type"),
+            "key": result.get("key"),
+            "keyed_alphabet": result.get("keyed_alphabet"),
+            "alphabet_keyword": result.get("alphabet_keyword"),
+            "token_count": result.get("token_count"),
+            "original_token_count": result.get("original_token_count"),
+            "skipped_symbol_count": result.get("skipped_symbol_count"),
+            "skipped_symbols": result.get("skipped_symbols"),
+            "key_advances_over_skipped_symbols": result.get("key_advances_over_skipped_symbols"),
+            "note": (
+                "Known-parameter keyed Vigenere replay from benchmark solver "
+                "hints. This is a calibration/replay path, not unknown-key search."
+            ),
+        }
+        return "keyed_vigenere_known_replay", {}, str(result.get("plaintext") or ""), step
+
+    variants = _periodic_variants_for_cipher_system(cipher_system)
+    result = polyalphabetic.search_periodic_polyalphabetic(
+        cipher_text,
+        language=language,
+        max_period=int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "20")),
+        variants=variants,
+        top_n=10,
+        refine=True,
+    )
+    best = result.get("best_candidate") if isinstance(result, dict) else None
+    if not best:
+        raise ValueError(result.get("reason", "periodic polyalphabetic search produced no candidate"))
+    step = {
+        "name": "search_periodic_polyalphabetic",
+        "solver": "periodic_polyalphabetic_screen",
+        "status": result.get("status"),
+        "variant": best.get("variant"),
+        "period": best.get("period"),
+        "key_type": "PeriodicShiftKey",
+        "key": best.get("key"),
+        "shifts": best.get("shifts"),
+        "score": best.get("score"),
+        "periods_tested": result.get("periods_tested"),
+        "variants_tested": result.get("variants_tested"),
+        "top_candidates": result.get("top_candidates"),
+        "note": (
+            "Periodic polyalphabetic search returns mode-specific key state, "
+            "not a substitution mapping. The artifact key is intentionally empty."
+        ),
+    }
+    return "periodic_polyalphabetic_screen", {}, str(best.get("plaintext") or ""), step
+
+
+def _periodic_variants_for_cipher_system(cipher_system: str) -> list[str] | None:
+    name = (cipher_system or "").lower()
+    if "gronsfeld" in name:
+        return ["gronsfeld"]
+    if "variant" in name and "beaufort" in name:
+        return ["variant_beaufort"]
+    if "beaufort" in name:
+        return ["beaufort"]
+    if "vigenere" in name or "vigenère" in name:
+        return ["vigenere"]
+    return None
+
+
+def _env_csv(name: str) -> list[str]:
+    raw = os.environ.get(name, "")
+    return [part.strip() for part in raw.split(",") if part.strip()]
 
 
 def _cipher_text_from_tokens(tokens: list[int], alphabet: Alphabet, source: str = "transform") -> CipherText:

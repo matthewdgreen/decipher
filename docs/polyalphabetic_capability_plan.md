@@ -1,9 +1,21 @@
 # Polyalphabetic Capability Plan
 
 Status: planning document. Decipher currently has useful cipher-identification
-signals for Vigenere-like periodic ciphers, but it does not yet have a
-first-class polyalphabetic solver stack or agent tool surface. Treat this plan
-as the starting point for a future capability branch.
+signals for Vigenere-like periodic ciphers and an initial bounded
+Vigenere-family implementation, but it does not yet have a complete
+first-class polyalphabetic subsystem. Treat this plan as the starting point
+for continued capability work.
+
+Implementation note, April 2026: the first slice is now in place. Decipher has
+an A-Z Vigenere-family screen in `src/analysis/polyalphabetic.py`, explicit
+benchmark metadata routing for Vigenere/Beaufort/Gronsfeld-style cases, and
+agent tools for cipher-ID observation, periodic-IC inspection, hypothesis
+branch creation/rejection, and installing periodic candidates as
+mode-tagged branches. The agent can also inspect phase-local streams with
+`decode_show_phases` and manually set or adjust periodic keys with
+`act_set_periodic_key`, `act_set_periodic_shift`, and
+`act_adjust_periodic_shift`. This is still a bounded diagnostic/solver slice,
+not a complete polyalphabetic subsystem.
 
 ## Goal
 
@@ -127,10 +139,14 @@ Expose detection as low-cost tools:
   - Shows period table and per-phase IC for candidate periods.
 - `observe_kasiski`
   - Shows repeated sequences and spacing gcds.
+  - Implemented as a detailed repeated n-gram/spacing/factor report.
 - `observe_phase_frequency`
   - For a candidate period, shows frequency profiles for each phase.
+  - Implemented for clean A-Z periodic candidates.
 - `observe_periodic_shift_candidates`
   - For each candidate period, proposes likely Caesar shifts per phase.
+  - Implemented with phase-local chi-squared candidates for Vigenere-family
+    variants.
 
 ### Routing Policy
 
@@ -208,13 +224,14 @@ Add tools:
 - `act_set_period`
   - Creates or changes a periodic branch's period.
 - `act_set_period_shift`
-  - Sets one phase shift.
+  - Sets one phase shift. Implemented as `act_set_periodic_shift`.
 - `act_adjust_period_shift`
-  - Increment/decrement a phase shift and preview changed text.
+  - Increment/decrement a phase shift and preview changed text. Implemented
+    as `act_adjust_periodic_shift`.
 - `act_set_periodic_key`
   - Sets the whole key, e.g. `LEMON` or shift list `[11,4,12,14,13]`.
 - `decode_show_phases`
-  - Shows plaintext grouped by phase with phase-local frequencies.
+  - Shows plaintext grouped by phase with phase-local frequencies. Implemented.
 - `workspace_compare_periodic_keys`
   - Compares two periodic branches by period, variant, key, decoded text, and
     internal scores.
@@ -234,16 +251,21 @@ Agent prompt changes:
 ## Milestone 4: Benchmarks And Synthetic Ladder
 
 Create a polyalphabetic fixture packet before working on famous unsolved cases.
+The first packet now lives at `frontier/polyalphabetic_ladder.jsonl` and is
+backed by the same `decipher testgen` machinery as ad hoc synthetic cases.
 
 ### Synthetic Ladder
 
 Generate local Decipher fixtures:
 
-- Vigenere, known period, clean text.
-- Vigenere, hidden period, clean text.
-- Vigenere, no word boundaries.
-- Beaufort and variant Beaufort.
-- Gronsfeld constrained keys.
+- Vigenere, known period, clean no-boundary text. Implemented in
+  `frontier/polyalphabetic_ladder.jsonl`.
+- Vigenere, hidden/random period, clean text. Supported on demand with
+  `decipher testgen --cipher-system vigenere --poly-period N`, but not yet
+  calibrated as a frontier row.
+- Vigenere, no word boundaries. Implemented.
+- Beaufort and variant Beaufort. Implemented in the ladder packet.
+- Gronsfeld constrained keys. Implemented in the ladder packet.
 - Short underdetermined cases.
 - Noisy/transcription-error cases.
 - Mixed substitution + Vigenere as an advanced row.
@@ -328,14 +350,55 @@ should be nudged to choose a mode before applying mutating tools:
 
 Recommended first branch:
 
-1. Add `cipher_mode` metadata to workspace branches without changing existing
+1. [x] Add `cipher_mode` metadata to workspace branches without changing existing
    substitution behavior.
-2. Add `observe_cipher_id` and `observe_periodic_ic` as agent tools backed by
+2. [x] Add `observe_cipher_id` and `observe_periodic_ic` as agent tools backed by
    existing `analysis.cipher_id`.
-3. Add a simple automated Vigenere solver for known alphabet A-Z:
+3. [x] Add a simple automated Vigenere solver for known alphabet A-Z:
    period search -> per-phase chi-squared shifts -> n-gram refinement.
-4. Add a synthetic Vigenere ladder.
-5. Import one or two AZdecrypt Vigenere examples as solved calibration rows.
-6. Add `search_periodic_polyalphabetic` to install candidate periodic branches.
+4. [x] Add a synthetic Vigenere-family ladder and on-demand testgen support.
+5. [x] Import solved Kryptos K1/K2 calibration rows and support
+   known-parameter keyed Vigenere replay.
+6. [x] Add `search_periodic_polyalphabetic` to install candidate periodic branches.
 
-Only after that should we attempt Kryptos or running-key examples.
+Only after that should we attempt unknown-key Kryptos, running-key examples, or
+general periodic substitution.
+
+Current Kryptos-specific state:
+
+- The benchmark repo now carries K1/K2 solved calibration records with
+  solution-bearing `known_cipher_parameters`.
+- Decipher can replay those parameters with a `PeriodicAlphabetKey` model:
+  one shared keyed alphabet plus per-position shifts from the periodic key.
+- This is deliberately labeled `keyed_vigenere_known_replay` in artifacts. It
+  verifies mechanics, tableau convention, and unknown-symbol handling; it is
+  not a claim that Decipher has recovered the Kryptos keys from ciphertext.
+- Decipher can also recover the periodic key over supplied candidate keyed
+  alphabets/tableau keywords via `keyed_vigenere_periodic_key_search`
+  (`DECIPHER_KEYED_VIGENERE_MODE=search`). With the `KRYPTOS` keyed alphabet
+  supplied, this recovers K2's `ABSCISSA` key and plaintext.
+- First-pass keyword-tableau enumeration is available as
+  `DECIPHER_KEYED_VIGENERE_MODE=tableau_search`. This mode tests the standard
+  A-Z tableau first, then keyword-derived tableaux from
+  `DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS`. With `KRYPTOS` in that explicit
+  candidate list, K2 recovers as a genuine candidate-tableau selection plus
+  periodic-key recovery.
+- Experimental shared-tableau mutation search is available as
+  `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`. It mutates the candidate
+  alphabet with swaps, moves, and reversals, re-optimizes phase shifts after
+  each mutation, and scores the whole plaintext. This is the first
+  frequency/search scaffold beyond keyword lists, but broad blind recovery
+  from plain A-Z is not reliable yet.
+- K1 is currently too short for the plain n-gram/chi-square scorer to recover
+  `PALIMPSEST` reliably without crib/context help; false English-ish basins
+  can outrank the true text.
+- K2's `?` source tokens are skipped and do not advance the periodic key.
+
+Remaining keyed-Vigenere work:
+
+- Larger and better-prioritized keyword candidate generation.
+- Better mutation proposals for shared-alphabet search: phase-frequency
+  constraints, pairwise offset constraints, and beam/anneal hybrids.
+- Crib-aware scoring for short famous ciphers.
+- Agent tools to try a tableau keyword, inspect the resulting periodic branch,
+  and compare keyed-Vigenere hypotheses against ordinary Vigenere branches.

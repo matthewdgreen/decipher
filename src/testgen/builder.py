@@ -5,6 +5,7 @@ import string
 import uuid
 
 from benchmark.loader import BenchmarkTest, TestData
+from analysis.polyalphabetic import encode_plaintext, parse_periodic_key
 from analysis.transformers import TransformPipeline, make_inverse_input_for_pipeline
 from testgen.cache import PlaintextCache
 from testgen.plaintext import PlaintextGenerator
@@ -53,7 +54,22 @@ def build_test_case(
 
     transform_pipeline = TransformPipeline.from_raw(spec.transform_pipeline)
 
-    if spec.homophonic:
+    if spec.polyalphabetic_variant:
+        if transform_pipeline is not None and not transform_pipeline.is_empty():
+            raise ValueError("polyalphabetic synthetic cases do not yet support transform pipelines")
+        variant = spec.polyalphabetic_variant
+        key_text = spec.polyalphabetic_key or _make_periodic_key(
+            rng,
+            variant=variant,
+            period=spec.polyalphabetic_period or 5,
+        )
+        shifts = parse_periodic_key(key=key_text, variant=variant)
+        plaintext_continuous = "".join(words)
+        cipher_continuous = encode_plaintext(plaintext_continuous, shifts, variant=variant)
+        cipher_words = _split_periodic_cipher_words(cipher_continuous, words)
+        canonical = _format_canonical(cipher_words, spec.word_boundaries)
+        cipher_system = variant
+    elif spec.homophonic:
         homo_key = _make_homophonic_key(rng)
         cipher_token_words = _apply_homophonic_key(words, homo_key, rng)
         if transform_pipeline is not None and not transform_pipeline.is_empty():
@@ -88,7 +104,9 @@ def build_test_case(
     # Seeded runs get a stable, human-readable ID so the same test can be
     # tracked across multiple runs (regression testing).
     if effective_seed is not None:
-        if spec.homophonic:
+        if spec.polyalphabetic_variant:
+            cipher_flag = _poly_flag(spec.polyalphabetic_variant, spec.word_boundaries)
+        elif spec.homophonic:
             cipher_flag = "thonb" if transform_pipeline is not None and not transform_pipeline.is_empty() else "honb"
         else:
             if transform_pipeline is not None and not transform_pipeline.is_empty():
@@ -103,8 +121,13 @@ def build_test_case(
         if transform_pipeline is not None and not transform_pipeline.is_empty()
         else ("word-boundary" if spec.word_boundaries else "no-boundary")
     )
-    homo_label = ", homophonic" if spec.homophonic else ""
-    transform_label = ", transformed" if transform_pipeline is not None and not transform_pipeline.is_empty() else ""
+    descriptor_parts = [boundary_label]
+    if spec.homophonic:
+        descriptor_parts.append("homophonic")
+    if spec.polyalphabetic_variant:
+        descriptor_parts.append(spec.polyalphabetic_variant)
+    if transform_pipeline is not None and not transform_pipeline.is_empty():
+        descriptor_parts.append("transformed")
     test = BenchmarkTest(
         test_id=test_id,
         track="transcription2plaintext",
@@ -112,7 +135,7 @@ def build_test_case(
         target_records=[],
         context_records=[],
         description=(
-            f"Synthetic {spec.language}, {boundary_label}{homo_label}{transform_label}, "
+            f"Synthetic {spec.language}, {', '.join(descriptor_parts)}, "
             f"~{len(words)} words, topic={spec.topic}"
         ),
     )
@@ -145,6 +168,36 @@ def _format_canonical(cipher_words: list[str], word_boundaries: bool) -> str:
         return " | ".join(" ".join(w) for w in cipher_words)
     else:
         return " ".join(c for w in cipher_words for c in w)
+
+
+def _split_periodic_cipher_words(cipher_continuous: str, plaintext_words: list[str]) -> list[str]:
+    words: list[str] = []
+    idx = 0
+    for word in plaintext_words:
+        end = idx + len(word)
+        words.append(cipher_continuous[idx:end])
+        idx = end
+    if idx < len(cipher_continuous):
+        words.append(cipher_continuous[idx:])
+    return words
+
+
+def _make_periodic_key(rng: random.Random, *, variant: str, period: int) -> str:
+    if variant == "gronsfeld":
+        return "".join(str(rng.randrange(10)) for _ in range(period))
+    letters = string.ascii_uppercase
+    return "".join(rng.choice(letters) for _ in range(period))
+
+
+def _poly_flag(variant: str, word_boundaries: bool) -> str:
+    suffix = "wb" if word_boundaries else "nb"
+    flags = {
+        "vigenere": "vig",
+        "beaufort": "bf",
+        "variant_beaufort": "vbf",
+        "gronsfeld": "gr",
+    }
+    return f"{flags.get(variant, 'poly')}{suffix}"
 
 
 # ---------------------------------------------------------------------------

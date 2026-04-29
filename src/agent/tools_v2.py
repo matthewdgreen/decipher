@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from analysis import dictionary, frequency, homophonic, ic, ngram, pattern
+from analysis import cipher_id, dictionary, frequency, homophonic, ic, ngram, pattern, polyalphabetic
 from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
@@ -121,6 +121,65 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "workspace_create_hypothesis_branch",
+        "description": (
+            "Create a branch tagged with an explicit cipher-mode hypothesis "
+            "without assuming a substitution key. Use this early on unknown "
+            "ciphers to separate hypotheses such as homophonic, "
+            "periodic_polyalphabetic, transposition_homophonic, or "
+            "fractionation_transposition."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "new_name": {"type": "string"},
+                "cipher_mode": {
+                    "type": "string",
+                    "description": "Mode hypothesis, e.g. periodic_polyalphabetic.",
+                },
+                "rationale": {"type": "string"},
+                "from_branch": {"type": "string", "default": "main"},
+                "mode_confidence": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "default": "medium",
+                },
+            },
+            "required": ["new_name", "cipher_mode", "rationale"],
+        },
+    },
+    {
+        "name": "workspace_reject_hypothesis",
+        "description": (
+            "Mark a hypothesis branch as rejected or superseded and record the "
+            "reason. Use this when a mode/search basin produced only word "
+            "islands, incoherent text, or incompatible evidence."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "reason": {"type": "string"},
+                "status": {
+                    "type": "string",
+                    "enum": ["rejected", "superseded"],
+                    "default": "rejected",
+                },
+            },
+            "required": ["branch", "reason"],
+        },
+    },
+    {
+        "name": "workspace_hypothesis_cards",
+        "description": (
+            "Show branch cards filtered and summarized as cipher-type "
+            "hypotheses: active/rejected mode, evidence, decoded preview, and "
+            "next action. Use this before switching modes or declaring an "
+            "unknown-cipher result."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "workspace_delete",
         "description": "Delete a branch. Cannot delete 'main'.",
         "input_schema": {
@@ -200,6 +259,114 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "observe_ic",
         "description": "Index of coincidence for the encoded text.",
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "observe_cipher_id",
+        "description": (
+            "Cheap unknown-cipher fingerprint for a branch: IC, entropy, "
+            "periodic IC, Kasiski hints, doubled-digraph rate, symbol counts, "
+            "and ranked cipher-mode suspicions. Use this before committing to "
+            "a solver family."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "max_period": {"type": "integer", "default": 26},
+            },
+        },
+    },
+    {
+        "name": "observe_cipher_shape",
+        "description": (
+            "Compact structural view of a branch before choosing a cipher "
+            "mode: token count, symbol inventory, boundary structure, repeated "
+            "n-grams, pairability, and coordinate-looking symbol hints."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "top_n": {"type": "integer", "default": 12},
+            },
+        },
+    },
+    {
+        "name": "observe_periodic_ic",
+        "description": (
+            "Detailed periodic-IC/Kasiski view for Vigenere-family diagnosis. "
+            "Use this when observe_cipher_id suggests polyalphabetic or when "
+            "raw IC is depressed but alphabet size is near 26."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "max_period": {"type": "integer", "default": 26},
+                "top_n": {"type": "integer", "default": 10},
+            },
+        },
+    },
+    {
+        "name": "observe_kasiski",
+        "description": (
+            "Detailed Kasiski repeated-sequence spacing report for periodic "
+            "polyalphabetic diagnosis. Shows repeated n-grams, positions, "
+            "spacings, and factor/period support."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "min_ngram": {"type": "integer", "default": 3},
+                "max_ngram": {"type": "integer", "default": 5},
+                "max_period": {"type": "integer", "default": 40},
+                "top_n": {"type": "integer", "default": 12},
+            },
+        },
+    },
+    {
+        "name": "observe_phase_frequency",
+        "description": (
+            "Show per-phase frequency profiles for a proposed periodic key "
+            "length. Use after observe_periodic_ic/Kasiski suggests a period."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "period": {
+                    "type": "integer",
+                    "description": "Period to inspect. Defaults to branch key period or fingerprint best period.",
+                },
+                "top_n": {"type": "integer", "default": 8},
+            },
+        },
+    },
+    {
+        "name": "observe_periodic_shift_candidates",
+        "description": (
+            "For a proposed period and variant, rank likely Caesar shifts for "
+            "each key phase using monogram chi-squared. Use before manually "
+            "setting or adjusting periodic shifts."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "period": {
+                    "type": "integer",
+                    "description": "Period to inspect. Defaults to branch key period or fingerprint best period.",
+                },
+                "variant": {
+                    "type": "string",
+                    "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                    "default": "vigenere",
+                },
+                "top_n": {"type": "integer", "default": 5},
+                "sample": {"type": "integer", "default": 80},
+            },
+        },
     },
     {
         "name": "observe_homophone_distribution",
@@ -295,6 +462,41 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "search_periodic_polyalphabetic",
+        "description": (
+            "Run a bounded Vigenere-family search over clean A-Z ciphertext "
+            "and optionally install the best candidates as mode-tagged "
+            "hypothesis branches. This is not a substitution mapping; the "
+            "periodic key is stored in branch metadata."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "max_period": {"type": "integer", "default": 20},
+                "periods": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Optional exact periods to test.",
+                },
+                "variants": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                    },
+                },
+                "top_n": {"type": "integer", "default": 5},
+                "install_top_n": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "How many top candidates to install as branches; 0 means screen only.",
+                },
+                "new_branch_prefix": {"type": "string", "default": "poly"},
+            },
+        },
+    },
     # ----- decode_* -----
     {
         "name": "decode_show",
@@ -308,6 +510,31 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "start_word": {"type": "integer", "default": 0},
                 "count": {"type": "integer", "description": "Max words to show (capped at 50).", "default": 25},
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "decode_show_phases",
+        "description": (
+            "For a periodic polyalphabetic hypothesis, show ciphertext grouped "
+            "by key phase with phase shifts, key letters/digits, decoded samples, "
+            "and top phase-local symbols. Use this to inspect or manually adjust "
+            "a Vigenere/Beaufort/Gronsfeld candidate."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "period": {
+                    "type": "integer",
+                    "description": "Optional period override; defaults to branch periodic metadata.",
+                },
+                "variant": {
+                    "type": "string",
+                    "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                },
+                "sample": {"type": "integer", "default": 24},
             },
             "required": ["branch"],
         },
@@ -441,6 +668,71 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["branch", "cipher_symbol", "plain_letter"],
+        },
+    },
+    {
+        "name": "act_set_periodic_key",
+        "description": (
+            "Set the full periodic key for a periodic polyalphabetic branch. "
+            "For Vigenere/Beaufort variants, pass a key string like LEMON or "
+            "a shift list. For Gronsfeld, pass digits or shifts 0-9. This "
+            "updates mode-specific metadata and decoded_text, not branch.key."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "key": {"type": "string"},
+                "shifts": {"type": "array", "items": {"type": "integer"}},
+                "variant": {
+                    "type": "string",
+                    "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                    "default": "vigenere",
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "act_set_periodic_shift",
+        "description": (
+            "Set one phase shift in a periodic polyalphabetic branch and "
+            "refresh decoded_text. Phase is zero-based. Use decode_show_phases "
+            "before and after to inspect the effect."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "phase": {"type": "integer"},
+                "shift": {"type": "integer"},
+                "variant": {
+                    "type": "string",
+                    "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                },
+            },
+            "required": ["branch", "phase", "shift"],
+        },
+    },
+    {
+        "name": "act_adjust_periodic_shift",
+        "description": (
+            "Increment/decrement one phase shift in a periodic polyalphabetic "
+            "branch and refresh decoded_text. Phase is zero-based; delta "
+            "defaults to +1."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "phase": {"type": "integer"},
+                "delta": {"type": "integer", "default": 1},
+                "variant": {
+                    "type": "string",
+                    "enum": ["vigenere", "beaufort", "variant_beaufort", "gronsfeld"],
+                },
+            },
+            "required": ["branch", "phase"],
         },
     },
     {
@@ -1994,12 +2286,31 @@ class WorkspaceToolExecutor:
                 )
         return warnings
 
+    def _recommended_tool_for_cipher_mode(self, mode: str) -> str:
+        return {
+            "monoalphabetic_substitution": "search_anneal",
+            "simple_substitution": "search_anneal",
+            "homophonic_substitution": "search_homophonic_anneal",
+            "transposition": "observe_transform_suspicion",
+            "transposition_homophonic": "search_transform_candidates",
+            "polyalphabetic_vigenere": "observe_periodic_ic",
+            "periodic_polyalphabetic": "search_periodic_polyalphabetic",
+            "playfair": "observe_digraph_structure",
+        }.get(mode, "workspace_create_hypothesis_branch")
+
+    def _branch_decoded_text(self, branch_name: str) -> str:
+        branch = self.workspace.get_branch(branch_name)
+        decoded = branch.metadata.get("decoded_text")
+        if isinstance(decoded, str) and decoded.strip():
+            return decoded
+        return self.workspace.apply_key(branch_name)
+
     def _compute_quick_scores(self, branch_name: str) -> dict[str, float | None]:
         """Return (dict_rate, quad) for a branch, fast. Used for score_delta
         on mutation tools so the agent can immediately see if a change helped.
         """
         from analysis.segment import segment_text
-        decrypted = self.workspace.apply_key(branch_name)
+        decrypted = self._branch_decoded_text(branch_name)
         normalized = sig.normalize_for_scoring(decrypted)
         if not normalized.strip():
             return {"dict_rate": None, "quad": None}
@@ -2081,6 +2392,16 @@ class WorkspaceToolExecutor:
         word. With `max_words=None` returns the full sequence.
         """
         ws = self.workspace
+        metadata_text = ws.get_branch(branch_name).metadata.get("decoded_text")
+        if isinstance(metadata_text, str) and metadata_text.strip():
+            if any(ch.isspace() for ch in metadata_text.strip()):
+                words = metadata_text.split()
+            else:
+                words = [
+                    metadata_text[i : i + 80]
+                    for i in range(0, len(metadata_text), 80)
+                ]
+            return words[:max_words] if max_words is not None else words
         words = ws.effective_words(branch_name)
         branch = ws.get_branch(branch_name)
         pt_alpha = self._pt_alpha()
@@ -3034,6 +3355,87 @@ class WorkspaceToolExecutor:
             "note": note,
         }
 
+    def _tool_workspace_create_hypothesis_branch(self, args: dict) -> Any:
+        new_name = args["new_name"]
+        from_branch = args.get("from_branch", "main")
+        mode = str(args["cipher_mode"]).strip()
+        rationale = str(args["rationale"]).strip()
+        confidence = str(args.get("mode_confidence") or "medium").strip().lower()
+        branch = self.workspace.fork(new_name, from_branch=from_branch)
+        branch.metadata.update({
+            "cipher_mode": mode,
+            "mode_confidence": confidence,
+            "mode_status": "active",
+            "mode_evidence": rationale,
+            "hypothesis_notes": rationale,
+        })
+        self.workspace.tag(new_name, "hypothesis")
+        self.workspace.tag(new_name, f"mode:{mode}")
+        return {
+            "status": "ok",
+            "created": new_name,
+            "parent": from_branch,
+            "cipher_mode": mode,
+            "mode_confidence": confidence,
+            "mode_status": "active",
+            "rationale": rationale,
+            "note": (
+                "This branch records a cipher-type hypothesis. Use mode-"
+                "appropriate tools on it, and reject/supersede it if the "
+                "decoded text or diagnostics do not support the hypothesis."
+            ),
+        }
+
+    def _tool_workspace_reject_hypothesis(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        branch = self.workspace.get_branch(branch_name)
+        status = str(args.get("status") or "rejected").strip().lower()
+        if status not in {"rejected", "superseded"}:
+            return {"error": "status must be rejected or superseded"}
+        reason = str(args["reason"]).strip()
+        branch.metadata["mode_status"] = status
+        branch.metadata["rejection_reason"] = reason
+        self.workspace.tag(branch_name, status)
+        return {
+            "status": "ok",
+            "branch": branch_name,
+            "mode_status": status,
+            "cipher_mode": branch.metadata.get("cipher_mode"),
+            "reason": reason,
+        }
+
+    def _tool_workspace_hypothesis_cards(self, _args: dict) -> Any:
+        cards = []
+        for name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(name)
+            metadata = branch.metadata
+            mode = metadata.get("cipher_mode")
+            if not mode and "hypothesis" not in branch.tags:
+                continue
+            card = self._branch_card(name)
+            cards.append({
+                "branch": name,
+                "cipher_mode": mode or "unknown",
+                "mode_status": metadata.get("mode_status", "active"),
+                "mode_confidence": metadata.get("mode_confidence"),
+                "mode_evidence": metadata.get("mode_evidence") or metadata.get("hypothesis_notes"),
+                "rejection_reason": metadata.get("rejection_reason"),
+                "periodic_key": metadata.get("periodic_key"),
+                "periodic_variant": metadata.get("periodic_variant"),
+                "scores": card.get("scores"),
+                "decoded_excerpt": card.get("decoded_excerpt"),
+                "tags": card.get("tags"),
+            })
+        return {
+            "status": "ok",
+            "hypotheses": cards,
+            "note": (
+                "Compare hypotheses by mode evidence and coherent text, not by "
+                "raw scores alone. If all active cards are word islands, reject "
+                "or supersede the bad basin and try another mode."
+            ),
+        }
+
     def _select_best_fork_source(self, prefer_branch: str | None = None) -> str:
         if prefer_branch and self.workspace.has_branch(prefer_branch):
             return prefer_branch
@@ -3190,6 +3592,242 @@ class WorkspaceToolExecutor:
             "english_reference": ic.ENGLISH_IC,
             "random_reference": round(ic.random_ic(ct.alphabet.size), 4),
             "alphabet_size": ct.alphabet.size,
+        }
+
+    def _tool_observe_cipher_id(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        max_period = int(args.get("max_period", 26))
+        fp = cipher_id.compute_cipher_fingerprint(
+            effective.tokens,
+            effective.alphabet.size,
+            max_period=max_period,
+            language=self.language,
+            word_group_count=len(self.workspace.effective_word_spans(branch_name)),
+        )
+        ranked = sorted(fp.suspicion_scores.items(), key=lambda item: item[1], reverse=True)
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "fingerprint": fp.to_dict(),
+            "ranked_hypotheses": [
+                {
+                    "cipher_mode": mode,
+                    "score": round(score, 4),
+                    "confidence": "high" if score >= 0.65 else "medium" if score >= 0.35 else "low",
+                    "recommended_next_tool": self._recommended_tool_for_cipher_mode(mode),
+                }
+                for mode, score in ranked
+            ],
+            "context_block": cipher_id.format_fingerprint_for_context(fp),
+            "note": (
+                "These scores are evidence weights, not probabilities. Use "
+                "them to create mode-specific hypothesis branches and choose "
+                "diagnostic/search tools."
+            ),
+        }
+
+    def _tool_observe_cipher_shape(self, args: dict) -> Any:
+        from collections import Counter
+
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        tokens = self.workspace.effective_tokens(branch_name)
+        alpha = self._alpha()
+        top_n = max(1, min(int(args.get("top_n", 12)), 50))
+        counts = Counter(tokens)
+        bigrams = Counter(zip(tokens, tokens[1:]))
+        trigrams = Counter(zip(tokens, tokens[1:], tokens[2:]))
+        word_spans = self.workspace.effective_word_spans(branch_name)
+        symbols = [alpha.symbol_for(t).upper() for t in tokens]
+        coord_like_symbols = [
+            sym for sym in sorted(set(symbols))
+            if sym in {"1", "2", "3", "4", "5", "6", "A", "B", "C", "D", "E", "F"}
+        ]
+        repeated_trigrams = [
+            {
+                "trigram": " ".join(alpha.symbol_for(t) for t in gram),
+                "count": count,
+            }
+            for gram, count in trigrams.most_common(top_n)
+            if count > 1
+        ]
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "token_count": len(tokens),
+            "unique_symbols": len(counts),
+            "alphabet_size": alpha.size,
+            "word_group_count": len(word_spans),
+            "single_word_or_no_boundary": len(word_spans) <= 1,
+            "even_token_count": len(tokens) % 2 == 0,
+            "divisible_by_3": len(tokens) % 3 == 0,
+            "top_symbols": [
+                {
+                    "symbol": alpha.symbol_for(token_id),
+                    "count": count,
+                    "pct": round(count / len(tokens) * 100, 2) if tokens else 0.0,
+                }
+                for token_id, count in counts.most_common(top_n)
+            ],
+            "top_bigrams": [
+                {
+                    "bigram": " ".join(alpha.symbol_for(t) for t in gram),
+                    "count": count,
+                }
+                for gram, count in bigrams.most_common(top_n)
+            ],
+            "repeated_trigrams": repeated_trigrams,
+            "coordinate_like_symbols": coord_like_symbols,
+            "coordinate_like_fraction": round(
+                sum(1 for sym in symbols if sym in coord_like_symbols) / len(symbols),
+                4,
+            ) if symbols else 0.0,
+            "recommended_next_tools": [
+                "observe_cipher_id",
+                "observe_periodic_ic",
+                "observe_transform_suspicion",
+            ],
+            "note": (
+                "Use this as a shape card for unknown ciphers. Even length and "
+                "coordinate-like symbols support Polybius/fractionation probes; "
+                "single no-boundary dense alphabets support homophonic or "
+                "transposition+homophonic probes; depressed IC with period "
+                "recovery supports periodic polyalphabetic probes."
+            ),
+        }
+
+    def _tool_observe_periodic_ic(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        max_period = int(args.get("max_period", 26))
+        top_n = max(1, min(int(args.get("top_n", 10)), 40))
+        fp = cipher_id.compute_cipher_fingerprint(
+            effective.tokens,
+            effective.alphabet.size,
+            max_period=max_period,
+            language=self.language,
+            word_group_count=len(self.workspace.effective_word_spans(branch_name)),
+        )
+        periodic_rows = [
+            {
+                "period": period,
+                "mean_ic": round(value, 6),
+                "recovery_vs_raw_ic": round(value - fp.ic, 6) if fp.ic == fp.ic else None,
+                "near_language_reference": (
+                    value >= (fp.language_ic_reference or 0.0) - 0.015
+                    if fp.language_ic_reference is not None else False
+                ),
+                "kasiski_support": fp.kasiski_spacing_gcds.get(period, 0),
+            }
+            for period, value in sorted(fp.periodic_ic.items(), key=lambda item: item[1], reverse=True)
+        ]
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "raw_ic": round(fp.ic, 6) if fp.ic == fp.ic else None,
+            "language_reference_ic": fp.language_ic_reference,
+            "best_period": fp.best_period,
+            "best_period_ic": round(fp.best_period_ic, 6) if fp.best_period_ic is not None else None,
+            "kasiski_best_period": fp.kasiski_best_period,
+            "periodic_ic_top": periodic_rows[:top_n],
+            "all_periodic_ic": {str(k): round(v, 6) for k, v in fp.periodic_ic.items()},
+            "kasiski_spacing_gcds": {str(k): v for k, v in fp.kasiski_spacing_gcds.items()},
+            "recommended_next_tool": "search_periodic_polyalphabetic",
+            "note": (
+                "For Vigenere-family ciphers, promising periods usually show "
+                "periodic IC recovery above raw IC, ideally with Kasiski support. "
+                "Use search_periodic_polyalphabetic to test candidate periods."
+            ),
+        }
+
+    def _tool_observe_kasiski(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        min_ngram = max(2, min(int(args.get("min_ngram", 3)), 8))
+        max_ngram = max(min_ngram, min(int(args.get("max_ngram", 5)), 10))
+        max_period = max(2, min(int(args.get("max_period", 40)), 120))
+        top_n = max(1, min(int(args.get("top_n", 12)), 50))
+        report = cipher_id.kasiski_report(
+            effective.tokens,
+            min_n=min_ngram,
+            max_n=max_ngram,
+            max_period=max_period,
+            top_n=top_n,
+        )
+        alpha = effective.alphabet
+        repeated = []
+        for row in report.get("repeated_sequences", []):
+            ngram_ids = row.get("ngram", [])
+            repeated.append({
+                **row,
+                "ngram_symbols": " ".join(alpha.symbol_for(int(t)) for t in ngram_ids),
+            })
+        report = dict(report)
+        report["repeated_sequences"] = repeated
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **report,
+            "recommended_next_tools": [
+                "observe_phase_frequency",
+                "observe_periodic_shift_candidates",
+                "search_periodic_polyalphabetic",
+            ],
+            "note": (
+                "Kasiski support is corroborating evidence, not proof. Periods "
+                "that agree with periodic IC peaks deserve a solver screen."
+            ),
+        }
+
+    def _tool_observe_phase_frequency(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        period = self._period_from_args_or_branch(branch_name, args)
+        top_n = max(1, min(int(args.get("top_n", 8)), 26))
+        report = polyalphabetic.phase_frequency_report(
+            self.workspace.effective_cipher_text(branch_name),
+            period=period,
+            top_n=top_n,
+        )
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **report,
+            "recommended_next_tools": [
+                "observe_periodic_shift_candidates",
+                "search_periodic_polyalphabetic",
+            ],
+            "note": (
+                "Each phase should look roughly like a Caesar-shifted language "
+                "frequency distribution when the period is correct."
+            ),
+        }
+
+    def _tool_observe_periodic_shift_candidates(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        period = self._period_from_args_or_branch(branch_name, args)
+        variant = str(args.get("variant") or self._periodic_variant_for_branch(branch_name, None))
+        top_n = max(1, min(int(args.get("top_n", 5)), 26))
+        sample = max(1, min(int(args.get("sample", 80)), 200))
+        report = polyalphabetic.periodic_shift_candidates(
+            self.workspace.effective_cipher_text(branch_name),
+            period=period,
+            variant=variant,
+            top_n=top_n,
+            sample=sample,
+        )
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **report,
+            "recommended_next_tools": [
+                "act_set_periodic_key",
+                "act_set_periodic_shift",
+                "search_periodic_polyalphabetic",
+            ],
+            "note": (
+                "These are phase-local hints. The best global key is the one "
+                "that makes the full decoded stream read coherently."
+            ),
         }
 
     def _tool_observe_homophone_distribution(self, args: dict) -> Any:
@@ -3350,13 +3988,280 @@ class WorkspaceToolExecutor:
             ),
         }
 
+    def _tool_search_periodic_polyalphabetic(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        top_n = max(1, min(int(args.get("top_n", 5)), 20))
+        install_top_n = max(0, min(int(args.get("install_top_n", 1)), top_n))
+        periods = args.get("periods")
+        if periods is not None:
+            periods = [int(p) for p in periods]
+        variants = args.get("variants")
+        result = polyalphabetic.search_periodic_polyalphabetic(
+            effective,
+            language=self.language,
+            periods=periods,
+            max_period=int(args.get("max_period", 20)),
+            variants=variants,
+            top_n=top_n,
+            refine=True,
+        )
+        installed: list[dict[str, Any]] = []
+        prefix = str(args.get("new_branch_prefix") or "poly").strip() or "poly"
+        if result.get("status") == "completed" and install_top_n > 0:
+            for idx, candidate in enumerate(result.get("top_candidates", [])[:install_top_n], 1):
+                base_name = f"{prefix}_{candidate['variant']}_p{candidate['period']}_{idx}"
+                new_name = self._unique_branch_name(base_name)
+                new_branch = self.workspace.fork(new_name, from_branch=branch_name)
+                new_branch.metadata.update({
+                    "cipher_mode": "periodic_polyalphabetic",
+                    "mode_status": "active",
+                    "mode_confidence": "medium",
+                    "mode_evidence": (
+                        "Installed by search_periodic_polyalphabetic from "
+                        f"{candidate['variant']} period {candidate['period']}."
+                    ),
+                    "key_type": "PeriodicShiftKey",
+                    "periodic_variant": candidate["variant"],
+                    "periodic_period": candidate["period"],
+                    "periodic_key": candidate["key"],
+                    "periodic_shifts": candidate["shifts"],
+                    "periodic_score": candidate["score"],
+                    "decoded_text": candidate["plaintext"],
+                    "decoded_text_source": "search_periodic_polyalphabetic",
+                })
+                self.workspace.tag(new_name, "hypothesis")
+                self.workspace.tag(new_name, "mode:periodic_polyalphabetic")
+                installed.append({
+                    "branch": new_name,
+                    "variant": candidate["variant"],
+                    "period": candidate["period"],
+                    "key": candidate["key"],
+                    "score": candidate["score"],
+                    "preview": candidate["preview"],
+                })
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **result,
+            "installed_branches": installed,
+            "note": (
+                "Periodic polyalphabetic candidates are stored as mode-specific "
+                "branch metadata, not substitution keys. Use decode_show, "
+                "decode_show_phases, act_set_periodic_key, "
+                "act_set_periodic_shift, workspace_hypothesis_cards, and "
+                "contextual reading to judge whether a candidate is coherent "
+                "before repairing locally."
+            ),
+        }
+
+    def _apply_periodic_key_to_branch(
+        self,
+        branch_name: str,
+        shifts: list[int],
+        *,
+        variant: str,
+        source: str,
+    ) -> dict[str, Any]:
+        branch = self.workspace.get_branch(branch_name)
+        decoded = polyalphabetic.decode_cipher_text(
+            self.workspace.effective_cipher_text(branch_name),
+            shifts,
+            variant=variant,
+        )
+        if decoded.get("status") != "completed":
+            return decoded
+        branch.metadata.update({
+            "cipher_mode": "periodic_polyalphabetic",
+            "mode_status": branch.metadata.get("mode_status", "active"),
+            "mode_confidence": branch.metadata.get("mode_confidence", "medium"),
+            "key_type": "PeriodicShiftKey",
+            "periodic_variant": variant,
+            "periodic_period": decoded["period"],
+            "periodic_key": decoded["key"],
+            "periodic_shifts": decoded["shifts"],
+            "decoded_text": decoded["plaintext"],
+            "decoded_text_source": source,
+        })
+        self.workspace.tag(branch_name, "hypothesis")
+        self.workspace.tag(branch_name, "mode:periodic_polyalphabetic")
+        return {
+            "status": "ok",
+            "branch": branch_name,
+            "cipher_mode": "periodic_polyalphabetic",
+            "variant": decoded["variant"],
+            "period": decoded["period"],
+            "key": decoded["key"],
+            "shifts": decoded["shifts"],
+            "decoded_preview": decoded["plaintext"][:240],
+            "scores": self._compute_quick_scores(branch_name),
+        }
+
+    def _periodic_variant_for_branch(self, branch_name: str, override: str | None = None) -> str:
+        if override:
+            return override.strip().lower()
+        branch = self.workspace.get_branch(branch_name)
+        return str(branch.metadata.get("periodic_variant") or "vigenere").strip().lower()
+
+    def _periodic_shifts_for_branch(self, branch_name: str) -> list[int]:
+        branch = self.workspace.get_branch(branch_name)
+        raw = branch.metadata.get("periodic_shifts")
+        if isinstance(raw, list) and raw:
+            return [int(v) for v in raw]
+        key = branch.metadata.get("periodic_key")
+        variant = self._periodic_variant_for_branch(branch_name)
+        if isinstance(key, str) and key.strip():
+            return polyalphabetic.parse_periodic_key(key=key, variant=variant)
+        raise WorkspaceError(
+            "Branch has no periodic key. Use search_periodic_polyalphabetic "
+            "or act_set_periodic_key first."
+        )
+
+    def _period_from_args_or_branch(self, branch_name: str, args: dict) -> int:
+        explicit = args.get("period")
+        if explicit is not None:
+            period = int(explicit)
+            if period <= 0:
+                raise ValueError("period must be >= 1")
+            return period
+        branch = self.workspace.get_branch(branch_name)
+        metadata_period = branch.metadata.get("periodic_period")
+        if metadata_period is not None:
+            period = int(metadata_period)
+            if period > 0:
+                return period
+        try:
+            return len(self._periodic_shifts_for_branch(branch_name))
+        except WorkspaceError:
+            pass
+        effective = self.workspace.effective_cipher_text(branch_name)
+        fp = cipher_id.compute_cipher_fingerprint(
+            effective.tokens,
+            effective.alphabet.size,
+            max_period=26,
+            language=self.language,
+            word_group_count=len(self.workspace.effective_word_spans(branch_name)),
+        )
+        if fp.best_period is not None:
+            return int(fp.best_period)
+        raise WorkspaceError(
+            "No period available. Provide period=..., run observe_periodic_ic, "
+            "or create a periodic branch with search_periodic_polyalphabetic."
+        )
+
+    def _periodic_key_symbol(self, shift: int, variant: str) -> str:
+        if variant == "gronsfeld":
+            return str(int(shift) % 10)
+        return chr(ord("A") + (int(shift) % 26))
+
+    def _unique_branch_name(self, base_name: str) -> str:
+        sanitized = re.sub(r"[^A-Za-z0-9_-]+", "_", base_name).strip("_") or "branch"
+        name = sanitized
+        i = 2
+        while self.workspace.has_branch(name):
+            name = f"{sanitized}_{i}"
+            i += 1
+        return name
+
     # ------------------------------------------------------------------
     # decode_*
     # ------------------------------------------------------------------
+    def _tool_decode_show_phases(self, args: dict) -> Any:
+        from collections import Counter
+
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        variant = self._periodic_variant_for_branch(branch_name, args.get("variant"))
+        sample = max(1, min(int(args.get("sample", 24)), 120))
+        explicit_period = args.get("period")
+        shifts: list[int] | None
+        try:
+            shifts = self._periodic_shifts_for_branch(branch_name)
+        except WorkspaceError:
+            shifts = None
+        period = int(explicit_period) if explicit_period is not None else (len(shifts) if shifts else 0)
+        if period <= 0:
+            return {
+                "error": (
+                    "No period available. Provide period=... or set a periodic "
+                    "key/search result on this branch first."
+                )
+            }
+        values, skipped = polyalphabetic.cipher_values_from_text(
+            self.workspace.effective_cipher_text(branch_name)
+        )
+        if skipped:
+            return {
+                "error": "decode_show_phases currently requires clean A-Z ciphertext",
+                "skipped_symbols": skipped[:20],
+            }
+        rows = []
+        for phase in range(period):
+            stream = values[phase::period]
+            shift = shifts[phase] if shifts and phase < len(shifts) else None
+            decoded_sample = (
+                polyalphabetic.decode_values(stream[:sample], [shift], variant=variant)
+                if shift is not None else None
+            )
+            counts = Counter(stream)
+            rows.append({
+                "phase": phase,
+                "length": len(stream),
+                "shift": shift,
+                "key_symbol": self._periodic_key_symbol(shift, variant) if shift is not None else None,
+                "cipher_sample": "".join(chr(ord("A") + v) for v in stream[:sample]),
+                "decoded_sample": decoded_sample,
+                "top_cipher_letters": [
+                    {
+                        "letter": chr(ord("A") + value),
+                        "count": count,
+                        "pct": round(count / len(stream) * 100, 2) if stream else 0.0,
+                    }
+                    for value, count in counts.most_common(8)
+                ],
+            })
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "cipher_mode": self.workspace.get_branch(branch_name).metadata.get("cipher_mode"),
+            "variant": variant,
+            "period": period,
+            "key": self.workspace.get_branch(branch_name).metadata.get("periodic_key"),
+            "phase_rows": rows,
+            "note": (
+                "Each row is one key phase. If a phase's decoded_sample looks "
+                "systematically shifted, use act_set_periodic_shift or "
+                "act_adjust_periodic_shift on that phase."
+            ),
+        }
+
     def _tool_decode_show(self, args: dict) -> Any:
         branch = args["branch"]
         start = args.get("start_word", 0)
         count = min(args.get("count", 25), 50)
+        metadata_text = self.workspace.get_branch(branch).metadata.get("decoded_text")
+        if isinstance(metadata_text, str) and metadata_text.strip():
+            chunks = self._decoded_words(branch)
+            if start >= len(chunks):
+                return {"error": f"start_word {start} exceeds total {len(chunks)}"}
+            end = min(start + count, len(chunks))
+            return {
+                "branch": branch,
+                "range": f"{start}-{end - 1}",
+                "total_words": len(chunks),
+                "cipher_mode": self.workspace.get_branch(branch).metadata.get("cipher_mode"),
+                "rows": [
+                    {
+                        "index": i,
+                        "cipher": "(periodic-key branch)",
+                        "decoded": chunks[i],
+                    }
+                    for i in range(start, end)
+                ],
+                "note": (
+                    "This branch stores mode-specific decoded text in metadata "
+                    "rather than a substitution mapping."
+                ),
+            }
         words = self.workspace.effective_words(branch)
         if not words:
             return {"error": "Cipher has no words"}
@@ -4538,6 +5443,72 @@ class WorkspaceToolExecutor:
                 + self._READING_DECISION_NOTE
             ),
         }
+
+    def _tool_act_set_periodic_key(self, args: dict) -> Any:
+        branch = args["branch"]
+        variant = self._periodic_variant_for_branch(branch, args.get("variant"))
+        shifts_arg = args.get("shifts")
+        shifts = polyalphabetic.parse_periodic_key(
+            key=args.get("key"),
+            shifts=shifts_arg if isinstance(shifts_arg, list) else None,
+            variant=variant,
+        )
+        before = {
+            "preview": self._decoded_preview(branch, max_words=4),
+            "scores": self._compute_quick_scores(branch),
+            "key": self.workspace.get_branch(branch).metadata.get("periodic_key"),
+        }
+        out = self._apply_periodic_key_to_branch(
+            branch,
+            shifts,
+            variant=variant,
+            source="act_set_periodic_key",
+        )
+        out["before"] = before
+        out["after_preview"] = self._decoded_preview(branch, max_words=4)
+        return out
+
+    def _tool_act_set_periodic_shift(self, args: dict) -> Any:
+        branch = args["branch"]
+        variant = self._periodic_variant_for_branch(branch, args.get("variant"))
+        shifts = self._periodic_shifts_for_branch(branch)
+        phase = int(args["phase"])
+        if phase < 0 or phase >= len(shifts):
+            return {"error": f"phase {phase} out of range for period {len(shifts)}"}
+        modulus = 10 if variant == "gronsfeld" else 26
+        before = {
+            "preview": self._decoded_preview(branch, max_words=4),
+            "scores": self._compute_quick_scores(branch),
+            "key": self.workspace.get_branch(branch).metadata.get("periodic_key"),
+            "shift": shifts[phase],
+        }
+        shifts[phase] = int(args["shift"]) % modulus
+        out = self._apply_periodic_key_to_branch(
+            branch,
+            shifts,
+            variant=variant,
+            source="act_set_periodic_shift",
+        )
+        out["changed_phase"] = phase
+        out["before"] = before
+        out["after_preview"] = self._decoded_preview(branch, max_words=4)
+        return out
+
+    def _tool_act_adjust_periodic_shift(self, args: dict) -> Any:
+        branch = args["branch"]
+        variant = self._periodic_variant_for_branch(branch, args.get("variant"))
+        shifts = self._periodic_shifts_for_branch(branch)
+        phase = int(args["phase"])
+        if phase < 0 or phase >= len(shifts):
+            return {"error": f"phase {phase} out of range for period {len(shifts)}"}
+        modulus = 10 if variant == "gronsfeld" else 26
+        delta = int(args.get("delta", 1))
+        return self._tool_act_set_periodic_shift({
+            "branch": branch,
+            "phase": phase,
+            "shift": (shifts[phase] + delta) % modulus,
+            "variant": variant,
+        })
 
     def _tool_act_bulk_set(self, args: dict) -> Any:
         branch = args["branch"]

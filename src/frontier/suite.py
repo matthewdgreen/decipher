@@ -366,6 +366,21 @@ def _parse_synthetic_spec(data: Any, source: str) -> TestSpec | None:
         approx_length=int(data.get("approx_length", 100)),
         word_boundaries=bool(data.get("word_boundaries", True)),
         homophonic=bool(data.get("homophonic", False)),
+        polyalphabetic_variant=(
+            str(data["polyalphabetic_variant"])
+            if data.get("polyalphabetic_variant") is not None
+            else None
+        ),
+        polyalphabetic_key=(
+            str(data["polyalphabetic_key"])
+            if data.get("polyalphabetic_key") is not None
+            else None
+        ),
+        polyalphabetic_period=(
+            int(data["polyalphabetic_period"])
+            if data.get("polyalphabetic_period") is not None
+            else None
+        ),
         seed=int(data["seed"]) if data.get("seed") is not None else None,
         topic=str(data.get("topic", "general")),
         frequency_style=str(data.get("frequency_style", "normal")),

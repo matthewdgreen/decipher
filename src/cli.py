@@ -641,8 +641,26 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         spec.topic = args.topic
     if args.no_boundaries:
         spec.word_boundaries = False
+    if args.cipher_system:
+        cipher_system = args.cipher_system.lower()
+        if cipher_system == "simple_substitution":
+            spec.homophonic = False
+            spec.polyalphabetic_variant = None
+        elif cipher_system == "homophonic_substitution":
+            spec.homophonic = True
+            spec.polyalphabetic_variant = None
+            spec.word_boundaries = False
+        else:
+            spec.homophonic = False
+            spec.polyalphabetic_variant = cipher_system
+            spec.word_boundaries = False if not args.keep_boundaries else spec.word_boundaries
+    if args.poly_key:
+        spec.polyalphabetic_key = args.poly_key
+    if args.poly_period:
+        spec.polyalphabetic_period = args.poly_period
     if args.seed is not None:
         spec.seed = args.seed
+    spec.__post_init__()
 
     if args.flush_cache:
         n = cache.flush(spec)
@@ -1032,6 +1050,39 @@ def main() -> None:
     tg.add_argument("--length", type=int, help="Override approx word count from preset")
     tg.add_argument("--topic", default="general")
     tg.add_argument("--no-boundaries", action="store_true")
+    tg.add_argument(
+        "--cipher-system",
+        choices=[
+            "simple_substitution",
+            "homophonic_substitution",
+            "vigenere",
+            "beaufort",
+            "variant_beaufort",
+            "gronsfeld",
+        ],
+        help=(
+            "Synthetic cipher family to generate. Defaults to the selected preset; "
+            "periodic polyalphabetic systems are generated no-boundary unless "
+            "--keep-boundaries is supplied."
+        ),
+    )
+    tg.add_argument(
+        "--poly-key",
+        help=(
+            "Explicit periodic key for Vigenere-family synthetic cases. "
+            "Use letters for Vigenere/Beaufort and digits for Gronsfeld."
+        ),
+    )
+    tg.add_argument(
+        "--poly-period",
+        type=int,
+        help="Random periodic key length when --poly-key is omitted.",
+    )
+    tg.add_argument(
+        "--keep-boundaries",
+        action="store_true",
+        help="Keep word-boundary formatting for periodic synthetic cases.",
+    )
     tg.add_argument("--seed", type=int)
     tg.add_argument("--flush-cache", action="store_true")
     tg.add_argument("--flush-all-cache", action="store_true")

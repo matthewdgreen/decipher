@@ -41,6 +41,7 @@ suite skipped unless explicitly enabled.
 | `tests/test_agent_resume.py` | Artifact resume/continuation. | Resume context, branch install, continuation declaration. |
 | `tests/test_final_summary.py` | Human-readable final summaries. | Non-English summary, blocked declaration recovery, further-iteration notes. |
 | `tests/test_cipher_transformers.py` | Transposition/homophonic transformer subsystem. | Transform semantics, known-pipeline replay, synthetic builder metadata, agent transform tool. |
+| `tests/test_polyalphabetic.py` | Periodic polyalphabetic solver and tools. | Vigenere-family search, Kasiski/phase/shift diagnostics, keyed-Vigenere replay, unknown-symbol skipping, agent periodic branches, periodic key edits, automated routing, synthetic testgen generation. |
 | `tests/test_milestone4_smoke.py` | Milestone 4 smoke packet. | Fast fake-provider agent tests run by default; historical automated baseline is opt-in. |
 
 ## Opt-In Pytest Suites
@@ -148,6 +149,72 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 
 This is a capability fixture, not raw Z340 discovery: it applies the known
 Zenith transform pipeline before homophonic solving.
+
+### Periodic Polyalphabetic Ladder
+
+Synthetic Vigenere-family packet:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/polyalphabetic_ladder.jsonl \
+  --solvers decipher
+```
+
+Current rows cover Vigenere, Beaufort, Variant Beaufort, and Gronsfeld. A
+default pytest regression in `tests/test_polyalphabetic.py` runs this packet
+end-to-end from cached local plaintext with no LLM access.
+
+Kryptos keyed-Vigenere calibration:
+
+```bash
+PYTHONPATH=src .venv/bin/decipher benchmark ../cipher_benchmark/benchmark \
+  --split kryptos_tests.jsonl \
+  --automated-only
+```
+
+This is known-parameter replay for K1/K2, not unknown-key recovery. The tests
+also include a compact K1 vector and a K2 replay with skipped `?` symbols.
+
+To force supplied-tableau periodic-key recovery rather than known-key replay:
+
+```bash
+DECIPHER_KEYED_VIGENERE_MODE=search \
+PYTHONPATH=src .venv/bin/decipher benchmark ../cipher_benchmark/benchmark \
+  --split kryptos_tests.jsonl \
+  --test-id kryptos_k2_keyed_vigenere \
+  --automated-only
+```
+
+This recovers K2's `ABSCISSA` key over the supplied `KRYPTOS` tableau. K1 is
+currently a short-text stress case for future crib/context-aware scoring.
+
+To run the first keyword-tableau enumeration layer, with standard Vigenere
+tested before the `KRYPTOS` keyword tableau:
+
+```bash
+DECIPHER_KEYED_VIGENERE_MODE=tableau_search \
+DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS=KRYPTOS \
+PYTHONPATH=src .venv/bin/decipher benchmark ../cipher_benchmark/benchmark \
+  --split kryptos_tests.jsonl \
+  --test-id kryptos_k2_keyed_vigenere \
+  --automated-only
+```
+
+Experimental shared-tableau mutation search:
+
+```bash
+DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal \
+DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS=KRYPTOS \
+DECIPHER_KEYED_VIGENERE_ANNEAL_STEPS=2000 \
+DECIPHER_KEYED_VIGENERE_ANNEAL_RESTARTS=4 \
+PYTHONPATH=src .venv/bin/decipher benchmark ../cipher_benchmark/benchmark \
+  --split kryptos_tests.jsonl \
+  --test-id kryptos_k2_keyed_vigenere \
+  --automated-only
+```
+
+This mode is a research diagnostic for shared-alphabet mutation/refinement.
+It is not yet a reliable blind Kryptos-tableau recovery claim.
 
 ### Real English Challenge Packet
 

@@ -1104,6 +1104,16 @@ def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
     assert "Do not spend early turns re-measuring facts" in system
 
 
+def test_system_prompt_includes_unknown_cipher_mode_workflow():
+    system = get_system_prompt("en")
+
+    assert "Unknown-cipher discipline" in system
+    assert "observe_cipher_id" in system
+    assert "workspace_create_hypothesis_branch" in system
+    assert "workspace_reject_hypothesis" in system
+    assert "Local spelling and boundary repairs are for near-solves" in system
+
+
 def test_system_prompt_mentions_scoped_benchmark_context_tools():
     system = get_system_prompt("en")
 
