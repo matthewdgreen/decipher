@@ -187,6 +187,62 @@ alphabet size is near 26.*
 
 ---
 
+### `observe_kasiski`
+Detailed Kasiski repeated-sequence spacing report for periodic polyalphabetic
+diagnosis. Shows repeated n-grams, their positions, spacings between
+occurrences, and per-factor/period support counts.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `min_ngram` | integer | minimum n-gram length to search (default 3) |
+| `max_ngram` | integer | maximum n-gram length to search (default 5) |
+| `max_period` | integer | largest period to tabulate (default 40) |
+| `top_n` | integer | top period candidates to return (default 12) |
+
+*Use alongside `observe_periodic_ic` to corroborate the period estimate — a
+strong Kasiski GCD spike plus a Friedman IC peak at the same period is strong
+evidence for Vigenère-family ciphers.*
+
+---
+
+### `observe_phase_frequency`
+Show per-phase symbol frequency profiles for a proposed periodic key length.
+Each of the `period` phases (columns of the strided partition) is shown as an
+independent frequency histogram so per-column shift candidates are visible.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `period` | integer | period to inspect; defaults to branch key period or fingerprint best period |
+| `top_n` | integer | top symbols per phase to display (default 8) |
+
+*Use after `observe_periodic_ic` or `observe_kasiski` has suggested a plausible
+period, before calling `observe_periodic_shift_candidates` or setting shifts
+manually.*
+
+---
+
+### `observe_periodic_shift_candidates`
+For a proposed period and cipher variant, rank the most likely Caesar shift for
+each key phase using monogram chi-squared against the reference language
+frequency table.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `period` | integer | period to inspect; defaults to branch key period or fingerprint best period |
+| `variant` | string | `vigenere` (default), `beaufort`, `variant_beaufort`, or `gronsfeld` |
+| `top_n` | integer | top shift candidates per phase (default 5) |
+| `sample` | integer | token sample size for chi-squared (default 80) |
+
+*Use before calling `act_set_periodic_key` or `act_adjust_periodic_key` to see
+which shifts are statistically favoured. The `variant` parameter must match the
+cipher family being tested — different variants apply the shift in opposite
+directions.*
+
+---
+
 ### `observe_homophone_distribution`
 Homophonic-cipher diagnostic. Estimates expected cipher-symbol counts per
 plaintext letter from reference language frequencies, and compares with the
