@@ -38,7 +38,7 @@ src/
     runner.py             — Automated-only/no-LLM runner; zenith_native profile dispatch
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 32 tools across 9 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 78 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -78,6 +78,12 @@ tests/
   test_agent_reliability.py — loop fallback and reliability behavior tests
   test_zenith_solver.py   — binary model loading, entropy/score formula, SA recovery (23 tests)
 ```
+
+**TOOLS.md** is the canonical human-readable reference for all agent tools.
+When adding, removing, or significantly changing tools in
+`src/agent/tools_v2.py`, update `TOOLS.md` to match: tool name, description,
+parameter table, and usage notes. The tool count in the `tools_v2.py` line
+above should also be kept current.
 
 ---
 

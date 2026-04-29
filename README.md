@@ -1,19 +1,25 @@
 # Decipher
 
-Decipher is a tool for performing automated cryptanalysis for classical substitution 
-ciphers, with a focus on historical manuscripts. The goal of this tool is to achieve
-parity, and then improve on the state-of-the-art in automated cipher solver tools.
-As a second and more experimental goal, decipher is intended to (optionally) integrate 
-with an agentic LLM, enabling the LLM to perform manual solving steps that improve our
-ability to cryptanalyze challenging ciphertexts.
+Decipher is a tool for performing automated cryptanalysis of classical ciphers,
+with a focus on historical manuscripts. The goal is to achieve parity with, and
+then improve on, the state-of-the-art in automated solver tools.
 
-Decipher's primary mode is its native automated solver stack: fast, reproducible, and
-usable with only local computation. The experimental agentic solver requires an API key
-and is documented separately below.
+Currently supported cipher families:
 
-Decipher borrows solving algorithms (with attribution and license compliance) from the 
-Zenith solving tool. For licensing reasons we do not redistribute Zenith's ngram models,
-and instead provide our own (as well as tooling to generate additional models.)
+- **Monoalphabetic substitution** — simple, homophonic (e.g. Zodiac 408/Copiale)
+- **Transposition + homophonic** — known-pipeline replay and open-ended
+  transform search (e.g. Zodiac 340 family)
+- **Periodic polyalphabetic** — Vigenère, Beaufort, Variant Beaufort, Gronsfeld
+
+Decipher's primary mode is its native automated solver stack: fast,
+reproducible, and usable with only local computation. An experimental agentic
+solver (requires an API key) layers an LLM on top for branching hypothesis
+exploration and manual solving steps.
+
+Decipher borrows solving algorithms (with attribution and license compliance)
+from the Zenith solving tool. For licensing reasons we do not redistribute
+Zenith's ngram models, and instead provide our own (as well as tooling to
+generate additional models).
 
 ## License
 
@@ -22,9 +28,8 @@ Decipher is licensed under the GNU General Public License, version 3. See
 
 ## Attribution
 
-The `zenith_native` homophonic solver in
-`src/analysis/zenith_solver.py`
-is derived from the Zenith project by beldenge:
+The `zenith_native` homophonic solver in `src/analysis/zenith_solver.py` is
+derived from the Zenith project by beldenge:
 
 - [Zenith](https://github.com/beldenge/Zenith)
 
@@ -33,9 +38,9 @@ native homophonic search. Decipher was therefore relicensed under GPLv3 so
 this derived solver can be redistributed with explicit attribution and license
 compatibility.
 
-The original Zenith English binary model is not redistributed here.
-Decipher includes tooling to build replacement language models from open and
-licensed corpora.
+The original Zenith English binary model is not redistributed here. Decipher
+includes tooling to build replacement language models from open and licensed
+corpora.
 
 Current provenance understanding:
 
@@ -62,23 +67,21 @@ pip install -e .
 
 No API key is required for the default automated workflows.
 
-This repository currently ships with a bundled English
-5-gram model at `models/ngram5_en.bin`,
-so a fresh clone can use the automated homophonic solver immediately. You can
-override it with `DECIPHER_NGRAM_MODEL_EN=/path/to/other.bin`.
-Automated homophonic runs now default to the `zenith_native` solver path with
-that bundled parity model. To exercise the older pre-`zenith_native`
-homophonic code for comparison, pass `--legacy-homophonic`.
+This repository ships with a bundled English 5-gram model at
+`models/ngram5_en.bin`, so a fresh clone can use the automated homophonic
+solver immediately. You can override it with
+`DECIPHER_NGRAM_MODEL_EN=/path/to/other.bin`. Automated homophonic runs
+default to the `zenith_native` solver path. To exercise the older
+pre-`zenith_native` code for comparison, pass `--legacy-homophonic`.
 
-On multi-core machines, `zenith_native` now auto-sizes parallel seed workers
-by default. You can still override that explicitly with
-`DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`.
+On multi-core machines, `zenith_native` auto-sizes parallel seed workers by
+default. Override explicitly with `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`.
 
 ## Automated Solving
 
 ### Crack a cipher from a file or stdin
 
-`decipher crack` now runs the native automated solver by default.
+`decipher crack` runs the native automated solver by default.
 
 ```bash
 # From a text file
@@ -101,14 +104,55 @@ decipher crack -f cipher.txt \
   --verbose
 ```
 
-Experimental homophonic tuning knobs:
+Homophonic tuning environment variables:
 
-- `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`: override the auto-sized seed worker count
-- `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full`: shrink broad search for local iteration
-- `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full`: shrink repair breadth for local iteration
-- `DECIPHER_HOMOPHONIC_POLISH=1`: opt into the current experimental shared
-  no-boundary segmentation/repair pass for post-`zenith_native` continuous
-  output
+- `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>` — override the auto-sized seed worker count
+- `DECIPHER_HOMOPHONIC_SEARCH_PROFILE=dev|full` — shrink broad search for local iteration
+- `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full` — shrink repair breadth for local iteration
+- `DECIPHER_HOMOPHONIC_POLISH=1` — opt into the experimental shared no-boundary
+  segmentation/repair pass for post-`zenith_native` continuous output
+
+### Transposition + homophonic search
+
+For ciphers that may combine a token-order transposition with homophonic
+substitution, `--transform-search` activates the transform candidate engine:
+
+```bash
+# Automated suspicion diagnostics only (cheap, no solver probes)
+decipher crack -f cipher.txt --transform-search screen
+
+# Structural triage → solver probes → independent confirmation
+decipher crack -f cipher.txt --transform-search rank
+
+# Unlimited solver budget — use for final runs
+decipher crack -f cipher.txt --transform-search full
+
+# Promote specific candidates from a prior screen artifact
+decipher crack -f cipher.txt \
+  --transform-search promote \
+  --transform-promote-artifact artifacts/prior/run.json \
+  --transform-promote-top-n 5
+```
+
+Transform search modes (`--transform-search`):
+
+| Mode | Description |
+|------|-------------|
+| `off` | Disabled (default) |
+| `auto` | Screen only when suspicion router signals are strong |
+| `screen` | Record the structural candidate menu; no solver probes |
+| `wide` | Larger structural-only sweep with extended candidate breadth |
+| `rank` | 3-stage: structural triage → solver probes → independent confirmation |
+| `full` | Like `rank` but with unlimited homophonic solver budget |
+| `promote` | Probe specific candidates from a prior `screen`/`wide` artifact |
+
+Candidate breadth profiles (`--transform-search-profile`):
+
+| Profile | Description |
+|---------|-------------|
+| `fast` | Trims mutations and confirmations; recommended for regression runs |
+| `broad` | Default; good balance of breadth and runtime |
+| `wide` | Expanded structural sweep with more grid dimensions |
 
 ### Run the historical benchmark
 
@@ -135,9 +179,9 @@ decipher benchmark /path/to/cipher_benchmark/benchmark \
 
 ### Generate and solve a synthetic test
 
-`decipher testgen` defaults to automated solving too. Because synthetic
-plaintext generation may itself require an LLM call, the default automated path
-works only when that plaintext is already cached.
+`decipher testgen` defaults to automated solving. Synthetic plaintext
+generation may itself require an LLM call, so the default automated path works
+only when that plaintext is already cached.
 
 ```bash
 # Show the generated plaintext and cache it, but skip solving
@@ -149,15 +193,14 @@ decipher testgen --preset hardest --language en
 
 Presets:
 
-- `tiny`: ~40 words, word boundaries, simple substitution
-- `medium`: ~200 words, word boundaries, simple substitution
-- `hard`: ~250 words, no boundaries, simple substitution
-- `hardest`: ~200 words, no boundaries, homophonic substitution
+| Preset | Words | Word boundaries | Cipher type |
+|--------|-------|-----------------|-------------|
+| `tiny` | ~40 | yes | simple substitution |
+| `medium` | ~200 | yes | simple substitution |
+| `hard` | ~250 | no | simple substitution |
+| `hardest` | ~200 | no | homophonic substitution |
 
 ### Automated Frontier / Parity Runs
-
-The non-agentic solver stack is also what powers the automated parity and
-frontier evaluation workflows:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py
@@ -167,8 +210,8 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher
 ```
 
-For the main automated frontier suite, external runs now default to Zenith
-only, which keeps routine comparisons much faster:
+For the main automated frontier suite, external runs default to Zenith only,
+which keeps routine comparisons fast:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
@@ -186,6 +229,18 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --external-config external_baselines/local_tools.json
 ```
 
+The transposition+homophonic frontier suite (known-pipeline replay and
+open-ended transform search) is at
+`frontier/transposition_homophonic_ladder.jsonl`. The Zodiac 340 known-replay
+fixture is at `frontier/zodiac340_known_replay.jsonl`.
+
+```bash
+# Run the transposition+homophonic ladder with transform search
+PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
+  --benchmark-split frontier/transposition_homophonic_ladder.jsonl \
+  --transform-search rank
+```
+
 ### Build Redistributable Language Models
 
 Decipher can build Zenith-compatible binary n-gram models from public-domain
@@ -194,7 +249,7 @@ corpora and licensed local sources.
 Source summary:
 
 | Source | Languages | Tooling path | Notes |
-|---|---|---|---|
+|--------|-----------|--------------|-------|
 | Project Gutenberg | `en`, `de`, `fr`, `it`, `la` | automatic download | Good bootstrap source, but literary-skewed |
 | OANC | `en` | automatic download | Official ANC archive; tooling handles current TLS issue |
 | MASC | `en` | automatic download | Official ANC archive; small but balanced |
@@ -274,7 +329,7 @@ BNC is supported as a **licensed local import**, not a direct public downloader.
 Decipher does not redistribute BNC corpus text; it only imports from your local
 licensed copy and emits derived statistical models with explicit provenance.
 
-Official source pages and mirrors we found:
+Official source pages and mirrors:
 - [OTA / Bodleian BNC XML Edition page](https://ota.bodleian.ox.ac.uk/repository/xmlui/handle/20.500.12024/2554)
 - [Direct OTA `2554.zip` bitstream](https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2554/2554.zip?isAllowed=y&sequence=3)
 - [Oxford LLDS mirror](https://llds.ling-phil.ox.ac.uk/llds/xmlui/handle/20.500.14106/2554)
@@ -288,7 +343,7 @@ curl -L -C - --fail --output corpus_data/en/_archives/BNC-2554.zip \
   "https://ota.bodleian.ox.ac.uk/repository/xmlui/bitstream/handle/20.500.12024/2554/2554.zip?isAllowed=y&sequence=3"
 ```
 
-Then extract it somewhere local and point the corpus tool at that directory:
+Then extract and point the corpus tool at that directory:
 
 ```bash
 mkdir -p corpus_data/en/bnc_source && \
@@ -310,7 +365,7 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 ```
 
 By default, `zenith_native` first honors any explicit environment override such
-as `DECIPHER_NGRAM_MODEL_EN=/path/to/model.bin`. If no override is set, it then
+as `DECIPHER_NGRAM_MODEL_EN=/path/to/model.bin`. If no override is set, it
 looks for a repo-local bundled model such as `models/ngram5_en.bin`, and only
 after that falls back to English-specific legacy Zenith locations.
 
@@ -321,11 +376,9 @@ Notes on source access:
 - BNC is supported as a licensed local source via `--source bnc --bnc-source-dir ...`;
   Decipher records attribution/provenance and emits only derived models, not corpus text.
 - Non-English models currently use Gutenberg-backed downloads through the same tooling.
-- The ANC site currently serves an expired TLS certificate, so the corpus
-  tooling relaxes certificate verification only for `anc.org` / `www.anc.org`
-  in order to automate those downloads.
-- Model metadata automatically records the source list and provenance carried in
-  the corpus manifest.
+- The ANC site currently serves an expired TLS certificate, so the corpus tooling
+  relaxes certificate verification only for `anc.org` / `www.anc.org`.
+- Model metadata automatically records the source list and provenance.
 
 ## Regression Suite
 
@@ -344,12 +397,12 @@ Useful options:
 
 The fixed suite contains:
 
-| Preset   | Words | Word boundaries | Cipher type          | Seed |
-|----------|-------|-----------------|----------------------|------|
-| tiny     | ~40   | yes             | simple substitution  | 1    |
-| medium   | ~200  | yes             | simple substitution  | 3    |
-| hard     | ~250  | no              | simple substitution  | 4    |
-| hardest  | ~200  | no              | homophonic (58 syms) | 5    |
+| Preset | Words | Word boundaries | Cipher type |
+|--------|-------|-----------------|-------------|
+| `tiny` | ~40 | yes | simple substitution |
+| `medium` | ~200 | yes | simple substitution |
+| `hard` | ~250 | no | simple substitution |
+| `hardest` | ~200 | no | homophonic substitution |
 
 Tests that miss 100% character accuracy are copied to `errata/` with an
 alignment report, verbose notes, and the full artifact.
@@ -367,33 +420,72 @@ PYTHONPATH=src .venv/bin/python scripts/run_testgen_suite.py --rerun-errata
 
 ## Experimental Agentic Solving
 
-The agentic solver is still available for research workflows where we want
-branching hypotheses, tool use, and LLM-guided reasoning. It is now an
-explicit opt-in mode via `--agentic`.
+The agentic solver uses an LLM-driven loop for hypothesis exploration,
+multi-step tool use, and cipher-type identification. It is an explicit opt-in
+via `--agentic`.
 
-Agentic runs now receive the same automated preflight branch by default, and
-the v2 tool loop can also invoke the modern local automated stack directly via
-its `search_automated_solver` tool. For homophonic work, the agent's
-`search_homophonic_anneal` tool now supports the modern
-`solver_profile='zenith_native'` path as well as the legacy path. There is
-also a shared `decode_repair_no_boundary` repair tool for locally-correct but
-globally drifted continuous plaintext candidates; it returns a text-only
-repair preview without mutating the branch key. For boundary-drift cases where
-the decoded character stream reads correctly but the word breaks are wrong,
-the agent can validate a proposed whole-text reading with
-`decode_validate_reading_repair` and apply character-preserving word-boundary
-overlays with `act_resegment_by_reading`. If the proposed reading also changes
-some letters but preserves the character count, the agent can apply only the
-reading's word-boundary pattern with `act_resegment_from_reading_repair`, then
-use the reported mismatch spans as targets for key repairs. As a guardrail,
-`meta_declare_solution` will block a pre-final declaration whose rationale
-still mentions boundary/alignment problems unless that branch has gone through
-the full-reading validation/resegmentation workflow. The loop also issues a
-penultimate-turn warning so the agent sees this requirement while there is
-still one turn left to declare.
+Agentic runs receive the automated preflight branch by default. The v2 tool
+loop can invoke the local automated stack directly via `search_automated_solver`
+and exposes all major solver paths — monoalphabetic anneal, homophonic anneal,
+transform+homophonic, and periodic polyalphabetic — as dedicated tools. The
+loop also includes a battery of observation tools, a reading-repair discipline
+with a durable repair agenda, and benchmark context inspection tools that let
+the agent examine related records and known solutions.
 
-Current Borg follow-up is paused pending a more modern agent loop design. See
-`docs/agent_loop_redesign_plan.md` for the no-code design plan.
+### Cipher-type identification
+
+Before calling any solve tool, the agent receives a cipher-type fingerprint in
+its initial context. This fingerprint is computed from cheap statistical
+signals:
+
+- **IC (Index of Coincidence)** — near language reference → monoalphabetic;
+  depressed → polyalphabetic or homophonic
+- **Normalized entropy / frequency flatness** — peaked → monoalphabetic;
+  flat → homophonic or polyalphabetic
+- **Periodic IC (Friedman)** — peak at period *k* recovering toward language
+  IC → Vigenère key length *k*
+- **Kasiski spacing GCDs** — repeated-trigram spacing factors → corroborate
+  Vigenère period
+- **Doubled-digraph rate** — near-zero or halved from random → Playfair
+- **Alphabet size vs. unique symbols** — large gap → homophonic
+
+The fingerprint produces a ranked suspicion list (`monoalphabetic_substitution`,
+`homophonic_substitution`, `polyalphabetic_vigenere`, `transposition_homophonic`,
+`playfair`, …) that the agent uses to prioritize which solver to try first.
+
+The `observe_cipher_id` tool lets the agent re-run the fingerprint mid-run
+after applying a transform. For Vigenere-family suspicions, the agent can then
+drill into `observe_kasiski`, `observe_phase_frequency`, and
+`observe_periodic_shift_candidates` before running or repairing a periodic
+solver branch.
+
+### External context injection
+
+You can inject free-form context (date, source, suspected technique) into the
+agent's initial prompt before its first tool call:
+
+```bash
+# Inline text
+decipher crack -f cipher.txt --agentic \
+  --context "Found in an 18th-century French manuscript. Believed to be a Vigenère cipher."
+
+# From a file
+decipher crack -f cipher.txt --agentic \
+  --context-file notes/cipher_notes.txt
+
+# Both (inline text is prepended to the file contents)
+decipher crack -f cipher.txt --agentic \
+  --context "Key length may be 7." \
+  --context-file notes/cipher_notes.txt
+```
+
+The same flags work on `decipher benchmark --agentic`:
+
+```bash
+decipher benchmark /path/to/cipher_benchmark/benchmark \
+  --agentic --source borg \
+  --context "Borg cipher, monoalphabetic substitution, Latin pharmaceutical text."
+```
 
 ### Crack with the agent
 
@@ -413,27 +505,91 @@ decipher benchmark /path/to/cipher_benchmark/benchmark \
 
 ### Synthetic test generation and agentic solving
 
-If you want `decipher testgen` to generate uncached plaintext and solve it in
-one go, use `--agentic`:
-
 ```bash
 decipher testgen --preset medium --language en --agentic --model claude-sonnet-4-6
 ```
 
-### API key setup
+### Resume a prior agentic run
 
-Agentic mode requires an Anthropic API key:
+The `resume-artifact` command continues a saved agentic run, restoring the
+workspace branches and running additional iterations:
+
+```bash
+decipher resume-artifact artifacts/my_cipher/run_abc123.json \
+  --extra-iterations 10 \
+  --model claude-sonnet-4-6
+```
+
+Useful options:
+
+- `--branch NAME` — focus on a specific workspace branch from the prior run
+- `--extra-iterations N` — additional iterations to run (default: 10)
+- `--artifact-dir` — where to save the continuation artifact
+
+### LLM provider and model selection
+
+Agentic mode supports multiple LLM providers:
+
+```bash
+# Anthropic (default)
+decipher crack -f cipher.txt --agentic --model claude-sonnet-4-6
+
+# OpenAI
+decipher crack -f cipher.txt --agentic --provider openai --model gpt-4o
+
+# Gemini
+decipher crack -f cipher.txt --agentic --provider gemini --model gemini-2.0-flash
+```
+
+Recommended for historical manuscript analysis: `claude-sonnet-4-6`. The
+provider is inferred automatically from a recognized model name, or pass
+`--provider` explicitly.
+
+### Terminal display mode
+
+Agentic runs support four display modes via `--display`:
+
+| Mode | Description |
+|------|-------------|
+| `auto` | `pretty` on an interactive terminal, `raw` when piped (default) |
+| `pretty` | Rich terminal UI with live iteration and tool panels |
+| `raw` | Plain-text streaming output |
+| `jsonl` | Machine-readable JSONL event stream |
+
+`--verbose` overrides to the legacy verbose text stream.
+
+### API key setup
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
 ```
 
 Or store it in the macOS Keychain under service `decipher`, account
-`anthropic_api_key`.
+`anthropic_api_key`. OpenAI and Gemini keys follow the same pattern
+(`OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`).
 
-`--no-automated-preflight` is available if you want to suppress the default
-native preflight pass before an agentic run, though the preflight is generally
-useful and cheap.
+`--no-automated-preflight` suppresses the default no-LLM preflight pass before
+an agentic run (the preflight is generally cheap and useful).
+
+### Agent tool namespaces
+
+The v2 agent loop exposes tools across several namespaces. See
+[TOOLS.md](TOOLS.md) for the complete reference with per-tool parameter
+tables and usage notes.
+
+| Namespace | Representative tools | Purpose |
+|-----------|---------------------|---------|
+| `workspace_*` | fork, fork_best, create_hypothesis_branch, reject_hypothesis, hypothesis_cards, list_branches, branch_cards, delete, compare, merge | Branch and hypothesis management |
+| `observe_*` | frequency, ic, isomorph_clusters, cipher_id, cipher_shape, periodic_ic, kasiski, phase_frequency, periodic_shift_candidates, homophone_distribution, transform_pipeline, transform_suspicion | Statistical observation |
+| `decode_*` | show, show_phases, unmapped_report, ngram_heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix, repair_no_boundary, validate_reading_repair, plan_word_repair, plan_word_repair_menu | Decryption display and diagnosis |
+| `score_*` | panel, quadgram, dictionary | Multi-signal scoring |
+| `corpus_*` | lookup_word, word_candidates | Dictionary and corpus lookup |
+| `act_*` | set_mapping, bulk_set, anchor_word, clear_mapping, swap_decoded, split/merge cipher words, apply_word_repair, resegment_by_reading, resegment_from/window, apply_transform_pipeline, install_transform_finalists, rate_transform_finalist, set/adjust_periodic_key | Key mutations and structural edits |
+| `search_*` | hill_climb, anneal, homophonic_anneal, automated_solver, transform_candidates, transform_homophonic, review_transform_finalists, periodic_polyalphabetic | Solver invocation |
+| `repair_agenda_*` | list, update | Durable reading-repair bookkeeping |
+| `inspect_*` / `list_*` | inspect_benchmark_context, list_related_records, inspect_related_transcription, inspect_related_solution, list_associated_documents, inspect_associated_document | Benchmark context examination |
+| `run_python` | (one tool) | Escape hatch with required justification |
+| `meta_*` | request_tool, declare_solution | Run control |
 
 ## Unit Tests
 
