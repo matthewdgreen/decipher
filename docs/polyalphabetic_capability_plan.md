@@ -14,8 +14,11 @@ branch creation/rejection, and installing periodic candidates as
 mode-tagged branches. The agent can also inspect phase-local streams with
 `decode_show_phases` and manually set or adjust periodic keys with
 `act_set_periodic_key`, `act_set_periodic_shift`, and
-`act_adjust_periodic_shift`. This is still a bounded diagnostic/solver slice,
-not a complete polyalphabetic subsystem.
+`act_adjust_periodic_shift`. A first Quagmire III agent tool,
+`search_quagmire3_keyword_alphabet`, can now run the bounded keyword-alphabet
+search and install decoded candidates as `QuagmireKey` hypothesis branches.
+This is still a bounded diagnostic/solver slice, not a complete
+polyalphabetic subsystem.
 
 ## Goal
 
@@ -370,9 +373,69 @@ Current Kryptos-specific state:
   solution-bearing `known_cipher_parameters`.
 - Decipher can replay those parameters with a `PeriodicAlphabetKey` model:
   one shared keyed alphabet plus per-position shifts from the periodic key.
-- This is deliberately labeled `keyed_vigenere_known_replay` in artifacts. It
-  verifies mechanics, tableau convention, and unknown-symbol handling; it is
-  not a claim that Decipher has recovered the Kryptos keys from ciphertext.
+- Decipher also has explicit known-parameter Quagmire replay primitives. For
+  Kryptos-style Quagmire III, artifacts can now say `quag3_known_replay` with
+  `QuagmireKey`, `cycleword`, `plaintext_alphabet`, and `ciphertext_alphabet`
+  rather than hiding the case under generic keyed Vigenere terminology.
+- The first Quagmire III search scaffold is available as
+  `DECIPHER_KEYED_VIGENERE_MODE=quagmire_search`. It searches keyword-shaped
+  shared alphabets with a cheap score-guided screen hill climb, then
+  derives/optimizes the best cycleword for a finalist set. The screen includes
+  slip/backtrack controls (`DECIPHER_QUAGMIRE_SLIP_PROB`,
+  `DECIPHER_QUAGMIRE_BACKTRACK_PROB`) to mirror the shape of Blake's search
+  loop. Current calibration: if `KRYPTOS` is supplied as an initial
+  keyword-shaped alphabet, the scaffold recovers K2's `ABSCISSA` cycleword and
+  plaintext and ranks near-keyword variants close behind it. Small blind
+  diagnostics are now fast enough to run repeatedly, but random keyword-state
+  starts still do not naturally find the `KRYPTOS` basin.
+- The agent-facing version is `search_quagmire3_keyword_alphabet`. It is now
+  wired into the unknown-cipher playbook as the required escalation after
+  ordinary A-Z Vigenere-family failure when context says keyed
+  Vigenere/Kryptos-style, or when zero-context statistics still leave the
+  broader polyalphabetic family plausible. This prevents the K2 failure mode
+  where a bad plain-Vigenere result is mistaken for evidence against keyed
+  tableaux.
+- A first Rust/PyO3 fast path now exists for broad Quagmire III search:
+  `search_quagmire3_keyword_alphabet(engine="rust_shotgun")` calls
+  `search_quagmire3_shotgun_fast` in `src/analysis/polyalphabetic_fast.py`,
+  which in turn uses `rust/decipher_fast`. It evaluates independent
+  keyword-shaped restart/hillclimb jobs in parallel and records the budget
+  (`restart_jobs`, `hillclimbs_per_restart`, `nominal_proposals`, `threads`)
+  in tool results and branch metadata. Automated no-LLM runs can select the
+  same path with `DECIPHER_QUAGMIRE_ENGINE=rust_shotgun`,
+  `DECIPHER_QUAGMIRE_HILLCLIMBS`, and `DECIPHER_QUAGMIRE_THREADS`. This is
+  strategy-inspired by Sam
+  Blake's solver, but still uses Decipher's current quadgram scorer and does
+  not yet implement Blake's full shared global-best backtracking behavior.
+  The Rust extension is required for normal CLI runs. Do not silently
+  substitute the Python `python_screen` path for large runs: that path is
+  useful for diagnostics and regression comparisons, but it is not the same
+  search strategy or scale.
+- Quagmire finalist ranking now includes a strict continuous-word-hit signal,
+  controlled by `DECIPHER_QUAGMIRE_WORD_WEIGHT` (default `0.25`). This follows
+  the spirit of Blake's dictionary evidence while avoiding the generic
+  segmenter's tendency to over-credit gibberish with many short words.
+- `DECIPHER_QUAGMIRE_DICTIONARY_STARTS=<N>` adds ordered dictionary-derived
+  keyword starts. This gives Decipher a real no-explicit-keyword path for
+  ordinary Quagmire III cases with dictionary keywords. It is not sufficient
+  for Kryptos K2 because the built-in English dictionary does not contain the
+  tableau keyword `KRYPTOS`; context-derived or custom keyword sources remain
+  the next step for famous/contextual ciphers.
+- `DECIPHER_QUAGMIRE_CALIBRATION_KEYWORD=<WORD>` is available for solved
+  experiments. It records exact target-prefix rank and best target-prefix
+  distance in artifacts, but does not affect scoring or mutation. Use this to
+  measure whether broader random-start searches ever enter the known basin.
+- Attribution note: Quagmire naming and the next search-port roadmap reference
+  Sam Blake's MIT-licensed `polyalphabetic` solver
+  (`other_tools/stblake-polyalphabetic`). The replay code currently in
+  Decipher is independently implemented from the classical tableau semantics;
+  the search scaffold is strategy-inspired but not a literal code port. Any
+  future deeper port must keep MIT attribution in code and docs.
+- Older calibration rows may still be labeled `keyed_vigenere_known_replay`;
+  newer Quagmire-specific rows should prefer `quag3_known_replay`. Both replay
+  labels verify mechanics, tableau convention, and unknown-symbol handling;
+  neither is a claim that Decipher has recovered the Kryptos keys from
+  ciphertext.
 - Decipher can also recover the periodic key over supplied candidate keyed
   alphabets/tableau keywords via `keyed_vigenere_periodic_key_search`
   (`DECIPHER_KEYED_VIGENERE_MODE=search`). With the `KRYPTOS` keyed alphabet
@@ -386,7 +449,9 @@ Current Kryptos-specific state:
 - Experimental shared-tableau mutation search is available as
   `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`. It mutates the candidate
   alphabet with swaps, moves, and reversals, re-optimizes phase shifts after
-  each mutation, and scores the whole plaintext. This is the first
+  each mutation, and scores the whole plaintext. Guided mode is now enabled by
+  default: it proposes frequency-pressure swaps and per-phase common-letter
+  swaps before falling back to random mutation. This is the first
   frequency/search scaffold beyond keyword lists, but broad blind recovery
   from plain A-Z is not reliable yet.
 - K1 is currently too short for the plain n-gram/chi-square scorer to recover
@@ -397,8 +462,23 @@ Current Kryptos-specific state:
 Remaining keyed-Vigenere work:
 
 - Larger and better-prioritized keyword candidate generation.
-- Better mutation proposals for shared-alphabet search: phase-frequency
-  constraints, pairwise offset constraints, and beam/anneal hybrids.
+- Better shared-alphabet search: pairwise offset constraints,
+  beam/anneal hybrids, and pruning/ranking that can survive short texts.
+- Quagmire-specific search still needs the rest of the Blake-style strategy:
+  larger restart budgets, backtracking/slip behavior, keyword mutation tuned to
+  keyword-shaped alphabets, and word/dictionary evidence in the objective.
+- The first pairwise-offset prototype is now an offset-graph initializer for
+  keyed-Vigenere candidate capture. It samples modular constraints on shared
+  tableau positions and should be evaluated as a `--steps 0` population
+  generator before being mixed with mutation annealing.
+- A beam-search constraint-graph initializer has also been added. It is more
+  systematic than the random offset graph, but initial K2 evidence still does
+  not produce near-tableau basins. This keeps the immediate research focus on
+  richer constraint evidence rather than just broader sampling.
+- The K2 capture script also has a solution-bearing tableau perturbation
+  control. It injects exact and swap-perturbed true tableaux to calibrate
+  whether the fast scorer/ranker can recognize near-tableau candidates when
+  proposal generation is not the bottleneck.
 - Crib-aware scoring for short famous ciphers.
 - Agent tools to try a tableau keyword, inspect the resulting periodic branch,
   and compare keyed-Vigenere hypotheses against ordinary Vigenere branches.

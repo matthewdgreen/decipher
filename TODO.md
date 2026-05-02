@@ -51,26 +51,186 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     solution-bearing benchmark parameters.
   - Experimental shared-tableau mutation search is available as
     `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`. It mutates the tableau,
-    re-optimizes periodic shifts, and scores whole-text n-grams. Current
-    scope is near-basin refinement and research diagnostics; short-budget
-    standard-A-Z starts do not yet recover the Kryptos tableau.
+    re-optimizes periodic shifts, and scores whole-text n-grams. Guided mode
+    is now on by default and adds frequency-pressure plus per-phase
+    common-letter swap proposals (`DECIPHER_KEYED_VIGENERE_ANNEAL_GUIDED=0`
+    disables this; `DECIPHER_KEYED_VIGENERE_GUIDED_POOL` controls proposal
+    breadth). Current scope is near-basin refinement and research diagnostics;
+    standard-A-Z starts do not yet reliably recover the Kryptos tableau.
   - Periodic A-Z tooling now skips ignorable non-letter symbols, such as
     Kryptos K2 `?` tokens, without advancing the key.
   - Agent-side periodic branch manipulation is partially implemented:
     `decode_show_phases`, `act_set_periodic_key`,
     `act_set_periodic_shift`, and `act_adjust_periodic_shift`.
-  - Unknown-cipher prompt/preflight integration has started: automated
-    artifacts include `cipher_id_report`, preflight summaries expose ranked
-    mode suspicions, and the agent has `observe_cipher_shape` plus explicit
-    mode-first guidance before local repairs.
+  - Unknown-cipher prompt/preflight integration has started: automated and
+    agent artifacts include `cipher_id_report`; agent opening context now
+    includes a compact diagnostic preflight; preflight summaries expose ranked
+    mode suspicions; branch metadata is persisted; and the agent has
+    `observe_cipher_shape` plus explicit mode-first guidance before local
+    repairs.
+  - Hypothesis bookkeeping is now explicit through
+    `workspace_create_hypothesis_branch`, `workspace_update_hypothesis`,
+    `workspace_reject_hypothesis`, `workspace_hypothesis_cards`, and
+    `workspace_hypothesis_next_steps`. The next-step tool provides a
+    mode-specific diagnostic/solver playbook and marks which tools have
+    already been tried on the branch. Hypothesis branches must now call this
+    playbook before declaration, so artifacts capture tried/pending
+    mode-specific work. It now also returns a soft foreground tool menu with
+    always-available, foreground, escape, and discouraged tools for the active
+    mode. Next work: dynamic mode-specific prompt/tool menus and broader
+    fake-provider tests for full unknown-cipher escalation paths.
+  - Executor-level mode guardrails now block substitution-style repairs on
+    branches tagged as periodic, transform, fractionation, or polygraphic
+    hypotheses unless the agent explicitly passes
+    `allow_mode_mismatch_repair=true`. This keeps the agent from polishing the
+    wrong key model while still allowing deliberate cross-mode experiments.
+  - Benchmark-context cipher-family priors are now executor-enforced. If an
+    exposed context layer says a cipher is keyed-tableau/Kryptos-style
+    polyalphabetic, off-family automated, homophonic, and transform search
+    tools are blocked unless the agent deliberately passes
+    `override_context_cipher_family=true` and a concrete
+    `context_override_rationale`. Follow-up: surface these assumptions and
+    overrides in the pretty final UI and artifact analyzer summaries.
   - Add first-class support for Vigenere-family, Beaufort-family, Gronsfeld,
     running-key, periodic substitution, and sparse/light polyalphabetism.
   - Include period detection, key-length search, crib-aware modes, and
     automated-vs-agentic comparison fixtures.
-  - Next Kryptos capability step: keyed-alphabet discovery and short-text
-    support. Start with candidate tableau keyword generation, crib-aware
-    scoring, and an explicit distinction between known-tableau key recovery
-    and genuine ciphertext-only recovery.
+  - Next Kryptos capability step: stronger keyed-alphabet discovery and
+    short-text support. Start with pairwise offset constraints, beam/anneal
+    hybrids, crib-aware scoring, and an explicit distinction between
+    known-tableau key recovery and genuine ciphertext-only recovery.
+  - Candidate triage/reranking should be shared with the transform-search
+    optimization work instead of becoming a separate Kryptos-only path:
+    cached candidate sets, cheap/medium/LLM rankers, recall@K metrics, and
+    leakage controls apply to transform pipelines and keyed-tableau
+    candidates alike.
+  - A focused K2 candidate-capture diagnostic now lives at
+    `eval/scripts/capture_keyed_vigenere_candidates.py`. Use it before
+    rearchitecting the solver: if the blind guided-anneal candidate population
+    never contains a near-true tableau/key, prioritize better proposal/search
+    architecture; if near-true candidates exist but rank poorly, prioritize
+    the cascade reranker.
+  - Required Rust/PyO3 fast-kernel scaffold now lives in
+    `rust/decipher_fast`, with Python wrappers at
+    `src/analysis/polyalphabetic_fast.py`. The first compiled Quagmire III
+    shotgun loop is implemented as `search_quagmire3_shotgun_fast` and is
+    exposed to the agent through
+    `search_quagmire3_keyword_alphabet(engine="rust_shotgun")`. It runs
+    independent Blake-style restart/hillclimb jobs in parallel across local
+    CPU cores and records `threads`, `restart_jobs`,
+    `hillclimbs_per_restart`, and `nominal_proposals`. Automated no-LLM
+    Quagmire runs can select the same engine with
+    `DECIPHER_QUAGMIRE_ENGINE=rust_shotgun`,
+    `DECIPHER_QUAGMIRE_HILLCLIMBS`, and `DECIPHER_QUAGMIRE_THREADS`.
+    User-facing availability is documented in the README and exposed through
+    `decipher doctor`; `scripts/setup_dev.sh` now runs both `pip install -e .`
+    and the Rust build for fresh checkouts; normal CLI runs fail early with
+    build instructions if `decipher_fast` is unavailable. Do not silently substitute
+    `python_screen` for `rust_shotgun`: the Python path is a smaller
+    diagnostic/reference screen, not a scale-equivalent implementation.
+  - Keep Rust/Python compatibility honest: maintain tests for shared scoring
+    and seeded Quagmire semantics where the implementations overlap, but track
+    separately that the Rust shotgun loop and Python screen loop are different
+    search strategies. If a true Python reference implementation for the
+    Blake-style loop is added later, add candidate-distribution parity tests
+    before using it as a runtime substitute.
+  - Rust Quagmire follow-ups: compare the Rust candidate distribution against
+    Blake's solver on K2, add a stronger/principled quadgram source if the
+    current Decipher wordlist quadgrams rank poorly, decide whether exact
+    cross-restart/global-best backtracking is worth porting, and run a true
+    broad blind K2 experiment at tens-of-millions candidate scale.
+  - First phase-frequency constraint initializer is implemented as
+    `generate_keyed_vigenere_constraint_alphabets` and exposed in the K2
+    capture script via `--constraint-starts`. This is the first step away
+    from whole-tableau random walks: it creates structured keyed-alphabet
+    starts from per-phase shift/frequency evidence, then lets the fast Rust
+    evaluator/annealer rank or refine them. Evaluate first with `--steps 0`;
+    only promote to annealing if the screen shows better basins.
+  - First offset-graph initializer is implemented as
+    `generate_keyed_vigenere_offset_graph_alphabets` and exposed via
+    `--offset-graph-starts`. It samples modular constraints of the form
+    `pos(cipher_letter) - pos(plain_letter) = phase_shift mod 26`, keeps only
+    internally consistent constraint graphs, materializes candidate shared
+    tableaux, and then uses the same capture/ranking machinery. Next K2
+    experiment: run offset-graph screens with `--steps 0` and enough
+    `--offset-graph-samples` to see whether near-true shared-tableau basins
+    appear at all before spending budget on annealing.
+  - Solution-bearing tableau perturbation controls are available in the K2
+    capture script via `--include-tableau-perturbation-control`. These inject
+    the true K2 tableau plus controlled random swap perturbations and answer
+    whether the current fast scorer ranks exact/near-exact tableaux correctly
+    when they are present. Keep this labeled as calibration/control evidence,
+    not blind solving evidence.
+  - A first beam-search constraint-graph generator is available via
+    `--constraint-graph-starts`. It systematically combines phase-frequency
+    modular offset constraints before materializing tableaux. Initial K2 smoke
+    evidence is still negative (roughly the same `~34%` best-character /
+    `~21` best tableau-hamming ceiling as random offset graphs), so the
+    current constraint model is not yet rich enough. Next idea: learn stronger
+    pairwise constraints from candidate plaintext coherence or add a
+    medium-cost reranker over larger noisy populations before constructing
+    graphs.
+  - External reference check: Sam Blake's MIT-licensed polyalphabetic solver
+    (`other_tools/stblake-polyalphabetic`) solves K2 as Quagmire III without a
+    crib when given `plaintextkeywordlen=7` and `cyclewordlen=8`, recovering
+    `KRYPTOS` and `ABSCISSA` in a short run. Next implementation step should
+    study/port the Quagmire-specific keyed-alphabet mutation/search strategy
+    rather than continuing arbitrary-tableau random walks.
+  - [x] Add explicit known-parameter Quagmire replay primitives and automated
+    runner routing. The first slice supports artifact-labeled `quag3_known_replay`
+    for Kryptos-style Quagmire III fixtures and records attribution to Sam
+    Blake's MIT-licensed `polyalphabetic` solver as the search-strategy
+    reference.
+  - [x] Add the first Quagmire III keyword-search scaffold:
+    `DECIPHER_KEYED_VIGENERE_MODE=quagmire_search`. It searches
+    keyword-shaped shared alphabets, cheaply screens keyword/cycleword-length
+    states, and derives/optimizes the best cycleword for a finalist set. This
+    can recover K2's `ABSCISSA` when `KRYPTOS` is supplied as an initial
+    keyword-shaped alphabet, and artifacts label the scaffold plus attribution.
+    Small blind diagnostics now run fast enough to iterate, but random
+    keyword-state starts still do not naturally find the `KRYPTOS` basin.
+    Finalist ranking now adds a strict continuous-word-hit signal controlled
+    by `DECIPHER_QUAGMIRE_WORD_WEIGHT` (default `0.25`); this demotes many
+    quadgram-ish gibberish basins without using solution-bearing cribs.
+    The screen phase now uses a cheap score-guided keyword hill climb with
+    `DECIPHER_QUAGMIRE_SLIP_PROB` and `DECIPHER_QUAGMIRE_BACKTRACK_PROB`.
+    Seeded K2 runs rank near-keyword variants such as transposed `KRYPTOS`
+    close behind the exact keyword, but small blind random-start runs still
+    do not reach that neighborhood.
+    `DECIPHER_QUAGMIRE_DICTIONARY_STARTS=<N>` now adds ordered dictionary
+    keyword starts; this solves a synthetic Quagmire III case with an ordinary
+    dictionary keyword without explicit keyword seeding. It does not solve K2
+    blind because the bundled English dictionary does not contain `KRYPTOS`.
+    `DECIPHER_QUAGMIRE_CALIBRATION_KEYWORD=<WORD>` now records exact rank and
+    best prefix distance for solved experiments without changing search
+    behavior. In current small K2 blind probes the best finalist remains
+    several prefix positions away from `KRYPTOS`, while seeded probes rank the
+    exact prefix first and distance-1 variants behind it.
+  - [x] Expose that Quagmire III scaffold to the agent as
+    `search_quagmire3_keyword_alphabet`. The tool installs decoded
+    `QuagmireKey` hypothesis branches, records whether explicit initial
+    keywords seeded the search, and appears in the mode-specific playbook for
+    `periodic_polyalphabetic`, `quagmire3`, and
+    `keyed_tableau_polyalphabetic` hypotheses. This makes a K2 agent test
+    possible, with clear labeling for seeded/context-assisted versus blind
+    attempts.
+  - [x] Add context-prior and family-coverage guardrails for K2-style runs:
+    injected benchmark context that says keyed Vigenere/Kryptos-style now
+    requires Quagmire/keyed-tableau search before rejecting the
+    polyalphabetic family, and zero-context K2-like statistics now produce a
+    `workspace_hypothesis_next_steps` coverage debt after ordinary Vigenere
+    fails.
+  - New capture harness:
+    `eval/scripts/capture_quagmire_candidates.py`. Use it for broad K2
+    prefix-search experiments with checkpointed JSON artifacts and calibration
+    labels. This should be the main tool for deciding whether larger restart
+    budgets enter the known `KRYPTOS` basin before porting more of Blake's
+    stochastic machinery.
+  - [ ] Port the rest of the Quagmire-specific search strategy:
+    stronger keyword mutation, random restarts at Blake-style scale,
+    backtracking/slip behavior, word/dictionary scoring, and candidate
+    provenance. Keep this distinct from generic keyed-Vigenere tableau
+    mutation so results are interpretable.
 - [ ] Fractionation + transposition systems.
   - Cover Bifid, Trifid, ADFGX/ADFGVX-style families, fractionated Morse, and
     related systems where substitution, coordinate encoding, and transposition

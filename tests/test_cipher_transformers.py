@@ -473,6 +473,7 @@ def test_wide_transform_screen_is_structural_only_and_capped():
 
     assert screen["profile"] == "wide"
     assert screen["streaming"] is True
+    assert screen["rust_structural_metrics"] is True
     assert screen["candidate_count"] <= 750
     assert screen["max_generated_candidates"] == 750
     assert screen["top_candidates"]

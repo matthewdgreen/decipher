@@ -219,6 +219,17 @@ def _format_prompt_context(
                 f"- {item['record_id']} / {item['layer']} "
                 f"({item['label']}){flag_text}: {item['text']}"
             )
+        if any(item.get("contains_cipher_type_hint") for item in context.injected_layers):
+            lines.append("")
+            lines.append("### Agent-Declared Context Assumptions")
+            lines.append(
+                "If you read these layers as identifying the cipher family, record "
+                "that inference explicitly with `workspace_create_hypothesis_branch` "
+                "or `workspace_update_hypothesis` and set "
+                "`evidence_source='benchmark_context'`. The executor will only "
+                "enforce context as a hard working assumption after you make that "
+                "declaration; it does not infer cipher type from this prose itself."
+            )
 
     if test_data.context_records:
         ids = ", ".join(record.id for record in test_data.context_records[:20])

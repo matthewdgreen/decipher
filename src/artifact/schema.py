@@ -45,6 +45,7 @@ class BranchSnapshot:
     decryption: str                             # result of applying key
     signals: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     word_spans: list[tuple[int, int]] | None = None
     token_order: list[int] | None = None
     transform_pipeline: dict[str, Any] | None = None
@@ -108,6 +109,7 @@ class RunArtifact:
     cipher_word_count: int = 0
     max_iterations: int = 0
     automated_preflight: dict[str, Any] | None = None
+    cipher_id_report: dict[str, Any] | None = None
     benchmark_context: dict[str, Any] | None = None
     parent_run_id: str = ""
     parent_artifact_path: str = ""
@@ -121,11 +123,12 @@ class RunArtifact:
     subagent_runs: list[SubagentRun] = field(default_factory=list)
     loop_events: list[LoopEvent] = field(default_factory=list)
     repair_agenda: list[dict[str, Any]] = field(default_factory=list)
+    cipher_hypotheses: list[dict[str, Any]] = field(default_factory=list)
     messages: list[dict[str, Any]] = field(default_factory=list)  # full message history
 
     # Termination
     solution: SolutionDeclaration | None = None
-    status: str = "running"                     # running | solved | exhausted | error | stopped
+    status: str = "running"                     # running | solved | unsolved | exhausted | error | stopped
     error_message: str = ""
     final_summary: str = ""
 

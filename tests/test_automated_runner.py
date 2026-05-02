@@ -3,9 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -131,6 +134,75 @@ def test_cli_crack_defaults_to_automated_solver_and_bypasses_api_key(tmp_path, m
     out = capsys.readouterr().out
     assert "Running automated solver" in out
     assert "THE" in out
+
+
+def test_cli_doctor_reports_required_rust_kernel(capsys):
+    cli.cmd_doctor(argparse.Namespace(json=False))
+
+    out = capsys.readouterr().out
+    assert "Decipher environment check" in out
+    assert "Rust fast kernels" in out
+    assert "quagmire3_shotgun_search" in out
+
+
+def test_cli_preflight_exits_early_when_required_rust_kernel_missing(monkeypatch, capsys):
+    import analysis.polyalphabetic_fast as poly_fast
+
+    monkeypatch.setattr(poly_fast, "FAST_AVAILABLE", False)
+    monkeypatch.setattr(
+        poly_fast,
+        "fast_kernel_unavailable_message",
+        lambda *, feature="the Rust fast kernel": f"{feature} unavailable; build it",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli._require_rust_fast_kernel()
+
+    assert exc.value.code == 2
+    err = capsys.readouterr().err
+    assert "Decipher runtime unavailable" in err
+
+
+def test_cli_subprocess_reports_missing_rust_kernel_before_running_tool(tmp_path):
+    blocker = tmp_path / "sitecustomize.py"
+    blocker.write_text(
+        """
+import importlib.abc
+
+
+class _BlockDecipherFast(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "decipher_fast" or fullname.startswith("decipher_fast."):
+            raise ModuleNotFoundError("blocked decipher_fast for CLI missing-kernel test")
+        return None
+
+
+import sys
+sys.meta_path.insert(0, _BlockDecipherFast())
+""",
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join([
+        str(tmp_path),
+        str(Path(__file__).resolve().parents[1] / "src"),
+    ])
+
+    completed = subprocess.run(
+        [sys.executable, "-m", "cli", "crack"],
+        input="ABC\n",
+        text=True,
+        capture_output=True,
+        env=env,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert completed.stdout == ""
+    assert "Decipher runtime requires the Python module `decipher_fast`" in completed.stderr
+    assert "blocked decipher_fast for CLI missing-kernel test" in completed.stderr
+    assert "scripts/build_rust_fast.sh" in completed.stderr
+    assert "PYTHONPATH=src .venv/bin/decipher doctor" in completed.stderr
 
 
 def test_preflight_summary_omits_ground_truth_accuracy():

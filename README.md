@@ -59,10 +59,23 @@ ships Decipher-built replacement models.
 
 ## Setup
 
+Prerequisites:
+
+- Python 3.11 or newer. See the [Python downloads](https://www.python.org/downloads/)
+  and [venv documentation](https://docs.python.org/3/library/venv.html).
+- Rust with Cargo. The recommended installer is [rustup](https://rustup.rs/).
+- A local C/native build toolchain for Python extension builds:
+  - macOS: install Xcode Command Line Tools with `xcode-select --install`.
+  - Debian/Ubuntu: install `build-essential` and `python3.11-dev` or the
+    matching `python3-dev` package for your Python.
+  - Fedora/RHEL: install `gcc`, `gcc-c++`, `make`, and `python3-devel`.
+- `pip` in the virtual environment. The setup script installs `maturin`
+  automatically.
+
 ```bash
 cd /path/to/decipher
 source .venv/bin/activate
-pip install -e .
+scripts/setup_dev.sh
 ```
 
 No API key is required for the default automated workflows.
@@ -76,6 +89,43 @@ pre-`zenith_native` code for comparison, pass `--legacy-homophonic`.
 
 On multi-core machines, `zenith_native` auto-sizes parallel seed workers by
 default. Override explicitly with `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`.
+
+### Required Rust Fast Kernels
+
+Decipher requires the Rust/PyO3 module `decipher_fast` for normal CLI runs.
+This avoids silently replacing broad compiled searches with slow Python
+diagnostics. The `scripts/setup_dev.sh` command above installs the Python
+package and builds the Rust module.
+
+If you only need to rebuild the Rust module after changing Rust code:
+
+```bash
+cd /path/to/decipher
+scripts/build_rust_fast.sh
+```
+
+Minimal manual setup equivalent:
+
+```bash
+cd /path/to/decipher
+source .venv/bin/activate
+pip install -e .
+.venv/bin/python -m pip install maturin
+cd rust/decipher_fast
+../../.venv/bin/python -m maturin develop --release
+cd ../..
+```
+
+Check whether the module is available:
+
+```bash
+PYTHONPATH=src .venv/bin/decipher doctor
+```
+
+If `decipher_fast` is missing, benchmark/crack/testgen runs abort immediately
+with build instructions. The remaining Python Quagmire path is reference and
+diagnostic scaffolding only; do not treat it as a runtime fallback for
+large-scale searches.
 
 ## Automated Solving
 

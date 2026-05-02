@@ -17,7 +17,10 @@ LLM-safe preflight summary includes a compact cipher-type fingerprint.
 For periodic-polyalphabetic branches, the agent can inspect and repair the
 mode-specific key state with `decode_show_phases`,
 `act_set_periodic_key`, `act_set_periodic_shift`, and
-`act_adjust_periodic_shift`.
+`act_adjust_periodic_shift`. The agent also has a bounded
+`search_quagmire3_keyword_alphabet` tool for the first keyed-tableau child
+hypothesis: it searches Quagmire III keyword-shaped alphabets, derives
+cyclewords, and installs decoded candidates as hypothesis branches.
 
 ## Goal
 
@@ -245,6 +248,10 @@ Suggested tools:
 - `workspace_hypothesis_cards`
   - Shows all active/rejected mode branches, their evidence, scores, best
     preview text, and agent readability notes.
+- `workspace_hypothesis_next_steps`
+  - Shows the mode-specific diagnostic/solver sequence for active hypotheses,
+    marks tools already tried in the current run, and highlights the next
+    pending action.
 - `workspace_compare_hypotheses`
   - Compares branches across modes without pretending their scores are all
     commensurate.
@@ -438,8 +445,9 @@ Live/opt-in tests:
 Recommended first branch:
 
 1. [x] Promote `analysis.cipher_id` into a standard `cipher_id_report` attached to
-   automated artifacts. Agent initial-context injection remains planned, but
-   the report is available on demand through `observe_cipher_id`.
+   automated and agent artifacts. Agent runs now include the diagnostic
+   preflight in the opening context, while `observe_cipher_id` remains
+   available for branch-specific recomputation after transforms or filtering.
 2. [x] Add `observe_cipher_id` and `observe_cipher_shape`.
 3. [x] Add `cipher_mode`, `mode_evidence`, and `mode_status` metadata conventions
    for workspace branches.
@@ -447,14 +455,33 @@ Recommended first branch:
    `workspace_reject_hypothesis`, and `workspace_hypothesis_cards`.
 5. [x] Update the prompt so unknown-cipher runs explicitly start with hypothesis
    selection and bad-basin recognition.
-6. [ ] Add broader fake-provider tests for:
+6. [x] Add broader fake-provider/direct executor tests for:
    - selecting a mode
    - rejecting a mode
    - switching modes
    - not using substitution repair on a branch tagged
-     `periodic_polyalphabetic`
+     `periodic_polyalphabetic` unless the agent explicitly overrides the
+     mode-mismatch guard
 7. [x] Add the first new child solver capability, the bounded
    Vigenere-family slice from `polyalphabetic_capability_plan.md`.
+8. [x] Preserve hypothesis metadata in agent artifacts through
+   `cipher_hypotheses` and branch-snapshot `metadata`, so later analysis can
+   reconstruct why a mode was pursued or abandoned.
+9. [x] Add `workspace_hypothesis_next_steps` so the agent can ask for the
+   right mode-specific playbook instead of relying on the giant prompt. The
+   tool now also returns a soft foreground/escape/discouraged tool menu for
+   the active mode, which is the first low-risk slice of Milestone 5.
+10. [x] Add a hypothesis-branch declaration guard: before declaring a branch
+   tagged as a cipher-mode hypothesis, the agent must call
+   `workspace_hypothesis_next_steps` so tried/pending mode work is explicit.
+11. [x] Add context-prior and family-coverage guardrails. Benchmark context
+   that explicitly says keyed Vigenere/Kryptos-style now becomes a structured
+   mode prior with `search_quagmire3_keyword_alphabet` required before
+   rejecting the polyalphabetic family. In zero-context K2-like cases, once
+   ordinary A-Z Vigenere-family search has failed but the statistical
+   fingerprint still supports periodic polyalphabetic structure,
+   `workspace_hypothesis_next_steps` reports a family-coverage debt and
+   prioritizes Quagmire/keyed-tableau search.
 
 ## Open Questions
 

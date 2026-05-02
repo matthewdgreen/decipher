@@ -1,4 +1,4 @@
-# Transform Generator Optimization — Testing Framework Plan
+# Candidate Triage and Transform Generator Optimization — Testing Framework Plan
 
 ## Background
 
@@ -20,9 +20,16 @@ Two operational concerns motivate this plan:
    agentic loop end-to-end.
 
 This plan describes a **frozen-set / replayable-strategy** evaluation
-framework: run the expensive transform search once per case, cache the full
+framework: run the expensive candidate generator once per case, cache the full
 candidate list, and replay alternative ranking and triage strategies over the
 cache cheaply.
+
+Although the first implementation target is transform search, the design
+should be family-neutral. A "candidate" may be a transform pipeline, a
+keyed-Vigenere tableau/key hypothesis, a homophonic solve finalist, or a
+future unknown-cipher mode hypothesis. The core triage question is the same:
+which candidates are worth showing to the agent or promoting into a slower
+solver/LLM judging step?
 
 ---
 
@@ -36,6 +43,9 @@ cache cheaply.
   local model, etc.) against non-LLM strategies, with cost accounted for.
 - Keep historical cases (Borg, Copiale, Zodiac) as held-out validation,
   reported separately from synthetic results.
+- Build the cache/schema once so it can support transform search,
+  keyed-Vigenere/tableau recovery, homophonic finalist ranking, and future
+  unknown-cipher hypothesis ranking.
 
 ## Non-goals
 
@@ -61,9 +71,9 @@ cache cheaply.
                ▼
 ┌─────────────────────────────┐
 │ 2. Candidate capture        │  expensive (CPU only, no LLM)
-│    transform_search dump    │  — run once per case, cached
+│    generator dump           │  — run once per case, cached
 └──────────────┬──────────────┘
-               │ artifacts/transform_triage/<case_id>.jsonl
+               │ artifacts/candidate_triage/<family>/<case_id>.jsonl
                ▼
 ┌─────────────────────────────┐
 │ 3. Ground-truth labeler     │  expensive (per candidate)
@@ -91,6 +101,23 @@ is a few seconds of replay over fixed inputs.
 ---
 
 ## Component 1 — Population generator
+
+### Candidate families
+
+The first population should remain transform-focused, because that is the
+active Z340/transposition pain point. But the manifest should include a
+`candidate_family` field from the start:
+
+| Family | Candidate parameters | First use |
+|--------|----------------------|-----------|
+| `transform` | transform pipeline + post-transform solve metadata | Z340-style search triage |
+| `keyed_vigenere` | keyed alphabet/tableau, period, shifts, key text | Kryptos/tableau recovery |
+| `homophonic` | solver profile, seed, model, final key, decoded text | Zodiac/Scorpion finalist triage |
+| `unknown_mode` | cipher-mode hypothesis + delegated generator metadata | future unknown-cipher preflight |
+
+This prevents `src/triage` from becoming transform-specific and lets us reuse
+the same ranking, labeling, metrics, and LLM-cache infrastructure across
+cipher families.
 
 ### Synthetic sweep
 
@@ -146,7 +173,31 @@ the strategy is overfit to the generator.
 opt-in flag (e.g., `dump_full_candidates: int = 0`) that, when set, returns
 the top-N (default N=200) candidates as a structured list rather than only
 the page-sized output. This is the only invasive code change to existing
-search code.
+transform-search code.
+
+For family-neutrality, the captured record format should not assume a
+transform pipeline is present. Use a common envelope:
+
+```json
+{
+  "candidate_id": "case_id::generator::rank",
+  "case_id": "case_id",
+  "candidate_family": "transform",
+  "generator": "transform_search",
+  "generator_version": "...",
+  "original_rank": 12,
+  "parameters": {"transform_pipeline": [...]},
+  "decoded_text": "...",
+  "cheap_scores": {"ngram_score": -4.2, "dict_rate": 0.31},
+  "labels": {},
+  "provenance": {"cache_key": "..."}
+}
+```
+
+For keyed-Vigenere/tableau candidates, `parameters` would instead contain the
+keyed alphabet, tableau keyword if any, period, shifts, and recovered key. For
+homophonic candidates it would contain solver profile, model path/checksum
+where available, seed, and key metadata.
 
 ### Capture script
 
@@ -157,12 +208,12 @@ For each case in the population manifest:
 2. Run transform search with `dump_full_candidates=200`.
 3. For each candidate, persist:
    - `candidate_id` (stable, e.g., `case_id::rank`)
-   - `transform_pipeline` (full pipeline metadata)
+   - `parameters` (family-specific metadata, such as full transform pipeline)
    - `decoded_text` (post-transform, post-substitution string)
    - Internal scores: `ngram_score`, `ic`, `dict_rate`, anything else the
      ranker computes
    - `original_rank` (where this candidate sat in the top-N pre-replay)
-4. Write `artifacts/transform_triage/<case_id>.jsonl`.
+4. Write `artifacts/candidate_triage/transform/<case_id>.jsonl`.
 
 This is the expensive step. Budget: probably a few hours of CPU for the full
 population on a multi-core machine. Cache invalidation is by population
@@ -180,10 +231,13 @@ parity matrix.
 
 Per candidate:
 
-1. **`transform_correct`** (boolean). The candidate's transform pipeline
+1. **`family_correct`** (boolean or null). For transform cases this is
+   `transform_correct`: the candidate's transform pipeline
    matches the generator's ground-truth pipeline. Cheap; compute from
    metadata. For held-out cases without known pipelines, this label is
-   `null`.
+   `null`. For keyed-Vigenere cases this can be split into
+   `tableau_correct` and `key_correct` when synthetic or solved calibration
+   truth is available.
 
 2. **`readable_now`** (float in [0, 1]). Character-level alignment score of
    the candidate's decoded text against the ground-truth plaintext. Use
@@ -204,7 +258,8 @@ Computing `rescuable` for all 200 candidates per case is too expensive. Per
 case:
 - Always label the top 50 candidates by `original_rank`.
 - Always label the top 25 candidates by `readable_now`.
-- Always label any candidate with `transform_correct=true`.
+- Always label any candidate with `family_correct=true`, including
+  `transform_correct`, `tableau_correct`, or `key_correct` where available.
 - Label a random sample of 25 from the remaining tail (so strategies that
   reach into the tail can be evaluated, even with noise).
 
@@ -246,6 +301,12 @@ def rank(candidates: list[CachedCandidate],
 Implementations live in `src/triage/strategies/`. The harness loads them by
 name from a registry.
 
+Strategies may declare which candidate families they support. A generic text
+strategy such as `consecutive_dict_words` can run on any candidate with
+`decoded_text`; a transform-specific strategy may require
+`parameters.transform_pipeline`; a keyed-Vigenere strategy may use
+`parameters.keyed_alphabet`, period, or per-phase metadata.
+
 ### Strategies to implement initially
 
 Non-LLM:
@@ -273,6 +334,15 @@ LLM-based (offline-cached):
 Hybrid:
 - `binary_ngram_then_haiku` — non-LLM gate to top-25, then Haiku rerank.
   Accounts for cost-conscious deployment.
+
+Keyed-Vigenere/tableau-specific:
+- `phase_coherence_weighted` — prefer candidates whose per-phase decoded
+  streams have plausible frequency and IC after shift refinement.
+- `tableau_smoothness` — prefer keyed alphabets with plausible keyword-like
+  prefixes or low-disruption mutations only when this is explicitly allowed
+  by the evaluation mode.
+- `tableau_ngram_then_llm` — gate by n-gram/segmentation score, then use an
+  LLM to reject English-looking but semantically incoherent plaintext.
 
 ### Replay engine
 
@@ -306,6 +376,9 @@ Per (strategy × case), compute:
   modes — the most important gate for whether to ship a strategy.
 - **`cost_per_1k_candidates`**: total seconds and total LLM tokens
   consumed. Necessary for fair Haiku comparison.
+- **`leakage_mode`**: `blind`, `context`, or `solution_aware_label_only`.
+  Ranking strategies must never consume solution-aware labels except during
+  offline metric computation.
 
 Aggregate by:
 - Overall (all synthetic).
@@ -335,6 +408,7 @@ per evaluation, similar to existing parity matrix outputs.
 | `src/triage/metrics.py` | Recall@K, MRR, regression, cost accounting |
 | `scripts/build_transform_triage_population.py` | Generate synthetic cases |
 | `scripts/capture_transform_candidates.py` | Run transform search, dump candidate lists |
+| `scripts/capture_keyed_vigenere_candidates.py` | Optional later capture for tableau/key candidates |
 | `scripts/label_transform_candidates.py` | Label cached candidates |
 | `scripts/evaluate_triage_strategies.py` | Replay strategies, emit metrics |
 | `frontier/transform_triage_population.jsonl` | Versioned population manifest |
@@ -348,6 +422,7 @@ per evaluation, similar to existing parity matrix outputs.
 |------|--------|
 | `src/analysis/transform_search.py` | Add `dump_full_candidates: int` parameter that returns full top-N rather than only the agent-page output |
 | `src/testgen/builder.py` | Add `transform_compose` mode for synthetic transformed ciphertexts |
+| `src/analysis/polyalphabetic.py` | Later: expose keyed-Vigenere/tableau candidate dumps through the same cached-candidate envelope |
 
 ### Reused as-is
 
@@ -396,6 +471,11 @@ per evaluation, similar to existing parity matrix outputs.
 10. **Held-out evaluation** + report generation. First end-to-end answer to
     "does any strategy beat baseline on held-out historical anchors with an
     acceptable cost?"
+
+11. **Family generalization pass**. Once the transform path works, add a small
+    keyed-Vigenere/tableau candidate population and confirm the same
+    `CachedCandidate`, strategy, metric, and LLM-cache abstractions work
+    without transform-specific assumptions.
 
 Each step lands as a separate commit and a small write-up in
 `reports/triage/`. Stop and reassess after step 7 — that is the earliest
@@ -447,6 +527,13 @@ distribution, or both).
    results meaningful. Probably 3-5 variants compared on a small held-in
    subset.
 
+   For famous solved ciphers, prompts must include an explicit leakage mode.
+   In `blind` mode, do not name the cipher, source, known plaintext topic, or
+   famous solution. In `context` mode, allow benchmark context that would be
+   available to an analyst, but still forbid solution text. In
+   `solution_aware_label_only`, solution access is permitted only for labels
+   and metrics, never for ranking.
+
 3. **What about candidates that are "almost transform-correct"?** A
    candidate with the right transform but wrong substitution may decode to
    nonsense even though it is structurally correct. Rescuable labeling
@@ -459,6 +546,11 @@ distribution, or both).
    transform_search code version as a joint cache key, and expire caches
    when either changes. Document this clearly so old metrics are not
    silently compared against new code.
+
+5. **Candidate-family drift.** If transform, tableau, and homophonic
+   candidates share a triage harness, report family-specific metrics by
+   default. A strategy that wins on `transform` may be actively harmful on
+   `keyed_vigenere`, and the aggregate score should not hide that.
 
 ---
 

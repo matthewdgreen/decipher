@@ -1,0 +1,77 @@
+{
+  "test_id": "kryptos_k2_keyed_vigenere",
+  "period": 8,
+  "keyed_alphabet": "ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  "key": null,
+  "solution_bearing": false,
+  "skipped_symbol_count": 1,
+  "skipped_symbols": [
+    "?"
+  ],
+  "rows": [
+    {
+      "phase": 0,
+      "length": 47,
+      "shift": 2,
+      "shift_letter": "C",
+      "raw_top": "G:14.9 E:12.8 K:12.8 M: 8.5 Q: 8.5 F: 6.4",
+      "shifted_top": "E:14.9 C:12.8 I:12.8 K: 8.5 O: 8.5 D: 6.4"
+    },
+    {
+      "phase": 1,
+      "length": 46,
+      "shift": 10,
+      "shift_letter": "K",
+      "raw_top": "N:17.4 R:13.0 C: 8.7 Z: 8.7 P: 6.5 W: 6.5",
+      "shifted_top": "D:17.4 H:13.0 P: 8.7 S: 8.7 F: 6.5 M: 6.5"
+    },
+    {
+      "phase": 2,
+      "length": 46,
+      "shift": 3,
+      "shift_letter": "D",
+      "raw_top": "J:10.9 E: 8.7 L: 8.7 D: 6.5 F: 6.5 G: 6.5",
+      "shifted_top": "G:10.9 B: 8.7 I: 8.7 A: 6.5 C: 6.5 D: 6.5"
+    },
+    {
+      "phase": 3,
+      "length": 46,
+      "shift": 2,
+      "shift_letter": "C",
+      "raw_top": "Q:21.7 G:13.0 D: 6.5 H: 6.5 J: 6.5 Y: 6.5",
+      "shifted_top": "O:21.7 E:13.0 B: 6.5 F: 6.5 H: 6.5 W: 6.5"
+    },
+    {
+      "phase": 4,
+      "length": 46,
+      "shift": 7,
+      "shift_letter": "H",
+      "raw_top": "K:15.2 U:13.0 P:10.9 T: 8.7 B: 6.5 L: 6.5",
+      "shifted_top": "D:15.2 N:13.0 I:10.9 M: 8.7 E: 6.5 G: 6.5"
+    },
+    {
+      "phase": 5,
+      "length": 46,
+      "shift": 24,
+      "shift_letter": "Y",
+      "raw_top": "D:21.7 F:13.0 A: 6.5 E: 6.5 Q: 6.5 G: 4.3",
+      "shifted_top": "F:21.7 H:13.0 C: 6.5 G: 6.5 S: 6.5 B: 4.3"
+    },
+    {
+      "phase": 6,
+      "length": 46,
+      "shift": 18,
+      "shift_letter": "S",
+      "raw_top": "F:17.4 E:15.2 L:10.9 Z:10.9 D: 8.7 Q: 6.5",
+      "shifted_top": "N:17.4 M:15.2 H:10.9 T:10.9 L: 8.7 C: 6.5"
+    },
+    {
+      "phase": 7,
+      "length": 46,
+      "shift": 19,
+      "shift_letter": "T",
+      "raw_top": "V:17.4 E:13.0 M:13.0 F: 8.7 T: 8.7 H: 6.5",
+      "shifted_top": "C:17.4 L:13.0 T:13.0 A: 8.7 M: 8.7 O: 6.5"
+    }
+  ]
+}

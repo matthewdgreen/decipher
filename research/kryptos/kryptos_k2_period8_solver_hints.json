@@ -1,0 +1,88 @@
+{
+  "test_id": "kryptos_k2_keyed_vigenere",
+  "period": 8,
+  "keyed_alphabet": "KRYPTOSABCDEFGHIJLMNQUVWXZ",
+  "key": "ABSCISSA",
+  "solution_bearing": true,
+  "skipped_symbol_count": 3,
+  "skipped_symbols": [
+    {
+      "position": 37,
+      "symbol": "?"
+    },
+    {
+      "position": 163,
+      "symbol": "?"
+    },
+    {
+      "position": 225,
+      "symbol": "?"
+    }
+  ],
+  "rows": [
+    {
+      "phase": 0,
+      "length": 47,
+      "shift": 7,
+      "shift_letter": "A",
+      "raw_top": "G:14.9 K:12.8 E:12.8 M: 8.5 Q: 8.5 F: 6.4",
+      "shifted_top": "S:14.9 N:12.8 T:12.8 E: 8.5 G: 8.5 A: 6.4"
+    },
+    {
+      "phase": 1,
+      "length": 46,
+      "shift": 8,
+      "shift_letter": "B",
+      "raw_top": "N:17.4 R:13.0 C: 8.7 Z: 8.7 P: 6.5 W: 6.5",
+      "shifted_top": "E:17.4 N:13.0 L: 8.7 R: 8.7 I: 6.5 U: 6.5"
+    },
+    {
+      "phase": 2,
+      "length": 46,
+      "shift": 6,
+      "shift_letter": "S",
+      "raw_top": "J:10.9 E: 8.7 L: 8.7 R: 6.5 D: 6.5 F: 6.5",
+      "shifted_top": "D:10.9 E: 8.7 O: 8.7 A: 6.5 B: 6.5 I: 6.5"
+    },
+    {
+      "phase": 3,
+      "length": 46,
+      "shift": 9,
+      "shift_letter": "C",
+      "raw_top": "Q:21.7 G:13.0 Y: 6.5 D: 6.5 H: 6.5 J: 6.5",
+      "shifted_top": "E:21.7 T:13.0 A: 6.5 N: 6.5 O: 6.5 R: 6.5"
+    },
+    {
+      "phase": 4,
+      "length": 46,
+      "shift": 15,
+      "shift_letter": "I",
+      "raw_top": "K:15.2 U:13.0 P:10.9 T: 8.7 B: 6.5 L: 6.5",
+      "shifted_top": "E:15.2 S:13.0 H:10.9 I: 8.7 D: 6.5 N: 6.5"
+    },
+    {
+      "phase": 5,
+      "length": 46,
+      "shift": 6,
+      "shift_letter": "S",
+      "raw_top": "D:21.7 F:13.0 A: 6.5 E: 6.5 Q: 6.5 P: 4.3",
+      "shifted_top": "T:21.7 S:13.0 H: 6.5 O: 6.5 R: 6.5 A: 4.3"
+    },
+    {
+      "phase": 6,
+      "length": 46,
+      "shift": 6,
+      "shift_letter": "S",
+      "raw_top": "F:17.4 E:15.2 L:10.9 Z:10.9 D: 8.7 Q: 6.5",
+      "shifted_top": "S:17.4 O:15.2 E:10.9 N:10.9 T: 8.7 H: 6.5"
+    },
+    {
+      "phase": 7,
+      "length": 46,
+      "shift": 7,
+      "shift_letter": "A",
+      "raw_top": "V:17.4 E:13.0 M:13.0 T: 8.7 F: 8.7 H: 6.5",
+      "shifted_top": "I:17.4 E:13.0 T:13.0 O: 8.7 W: 8.7 A: 6.5"
+    }
+  ]
+}

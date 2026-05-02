@@ -4,6 +4,7 @@
 .env.*
 .decipher_keys/
 *_api_key.txt
+.claude/
 .DS_Store
 __pycache__/
 *.pyc
@@ -15,6 +16,7 @@ errata/
 *.egg-info/
 dist/
 build/
+rust/**/target/
 models/
 !models/
 models/*

@@ -41,15 +41,15 @@ src/
     solver.py             — Algorithmic solver: hill_climb_swaps(), auto_solve()
     ngram.py              — N-gram language models with lazy caching
     polyalphabetic.py     — Vigenere/Beaufort/Gronsfeld solvers, keyed
-                            Vigenere replay/search, and experimental shared
-                            tableau mutation search
+                            Vigenere/Quagmire replay/search, and experimental
+                            shared-tableau mutation search
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
     zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 78 tools across 11 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 82 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -183,6 +183,29 @@ appears to be about, record status/uncertainty notes, and say whether further
 iterations would likely help. Pretty terminal mode shows this on the final
 screen, and artifacts persist it as `final_summary` for follow-up analysis.
 
+Unknown-cipher agent runs now also persist first-pass cipher identification
+state. `run_v2` computes `cipher_id_report` before the first turn, includes a
+compact diagnostic block in the opening context, and records final
+`cipher_hypotheses` plus branch `metadata` in artifacts. Use
+`workspace_create_hypothesis_branch`, `workspace_update_hypothesis`,
+`workspace_reject_hypothesis`, `workspace_hypothesis_cards`, and
+`workspace_hypothesis_next_steps` to keep the mode trail explicit instead of
+burying cipher-type decisions in free text.
+For keyed-Vigenere/Kryptos-style context, hypothesis branches now carry a
+structured context prior: ordinary Vigenere-family failure must be followed by
+`search_quagmire3_keyword_alphabet` before rejecting the broader
+polyalphabetic family. In zero-context K2-like cases, the next-step tool also
+reports family coverage debt after plain Vigenere search if the statistical
+fingerprint still supports periodic polyalphabetic alternatives.
+When exposed benchmark context names a cipher family, Decipher treats that as
+a controlling working assumption rather than a weak hint. For example, a
+keyed-tableau/Kryptos-style context prior blocks off-family transform and
+homophonic search tools unless the agent explicitly passes
+`override_context_cipher_family=true` with a concrete
+`context_override_rationale`. Declaration tool results record the context
+assumption and any override, so an artifact can be read with the caveat that
+wrong context may have affected the solve.
+
 Artifact continuation is now available through
 `decipher resume-artifact <artifact.json> --extra-iterations N [--branch BRANCH]`.
 It restores saved branch keys, branch tags, repair agenda items, and, for new
@@ -292,7 +315,7 @@ make that asymmetry explicit in reporting.
 ### ✅ **V2 Agentic Framework Completed**
 Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 - **Branching workspace** with fork/merge/compare operations (src/workspace/)
-- **49 specialized tools** across 10 namespaces (src/agent/tools_v2.py)
+- **82 specialized tools** across 11 namespaces (src/agent/tools_v2.py)
 - **Multi-signal scoring** with 6 different metrics (src/analysis/signals.py)
 - **Agent-driven termination** via meta_declare_solution (no rigid phases)
 - **Full observability** via comprehensive run artifacts (src/artifact/schema.py)
@@ -366,19 +389,75 @@ Vigenere-family metadata through the automated runner. Current scope:
   `observe_phase_frequency`, and `observe_periodic_shift_candidates`.
 - Keyed-Vigenere calibration and research modes:
   - `keyed_vigenere_known_replay`: known key + known tableau replay.
+  - `quag3_known_replay`: known-parameter Quagmire III replay using explicit
+    cycleword and tableau alphabets. Quagmire naming and the search-port
+    roadmap reference Sam Blake's MIT-licensed `polyalphabetic` solver; the
+    current replay implementation is independent Decipher code.
+  - `DECIPHER_KEYED_VIGENERE_MODE=quagmire_search`: first bounded Quagmire III
+    keyword-alphabet search scaffold. It searches keyword-shaped shared
+    alphabets with a cheap score-guided screen hill climb, then
+    derives/optimizes the cycleword for a finalist set. The screen supports
+    Blake-style exploration knobs through `DECIPHER_QUAGMIRE_SLIP_PROB`
+    (default `0.001`) and `DECIPHER_QUAGMIRE_BACKTRACK_PROB` (default `0.15`).
+    Finalist ranking includes a strict
+    no-boundary word-hit signal (`DECIPHER_QUAGMIRE_WORD_WEIGHT`, default
+    `0.25`) because the generic segmenter is too permissive for gibberish
+    basins. `DECIPHER_QUAGMIRE_DICTIONARY_STARTS=<N>` adds the first N
+    language-dictionary keyword-shaped starts for ordinary keyword recovery.
+    `DECIPHER_QUAGMIRE_CALIBRATION_KEYWORD=<WORD>` records distance/rank
+    diagnostics for solved calibration experiments without steering the search.
+    This is inspired by Sam Blake's strategy but not yet a full
+    shotgun/backtracking port.
   - `DECIPHER_KEYED_VIGENERE_MODE=search`: recover periodic key over supplied
     candidate keyed alphabets/tableau keywords.
   - `DECIPHER_KEYED_VIGENERE_MODE=tableau_search`: test standard A-Z first,
     then keyword-derived tableaux from
     `DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS`.
   - `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal`: experimental shared-tableau
-    mutation search; useful as a scaffold/diagnostic, not yet robust blind
-    Kryptos recovery.
+    mutation search. Guided mode is on by default and adds frequency-pressure
+    plus per-phase common-letter swaps before falling back to random
+    swap/move/reverse mutations; useful as a scaffold/diagnostic, not yet
+    robust blind Kryptos recovery.
+  - `eval/scripts/capture_keyed_vigenere_candidates.py` now also supports
+    phase-constraint, offset-graph, and constraint-graph starts for blind K2
+    population studies. It also supports explicit tableau perturbation
+    controls; those are solution-bearing scorer/ranker calibrations, not
+    blind evidence. These diagnostics are not yet production-grade Kryptos
+    solvers.
+- Rust fast-kernel work has started under `rust/decipher_fast`, with Python
+  wrapper code in `src/analysis/polyalphabetic_fast.py`.
+  `search_quagmire3_shotgun_fast` implements the first Blake-style Quagmire
+  III restart/hillclimb loop in compiled code and parallelizes independent
+  restart jobs across local CPU cores. The agent-facing
+  `search_quagmire3_keyword_alphabet` tool exposes this through
+  `engine="rust_shotgun"` plus `hillclimbs`, `restarts`, `threads`,
+  `slip_probability`, and `backtrack_probability`. Automated no-LLM
+  Quagmire runs can use the same engine through
+  `DECIPHER_QUAGMIRE_ENGINE=rust_shotgun`,
+  `DECIPHER_QUAGMIRE_HILLCLIMBS`, and `DECIPHER_QUAGMIRE_THREADS`. Keep
+  Python as the
+  reference path for semantics, but use the Rust engine for broad candidate
+  searches after `tests/test_polyalphabetic_fast.py` passes locally. New
+  users should run `scripts/setup_dev.sh` after activating the virtualenv; it
+  performs `pip install -e .` and builds the Rust module. Use
+  `scripts/build_rust_fast.sh` to rebuild only the Rust module, and
+  `decipher doctor` to check availability. Agent tools should not silently
+  replace `rust_shotgun` with `python_screen`: the Python screen is
+  reference/diagnostic scaffolding, not an equivalent large-scale search.
 
 Kryptos status:
 - K1/K2 are imported in `../cipher_benchmark` as solved calibration records.
 - K2 can recover `ABSCISSA` and plaintext when `KRYPTOS` is supplied as a
   candidate tableau keyword.
+- K1/K2 can now be represented explicitly as Quagmire III cases for
+  known-parameter replay; unknown Quagmire search is still pending.
+- The first Quagmire search scaffold can recover K2's `ABSCISSA` cycleword
+  when `KRYPTOS` is present as an initial keyword-shaped alphabet. It does not
+  yet recover `KRYPTOS` blindly.
+- Dictionary-derived starts work on non-solution-bearing synthetic Quagmire III
+  cases with ordinary keywords, but the built-in English dictionary does not
+  contain `KRYPTOS`; context-derived or custom keyword sources are still needed
+  for that family.
 - K1 remains a short-text stress case; current scorer can prefer false
   English-ish basins without crib/context-aware scoring.
 
@@ -824,7 +903,7 @@ PYTHONPATH=src .venv/bin/python scripts/validate_benchmark.py \
 ```bash
 cd ~/Dropbox/src2/decipher
 source .venv/bin/activate   # Python 3.11 venv
-pip install -e .             # Install with entry points
+scripts/setup_dev.sh         # pip install -e . plus required Rust fast kernels
 pip install -e '.[providers]' # Optional: OpenAI/Gemini agent providers
 ```
 

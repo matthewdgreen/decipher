@@ -1,6 +1,6 @@
 # Agent Tool Reference
 
-Complete reference for the 75 tools exposed to the v2 agentic loop
+Complete reference for the 82 tools exposed to the v2 agentic loop
 (`src/agent/tools_v2.py`). Tools are organized by namespace. Each entry gives
 the tool name, what it does, its key parameters, and usage notes.
 
@@ -60,20 +60,59 @@ a substitution key.
 | `cipher_mode` | string | **required** — e.g. `periodic_polyalphabetic`, `transposition_homophonic` |
 | `rationale` | string | **required** |
 | `from_branch` | string | defaults to `main` |
+| `evidence_source` | string | `agent_inference` (default), `benchmark_context`, `ciphertext_statistics`, `solver_result`, `related_record`, or `other` |
 | `mode_confidence` | string | `low` / `medium` / `high` |
 
-*Use this early on unknown ciphers to separate hypotheses cleanly.*
+*Use this early on unknown ciphers to separate hypotheses cleanly. If you read
+exposed benchmark context as identifying the cipher family, set
+`evidence_source=benchmark_context`; that is the explicit handshake that lets the
+executor enforce context-aware tool discipline.*
 
 ---
 
 ### `workspace_reject_hypothesis`
 Mark a hypothesis branch as rejected or superseded and record the reason.
+Context-supported and statistically required family-level tools may block
+premature rejection. For example, a keyed-Vigenere/Kryptos context prior, or a
+low-IC periodic signal after ordinary Vigenere failure, requires
+`search_quagmire3_keyword_alphabet` before rejecting the broader
+polyalphabetic family.
+
+Context-family priors are executor-enforced only after the agent records the
+context reading on a hypothesis branch with `evidence_source=benchmark_context`.
+The executor does not parse prose context itself. Once the agent declares a
+keyed-tableau/polyalphabetic context assumption, off-family search tools such as
+transform+homophonic or homophonic annealing are blocked unless the agent
+explicitly passes `override_context_cipher_family=true` and a concrete
+`context_override_rationale`. Artifacts then record that benchmark context was
+overridden.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `branch` | string | **required** |
 | `reason` | string | **required** |
 | `status` | string | `rejected` (default) or `superseded` |
+| `acknowledge_pending_required_tools` | boolean | emergency override only; explain why pending required tools are impossible or irrelevant |
+
+---
+
+### `workspace_update_hypothesis`
+Update cipher-mode hypothesis metadata for an existing branch without changing
+its key, token order, or decoded text.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | **required** |
+| `cipher_mode` | string | optional replacement mode label |
+| `mode_status` | string | `active`, `paused`, `rejected`, or `superseded` |
+| `mode_confidence` | string | `low`, `medium`, or `high` |
+| `evidence` | string | supporting evidence to record |
+| `counter_evidence` | string | evidence against the hypothesis |
+| `next_recommended_action` | string | what should be tried next |
+| `evidence_source` | string | optional replacement source; use `benchmark_context` only after reading exposed context |
+
+*Use after diagnostics or solver attempts so the artifact records why the
+agent kept, paused, or abandoned a cipher-mode hypothesis.*
 
 ---
 
@@ -82,6 +121,27 @@ Show all branches filtered as cipher-type hypotheses: active/rejected mode,
 evidence, decoded preview, and suggested next action. No parameters.
 
 *Use before switching cipher modes or declaring on an unknown cipher.*
+
+---
+
+### `workspace_hypothesis_next_steps`
+Return a mode-specific diagnostic/solver playbook for one hypothesis branch or
+all active hypothesis branches. The result marks each recommended tool as
+`pending` or `tried` based on this run's tool log and highlights the next
+pending action. It also returns a soft `tool_menu` with always-available,
+foreground, escape, and discouraged tools for the active mode.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | optional; omit to show all active hypotheses |
+
+*Use this when the agent has a cipher-mode hypothesis but needs a compact
+reminder of the right tool sequence, the right foreground tools, or when it may
+be looping on the same diagnostic.*
+
+*Declaration guard: branches tagged as cipher-mode hypotheses must call this
+before `meta_declare_solution`, so the artifact records tried and pending
+mode-specific work.*
 
 ---
 
@@ -312,6 +372,8 @@ Simulated annealing — the primary search tool for monoalphabetic substitution.
 | `t_end` | number | final temperature (default 0.005) |
 | `score_fn` | string | `dictionary`, `quadgram`, `combined` (default `combined`) |
 | `preserve_existing` | boolean | preserve partial anchors; complete inherited keys restart from scratch |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 *Typically achieves 85%+ on English/Latin in one call. After annealing, read the
 decoded text. If a few errors remain, call `decode_diagnose_and_fix` before
@@ -329,6 +391,8 @@ homophonic routing) and install the result onto the named branch.
 | `homophonic_budget` | string | `full` (default) or `screen` |
 | `homophonic_refinement` | string | `none` (default), `two_stage`, `targeted_repair`, `family_repair` |
 | `homophonic_solver` | string | `zenith_native` (default) or `legacy` |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 *Mirrors the no-LLM automated runner used for frontier/parity evaluation.*
 
@@ -352,6 +416,8 @@ scoring plus a global letter-distribution objective.
 | `diversity_weight` | number | weight for diversity penalty on short texts (default 1.5) |
 | `top_n` | integer | return top N distinct epoch candidates (default 1) |
 | `write_candidate_branches` | boolean | write non-best candidates to sibling branches |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 *Prefer this over `search_anneal` for hardest/no-boundary homophonic tests.*
 
@@ -371,6 +437,8 @@ solver budget.
 | `include_program_search` | boolean | also run beam-search program composition (default false) |
 | `program_max_depth` | integer | beam-search depth (default 5) |
 | `program_beam_width` | integer | beam width (default 48) |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 *Use to decide whether a full `search_transform_homophonic` run is warranted.*
 
@@ -393,6 +461,8 @@ homophonic search, rank by quality, and optionally install the best branch.
 | `review_chars` | integer | max decoded preview chars per finalist (default 600) |
 | `homophonic_budget` | string | `screen` (default) or `full` |
 | `include_program_search` | boolean | also compose small pipelines from grammar (default false) |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 ---
 
@@ -426,6 +496,54 @@ branches.
 | `new_branch_prefix` | string | branch name prefix (default `poly`) |
 
 *The periodic key is stored in branch metadata, not the substitution key.*
+This tool covers ordinary A-Z periodic-shift families. Incoherent output from
+this tool does not reject keyed-tableau/Kryptos/Quagmire-style ciphers; use
+`search_quagmire3_keyword_alphabet` next when context or statistics still
+support the polyalphabetic family.
+
+---
+
+### `search_quagmire3_keyword_alphabet`
+Search Quagmire III keyword-shaped shared alphabets, derive cyclewords for
+each candidate, and optionally install the best candidates as decoded
+hypothesis branches.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `keyword_lengths` | array of int | candidate alphabet-keyword lengths |
+| `cycleword_lengths` | array of int | candidate periodic cycleword lengths |
+| `initial_keywords` | array of string | optional context/crib starts; makes the run seeded, not blind |
+| `engine` | string | `rust_shotgun` for the compiled parallel Blake-style restart/hillclimb loop; `python_screen` only for small reference/diagnostic probes |
+| `steps` | integer | Python-screen keyword mutation steps per start (default 200) |
+| `hillclimbs` | integer | Rust-shotgun proposals per restart (default 500) |
+| `restarts` | integer | random starts per keyword length (default 8) |
+| `threads` | integer | Rust-shotgun worker threads; `0` means all available cores |
+| `seed` | integer | deterministic RNG seed (default 1) |
+| `top_n` | integer | candidates to return (default 5) |
+| `install_top_n` | integer | candidates to install as branches (default 1; 0 = screen only) |
+| `estimate_only` | boolean | return budget/runtime estimates without running search; recommended before broad `rust_shotgun` runs |
+| `screen_top_n` | integer | finalists to refine after screening (default 64) |
+| `word_weight` | number | dictionary-word bonus in selection score (default 0.25) |
+| `slip_probability` | number | Rust/Python search escape probability for accepting worse moves |
+| `backtrack_probability` | number | Rust/Python search probability for returning to the local best state |
+| `dictionary_keyword_limit` | integer | add first N dictionary keyword starts (default 0) |
+| `new_branch_prefix` | string | branch name prefix (default `quag3`) |
+
+*The installed branch stores a `QuagmireKey` in metadata, including
+`alphabet_keyword`, `cycleword`, decoded text, and whether explicit initial
+keywords seeded the search. Use this after ordinary Vigenère-family candidates
+fail but periodic evidence remains. The Rust engine is intended for broad
+blind/search-budget runs; the Python engine remains useful for small diagnostic
+screens and parity comparisons. If `rust_shotgun` is unavailable, run
+`PYTHONPATH=src .venv/bin/decipher doctor` for the exact local build command.
+Do not treat `python_screen` as an equivalent runtime path for a large
+`rust_shotgun` run; downsize parameters and label it as a reference/diagnostic
+probe. For Rust runs, nominal proposals are
+`len(keyword_lengths) * len(cycleword_lengths) * restarts * hillclimbs`; use
+`estimate_only=true` to size the run before spending CPU time. Passing likely
+title/source keywords through `initial_keywords` makes the result
+context-seeded, not blind key recovery.*
 
 ---
 
@@ -697,12 +815,16 @@ Set a single cipher-symbol → plaintext-letter mapping on a branch.
 | `cipher_symbol` | string | **required** — the cipher symbol name, e.g. `S001`, `A` |
 | `plain_letter` | string | **required** |
 | `dry_run` | boolean | preview the mapping without mutating (default false) |
+| `allow_mode_mismatch_repair` | boolean | override the non-substitution mode guard |
 
 Returns `changed_words` (was → now) so you can judge by reading. Score delta is
 advisory.
 
 **This is the default primitive for reading-driven repair.** Surgical and
 unidirectional — only words containing the target cipher symbol change.
+Branches tagged as periodic, transform, fractionation, or polygraphic
+hypotheses block this by default; override only when deliberately abandoning or
+crossing that mode assumption.
 
 ---
 
@@ -751,6 +873,7 @@ Set multiple symbol → letter mappings in one call.
 |-----------|------|-------|
 | `branch` | string | **required** |
 | `mappings` | object | **required** — e.g. `{"S001": "E", "S002": "T"}` |
+| `allow_mode_mismatch_repair` | boolean | override the non-substitution mode guard |
 
 ---
 
@@ -764,6 +887,7 @@ Supports homophonic ciphers (multiple cipher symbols → same letter).
 | `branch` | string | **required** |
 | `cipher_word_index` | integer | **required** |
 | `plaintext` | string | **required** |
+| `allow_mode_mismatch_repair` | boolean | override the non-substitution mode guard |
 
 ---
 
@@ -862,6 +986,7 @@ returns `changed_words` for reading-based verification.
 | `occurrence` | integer | default 0 |
 | `dry_run` | boolean | preview without mutating (default false) |
 | `allow_bad_basin_repair` | boolean | override the bad-basin guard (default false) |
+| `allow_mode_mismatch_repair` | boolean | override the non-substitution mode guard |
 
 ---
 
@@ -921,6 +1046,8 @@ transformed ciphertext; does not change symbol mappings.
 |-----------|------|-------|
 | `branch` | string | **required** |
 | `pipeline` | object | **required** — `{columns, rows, steps: [{name, data}]}` |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 ---
 
@@ -933,6 +1060,8 @@ workspace branches, by 1-based rank, without rerunning the search.
 | `search_session_id` | string | **required** |
 | `ranks` | array of int | **required** — 1-based finalist ranks to install |
 | `branch_prefix` | string | optional prefix; defaults to `<source_branch>_transform_rank` |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
 ---
 
@@ -1070,7 +1199,7 @@ tool covers well. These requests appear prominently in benchmark reports.
 ---
 
 ### `meta_declare_solution`
-Terminate the run and submit the named branch as the final answer.
+Terminate the run and submit the named branch as a plausible final answer.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
@@ -1082,5 +1211,27 @@ Terminate the run and submit the named branch as the final answer.
 | `further_iterations_note` | string | **required** — what further iterations should try, or why they are not needed |
 | `forced_partial` | boolean | intentionally submitting a partial hypothesis (default false) |
 
-*Call this when you believe you have the best answer you can produce, or when
-further progress seems impossible. The loop ends after this call.*
+*Call this only for a genuinely plausible decipherment. If no branch is
+coherent after the relevant tools have been tried, use `meta_declare_unsolved`
+instead of labeling gibberish as solved. High-confidence periodic/Quagmire
+branches that store a continuous decoded stream in metadata are blocked until
+you install a word-boundary overlay with `act_resegment_by_reading`, unless you
+are explicitly submitting a forced partial.*
+
+---
+
+### `meta_declare_unsolved`
+Terminate the run as honestly unsolved/exhausted without submitting a bogus
+solution.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `rationale` | string | **required** — why stopping is justified |
+| `branches_considered` | array[string] | **required** — branches or hypotheses reviewed |
+| `best_branch` | string | optional best branch for later inspection |
+| `reading_summary` | string | **required** — what was learned, if anything |
+| `further_iterations_helpful` | boolean | **required** |
+| `further_iterations_note` | string | **required** |
+
+*The executor may block this while active cipher-family hypotheses still have
+required higher-level work pending and there is iteration budget left.*

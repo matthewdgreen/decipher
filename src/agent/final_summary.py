@@ -25,8 +25,8 @@ def build_final_summary(
     """Build a compact final-screen summary from the run artifact.
 
     This is deliberately deterministic and artifact-local. The agent can
-    provide the best summary through meta_declare_solution, but fallback text
-    should still be useful for auto-declared/error runs.
+    provide the best summary through meta_declare_solution/meta_declare_unsolved,
+    but fallback text should still be useful for auto-declared/error runs.
     """
     solution = artifact.solution
     language = LANGUAGE_LABELS.get(artifact.language, artifact.language or "unknown")
@@ -63,7 +63,8 @@ def build_final_summary(
 
     lines.append("")
     confidence = solution.self_confidence if solution else None
-    status_bits = [f"Declared branch: {final_branch or '-'}."]
+    status_label = "Declared branch" if artifact.status != "unsolved" else "Best inspected branch"
+    status_bits = [f"{status_label}: {final_branch or '-'}."]
     if confidence is not None:
         status_bits.append(f"Agent confidence: {confidence:.2f}.")
     status_bits.append(f"Run status: {artifact.status}.")
@@ -114,7 +115,7 @@ def _summary_from_rationale(rationale: str) -> str:
 def _latest_declaration_attempt(artifact: RunArtifact) -> dict[str, Any] | None:
     """Return the latest attempted declaration args, including blocked calls."""
     for call in reversed(artifact.tool_calls):
-        if call.tool_name == "meta_declare_solution":
+        if call.tool_name in {"meta_declare_solution", "meta_declare_unsolved"}:
             return dict(call.arguments)
     return None
 
@@ -125,7 +126,7 @@ def _is_fallback_rationale(rationale: str) -> bool:
 
 def _process_notes(artifact: RunArtifact) -> list[str]:
     notes: list[str] = []
-    if artifact.status in {"error", "exhausted"}:
+    if artifact.status in {"error", "exhausted", "unsolved"}:
         notes.append(f"The run ended as {artifact.status}; treat the result as partial.")
     if any(e.event == "auto_declared_solution" for e in artifact.loop_events):
         notes.append("The branch was auto-declared by fallback rather than explicitly declared by the agent.")

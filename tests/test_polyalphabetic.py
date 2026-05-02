@@ -8,7 +8,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from agent.tools_v2 import WorkspaceToolExecutor
 from analysis.polyalphabetic import (
     encode_keyed_vigenere_plaintext,
+    encode_quagmire_plaintext,
+    generate_keyed_vigenere_constraint_alphabets,
+    generate_keyed_vigenere_constraint_graph_alphabets,
+    generate_keyed_vigenere_offset_graph_alphabets,
     replay_keyed_vigenere,
+    replay_quagmire,
+    search_quagmire3_keyword_alphabet,
     search_keyed_vigenere_alphabet_anneal,
     search_keyed_vigenere,
     search_periodic_polyalphabetic,
@@ -89,6 +95,119 @@ def test_keyed_vigenere_replay_matches_kryptos_k1_zenith_vector():
     assert decoded["plaintext"] == plaintext
 
 
+def test_quagmire3_replay_matches_kryptos_k1_vector():
+    plaintext = "BETWEENSUBTLESHADINGANDTHEABSENCEOFLIGHTLIESTHENUANCEOFIQLUSION"
+    ciphertext = "EMUFPHZLRFAXYUSDJKZLDKRNSHGNFIVJYQTQUXQBQVYUVLLTREVJYQTMKYRDMFD"
+
+    encoded = encode_quagmire_plaintext(
+        plaintext,
+        cycleword="PALIMPSEST",
+        quagmire_type="quag3",
+        alphabet_keyword="KRYPTOS",
+    )
+    assert encoded == ciphertext
+
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.standard_english(), separator=None)
+    decoded = replay_quagmire(
+        ct,
+        cycleword="PALIMPSEST",
+        quagmire_type="quagmire3",
+        alphabet_keyword="KRYPTOS",
+    )
+
+    assert decoded["status"] == "completed"
+    assert decoded["key_type"] == "QuagmireKey"
+    assert decoded["solver"] == "quag3_known_replay"
+    assert decoded["plaintext_alphabet"] == KRYPTOS_ALPHABET
+    assert decoded["ciphertext_alphabet"] == KRYPTOS_ALPHABET
+    assert "Sam Blake" in decoded["attribution"]
+    assert decoded["plaintext"] == plaintext
+
+
+def test_quagmire3_keyword_search_derives_cycleword_from_candidate_keyword():
+    ciphertext = (
+        "VFPJUDEEHZWETZYVGWHKKQETGFQJNCEGGWHKK?DQMCPFQZDQMMIAGPFXHQRLGTIMVMZJANQLVKQEDAGDVFRPJUNGEUNA"
+        "QZGZLECGYUXUEENJTBJLBQCRTBJDFHRRYIZETKZEMVDUFKSJHKFWHKUWQLSZFTIHHDDDUVH?DWKBFUFPWNTDFIYCUQZERE"
+        "EVLDKFEZMOQQJLTTUGSYQPFEUNLAVIDXFLGGTEZ?FKZBSFDQVGOGIPUFXHHDRKFFHQNTGPUAECNUVPDJMQCLQUMUNEDFQE"
+        "LZZVRRGKFFVOEEXBDMVPNFQXEZLGREDNQFMPNZGLFLPMRJQYALMGNUVPDXVKPDQUMEBEDMHDAFMJGZNUPLGEWJLLAETG"
+    )
+    plaintext = (
+        "ITWASTOTALLYINVISIBLEHOWSTHATPOSSIBLETHEYUSEDTHEEARTHSMAGNETICFIELDXTHEINFORMATIONWASGATHERED"
+        "ANDTRANSMITTEDUNDERGRUUNDTOANUNKNOWNLOCATIONXDOESLANGLEYKNOWABOUTTHISTHEYSHOULDITSBURIEDOUTTHERE"
+        "SOMEWHEREXWHOKNOWSTHEEXACTLOCATIONONLYWWTHISWASHISLASTMESSAGEXTHIRTYEIGHTDEGREESFIFTYSEVENMINUTES"
+        "SIXPOINTFIVESECONDSNORTHSEVENTYSEVENDEGREESEIGHTMINUTESFORTYFOURSECONDSWESTIDBYROWS"
+    )
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.from_text(ciphertext), separator=None)
+
+    result = search_quagmire3_keyword_alphabet(
+        ct,
+        language="en",
+        keyword_lengths=[7],
+        cycleword_lengths=[8],
+        initial_keywords=["KRYPTOS"],
+        calibration_keyword="KRYPTOS",
+        steps=0,
+        restarts=1,
+        top_n=3,
+    )
+
+    best = result["best_candidate"]
+    assert result["status"] == "completed"
+    assert result["solver"] == "quagmire3_keyword_alphabet_search"
+    assert result["keyword_states_screened"] >= 1
+    assert result["refined_finalist_count"] >= 1
+    assert result["screen_search"] == "score_guided_keyword_hill_climb"
+    assert result["backtrack_probability"] == 0.15
+    assert result["slip_probability"] == 0.001
+    assert result["exact_calibration_keyword_rank"] == 1
+    assert result["best_calibration_keyword_distance"] == 0
+    assert best["variant"] == "quag3"
+    assert best["key"] == "ABSCISSA"
+    assert best["metadata"]["key_type"] == "QuagmireKey"
+    assert best["metadata"]["alphabet_keyword"] == "KRYPTOS"
+    assert best["metadata"]["plaintext_alphabet"] == KRYPTOS_ALPHABET
+    assert best["metadata"]["ciphertext_alphabet"] == KRYPTOS_ALPHABET
+    assert best["metadata"]["calibration_keyword_distance"] == 0
+    assert best["metadata"]["word_score"] > 0.9
+    assert best["plaintext"] == plaintext
+    assert "Sam Blake" in result["attribution"]
+
+
+def test_quagmire3_keyword_search_can_use_dictionary_keyword_starts():
+    plaintext = (
+        "THEOLDMANANDTHESEAWASWRITTENBYERNESTHEMINGWAY"
+        "THEOLDMANCAUGHTABIGFISHANDRETURNEDHOME"
+    )
+    ciphertext = encode_quagmire_plaintext(
+        plaintext,
+        cycleword="LEMON",
+        quagmire_type="quag3",
+        alphabet_keyword="ABOUT",
+    )
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = search_quagmire3_keyword_alphabet(
+        ct,
+        language="en",
+        keyword_lengths=[5],
+        cycleword_lengths=[5],
+        dictionary_keyword_limit=50,
+        steps=0,
+        restarts=1,
+        top_n=3,
+        screen_top_n=20,
+    )
+
+    best = result["best_candidate"]
+    assert result["status"] == "completed"
+    assert result["dictionary_keywords_loaded"] == 50
+    assert best["key"] == "LEMON"
+    assert best["metadata"]["alphabet_keyword"] == "ABOUT"
+    assert best["metadata"]["start_type"] == "dictionary_keyword"
+    assert best["metadata"]["word_score"] > 0.9
+    assert best["plaintext"] == plaintext
+
+
 def test_keyed_vigenere_search_recovers_kryptos_k2_periodic_key_from_candidate_alphabet():
     ciphertext = (
         "VFPJUDEEHZWETZYVGWHKKQETGFQJNCEGGWHKK?DQMCPFQZDQMMIAGPFXHQRLGTIMVMZJANQLVKQEDAGDVFRPJUNGEUNA"
@@ -153,9 +272,74 @@ def test_keyed_vigenere_alphabet_anneal_handles_standard_vigenere_baseline():
     best = result["best_candidate"]
     assert result["status"] == "completed"
     assert result["solver"] == "keyed_vigenere_alphabet_anneal"
+    assert result["guided"] is True
     assert best["key"] == KEY
     assert best["metadata"]["keyed_alphabet"] == "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    assert best["metadata"]["mutation_search"] == "guided_frequency_phase_swap_move_reverse"
     assert best["plaintext"] == PLAINTEXT
+
+
+def test_keyed_vigenere_constraint_alphabet_generator_returns_unique_starts():
+    result = generate_keyed_vigenere_constraint_alphabets(
+        _cipher_text(),
+        max_period=8,
+        beam_size=8,
+        limit=10,
+        top_shifts=2,
+        top_letters=2,
+        target_window=2,
+    )
+
+    alphabets = [row["keyed_alphabet"] for row in result["alphabets"]]
+    assert result["status"] == "completed"
+    assert len(alphabets) == len(set(alphabets))
+    assert len(alphabets) <= 10
+    assert all(len(alphabet) == 26 and len(set(alphabet)) == 26 for alphabet in alphabets)
+    assert result["beam_size"] == 8
+
+
+def test_keyed_vigenere_offset_graph_generator_returns_unique_starts():
+    result = generate_keyed_vigenere_offset_graph_alphabets(
+        _cipher_text(),
+        max_period=8,
+        limit=10,
+        random_seed=3,
+        samples=50,
+        phase_count=3,
+        top_cipher_letters=3,
+        target_letters=6,
+        target_window=3,
+    )
+
+    alphabets = [row["keyed_alphabet"] for row in result["alphabets"]]
+    assert result["status"] == "completed"
+    assert len(alphabets) == len(set(alphabets))
+    assert len(alphabets) <= 10
+    assert all(len(alphabet) == 26 and len(set(alphabet)) == 26 for alphabet in alphabets)
+    assert result["samples"] == 50
+
+
+def test_keyed_vigenere_constraint_graph_generator_returns_unique_starts():
+    result = generate_keyed_vigenere_constraint_graph_alphabets(
+        _cipher_text(),
+        max_period=8,
+        limit=12,
+        random_seed=3,
+        beam_size=12,
+        phase_count=3,
+        top_cipher_letters=3,
+        target_letters=6,
+        target_window=3,
+        options_per_phase=24,
+        materializations_per_state=2,
+    )
+
+    alphabets = [row["keyed_alphabet"] for row in result["alphabets"]]
+    assert result["status"] == "completed"
+    assert len(alphabets) == len(set(alphabets))
+    assert len(alphabets) <= 12
+    assert all(len(alphabet) == 26 and len(set(alphabet)) == 26 for alphabet in alphabets)
+    assert result["beam_size"] == 12
 
 
 def test_automated_runner_replays_keyed_kryptos_with_skipped_unknowns():
@@ -197,6 +381,85 @@ def test_automated_runner_replays_keyed_kryptos_with_skipped_unknowns():
     step = next(step for step in result.steps if step["name"] == "replay_keyed_vigenere")
     assert step["key_type"] == "PeriodicAlphabetKey"
     assert step["skipped_symbol_count"] == 3
+
+
+def test_automated_runner_replays_quagmire3_kryptos_with_attribution():
+    ciphertext = "EMUFPHZLRFAXYUSDJKZLDKRNSHGNFIVJYQTQUXQBQVYUVLLTREVJYQTMKYRDMFD"
+    plaintext = "BETWEENSUBTLESHADINGANDTHEABSENCEOFLIGHTLIESTHENUANCEOFIQLUSION"
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = run_automated(
+        ct,
+        language="en",
+        cipher_id="kryptos_k1_quagmire3",
+        ground_truth=plaintext,
+        cipher_system="quagmire3",
+        solver_hints={
+            "type": "quagmire3",
+            "cycleword": "PALIMPSEST",
+            "alphabet_keyword": "KRYPTOS",
+        },
+    )
+
+    assert result.status == "completed"
+    assert result.solver == "quag3_known_replay"
+    assert result.final_decryption == plaintext
+    assert result.char_accuracy == 1.0
+    step = next(step for step in result.steps if step["name"] == "replay_quagmire")
+    assert step["key_type"] == "QuagmireKey"
+    assert step["cycleword"] == "PALIMPSEST"
+    assert step["alphabet_keyword"] == "KRYPTOS"
+    assert "Sam Blake" in step["attribution"]
+
+
+def test_automated_runner_quagmire_search_records_scaffold(monkeypatch):
+    ciphertext = (
+        "VFPJUDEEHZWETZYVGWHKKQETGFQJNCEGGWHKK?DQMCPFQZDQMMIAGPFXHQRLGTIMVMZJANQLVKQEDAGDVFRPJUNGEUNA"
+        "QZGZLECGYUXUEENJTBJLBQCRTBJDFHRRYIZETKZEMVDUFKSJHKFWHKUWQLSZFTIHHDDDUVH?DWKBFUFPWNTDFIYCUQZERE"
+        "EVLDKFEZMOQQJLTTUGSYQPFEUNLAVIDXFLGGTEZ?FKZBSFDQVGOGIPUFXHHDRKFFHQNTGPUAECNUVPDJMQCLQUMUNEDFQE"
+        "LZZVRRGKFFVOEEXBDMVPNFQXEZLGREDNQFMPNZGLFLPMRJQYALMGNUVPDXVKPDQUMEBEDMHDAFMJGZNUPLGEWJLLAETG"
+    )
+    plaintext = (
+        "ITWASTOTALLYINVISIBLEHOWSTHATPOSSIBLETHEYUSEDTHEEARTHSMAGNETICFIELDXTHEINFORMATIONWASGATHERED"
+        "ANDTRANSMITTEDUNDERGRUUNDTOANUNKNOWNLOCATIONXDOESLANGLEYKNOWABOUTTHISTHEYSHOULDITSBURIEDOUTTHERE"
+        "SOMEWHEREXWHOKNOWSTHEEXACTLOCATIONONLYWWTHISWASHISLASTMESSAGEXTHIRTYEIGHTDEGREESFIFTYSEVENMINUTES"
+        "SIXPOINTFIVESECONDSNORTHSEVENTYSEVENDEGREESEIGHTMINUTESFORTYFOURSECONDSWESTIDBYROWS"
+    )
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.from_text(ciphertext), separator=None)
+    monkeypatch.setenv("DECIPHER_KEYED_VIGENERE_MODE", "quagmire_search")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_ENGINE", "python_screen")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_INITIAL_KEYWORDS", "KRYPTOS")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_KEYWORD_LENGTHS", "7")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS", "8")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_SEARCH_STEPS", "0")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "1")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_CALIBRATION_KEYWORD", "KRYPTOS")
+
+    result = run_automated(
+        ct,
+        language="en",
+        cipher_id="kryptos_k2_quagmire3_search",
+        ground_truth=plaintext,
+        cipher_system="quagmire3",
+    )
+
+    assert result.status == "completed"
+    assert result.solver == "quagmire3_keyword_alphabet_search"
+    assert result.final_decryption == plaintext
+    assert result.char_accuracy == 1.0
+    step = next(step for step in result.steps if step["name"] == "search_quagmire3_keyword_alphabet")
+    assert step["key_type"] == "QuagmireKey"
+    assert step["cycleword"] == "ABSCISSA"
+    assert step["alphabet_keyword"] == "KRYPTOS"
+    assert step["initial_keywords"] == ["KRYPTOS"]
+    assert step["dictionary_keywords_loaded"] == 0
+    assert step["exact_calibration_keyword_rank"] == 1
+    assert step["best_calibration_keyword_distance"] == 0
+    assert step["keyword_states_screened"] >= 1
+    assert step["refined_finalist_count"] >= 1
+    assert step["word_weight"] == 0.25
+    assert step["screen_search"] == "score_guided_keyword_hill_climb"
+    assert "Sam Blake" in step["attribution"]
 
 
 def test_automated_runner_can_force_keyed_kryptos_periodic_key_search(monkeypatch):
@@ -290,6 +553,8 @@ def test_automated_runner_alphabet_anneal_records_experimental_strategy(monkeypa
     assert result.solver == "keyed_vigenere_alphabet_anneal"
     assert result.final_decryption == PLAINTEXT
     step = next(step for step in result.steps if step["name"] == "search_keyed_vigenere_alphabet_anneal")
+    assert step["guided"] is True
+    assert step["guided_pool_size"] == 24
     assert step["initial_alphabets_tested"][0]["candidate_type"] == "standard_alphabet"
 
 
@@ -322,6 +587,55 @@ def test_agent_can_observe_cipher_id_and_install_periodic_branch():
     assert branch.metadata["key_type"] == "PeriodicShiftKey"
     assert branch.metadata["periodic_key"] == KEY
     assert branch.metadata["decoded_text"] == PLAINTEXT
+
+    shown = ex._tool_decode_show({"branch": installed["branch"], "count": 1})
+    assert shown["rows"][0]["decoded"].startswith("THEOLDMAN")
+
+
+def test_agent_can_search_quagmire3_and_install_decoded_branch():
+    plaintext = (
+        "THEOLDMANANDTHESEAWASWRITTENBYERNESTHEMINGWAY"
+        "THEOLDMANCAUGHTABIGFISHANDRETURNEDHOME"
+    )
+    ciphertext = encode_quagmire_plaintext(
+        plaintext,
+        cycleword="LEMON",
+        quagmire_type="quag3",
+        alphabet_keyword="ABOUT",
+    )
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.standard_english(), separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE", "OLD", "MAN", "AND", "SEA", "WAS", "WRITTEN", "HOME"},
+        word_list=["THE", "OLD", "MAN", "AND", "SEA", "WAS", "WRITTEN", "HOME"],
+        pattern_dict={},
+    )
+
+    result = ex._tool_search_quagmire3_keyword_alphabet({
+        "branch": "main",
+        "engine": "python_screen",
+        "keyword_lengths": [5],
+        "cycleword_lengths": [5],
+        "initial_keywords": ["ABOUT"],
+        "steps": 0,
+        "restarts": 1,
+        "top_n": 2,
+        "install_top_n": 1,
+        "new_branch_prefix": "quag",
+    })
+
+    installed = result["installed_branches"][0]
+    branch = ex.workspace.get_branch(installed["branch"])
+    assert result["status"] == "completed"
+    assert result["seeded_initial_keywords"] is True
+    assert branch.metadata["cipher_mode"] == "quagmire3"
+    assert branch.metadata["key_type"] == "QuagmireKey"
+    assert branch.metadata["alphabet_keyword"] == "ABOUT"
+    assert branch.metadata["cycleword"] == "LEMON"
+    assert branch.metadata["decoded_text"] == plaintext
+    assert branch.metadata["search_metadata"]["seeded_initial_keywords"] is True
+    assert "mode:quagmire3" in branch.tags
 
     shown = ex._tool_decode_show({"branch": installed["branch"], "count": 1})
     assert shown["rows"][0]["decoded"].startswith("THEOLDMAN")

@@ -116,6 +116,15 @@ readability score explicitly with `act_rate_transform_finalist` before \
 choosing which finalist to repair or declare. This directly \
 tests whether the reading order itself is wrong without blindly launching \
 expensive language-model searches. \
+For keyed-tableau / Quagmire-style polyalphabetic hypotheses, do not use the \
+default tiny search as meaningful evidence. Call \
+`workspace_hypothesis_next_steps` and then \
+`search_quagmire3_keyword_alphabet(estimate_only=true, engine='rust_shotgun')` \
+to size the run. Use the periodic evidence to choose cycleword lengths, and \
+only then run a moderate/broad `rust_shotgun` search. Do not pass title or \
+source words as `initial_keywords` unless you intentionally want a \
+context-seeded experiment; label such a result as seeded, not blind key \
+recovery. \
 If an `automated_preflight` branch exists, treat it as a protected no-LLM \
 baseline. Inspect it before launching fresh search. If it already reads as \
 coherent target-language text, fork from it before experimenting and keep \
@@ -148,11 +157,23 @@ families, first choose a **cipher-mode hypothesis**, not a letter repair. Use \
 `observe_cipher_id` / `observe_cipher_shape`, then create a branch with \
 `workspace_create_hypothesis_branch` such as `periodic_polyalphabetic`, \
 `homophonic_substitution`, `transposition_homophonic`, or \
-`fractionation_transposition`. Run the tools for that mode and judge whether \
-the result contains coherent clauses. If it only has word islands, reject or \
-supersede the hypothesis with `workspace_reject_hypothesis` and try another \
-mode. Local spelling and boundary repairs are for near-solves, not for bad \
-basins.
+`fractionation_transposition`. Call `workspace_hypothesis_next_steps` when \
+you need the mode-specific diagnostic/solver playbook, the foreground tool \
+menu, or want to avoid repeating a tool already tried. Prefer the foreground \
+tools for the active mode; treat `discouraged_tools` as likely mode mismatches \
+unless you are deliberately switching hypotheses. Use \
+`workspace_update_hypothesis` when later evidence changes your confidence, \
+counter-evidence, or next recommended action. Run the tools for that mode and \
+judge whether the result contains coherent clauses. If it only has word \
+islands, reject or supersede the hypothesis with \
+`workspace_reject_hypothesis` and try another mode. Local spelling and \
+boundary repairs are for near-solves, not for bad basins.
+
+If exposed benchmark context tells you the cipher type, read that context and \
+make the inference yourself: create or update a hypothesis branch with \
+`evidence_source="benchmark_context"`. That is the handshake that tells the \
+executor to treat your context reading as a hard working assumption. The \
+non-LLM tools do not parse the prose context to infer cipher family for you.
 
 Do not spend early turns re-measuring facts that are already in the opening \
 context, such as symbol count, word count, and IC. Treat those measured facts \
@@ -238,14 +259,21 @@ is read-only, but `act_apply_word_repair` may block the mutation. Override \
 that guard only when you can state the coherent clause you are preserving and \
 the repair is deliberately part of that reading.
 
-When you have the best transcription you can produce — or further progress \
-seems impossible — call `meta_declare_solution` with your chosen branch, a \
-rationale, your own confidence estimate, a brief `reading_summary`, and a \
-`further_iterations_helpful` judgement plus note. The final summary should be \
+When you have a genuinely plausible transcription, call `meta_declare_solution` \
+with your chosen branch, a rationale, your own confidence estimate, a brief \
+`reading_summary`, and a `further_iterations_helpful` judgement plus note. If \
+you have exhausted the relevant high-leverage tools and no branch is coherent, \
+call `meta_declare_unsolved` instead of submitting a bogus solution. The final \
+summary should be \
 human-readable: for example, "This appears to be an archaic Latin veterinary \
 or pharmaceutical passage about chickens dying/surviving; remaining issues \
 are local word-boundary and spelling repairs." Explicitly say whether more \
 iterations would likely help and what they should try.
+
+If you are declaring a branch tagged as a cipher-mode hypothesis, first call \
+`workspace_hypothesis_next_steps` for that branch. The declaration should be \
+grounded in the hypothesis playbook: what mode was tested, what tools were \
+tried, what remains pending, and why stopping now is justified.
 
 Declaration discipline: partial is **not** better than continued work while \
 useful tools remain. A few correct words or a repaired boundary overlay is not \
@@ -567,6 +595,7 @@ def initial_context(
     ic_value: float,
     language: str = "en",
     prior_context: str | None = None,
+    cipher_id_context: str | None = None,
 ) -> str:
     """Build the opening user message for a v2 run.
 
@@ -583,6 +612,15 @@ def initial_context(
     prior_section = ""
     if prior_context:
         prior_section = f"\n## Prior-run context for this manuscript\n{prior_context}\n"
+
+    cipher_id_section = ""
+    if cipher_id_context:
+        cipher_id_section = (
+            "\n## Cipher-diagnostic preflight\n"
+            f"{cipher_id_context}\n"
+            "Treat this as evidence, not a verdict. If multiple modes remain "
+            "plausible, create explicit hypothesis branches and test them.\n"
+        )
 
     # For unknown language, include IC-based ranking as a starting hint
     language_hint = ""
@@ -614,7 +652,7 @@ You are a digital humanities researcher analyzing a manuscript. {lang_line}
 - Total tokens: {total_tokens}
 - Word count: {total_words}
 - Index of coincidence: {ic_value:.4f} (English ~0.0667, random ~0.038)
-{language_hint}{prior_section}
+{language_hint}{cipher_id_section}{prior_section}
 ## Use the measured facts directly
 The measurements above are already computed for you. Do not spend your first \
 turns re-running frequency or IC just to confirm them. If symbol count, word \

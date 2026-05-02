@@ -152,6 +152,53 @@ def _read_external_context(args: argparse.Namespace) -> str | None:
     return ctx or None
 
 
+def _require_rust_fast_kernel() -> None:
+    from analysis.polyalphabetic_fast import FAST_AVAILABLE, fast_kernel_unavailable_message
+
+    if not FAST_AVAILABLE:
+        print(
+            fast_kernel_unavailable_message(
+                feature="Decipher runtime"
+            ),
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
+def cmd_doctor(args: argparse.Namespace) -> None:
+    from analysis.polyalphabetic_fast import fast_kernel_status
+
+    status = fast_kernel_status()
+    if getattr(args, "json", False):
+        import json
+
+        print(json.dumps({"rust_fast_kernel": status}, indent=2))
+        return
+
+    print("Decipher environment check")
+    print()
+    print("Rust fast kernels:")
+    if status["available"]:
+        print("  status: available")
+        print(f"  module: {status.get('module_file')}")
+    else:
+        print("  status: not installed")
+        if status.get("import_error"):
+            print(f"  import error: {status['import_error']}")
+        print()
+        print("  Build from the repo root with:")
+        print("    scripts/build_rust_fast.sh")
+        print()
+        print("  Manual equivalent:")
+        print(f"    {status['build_command']}")
+    print()
+    print("  Features:")
+    for feature in status["features"]:
+        print(f"    - {feature}")
+    print()
+    print(f"  Note: {status['note']}")
+
+
 def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
 
@@ -760,6 +807,16 @@ def main() -> None:
     )
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Check optional local dependencies such as Rust fast kernels",
+    )
+    doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable dependency status.",
+    )
+
     # benchmark
     bench = subparsers.add_parser("benchmark", help="Run benchmark tests against historical datasets")
     bench.add_argument("benchmark_path", help="Path to benchmark root directory")
@@ -1138,8 +1195,11 @@ def main() -> None:
     if args.command is None:
         parser.print_help()
         sys.exit(1)
+    if args.command != "doctor":
+        _require_rust_fast_kernel()
 
     dispatch = {
+        "doctor": cmd_doctor,
         "benchmark": cmd_benchmark,
         "crack": cmd_crack,
         "resume-artifact": cmd_resume_artifact,

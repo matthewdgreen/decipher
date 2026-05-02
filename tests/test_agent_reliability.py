@@ -22,6 +22,7 @@ from agent.loop_v2 import (
     _is_boundary_projection_count_failure,
     _is_tool_gated_result,
     _branch_snapshot_for,
+    _workspace_snapshot_payload,
     build_workspace_panel,
     run_v2,
 )
@@ -43,6 +44,7 @@ from agent.orchestration import AgentMode, AgentRunState, MODE_ALLOWED_TOOLS
 from agent.prompts_v2 import get_system_prompt, initial_context
 import agent.tools_v2 as tools_v2
 from agent.tools_v2 import WorkspaceToolExecutor
+from artifact.schema import ToolCall
 from benchmark.context import ScopedBenchmarkContext
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
@@ -1093,6 +1095,22 @@ def test_initial_context_discourages_remeasuring_without_leaking_cipher_label():
     assert "homophonic" not in msg.lower()
 
 
+def test_initial_context_can_include_cipher_diagnostic_preflight():
+    msg = initial_context(
+        cipher_display="LXFOPVEFRNHR",
+        alphabet_symbols=list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"),
+        total_tokens=12,
+        total_words=1,
+        ic_value=0.038,
+        language="en",
+        cipher_id_context="Top suspicions: periodic_polyalphabetic=0.72",
+    )
+
+    assert "Cipher-diagnostic preflight" in msg
+    assert "periodic_polyalphabetic=0.72" in msg
+    assert "Treat this as evidence, not a verdict" in msg
+
+
 def test_system_prompt_routes_from_measured_facts_to_homophonic_solver():
     system = get_system_prompt("en")
 
@@ -1110,6 +1128,7 @@ def test_system_prompt_includes_unknown_cipher_mode_workflow():
     assert "Unknown-cipher discipline" in system
     assert "observe_cipher_id" in system
     assert "workspace_create_hypothesis_branch" in system
+    assert "workspace_update_hypothesis" in system
     assert "workspace_reject_hypothesis" in system
     assert "Local spelling and boundary repairs are for near-solves" in system
 
@@ -1216,6 +1235,57 @@ def test_read_only_inspection_can_continue_inside_one_outer_iteration():
     assert INSPECTION_SANDBOX_CONTINUE_PREFLIGHT in str(api.messages_seen[1])
 
 
+class _InterruptingAPI:
+    model = "claude-sonnet-4-6"
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        raise KeyboardInterrupt
+
+
+def test_run_v2_returns_partial_artifact_on_keyboard_interrupt():
+    alpha = Alphabet.from_text("ABCABC")
+    ct = CipherText(raw="ABCABC", alphabet=alpha, separator=None)
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=_InterruptingAPI(),  # type: ignore[arg-type]
+        language="en",
+        max_iterations=5,
+        cipher_id="interrupt_smoke",
+    )
+
+    assert artifact.status == "stopped"
+    assert "Interrupted by user" in artifact.error_message
+    assert artifact.finished_at > 0
+    assert artifact.branches
+    assert artifact.branches[0].name == "main"
+    assert artifact.messages
+    assert any(event.event == "interrupted" for event in artifact.loop_events)
+
+
+def test_workspace_panel_shows_metadata_decoded_branches():
+    alpha = Alphabet.from_text("ABCABC")
+    workspace = Workspace(CipherText(raw="ABCABC", alphabet=alpha, separator=None))
+    workspace.fork("quag3_candidate", from_branch="main")
+    branch = workspace.get_branch("quag3_candidate")
+    branch.metadata.update({
+        "cipher_mode": "quagmire3",
+        "key_type": "QuagmireKey",
+        "decoded_text": "THEOLDMANANDTHESEA",
+    })
+
+    panel = build_workspace_panel(
+        workspace,
+        iteration=2,
+        language="en",
+        word_set={"THE", "OLD", "MAN", "AND", "SEA"},
+    )
+
+    assert "Branch `quag3_candidate`" in panel
+    assert "key_type=QuagmireKey" in panel
+    assert "THEOLDMANANDTHESEA" in panel
+
+
 class _FakeAPI:
     model = "claude-sonnet-4-6"
 
@@ -1230,6 +1300,820 @@ class _FakeAPI:
             usage=SimpleNamespace(input_tokens=10, output_tokens=2),
             content=[SimpleNamespace(type="text", text="I forgot to declare.")],
         )
+
+
+class _HypothesisThenDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen = []
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="hyp1",
+                    name="workspace_create_hypothesis_branch",
+                    input={
+                        "new_name": "hyp_vig",
+                        "cipher_mode": "periodic_polyalphabetic",
+                        "rationale": "Depressed IC and periodic evidence suggest Vigenere-family testing.",
+                        "mode_confidence": "medium",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="hyp2",
+                    name="workspace_update_hypothesis",
+                    input={
+                        "branch": "hyp_vig",
+                        "mode_status": "active",
+                        "mode_confidence": "high",
+                        "evidence": "Standard periodic diagnostics should be tried before word repair.",
+                        "counter_evidence": "No plaintext basin yet.",
+                        "next_recommended_action": "Run search_periodic_polyalphabetic.",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="next",
+                    name="workspace_hypothesis_next_steps",
+                    input={"branch": "hyp_vig"},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="cards",
+                    name="workspace_branch_cards",
+                    input={},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "hyp_vig",
+                        "rationale": "This is a workflow smoke test declaration.",
+                        "self_confidence": 0.75,
+                        "reading_summary": "Hypothesis bookkeeping smoke test.",
+                        "further_iterations_helpful": False,
+                        "further_iterations_note": "No further work needed.",
+                    },
+                ),
+            ],
+        )
+
+
+def test_agent_artifact_records_cipher_id_report_and_hypothesis_trail():
+    alpha = Alphabet.from_text("LXFOPVEFRNHR")
+    ct = CipherText(raw="LXFOPVEFRNHR", alphabet=alpha, separator=None)
+    api = _HypothesisThenDeclareAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=10,
+        cipher_id="hypothesis_smoke",
+    )
+
+    assert artifact.status == "solved"
+    assert artifact.cipher_id_report is not None
+    assert "suspicion_scores" in artifact.cipher_id_report
+    first_message = str(api.messages_seen[0])
+    assert "Cipher-diagnostic preflight" in first_message
+    assert artifact.cipher_hypotheses
+    hyp = next(row for row in artifact.cipher_hypotheses if row["branch"] == "hyp_vig")
+    assert hyp["cipher_mode"] == "periodic_polyalphabetic"
+    assert hyp["mode_confidence"] == "high"
+    assert hyp["mode_counter_evidence"] == "No plaintext basin yet."
+    branch = next(row for row in artifact.branches if row.name == "hyp_vig")
+    assert branch.metadata["next_recommended_action"] == "Run search_periodic_polyalphabetic."
+
+
+def test_substitution_repair_blocks_on_periodic_hypothesis_unless_overridden():
+    ex = _executor_for("ABC", separator=None)
+    ex._tool_workspace_create_hypothesis_branch({
+        "new_name": "hyp_poly",
+        "cipher_mode": "periodic_polyalphabetic",
+        "rationale": "Periodic diagnostics are stronger than monoalphabetic evidence.",
+    })
+
+    blocked = ex._tool_act_set_mapping({
+        "branch": "hyp_poly",
+        "cipher_symbol": "A",
+        "plain_letter": "T",
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "mode_mismatch_substitution_repair_blocked"
+    assert blocked["cipher_mode"] == "periodic_polyalphabetic"
+    assert "act_set_periodic_shift" in blocked["suggested_next_tools"]
+
+    accepted = ex._tool_act_set_mapping({
+        "branch": "hyp_poly",
+        "cipher_symbol": "A",
+        "plain_letter": "T",
+        "allow_mode_mismatch_repair": True,
+    })
+
+    assert accepted["status"] == "ok"
+    assert accepted["mapping"] == "A -> T"
+
+
+def test_hypothesis_next_steps_marks_tried_tools_and_next_pending_action():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_poly",
+        "cipher_mode": "periodic_polyalphabetic",
+        "rationale": "Depressed IC suggests periodic testing.",
+    })
+
+    first = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_poly",
+    }))
+    report = first["reports"][0]
+    assert report["next_step"]["tool"] == "observe_periodic_ic"
+    assert "observe_periodic_ic" in report["pending_tools"]
+    menu = report["tool_menu"]
+    assert "search_periodic_polyalphabetic" in menu["foreground_tools"]
+    assert "act_set_periodic_shift" in menu["foreground_tools"]
+    assert "act_set_mapping" in menu["discouraged_tools"]
+    assert "workspace_reject_hypothesis" in menu["escape_tools"]
+
+    ex.execute("observe_periodic_ic", {"branch": "hyp_poly", "max_period": 6})
+    second = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_poly",
+    }))
+    report = second["reports"][0]
+    assert "observe_periodic_ic" in report["already_tried_tools"]
+    assert report["next_step"]["tool"] == "observe_kasiski"
+
+
+def test_hypothesis_next_steps_returns_transform_mode_tool_menu():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_transform",
+        "cipher_mode": "transposition_homophonic",
+        "rationale": "Word islands suggest order plus homophonic search.",
+    })
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_transform",
+    }))
+
+    menu = out["reports"][0]["tool_menu"]
+    assert "observe_transform_suspicion" in menu["foreground_tools"]
+    assert "search_transform_homophonic" in menu["foreground_tools"]
+    assert "act_rate_transform_finalist" in menu["foreground_tools"]
+    assert "act_set_mapping" in menu["discouraged_tools"]
+
+
+def test_hypothesis_next_steps_returns_quagmire_tool_menu():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_quag",
+        "cipher_mode": "quagmire3",
+        "rationale": "Periodic evidence remains but ordinary Vigenere failed.",
+    })
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_quag",
+    }))
+
+    report = out["reports"][0]
+    tools = [step["tool"] for step in report["playbook"]]
+    menu = report["tool_menu"]
+    assert "search_quagmire3_keyword_alphabet" in tools
+    assert "search_quagmire3_keyword_alphabet" in menu["foreground_tools"]
+    assert "search_periodic_polyalphabetic" in menu["foreground_tools"]
+    assert "act_set_mapping" in menu["discouraged_tools"]
+    guidance = report["quagmire_budget_guidance"]
+    assert guidance["tool"] == "search_quagmire3_keyword_alphabet"
+    assert guidance["profiles"][1]["suggested_args"]["estimate_only"] is True
+    assert guidance["profiles"][1]["suggested_args"]["hillclimbs"] == 10000
+    assert "context-seeded" in guidance["seeded_keyword_warning"]
+
+
+def test_context_supported_keyed_vigenere_blocks_premature_poly_rejection():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[
+            {
+                "record_id": "kryptos_k2",
+                "layer": "standard",
+                "label": "Standard cipher metadata",
+                "contains_cipher_type_hint": True,
+                "text": (
+                    "K2 is an English alphabetic Kryptos section classified "
+                    "here as a keyed Vigenere-style polyalphabetic cipher."
+                ),
+            }
+        ],
+        target_record_ids=["kryptos_k2"],
+    )
+    created = json.loads(ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_poly",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "Context and IC suggest keyed Vigenere.",
+        "evidence_source": "benchmark_context",
+    }))
+    assert created["context_mode_prior"]["prior"] == "keyed_tableau_polyalphabetic"
+    assert created["evidence_source"] == "benchmark_context"
+
+    blocked = json.loads(ex.execute("workspace_reject_hypothesis", {
+        "branch": "hyp_poly",
+        "reason": "Ordinary Vigenere failed.",
+    }))
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "pending_required_tools_before_rejection"
+    assert blocked["pending_required_tools"] == ["search_quagmire3_keyword_alphabet"]
+    assert "Plain Vigenere failure" in blocked["note"]
+
+
+def test_workspace_snapshot_uses_metadata_decoded_text_for_periodic_branches():
+    raw = "ABCABCABCABC"
+    alpha = Alphabet.from_text(raw)
+    workspace = Workspace(CipherText(raw=raw, alphabet=alpha, separator=None))
+    branch = workspace.fork("quag3_candidate", from_branch="main")
+    branch.metadata.update({
+        "cipher_mode": "quagmire3",
+        "key_type": "QuagmireKey",
+        "decoded_text": "THEOLDTHEOLD",
+        "decoded_text_source": "unit_test",
+    })
+
+    payload = _workspace_snapshot_payload(
+        workspace,
+        "en",
+        {"THE", "OLD"},
+        {"THE": 1, "OLD": 2},
+        iteration=3,
+        max_iterations=10,
+    )
+
+    assert payload["branch"] == "quag3_candidate"
+    assert payload["decryption"] == "THEOLDTHEOLD"
+    assert payload["decryption_preview"].startswith("THEOLD")
+
+    workspace.set_word_spans("quag3_candidate", [
+        (0, 3),
+        (3, 6),
+        (6, 9),
+        (9, 12),
+    ])
+    segmented_payload = _workspace_snapshot_payload(
+        workspace,
+        "en",
+        {"THE", "OLD"},
+        {"THE": 1, "OLD": 2},
+        iteration=4,
+        max_iterations=10,
+    )
+
+    assert segmented_payload["decryption"] == "THE OLD THE OLD"
+    assert segmented_payload["decryption_preview"].startswith("THE OLD")
+
+
+def test_periodic_family_coverage_debt_prioritizes_quagmire_after_plain_search():
+    # K2-like statistics: low IC, flat alphabet, and a period-8 bump. No
+    # benchmark context is used here, so this is the zero-context escalation
+    # guard rather than a context-prior guard.
+    raw = (
+        "VFPJUDEEHZWETZYVGWHKKQETGFQJNCEGGWHKK?DQMCPFQZDQMMIAGPFXHQRLGTIMVMZJANQLVKQEDAGDVFRPJUNGEUNA"
+        "QZGZLECGYUXUEENJTBJLBQCRTBJDFHRRYIZETKZEMVDUFKSJHKFWHKUWQLSZFTIHHDDDUVH?DWKBFUFPWNTDFIYCUQZERE"
+        "EVLDKFEZMOQQJLTTUGSYQPFEUNLAVIDXFLGGTEZ?FKZBSFDQVGOGIPUFXHHDRKFFHQNTGPUAECNUVPDJMQCLQUMUNEDFQE"
+        "LZZVRRGKFFVOEEXBDMVPNFQXEZLGREDNQFMPNZGLFLPMRJQYALMGNUVPDXVKPDQUMEBEDMHDAFMJGZNUPLGEWJLLAETG"
+    )
+    alpha = Alphabet.from_text(raw)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(CipherText(raw=raw, alphabet=alpha, separator=None)),
+        language="en",
+        word_set=set(),
+        word_list=[],
+        pattern_dict={},
+    )
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_poly",
+        "cipher_mode": "periodic_polyalphabetic",
+        "rationale": "Low IC and period evidence suggest a periodic family.",
+    })
+    ex.call_log.append(ToolCall(
+        iteration=1,
+        tool_name="search_periodic_polyalphabetic",
+        tool_use_id="plain-vig",
+        arguments={"branch": "hyp_poly"},
+        result="{}",
+    ))
+    ex.call_log.append(ToolCall(
+        iteration=2,
+        tool_name="search_quagmire3_keyword_alphabet",
+        tool_use_id="estimate-quag",
+        arguments={"branch": "hyp_poly", "estimate_only": True},
+        result='{"status":"estimated"}',
+    ))
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_poly",
+    }))
+    report = out["reports"][0]
+
+    assert report["next_step"]["tool"] == "search_quagmire3_keyword_alphabet"
+    assert report["pending_required_tools"] == ["search_quagmire3_keyword_alphabet"]
+    assert report["family_coverage_debt"]
+    assert report["statistical_family_prior"]["prior"] == "polyalphabetic_family"
+
+
+def test_diagnostic_quagmire_search_does_not_clear_family_coverage():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_quag",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "Context says this is a keyed-tableau family.",
+        "evidence_source": "benchmark_context",
+    })
+    ex.call_log.append(ToolCall(
+        iteration=2,
+        tool_name="search_quagmire3_keyword_alphabet",
+        tool_use_id="tiny-quag",
+        arguments={"branch": "hyp_quag"},
+        result='{"status":"completed","nominal_proposals":40000,"budget_class":"diagnostic"}',
+    ))
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_quag",
+    }))
+    report = out["reports"][0]
+
+    assert report["pending_required_tools"] == ["search_quagmire3_keyword_alphabet"]
+    assert report["quagmire_search_status"]["budget_class"] == "diagnostic"
+    assert report["quagmire_search_status"]["sufficient_to_reject"] is False
+
+
+def test_moderate_quagmire_search_clears_family_coverage_for_installed_branch():
+    raw = "ABC" * 40
+    ex = _executor_for(raw, separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(12)
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_quag",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "Context says this is a keyed-tableau family.",
+        "evidence_source": "benchmark_context",
+    })
+    branch = ex.workspace.fork("quag3_KRYPTOS_ABSCISSA_1", from_branch="hyp_quag")
+    branch.metadata.update({
+        "cipher_mode": "quagmire3",
+        "mode_status": "active",
+        "key_type": "QuagmireKey",
+        "decoded_text": "THEOLD" * 20,
+        "search_metadata": {
+            "engine": "rust_shotgun",
+            "nominal_proposals": 50_000_000,
+            "budget_class": "broad",
+        },
+    })
+    ex.workspace.tag("quag3_KRYPTOS_ABSCISSA_1", "hypothesis")
+    ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "quag3_KRYPTOS_ABSCISSA_1",
+    })
+    ex.execute("workspace_branch_cards", {})
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "quag3_KRYPTOS_ABSCISSA_1",
+        "rationale": "The Quagmire branch is coherent and the family search was broad.",
+        "self_confidence": 0.98,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No further work needed.",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "word_boundary_pass_required"
+
+    segmented = ex._tool_act_resegment_by_reading({
+        "branch": "quag3_KRYPTOS_ABSCISSA_1",
+        "proposed_text": " ".join(["THE", "OLD"] * 20),
+    })
+
+    assert segmented["status"] == "ok"
+    assert segmented["decoded_preview"].startswith("THE | OLD")
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "quag3_KRYPTOS_ABSCISSA_1",
+        "rationale": "The Quagmire branch is coherent and the family search was broad.",
+        "self_confidence": 0.98,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No further work needed.",
+    })
+
+    assert out["status"] == "ok"
+    assert out["accepted"] is True
+
+
+def test_meta_declare_blocks_when_context_keyed_tableau_work_pending():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(6)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[
+            {
+                "record_id": "kryptos_k2",
+                "layer": "standard",
+                "label": "Standard cipher metadata",
+                "contains_cipher_type_hint": True,
+                "text": (
+                    "K2 is an English alphabetic Kryptos section classified "
+                    "here as a keyed Vigenere-style polyalphabetic cipher."
+                ),
+            }
+        ],
+        target_record_ids=["kryptos_k2"],
+    )
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_poly",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "Context and IC suggest keyed Vigenere.",
+        "evidence_source": "benchmark_context",
+    })
+    ex.execute("workspace_hypothesis_next_steps", {"branch": "hyp_poly"})
+    ex.call_log.append(ToolCall(
+        iteration=5,
+        tool_name="search_periodic_polyalphabetic",
+        tool_use_id="plain-vig",
+        arguments={"branch": "hyp_poly"},
+        result="{}",
+    ))
+    ex.execute("workspace_branch_cards", {})
+
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Stopping with no coherent result.",
+        "self_confidence": 0.12,
+        "reading_summary": "No coherent plaintext recovered.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No useful work remains.",
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "family_coverage_pending"
+    assert "search_quagmire3_keyword_alphabet" in blocked["suggested_next_tools"]
+
+
+def test_meta_declare_unsolved_terminates_without_solution():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.set_max_iterations(10)
+    ex.set_iteration(10)
+
+    out = ex._tool_meta_declare_unsolved({
+        "rationale": "No coherent plaintext branch emerged after available work.",
+        "branches_considered": ["main"],
+        "best_branch": "main",
+        "reading_summary": "No coherent plaintext recovered.",
+        "further_iterations_helpful": True,
+        "further_iterations_note": "A larger search might be useful later.",
+    })
+
+    assert out["status"] == "ok"
+    assert out["outcome"] == "unsolved"
+    assert ex.terminated is True
+    assert ex.solution is None
+    assert ex.unsolved_declaration["best_branch"] == "main"
+
+
+def test_context_keyed_tableau_blocks_off_family_transform_search():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[
+            {
+                "record_id": "kryptos_k2",
+                "layer": "standard",
+                "label": "Standard cipher metadata",
+                "contains_cipher_type_hint": True,
+                "text": (
+                    "K2 is an English alphabetic Kryptos section classified "
+                    "here as a keyed Vigenere-style polyalphabetic cipher."
+                ),
+            }
+        ],
+        target_record_ids=["kryptos_k2"],
+    )
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_quag",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "I read the benchmark context as keyed Vigenere/Kryptos-style.",
+        "evidence_source": "benchmark_context",
+    })
+
+    blocked = json.loads(ex.execute("search_transform_homophonic", {
+        "branch": "main",
+        "profile": "small",
+    }))
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "context_cipher_family_mismatch"
+    assert blocked["context_cipher_family"] == "keyed_tableau_polyalphabetic"
+    assert "search_quagmire3_keyword_alphabet" in blocked["suggested_next_tools"]
+    assert blocked["override_fields"]["override_context_cipher_family"] is True
+
+
+def test_exposed_context_alone_does_not_hard_gate_tools():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[
+            {
+                "record_id": "kryptos_k2",
+                "layer": "standard",
+                "label": "Standard cipher metadata",
+                "contains_cipher_type_hint": True,
+                "text": (
+                    "K2 is an English alphabetic Kryptos section classified "
+                    "here as a keyed Vigenere-style polyalphabetic cipher."
+                ),
+            }
+        ],
+        target_record_ids=["kryptos_k2"],
+    )
+
+    assert ex._context_cipher_family_tool_block("search_transform_homophonic", {
+        "branch": "main",
+        "profile": "small",
+    }) is None
+
+
+def test_context_family_override_requires_explicit_rationale():
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[
+            {
+                "record_id": "kryptos_k2",
+                "layer": "standard",
+                "label": "Standard cipher metadata",
+                "contains_cipher_type_hint": True,
+                "text": (
+                    "K2 is an English alphabetic Kryptos section classified "
+                    "here as a keyed Vigenere-style polyalphabetic cipher."
+                ),
+            }
+        ],
+        target_record_ids=["kryptos_k2"],
+    )
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_quag",
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "rationale": "I read the benchmark context as keyed Vigenere/Kryptos-style.",
+        "evidence_source": "benchmark_context",
+    })
+
+    blocked = ex._context_cipher_family_tool_block("search_transform_homophonic", {
+        "branch": "main",
+        "override_context_cipher_family": True,
+        "context_override_rationale": "try transform",
+    })
+    assert blocked is not None
+    assert blocked["reason"] == "context_override_rationale_required"
+
+    allowed = ex._context_cipher_family_tool_block("search_transform_homophonic", {
+        "branch": "main",
+        "override_context_cipher_family": True,
+        "context_override_rationale": (
+            "The context-supported keyed-tableau route has produced only "
+            "negative results, and independent evidence now suggests order "
+            "transposition should be tested as a deliberate override."
+        ),
+    })
+    assert allowed is None
+    assert ex.context_family_overrides
+    assert ex.context_family_overrides[0]["tool"] == "search_transform_homophonic"
+
+
+def test_meta_declare_requires_hypothesis_next_steps_for_hypothesis_branch():
+    ex = _executor_for("ABCABC", separator=None)
+    ex._tool_workspace_create_hypothesis_branch({
+        "new_name": "hyp_poly",
+        "cipher_mode": "periodic_polyalphabetic",
+        "rationale": "Periodic diagnostics should be tested.",
+    })
+    ex.execute("workspace_branch_cards", {})
+
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "hyp_poly",
+        "rationale": "Declaring a hypothesis branch without playbook review.",
+        "self_confidence": 0.7,
+        "reading_summary": "No real reading.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No further work needed.",
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["reason"] == "hypothesis_next_steps_required"
+    assert "workspace_hypothesis_next_steps" in blocked["suggested_next_tools"]
+
+    ex.execute("workspace_hypothesis_next_steps", {"branch": "hyp_poly"})
+    accepted = ex._tool_meta_declare_solution({
+        "branch": "hyp_poly",
+        "rationale": "Playbook reviewed for smoke-test declaration.",
+        "self_confidence": 0.7,
+        "reading_summary": "No real reading.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "No further work needed.",
+    })
+
+    assert accepted["status"] == "ok"
+    assert accepted["accepted"] is True
+
+
+class _RejectSwitchDeclareAPI:
+    model = "claude-sonnet-4-6"
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="hyp_sub",
+                    name="workspace_create_hypothesis_branch",
+                    input={
+                        "new_name": "hyp_sub",
+                        "cipher_mode": "monoalphabetic_substitution",
+                        "rationale": "Initial fallback hypothesis.",
+                        "mode_confidence": "low",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="reject_sub",
+                    name="workspace_reject_hypothesis",
+                    input={
+                        "branch": "hyp_sub",
+                        "reason": "Depressed IC and failed monoalphabetic evidence favor a periodic mode.",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="hyp_poly",
+                    name="workspace_create_hypothesis_branch",
+                    input={
+                        "new_name": "hyp_poly",
+                        "cipher_mode": "periodic_polyalphabetic",
+                        "rationale": "Switching to periodic polyalphabetic after rejecting monoalphabetic.",
+                        "mode_confidence": "medium",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="cards",
+                    name="workspace_branch_cards",
+                    input={},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="next",
+                    name="workspace_hypothesis_next_steps",
+                    input={"branch": "hyp_poly"},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "hyp_poly",
+                        "rationale": "Smoke test: the active hypothesis switched modes.",
+                        "self_confidence": 0.7,
+                        "reading_summary": "Hypothesis switching smoke test.",
+                        "further_iterations_helpful": False,
+                        "further_iterations_note": "No further work needed.",
+                    },
+                ),
+            ],
+        )
+
+
+class _NextStepsThenSearchAPI:
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.calls += 1
+        if self.calls == 1:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="hyp",
+                    name="workspace_create_hypothesis_branch",
+                    input={
+                        "new_name": "hyp_poly",
+                        "cipher_mode": "periodic_polyalphabetic",
+                        "rationale": "Periodic evidence should be tested before substitution repair.",
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="next",
+                    name="workspace_hypothesis_next_steps",
+                    input={"branch": "hyp_poly"},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="search",
+                    name="search_periodic_polyalphabetic",
+                    input={
+                        "branch": "hyp_poly",
+                        "periods": [3],
+                        "variants": ["vigenere"],
+                        "top_n": 1,
+                        "install_top_n": 0,
+                    },
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="update",
+                    name="workspace_update_hypothesis",
+                    input={
+                        "branch": "hyp_poly",
+                        "mode_status": "active",
+                        "evidence": "Followed the periodic playbook through search_periodic_polyalphabetic.",
+                        "next_recommended_action": "Read the search candidates and decide whether to install.",
+                    },
+                ),
+            ]
+        else:
+            content = [
+                SimpleNamespace(
+                    type="tool_use",
+                    id="cards",
+                    name="workspace_branch_cards",
+                    input={},
+                ),
+                SimpleNamespace(
+                    type="tool_use",
+                    id="declare",
+                    name="meta_declare_solution",
+                    input={
+                        "branch": "hyp_poly",
+                        "rationale": "Smoke test: followed hypothesis next-step playbook.",
+                        "self_confidence": 0.7,
+                        "reading_summary": "Hypothesis next-step smoke test.",
+                        "further_iterations_helpful": False,
+                        "further_iterations_note": "No further work needed.",
+                    },
+                ),
+            ]
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=content,
+        )
+
+
+def test_agent_can_request_hypothesis_next_steps_then_follow_periodic_search():
+    alpha = Alphabet.from_text("LXFOPVEFRNHR")
+    ct = CipherText(raw="LXFOPVEFRNHR", alphabet=alpha, separator=None)
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=_NextStepsThenSearchAPI(),  # type: ignore[arg-type]
+        language="en",
+        max_iterations=10,
+        cipher_id="hypothesis_next_steps_smoke",
+    )
+
+    tool_names = [call.tool_name for call in artifact.tool_calls]
+    assert "workspace_hypothesis_next_steps" in tool_names
+    assert "search_periodic_polyalphabetic" in tool_names
+    hyp = next(row for row in artifact.cipher_hypotheses if row["branch"] == "hyp_poly")
+    assert hyp["next_recommended_action"] == "Read the search candidates and decide whether to install."
+
+
+def test_agent_artifact_records_rejected_and_switched_hypotheses():
+    alpha = Alphabet.from_text("LXFOPVEFRNHR")
+    ct = CipherText(raw="LXFOPVEFRNHR", alphabet=alpha, separator=None)
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=_RejectSwitchDeclareAPI(),  # type: ignore[arg-type]
+        language="en",
+        max_iterations=10,
+        cipher_id="hypothesis_switch_smoke",
+    )
+
+    hypotheses = {row["branch"]: row for row in artifact.cipher_hypotheses}
+    assert hypotheses["hyp_sub"]["mode_status"] == "rejected"
+    assert hypotheses["hyp_sub"]["rejection_reason"].startswith("Depressed IC")
+    assert hypotheses["hyp_poly"]["mode_status"] == "active"
+    assert artifact.solution is not None
+    assert artifact.solution.branch == "hyp_poly"
 
 
 class _GatedThenDeclareAPI:
@@ -2076,9 +2960,11 @@ def test_final_turn_exposes_declare_and_bookkeeping_tools():
     final_turn_tool_names = {tool["name"] for tool in api.tools_seen[-1]}
     assert final_turn_tool_names == {
         "workspace_branch_cards",
+        "workspace_hypothesis_next_steps",
         "repair_agenda_list",
         "repair_agenda_update",
         "meta_declare_solution",
+        "meta_declare_unsolved",
     }
 
 

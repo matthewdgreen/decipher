@@ -1,0 +1,15 @@
+[package]
+name = "decipher-fast"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[lib]
+name = "decipher_fast"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.21", features = ["extension-module"] }
+rand = "0.8"
+rayon = "1.10"
+sha1 = "0.10"

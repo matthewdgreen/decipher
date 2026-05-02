@@ -2251,7 +2251,7 @@ def _select_solver_path(
         any(token in cipher_name for token in ("transposition", "z340", "zodiac340"))
         and any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
     )
-    if any(token in cipher_name for token in ("vigenere", "vigenère", "beaufort", "gronsfeld", "polyalphabetic")):
+    if any(token in cipher_name for token in ("vigenere", "vigenère", "beaufort", "gronsfeld", "polyalphabetic", "quagmire", "quag")):
         return {
             "route": "periodic_polyalphabetic",
             "solver": "periodic_polyalphabetic_screen",
@@ -2308,6 +2308,181 @@ def _run_periodic_polyalphabetic(
     solver_hints = solver_hints or {}
     known_params = solver_hints.get("known_cipher_parameters") if "known_cipher_parameters" in solver_hints else solver_hints
     keyed_mode = os.environ.get("DECIPHER_KEYED_VIGENERE_MODE", "replay").strip().lower()
+    quagmire_types = {
+        "quagmire",
+        "quagmirei",
+        "quagmireii",
+        "quagmireiii",
+        "quagmireiv",
+        "quagmire1",
+        "quagmire2",
+        "quagmire3",
+        "quagmire4",
+        "quagi",
+        "quagii",
+        "quagiii",
+        "quagiv",
+        "quag1",
+        "quag2",
+        "quag3",
+        "quag4",
+    }
+    if (
+        isinstance(known_params, dict)
+        and str(known_params.get("type") or "").lower().replace("_", "").replace("-", "") in quagmire_types
+        and keyed_mode in {"replay", "known_replay", "quagmire_replay"}
+    ):
+        qtype = (
+            known_params.get("quagmire_type")
+            or known_params.get("type")
+            or known_params.get("variant")
+            or "quag3"
+        )
+        cycleword = (
+            known_params.get("cycleword")
+            or known_params.get("periodic_key")
+            or known_params.get("key")
+            or ""
+        )
+        result = polyalphabetic.replay_quagmire(
+            cipher_text,
+            cycleword=str(cycleword),
+            quagmire_type=qtype,
+            plaintext_alphabet=known_params.get("plaintext_alphabet"),
+            ciphertext_alphabet=known_params.get("ciphertext_alphabet"),
+            plaintext_keyword=known_params.get("plaintext_keyword"),
+            ciphertext_keyword=known_params.get("ciphertext_keyword"),
+            alphabet_keyword=known_params.get("alphabet_keyword"),
+            keyed_alphabet=known_params.get("keyed_alphabet"),
+        )
+        if result.get("status") != "completed":
+            raise ValueError(result.get("reason", "Quagmire replay failed"))
+        step = {
+            "name": "replay_quagmire",
+            "solver": result.get("solver"),
+            "status": result.get("status"),
+            "variant": result.get("variant"),
+            "quagmire_type": result.get("quagmire_type"),
+            "period": result.get("period"),
+            "key_type": result.get("key_type"),
+            "cycleword": result.get("cycleword"),
+            "plaintext_alphabet": result.get("plaintext_alphabet"),
+            "ciphertext_alphabet": result.get("ciphertext_alphabet"),
+            "alphabet_keyword": result.get("alphabet_keyword"),
+            "plaintext_keyword": result.get("plaintext_keyword"),
+            "ciphertext_keyword": result.get("ciphertext_keyword"),
+            "token_count": result.get("token_count"),
+            "original_token_count": result.get("original_token_count"),
+            "skipped_symbol_count": result.get("skipped_symbol_count"),
+            "skipped_symbols": result.get("skipped_symbols"),
+            "key_advances_over_skipped_symbols": result.get("key_advances_over_skipped_symbols"),
+            "attribution": result.get("attribution"),
+            "note": (
+                "Known-parameter Quagmire replay from benchmark solver hints. "
+                "This validates tableau semantics and artifact provenance; it "
+                "is not unknown-key Quagmire search."
+            ),
+        }
+        return str(result.get("solver") or "quagmire_known_replay"), {}, str(result.get("plaintext") or ""), step
+
+    if keyed_mode in {"quagmire_search", "quag3_search", "quagmire3_search"}:
+        quagmire_engine = os.environ.get("DECIPHER_QUAGMIRE_ENGINE", "rust_shotgun").strip().lower()
+        keyword_lengths = _env_int_csv("DECIPHER_QUAGMIRE_KEYWORD_LENGTHS") or [7]
+        cycleword_lengths = _env_int_csv("DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS") or list(
+            range(1, int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "12")) + 1)
+        )
+        initial_keywords = _env_csv("DECIPHER_QUAGMIRE_INITIAL_KEYWORDS")
+        if quagmire_engine == "rust_shotgun":
+            from analysis.polyalphabetic_fast import search_quagmire3_shotgun_fast
+
+            result = search_quagmire3_shotgun_fast(
+                cipher_text,
+                language=language,
+                keyword_lengths=keyword_lengths,
+                cycleword_lengths=cycleword_lengths,
+                hillclimbs=int(os.environ.get("DECIPHER_QUAGMIRE_HILLCLIMBS", "500")),
+                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "8")),
+                seed=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_SEED", "1")),
+                top_n=10,
+                slip_probability=float(os.environ.get("DECIPHER_QUAGMIRE_SLIP_PROB", "0.001")),
+                backtrack_probability=float(os.environ.get("DECIPHER_QUAGMIRE_BACKTRACK_PROB", "0.15")),
+                threads=int(os.environ.get("DECIPHER_QUAGMIRE_THREADS", "0")),
+                initial_keywords=initial_keywords,
+            )
+        else:
+            result = polyalphabetic.search_quagmire3_keyword_alphabet(
+                cipher_text,
+                language=language,
+                keyword_lengths=keyword_lengths,
+                cycleword_lengths=cycleword_lengths,
+                initial_keywords=initial_keywords,
+                steps=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_STEPS", "500")),
+                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "8")),
+                seed=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_SEED", "1")),
+                screen_top_n=int(os.environ.get("DECIPHER_QUAGMIRE_SCREEN_TOP_N", "128")),
+                word_weight=float(os.environ.get("DECIPHER_QUAGMIRE_WORD_WEIGHT", "0.25")),
+                slip_probability=float(os.environ.get("DECIPHER_QUAGMIRE_SLIP_PROB", "0.001")),
+                backtrack_probability=float(os.environ.get("DECIPHER_QUAGMIRE_BACKTRACK_PROB", "0.15")),
+                dictionary_keyword_limit=int(os.environ.get("DECIPHER_QUAGMIRE_DICTIONARY_STARTS", "0")),
+                calibration_keyword=os.environ.get("DECIPHER_QUAGMIRE_CALIBRATION_KEYWORD"),
+                top_n=10,
+            )
+        best = result.get("best_candidate") if isinstance(result, dict) else None
+        if not best:
+            raise ValueError(result.get("reason", "Quagmire III keyword search produced no candidate"))
+        metadata = best.get("metadata") or {}
+        step = {
+            "name": "search_quagmire3_keyword_alphabet",
+            "solver": result.get("solver") or "quagmire3_keyword_alphabet_search",
+            "status": result.get("status"),
+            "engine": quagmire_engine,
+            "variant": best.get("variant"),
+            "quagmire_type": metadata.get("quagmire_type", "quag3"),
+            "period": best.get("period"),
+            "key_type": metadata.get("key_type", "QuagmireKey"),
+            "cycleword": metadata.get("cycleword") or best.get("key"),
+            "shifts": best.get("shifts"),
+            "score": best.get("score"),
+            "alphabet_keyword": metadata.get("alphabet_keyword"),
+            "plaintext_alphabet": metadata.get("plaintext_alphabet"),
+            "ciphertext_alphabet": metadata.get("ciphertext_alphabet"),
+            "keyword_lengths": result.get("keyword_lengths"),
+            "cycleword_lengths": result.get("cycleword_lengths"),
+            "initial_keywords": result.get("initial_keywords"),
+            "dictionary_keyword_limit": result.get("dictionary_keyword_limit"),
+            "dictionary_keywords_loaded": result.get("dictionary_keywords_loaded"),
+            "calibration_keyword": result.get("calibration_keyword"),
+            "exact_calibration_keyword_rank": result.get("exact_calibration_keyword_rank"),
+            "best_calibration_keyword_distance": result.get("best_calibration_keyword_distance"),
+            "steps_per_start": result.get("steps_per_start"),
+            "hillclimbs_per_restart": result.get("hillclimbs_per_restart"),
+            "restarts_per_length": result.get("restarts_per_length"),
+            "restart_jobs": result.get("restart_jobs"),
+            "nominal_proposals": result.get("nominal_proposals"),
+            "threads": result.get("threads"),
+            "keyword_states_screened": result.get("keyword_states_screened"),
+            "screen_top_n": result.get("screen_top_n"),
+            "refined_finalist_count": result.get("refined_finalist_count"),
+            "word_weight": result.get("word_weight"),
+            "screen_search": result.get("screen_search"),
+            "slip_probability": result.get("slip_probability"),
+            "backtrack_probability": result.get("backtrack_probability"),
+            "accepted_screen_mutations": result.get("accepted_screen_mutations"),
+            "slipped_screen_mutations": result.get("slipped_screen_mutations"),
+            "backtrack_events": result.get("backtrack_events"),
+            "seed": result.get("seed"),
+            "top_candidates": result.get("top_candidates"),
+            "attribution": result.get("attribution"),
+            "note": (
+                "Bounded Quagmire III keyword-alphabet search. It searches "
+                "keyword-shaped alphabets and derives the cycleword for each "
+                "candidate, inspired by Sam Blake's MIT-licensed "
+                "polyalphabetic solver. This is a scaffold, not yet the full "
+                "shotgun/backtracking implementation."
+            ),
+        }
+        return str(result.get("solver") or "quagmire3_keyword_alphabet_search"), {}, str(best.get("plaintext") or ""), step
+
     if keyed_mode in {"alphabet_anneal", "tableau_anneal", "anneal"}:
         keywords = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAU_KEYWORDS")
         explicit_alphabets = _env_csv("DECIPHER_KEYED_VIGENERE_TABLEAUS")
@@ -2321,6 +2496,8 @@ def _run_periodic_polyalphabetic(
             steps=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_STEPS", "2000")),
             restarts=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_RESTARTS", "4")),
             seed=int(os.environ.get("DECIPHER_KEYED_VIGENERE_ANNEAL_SEED", "1")),
+            guided=_env_bool("DECIPHER_KEYED_VIGENERE_ANNEAL_GUIDED", True),
+            guided_pool_size=int(os.environ.get("DECIPHER_KEYED_VIGENERE_GUIDED_POOL", "24")),
             top_n=10,
         )
         best = result.get("best_candidate") if isinstance(result, dict) else None
@@ -2345,12 +2522,15 @@ def _run_periodic_polyalphabetic(
             "initial_alphabets_tested": result.get("initial_alphabets_tested"),
             "steps_per_period": result.get("steps_per_period"),
             "restarts_per_alphabet": result.get("restarts_per_alphabet"),
+            "guided": result.get("guided"),
+            "guided_pool_size": result.get("guided_pool_size"),
             "top_candidates": result.get("top_candidates"),
             "note": (
                 "Experimental shared-tableau mutation search. It re-optimizes "
-                "periodic shifts after alphabet mutations; current scope is "
-                "near-basin refinement and research diagnostics, not robust "
-                "blind Kryptos recovery."
+                "periodic shifts after alphabet mutations; guided mode adds "
+                "frequency/phase proposals. Current scope is near-basin "
+                "refinement and research diagnostics, not robust blind "
+                "Kryptos recovery."
             ),
         }
         return "keyed_vigenere_alphabet_anneal", {}, str(best.get("plaintext") or ""), step
@@ -2519,6 +2699,20 @@ def _periodic_variants_for_cipher_system(cipher_system: str) -> list[str] | None
 def _env_csv(name: str) -> list[str]:
     raw = os.environ.get(name, "")
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _env_int_csv(name: str) -> list[int]:
+    values: list[int] = []
+    for part in _env_csv(name):
+        values.append(int(part))
+    return values
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"0", "false", "no", "off"}
 
 
 def _cipher_text_from_tokens(tokens: list[int], alphabet: Alphabet, source: str = "transform") -> CipherText:

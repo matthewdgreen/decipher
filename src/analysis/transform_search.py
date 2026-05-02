@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import heapq
+import os
 from array import array
 from collections import Counter
 from dataclasses import dataclass, field
@@ -1340,12 +1341,19 @@ def _screen_transform_candidates_streaming(
     sequence = 0
     candidate_count = 0
     scored_count = 0
-    use_fast_structural_metrics = (
-        profile == "wide"
-        and max_generated_candidates is not None
-        and max_generated_candidates >= 100000
-    )
+    use_fast_structural_metrics = profile == "wide"
     identity_positions = np.arange(len(tokens), dtype=np.int32) if use_fast_structural_metrics else None
+    use_rust_structural_metrics = (
+        use_fast_structural_metrics
+        and os.environ.get("DECIPHER_TRANSFORM_SCREEN_RUST", "1").strip().lower()
+        not in {"0", "false", "no", "off"}
+    )
+    rust_threads = 0
+    rust_batch_size = 4096
+    if use_rust_structural_metrics:
+        from analysis.transform_fast import transform_fast_threads_from_env
+
+        rust_threads = transform_fast_threads_from_env()
 
     def push_heap(
         heap: list[tuple[float, float, int, CandidateScore]],
@@ -1413,10 +1421,82 @@ def _screen_transform_candidates_streaming(
         if _anchor_candidate_key(item) is not None:
             push_heap(anchor_heap, item, limit=max(24, top_n))
 
+    def score_fast_batch(batch: list[TransformCandidate], *, stage: str) -> None:
+        nonlocal identity_candidate, sequence, scored_count
+        if not batch:
+            return
+        from analysis.transform_fast import score_transform_candidates_fast_batch
+
+        results = score_transform_candidates_fast_batch(
+            tokens,
+            [candidate.to_dict() for candidate in batch],
+            threads=rust_threads,
+        )
+        for candidate, result in zip(batch, results, strict=True):
+            if not result.get("valid"):
+                reason = str(result.get("reason") or "invalid_transform")
+                rejected_reason_counts[reason] += 1
+                if len(rejected) < 40:
+                    payload = {
+                        **candidate.to_dict(),
+                        "stage": stage,
+                        "reason": reason,
+                    }
+                    if result.get("token_order_hash"):
+                        payload["token_order_hash"] = result.get("token_order_hash")
+                    rejected.append(payload)
+                continue
+            order_hash = str(result["token_order_hash"])
+            preserve_duplicate = (
+                stage == "program_search"
+                and isinstance(candidate.params, dict)
+                and bool(candidate.params.get("template"))
+            )
+            if order_hash in seen_orders and not preserve_duplicate:
+                rejected_reason_counts["duplicate_token_order"] += 1
+                if len(rejected) < 40:
+                    rejected.append({
+                        **candidate.to_dict(),
+                        "stage": stage,
+                        "reason": "duplicate_token_order",
+                        "token_order_hash": order_hash,
+                    })
+                continue
+            if not preserve_duplicate:
+                seen_orders.add(order_hash)
+            metrics = dict(result["metrics"])
+            score = _combined_metric_score(metrics) + _program_shape_bonus(candidate)
+            item = CandidateScore(
+                candidate=candidate,
+                score=score,
+                delta_vs_identity=score - identity_score,
+                metrics=metrics,
+                token_order_hash=order_hash,
+                transformed_preview=list(result.get("transformed_preview") or []),
+                position_order_preview=list(result.get("position_order_preview") or []),
+            )
+            scored_count += 1
+            scored_family_counts[_family_count_key(candidate.family)] += 1
+            if candidate.family == "identity":
+                identity_candidate = item.to_dict()
+            sequence += 1
+            push_heap(top_heap, item, limit=max(1, top_n))
+            if _anchor_candidate_key(item) is not None:
+                push_heap(anchor_heap, item, limit=max(24, top_n))
+
+    fast_batch: list[TransformCandidate] = []
     for candidate in candidate_iter:
         candidate_count += 1
         family_counts[_family_count_key(candidate.family)] += 1
-        score_one(candidate, stage="base")
+        if use_rust_structural_metrics:
+            fast_batch.append(candidate)
+            if len(fast_batch) >= rust_batch_size:
+                score_fast_batch(fast_batch, stage="base")
+                fast_batch = []
+        else:
+            score_one(candidate, stage="base")
+    if use_rust_structural_metrics and fast_batch:
+        score_fast_batch(fast_batch, stage="base")
 
     base_scored_candidate_count = scored_count
     program_candidate_count = 0
@@ -1455,6 +1535,8 @@ def _screen_transform_candidates_streaming(
         "profile": profile,
         "streaming": True,
         "fast_structural_metrics": use_fast_structural_metrics,
+        "rust_structural_metrics": use_rust_structural_metrics,
+        "rust_threads": rust_threads,
         "max_generated_candidates": max_generated_candidates,
         "generation_limit_reached": (
             max_generated_candidates is not None

@@ -139,6 +139,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "rationale": {"type": "string"},
                 "from_branch": {"type": "string", "default": "main"},
+                "evidence_source": {
+                    "type": "string",
+                    "enum": [
+                        "agent_inference",
+                        "benchmark_context",
+                        "ciphertext_statistics",
+                        "solver_result",
+                        "related_record",
+                        "other",
+                    ],
+                    "default": "agent_inference",
+                    "description": (
+                        "Where this cipher-mode hypothesis came from. Use "
+                        "`benchmark_context` when you read the exposed context "
+                        "and are treating it as a controlling working assumption."
+                    ),
+                },
                 "mode_confidence": {
                     "type": "string",
                     "enum": ["low", "medium", "high"],
@@ -153,7 +170,9 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Mark a hypothesis branch as rejected or superseded and record the "
             "reason. Use this when a mode/search basin produced only word "
-            "islands, incoherent text, or incompatible evidence."
+            "islands, incoherent text, or incompatible evidence. The executor "
+            "may block rejection when context-supported or statistically "
+            "required family-level tools are still pending."
         ),
         "input_schema": {
             "type": "object",
@@ -165,8 +184,65 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "enum": ["rejected", "superseded"],
                     "default": "rejected",
                 },
+                "acknowledge_pending_required_tools": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Emergency override only. Set true only when pending "
+                        "required tools are impossible or irrelevant, and "
+                        "explain why in reason."
+                    ),
+                },
             },
             "required": ["branch", "reason"],
+        },
+    },
+    {
+        "name": "workspace_update_hypothesis",
+        "description": (
+            "Update the cipher-mode hypothesis metadata for an existing branch "
+            "without changing its key or decoded text. Use this to activate, "
+            "downgrade, supersede, or add evidence/counter-evidence after a "
+            "diagnostic or solver attempt."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "cipher_mode": {
+                    "type": "string",
+                    "description": "Optional replacement mode label.",
+                },
+                "mode_status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "rejected", "superseded"],
+                    "default": "active",
+                },
+                "mode_confidence": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                },
+                "evidence": {"type": "string"},
+                "counter_evidence": {"type": "string"},
+                "next_recommended_action": {"type": "string"},
+                "evidence_source": {
+                    "type": "string",
+                    "enum": [
+                        "agent_inference",
+                        "benchmark_context",
+                        "ciphertext_statistics",
+                        "solver_result",
+                        "related_record",
+                        "other",
+                    ],
+                    "description": (
+                        "Optional replacement evidence source. Set to "
+                        "`benchmark_context` only after reading exposed context "
+                        "and deciding it should control the active cipher family."
+                    ),
+                },
+            },
+            "required": ["branch"],
         },
     },
     {
@@ -178,6 +254,25 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "unknown-cipher result."
         ),
         "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "workspace_hypothesis_next_steps",
+        "description": (
+            "Return a mode-specific diagnostic/solver playbook for one "
+            "hypothesis branch or all active hypotheses. It marks which "
+            "recommended tools have already been tried in this run and names "
+            "the next pending action, so the agent can avoid looping on the "
+            "same diagnostic."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Optional hypothesis branch; omit for all active hypotheses.",
+                },
+            },
+        },
     },
     {
         "name": "workspace_delete",
@@ -459,6 +554,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "include_program_search": {"type": "boolean", "default": False},
                 "program_max_depth": {"type": "integer", "default": 5},
                 "program_beam_width": {"type": "integer", "default": 48},
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
             },
         },
     },
@@ -494,6 +604,91 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": "How many top candidates to install as branches; 0 means screen only.",
                 },
                 "new_branch_prefix": {"type": "string", "default": "poly"},
+            },
+        },
+    },
+    {
+        "name": "search_quagmire3_keyword_alphabet",
+        "description": (
+            "Search Quagmire III keyword-shaped shared alphabets and derive "
+            "cyclewords for each candidate. Use this after ordinary "
+            "Vigenere-family search fails but periodic evidence remains, or "
+            "when context suggests a keyed-tableau/Quagmire-style cipher. "
+            "This is bounded and diagnostic, not a full open-ended Quagmire "
+            "crack."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "keyword_lengths": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Candidate alphabet-keyword lengths, e.g. [7].",
+                },
+                "cycleword_lengths": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Candidate cycleword/key lengths, e.g. [8].",
+                },
+                "initial_keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional context/crib keyword starts. Supplying a "
+                        "solution-bearing or title/source-derived keyword "
+                        "makes this a seeded/context-assisted probe, not a "
+                        "blind solve."
+                    ),
+                },
+                "steps": {"type": "integer", "default": 200},
+                "restarts": {"type": "integer", "default": 8},
+                "seed": {"type": "integer", "default": 1},
+                "top_n": {"type": "integer", "default": 5},
+                "install_top_n": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "Install this many candidates as branches; 0 = screen only.",
+                },
+                "estimate_only": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Return budget/runtime estimates without running the "
+                        "search. Recommended before broad rust_shotgun runs."
+                    ),
+                },
+                "screen_top_n": {"type": "integer", "default": 64},
+                "word_weight": {"type": "number", "default": 0.25},
+                "dictionary_keyword_limit": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Add first N dictionary keyword starts.",
+                },
+                "engine": {
+                    "type": "string",
+                    "enum": ["python_screen", "rust_shotgun"],
+                    "default": "rust_shotgun",
+                    "description": (
+                        "Use rust_shotgun for the compiled Blake-style "
+                        "parallel restart/hillclimb loop. python_screen is "
+                        "a small reference/diagnostic path, not a large-run "
+                        "fallback."
+                    ),
+                },
+                "hillclimbs": {
+                    "type": "integer",
+                    "default": 500,
+                    "description": "Rust shotgun hillclimb proposals per restart.",
+                },
+                "threads": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Rust worker threads; 0 means all available cores.",
+                },
+                "slip_probability": {"type": "number", "default": 0.001},
+                "backtrack_probability": {"type": "number", "default": 0.15},
+                "new_branch_prefix": {"type": "string", "default": "quag3"},
             },
         },
     },
@@ -666,6 +861,15 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "near-solved repairs before committing them."
                     ),
                 },
+                "allow_mode_mismatch_repair": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Override the cipher-mode guard when deliberately "
+                        "using a substitution-style repair on a non-"
+                        "substitution hypothesis branch."
+                    ),
+                },
             },
             "required": ["branch", "cipher_symbol", "plain_letter"],
         },
@@ -746,6 +950,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "object",
                     "additionalProperties": {"type": "string"},
                 },
+                "allow_mode_mismatch_repair": {"type": "boolean", "default": False},
             },
             "required": ["branch", "mappings"],
         },
@@ -764,6 +969,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "branch": {"type": "string"},
                 "cipher_word_index": {"type": "integer"},
                 "plaintext": {"type": "string"},
+                "allow_mode_mismatch_repair": {"type": "boolean", "default": False},
             },
             "required": ["branch", "cipher_word_index", "plaintext"],
         },
@@ -935,6 +1141,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "want this local word repair despite the warning."
                     ),
                 },
+                "allow_mode_mismatch_repair": {"type": "boolean", "default": False},
             },
             "required": ["branch", "target_word"],
         },
@@ -1105,6 +1312,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "inherited keys are restarted from scratch."
                     ),
                 },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
             },
             "required": ["branch"],
         },
@@ -1136,6 +1358,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["zenith_native", "legacy"],
                     "default": "zenith_native",
+                },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
                 },
             },
             "required": ["branch"],
@@ -1236,6 +1473,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "named <branch>_cand2, <branch>_cand3, ..."
                     ),
                 },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
             },
             "required": ["branch"],
         },
@@ -1257,6 +1509,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": (
                         "Pipeline object with optional columns/rows and steps, "
                         "where each step is {name, data}."
+                    ),
+                },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
                     ),
                 },
             },
@@ -1284,6 +1551,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "description": (
                         "Optional branch prefix. Defaults to "
                         "<source_branch>_transform_rank."
+                    ),
+                },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
                     ),
                 },
             },
@@ -1399,6 +1681,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "include_program_search": {"type": "boolean", "default": False},
                 "program_max_depth": {"type": "integer", "default": 5},
                 "program_beam_width": {"type": "integer", "default": 24},
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
             },
             "required": ["branch"],
         },
@@ -1930,7 +2227,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "meta_declare_solution",
         "description": (
-            "Terminate the run. Specify the branch whose transcription you want"
+            "Terminate the run. Specify the branch whose transcription you want "
             "to submit, a rationale explaining your reasoning and remaining "
             "uncertainty, a brief human-readable reading summary, whether "
             "more iterations would likely help, and your self-confidence "
@@ -1991,6 +2288,43 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             ],
         },
     },
+    {
+        "name": "meta_declare_unsolved",
+        "description": (
+            "Terminate the run as honestly unsolved/exhausted instead of "
+            "submitting a bogus solution. Use this when the relevant "
+            "high-leverage tools have been tried, no branch is coherent, and "
+            "the right artifact outcome is a negative result with next steps."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "rationale": {"type": "string"},
+                "branches_considered": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Branches or hypotheses reviewed before stopping.",
+                },
+                "best_branch": {
+                    "type": "string",
+                    "description": "Best available branch for inspection, if any.",
+                },
+                "reading_summary": {
+                    "type": "string",
+                    "description": "Human-readable summary of what, if anything, was learned.",
+                },
+                "further_iterations_helpful": {"type": "boolean"},
+                "further_iterations_note": {"type": "string"},
+            },
+            "required": [
+                "rationale",
+                "branches_considered",
+                "reading_summary",
+                "further_iterations_helpful",
+                "further_iterations_note",
+            ],
+        },
+    },
 ]
 
 
@@ -2035,6 +2369,7 @@ class WorkspaceToolExecutor:
         # Termination state
         self.terminated: bool = False
         self.solution: SolutionDeclaration | None = None
+        self.unsolved_declaration: dict[str, Any] | None = None
         self.max_iterations: int | None = None
         self.allowed_tool_names: set[str] | None = None
 
@@ -2044,6 +2379,7 @@ class WorkspaceToolExecutor:
 
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
+        self.context_family_overrides: list[dict[str, Any]] = []
 
         # Durable reading-repair agenda. These are deliberately plain dicts so
         # they serialize directly into run artifacts and tool results.
@@ -2098,6 +2434,8 @@ class WorkspaceToolExecutor:
                     "decide which resegmentation actuator applies."
                 ),
             })
+        elif (context_block := self._context_cipher_family_tool_block(tool_name, args)) is not None:
+            result = _json(context_block)
         elif handler is None:
             result = _json({"error": f"Unknown tool: {tool_name}"})
         else:
@@ -2295,8 +2633,999 @@ class WorkspaceToolExecutor:
             "transposition_homophonic": "search_transform_candidates",
             "polyalphabetic_vigenere": "observe_periodic_ic",
             "periodic_polyalphabetic": "search_periodic_polyalphabetic",
-            "playfair": "observe_digraph_structure",
+            "quagmire3": "search_quagmire3_keyword_alphabet",
+            "keyed_tableau_polyalphabetic": "search_quagmire3_keyword_alphabet",
+            "playfair": "observe_cipher_shape",
         }.get(mode, "workspace_create_hypothesis_branch")
+
+    _POLY_MODE_NAMES = {
+        "periodic_polyalphabetic",
+        "polyalphabetic_vigenere",
+        "keyed_tableau_polyalphabetic",
+        "quagmire3",
+    }
+
+    _KEYED_TABLEAU_OFF_FAMILY_TOOLS = {
+        "search_anneal": "monoalphabetic/simple substitution",
+        "search_automated_solver": "generic automated routing",
+        "search_homophonic_anneal": "homophonic substitution",
+        "search_transform_candidates": "ciphertext-order transform screening",
+        "search_transform_homophonic": "transposition+homophonic search",
+        "act_apply_transform_pipeline": "manual ciphertext-order transform",
+        "act_install_transform_finalists": "transform finalist promotion",
+    }
+
+    def _context_cipher_family_assumptions(self) -> list[dict[str, Any]]:
+        prior = self._context_keyed_tableau_prior()
+        if not prior:
+            return []
+        return [{
+            "cipher_mode": prior["prior"],
+            "confidence": prior["confidence"],
+            "source": "agent_declared_benchmark_context_assumption",
+            "evidence": prior["evidence"],
+            "assumption": (
+                "The agent read exposed benchmark context and explicitly "
+                "recorded it as a controlling cipher-family assumption."
+            ),
+            "risk": (
+                "If the benchmark context is wrong or too specific, this "
+                "assumption could suppress useful off-family searches."
+            ),
+        }]
+
+    def _context_cipher_family_tool_block(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Prevent accidental drift away from an exposed context cipher family."""
+        prior = self._context_keyed_tableau_prior()
+        if not prior:
+            return None
+        attempted_family = self._KEYED_TABLEAU_OFF_FAMILY_TOOLS.get(tool_name)
+        if attempted_family is None:
+            return None
+        if bool(args.get("override_context_cipher_family", False)):
+            rationale = str(args.get("context_override_rationale") or "").strip()
+            if len(rationale) < 40:
+                return {
+                    "status": "blocked",
+                    "accepted": False,
+                    "reason": "context_override_rationale_required",
+                    "attempted_tool": tool_name,
+                    "attempted_family": attempted_family,
+                    "context_cipher_family": prior["prior"],
+                    "context_assumption": prior,
+                    "note": (
+                        "Benchmark context explicitly supports a keyed-"
+                        "tableau/Kryptos-style polyalphabetic cipher. To "
+                        "leave that family, call this tool again with "
+                        "`override_context_cipher_family=true` and a concrete "
+                        "`context_override_rationale` explaining the evidence "
+                        "that context may be wrong or exhausted."
+                    ),
+                    "suggested_next_tools": [
+                        "workspace_hypothesis_next_steps",
+                        "search_periodic_polyalphabetic",
+                        "search_quagmire3_keyword_alphabet",
+                        "workspace_branch_cards",
+                    ],
+                }
+            self.context_family_overrides.append({
+                "iteration": self._current_iteration,
+                "tool": tool_name,
+                "attempted_family": attempted_family,
+                "context_cipher_family": prior["prior"],
+                "rationale": rationale,
+                "warning": (
+                    "Agent explicitly overrode exposed benchmark cipher-family "
+                    "context; compare this run separately from context-trusting "
+                    "runs."
+                ),
+            })
+            return None
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "reason": "context_cipher_family_mismatch",
+            "attempted_tool": tool_name,
+            "attempted_family": attempted_family,
+            "context_cipher_family": prior["prior"],
+            "context_assumption": prior,
+            "note": (
+                "Exposed benchmark context says this cipher is keyed-"
+                "Vigenere/Kryptos-style polyalphabetic. Trust that context "
+                "as the working cipher family. Do not spend budget on "
+                f"{attempted_family} tools unless you explicitly override the "
+                "context and record why the context may be wrong."
+            ),
+            "suggested_next_tools": [
+                "workspace_hypothesis_next_steps",
+                "search_periodic_polyalphabetic",
+                "search_quagmire3_keyword_alphabet",
+                "workspace_branch_cards",
+            ],
+            "override_fields": {
+                "override_context_cipher_family": True,
+                "context_override_rationale": (
+                    "Required if deliberately leaving the context-supported "
+                    "cipher family."
+                ),
+            },
+        }
+
+    def _context_keyed_tableau_prior(self) -> dict[str, Any] | None:
+        """Return a keyed-tableau prior explicitly declared by the agent.
+
+        The executor does not parse benchmark prose to infer cipher type. If
+        context says "this is keyed Vigenere" or similar, the agent must record
+        that reading via workspace_create_hypothesis_branch or
+        workspace_update_hypothesis with evidence_source="benchmark_context".
+        """
+        rows = []
+        for name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(name)
+            metadata = branch.metadata
+            if not metadata.get("context_supported_mode"):
+                continue
+            if metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            mode = str(metadata.get("cipher_mode") or "").strip()
+            if mode not in {"keyed_tableau_polyalphabetic", "quagmire3"}:
+                continue
+            rows.append({
+                "branch": name,
+                "cipher_mode": mode,
+                "evidence_source": metadata.get("evidence_source"),
+                "mode_evidence": metadata.get("mode_evidence") or metadata.get("hypothesis_notes"),
+                "context_assumption_note": metadata.get("context_assumption_note"),
+            })
+        if not rows:
+            return None
+        return {
+            "prior": "keyed_tableau_polyalphabetic",
+            "confidence": "agent_declared_context_supported",
+            "evidence": rows,
+            "required_tools_before_rejection": [
+                "search_quagmire3_keyword_alphabet",
+            ],
+            "note": (
+                "The agent has recorded exposed benchmark context as supporting "
+                "a keyed-tableau/Kryptos-style hypothesis. Plain A-Z Vigenere "
+                "failure does not reject this family; escalate to "
+                "keyed-tableau/Quagmire search before rejecting it."
+            ),
+        }
+
+    def _polyalphabetic_signal_prior(self) -> dict[str, Any] | None:
+        fp = cipher_id.compute_cipher_fingerprint(
+            self.workspace.cipher_text.tokens,
+            self.workspace.cipher_text.alphabet.size,
+            language=self.language,
+            word_group_count=len(self.workspace.cipher_text.words),
+        )
+        scores = fp.suspicion_scores
+        poly_score = float(scores.get("polyalphabetic_vigenere", 0.0))
+        hom_score = float(scores.get("homophonic_substitution", 0.0))
+        period_lift = (
+            float(fp.best_period_ic or 0.0) - float(fp.ic or 0.0)
+            if fp.best_period_ic is not None else 0.0
+        )
+        if poly_score < 0.55 and period_lift < 0.006:
+            return None
+        return {
+            "prior": "polyalphabetic_family",
+            "confidence": "statistical",
+            "poly_score": round(poly_score, 4),
+            "homophonic_score": round(hom_score, 4),
+            "best_period": fp.best_period,
+            "best_period_ic": round(float(fp.best_period_ic), 6) if fp.best_period_ic is not None else None,
+            "raw_ic": round(float(fp.ic), 6),
+            "period_lift": round(period_lift, 6),
+            "note": (
+                "Statistics make a periodic polyalphabetic family plausible. "
+                "If ordinary Vigenere-family shifts fail, that only rules out "
+                "one child model; keyed-tableau/Quagmire remains pending."
+            ),
+        }
+
+    def _polyalphabetic_required_tools_for_mode(self, mode: str) -> list[str]:
+        mode = (mode or "").strip()
+        context_prior = self._context_keyed_tableau_prior()
+        if context_prior and mode in self._POLY_MODE_NAMES:
+            return list(context_prior["required_tools_before_rejection"])
+        if mode in {"quagmire3", "keyed_tableau_polyalphabetic"}:
+            return ["search_quagmire3_keyword_alphabet"]
+        return []
+
+    def _mode_playbook(self, mode: str) -> list[dict[str, str]]:
+        mode = (mode or "unknown").strip()
+        playbooks: dict[str, list[dict[str, str]]] = {
+            "monoalphabetic_substitution": [
+                {"tool": "search_anneal", "purpose": "Run the main substitution solver."},
+                {"tool": "workspace_branch_cards", "purpose": "Read the candidate and compare branches."},
+                {"tool": "decode_diagnose", "purpose": "Plan local repairs only if the text is near-readable."},
+                {"tool": "score_panel", "purpose": "Use scores as supporting evidence."},
+            ],
+            "simple_substitution": [
+                {"tool": "search_anneal", "purpose": "Run the main substitution solver."},
+                {"tool": "workspace_branch_cards", "purpose": "Read the candidate and compare branches."},
+                {"tool": "decode_diagnose", "purpose": "Plan local repairs only if the text is near-readable."},
+                {"tool": "score_panel", "purpose": "Use scores as supporting evidence."},
+            ],
+            "homophonic_substitution": [
+                {"tool": "search_automated_solver", "purpose": "Run the modern no-LLM solver stack first."},
+                {"tool": "search_homophonic_anneal", "purpose": "Run focused homophonic annealing if needed."},
+                {"tool": "workspace_branch_cards", "purpose": "Check for coherent clauses, not just word islands."},
+                {"tool": "decode_absent_letter_candidates", "purpose": "Diagnose missing/overused letters before local repair."},
+            ],
+            "periodic_polyalphabetic": [
+                {"tool": "observe_periodic_ic", "purpose": "Confirm candidate periods and IC recovery."},
+                {"tool": "observe_kasiski", "purpose": "Corroborate periods with repeated-sequence spacings."},
+                {"tool": "observe_phase_frequency", "purpose": "Inspect phase frequency once a period is plausible."},
+                {"tool": "search_periodic_polyalphabetic", "purpose": "Try Vigenere/Beaufort/Gronsfeld candidates."},
+                {"tool": "search_quagmire3_keyword_alphabet", "purpose": "Escalate to keyed-tableau/Quagmire III if standard Vigenere-family search fails."},
+                {"tool": "decode_show_phases", "purpose": "Read installed periodic branches by phase."},
+                {"tool": "act_set_periodic_shift", "purpose": "Adjust individual phase shifts only after reading evidence."},
+            ],
+            "quagmire3": [
+                {"tool": "observe_periodic_ic", "purpose": "Confirm periodic evidence and plausible cycleword lengths."},
+                {"tool": "search_periodic_polyalphabetic", "purpose": "Clear ordinary Vigenere-family hypotheses first."},
+                {"tool": "search_quagmire3_keyword_alphabet", "purpose": "Search keyword-shaped shared alphabets plus derived cyclewords."},
+                {"tool": "workspace_branch_cards", "purpose": "Read installed candidates and compare coherence."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Record whether Quagmire III remains plausible."},
+            ],
+            "keyed_tableau_polyalphabetic": [
+                {"tool": "observe_periodic_ic", "purpose": "Confirm periodic evidence and plausible cycleword lengths."},
+                {"tool": "search_periodic_polyalphabetic", "purpose": "Clear ordinary Vigenere-family hypotheses first."},
+                {"tool": "search_quagmire3_keyword_alphabet", "purpose": "Try the first structured keyed-tableau hypothesis, Quagmire III."},
+                {"tool": "workspace_branch_cards", "purpose": "Read installed candidates and compare coherence."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Record whether broader keyed-tableau search is needed."},
+            ],
+            "polyalphabetic_vigenere": [
+                {"tool": "observe_periodic_ic", "purpose": "Confirm candidate periods and IC recovery."},
+                {"tool": "observe_kasiski", "purpose": "Corroborate periods with repeated-sequence spacings."},
+                {"tool": "search_periodic_polyalphabetic", "purpose": "Try Vigenere-family candidates."},
+                {"tool": "search_quagmire3_keyword_alphabet", "purpose": "Escalate to keyed-tableau/Quagmire III if plain Vigenere-family candidates fail."},
+                {"tool": "decode_show_phases", "purpose": "Read installed periodic branches by phase."},
+            ],
+            "transposition_homophonic": [
+                {"tool": "observe_transform_suspicion", "purpose": "Check whether token order is suspicious."},
+                {"tool": "search_transform_candidates", "purpose": "Run structural transform screening."},
+                {"tool": "search_transform_homophonic", "purpose": "Promote candidates with homophonic solving."},
+                {"tool": "search_review_transform_finalists", "purpose": "Page through multiple finalist readings."},
+                {"tool": "act_rate_transform_finalist", "purpose": "Record contextual readability before choosing branches."},
+            ],
+            "transposition": [
+                {"tool": "observe_transform_suspicion", "purpose": "Check whether token order is suspicious."},
+                {"tool": "search_transform_candidates", "purpose": "Run structural transform screening."},
+                {"tool": "act_apply_transform_pipeline", "purpose": "Apply a known or selected transform pipeline."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Record whether order correction helped."},
+            ],
+            "fractionation_transposition": [
+                {"tool": "observe_cipher_shape", "purpose": "Inspect pairability, coordinate-like symbols, and token structure."},
+                {"tool": "observe_cipher_id", "purpose": "Re-evaluate after any normalization/filtering."},
+                {"tool": "meta_request_tool", "purpose": "Request missing fractionation/Polybius tooling if evidence supports it."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Mark as capability gap or paused if no solver exists yet."},
+            ],
+            "playfair": [
+                {"tool": "observe_cipher_shape", "purpose": "Inspect digraph constraints and doubled-letter behavior."},
+                {"tool": "meta_request_tool", "purpose": "Request Playfair/polygraphic tooling if evidence supports it."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Mark as capability gap or paused if no solver exists yet."},
+            ],
+        }
+        return playbooks.get(mode, [
+            {"tool": "observe_cipher_id", "purpose": "Rank plausible cipher families."},
+            {"tool": "observe_cipher_shape", "purpose": "Inspect structural clues before choosing a mode."},
+            {"tool": "workspace_create_hypothesis_branch", "purpose": "Create an explicit mode hypothesis."},
+            {"tool": "workspace_update_hypothesis", "purpose": "Record evidence and next action."},
+        ])
+
+    def _mode_tool_menu(self, mode: str) -> dict[str, Any]:
+        mode = (mode or "unknown").strip()
+        always_available = [
+            "inspect_benchmark_context",
+            "observe_cipher_id",
+            "observe_cipher_shape",
+            "workspace_branch_cards",
+            "workspace_hypothesis_cards",
+            "workspace_hypothesis_next_steps",
+            "workspace_update_hypothesis",
+            "workspace_reject_hypothesis",
+            "meta_declare_solution",
+        ]
+        escape_tools = [
+            "workspace_update_hypothesis",
+            "workspace_reject_hypothesis",
+            "workspace_create_hypothesis_branch",
+            "meta_request_tool",
+        ]
+        menus: dict[str, dict[str, Any]] = {
+            "monoalphabetic_substitution": {
+                "foreground_tools": [
+                    "observe_frequency",
+                    "observe_patterns",
+                    "corpus_word_candidates",
+                    "search_anneal",
+                    "decode_diagnose",
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_anchor_word",
+                    "act_apply_word_repair",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "search_transform_candidates",
+                    "search_transform_homophonic",
+                    "act_set_periodic_key",
+                    "act_set_periodic_shift",
+                ],
+                "mode_warning": (
+                    "Use local mapping repairs only after search has produced "
+                    "a near-readable substitution basin."
+                ),
+            },
+            "simple_substitution": {
+                "foreground_tools": [
+                    "observe_frequency",
+                    "observe_patterns",
+                    "corpus_word_candidates",
+                    "search_anneal",
+                    "decode_diagnose",
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_anchor_word",
+                    "act_apply_word_repair",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "search_transform_candidates",
+                    "search_transform_homophonic",
+                    "act_set_periodic_key",
+                    "act_set_periodic_shift",
+                ],
+                "mode_warning": (
+                    "If this produces only word islands, reject the basin "
+                    "instead of polishing local spellings."
+                ),
+            },
+            "homophonic_substitution": {
+                "foreground_tools": [
+                    "search_automated_solver",
+                    "search_homophonic_anneal",
+                    "decode_letter_stats",
+                    "decode_absent_letter_candidates",
+                    "decode_ambiguous_letter",
+                    "decode_repair_no_boundary",
+                    "workspace_branch_cards",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "search_anneal",
+                    "act_swap_decoded",
+                    "act_set_periodic_key",
+                    "search_periodic_polyalphabetic",
+                ],
+                "mode_warning": (
+                    "Segmented dictionary hits can be word islands; require "
+                    "coherent clauses before local repair."
+                ),
+            },
+            "periodic_polyalphabetic": {
+                "foreground_tools": [
+                    "observe_periodic_ic",
+                    "observe_kasiski",
+                    "observe_phase_frequency",
+                    "observe_periodic_shift_candidates",
+                    "search_periodic_polyalphabetic",
+                    "search_quagmire3_keyword_alphabet",
+                    "decode_show_phases",
+                    "act_set_periodic_key",
+                    "act_set_periodic_shift",
+                    "act_adjust_periodic_shift",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_anchor_word",
+                    "act_apply_word_repair",
+                    "search_homophonic_anneal",
+                    "search_transform_homophonic",
+                ],
+                "mode_warning": (
+                    "Do not use single-symbol substitution repairs on this "
+                    "mode unless explicitly abandoning the periodic model."
+                ),
+            },
+            "polyalphabetic_vigenere": {
+                "foreground_tools": [
+                    "observe_periodic_ic",
+                    "observe_kasiski",
+                    "observe_phase_frequency",
+                    "observe_periodic_shift_candidates",
+                    "search_periodic_polyalphabetic",
+                    "search_quagmire3_keyword_alphabet",
+                    "decode_show_phases",
+                    "act_set_periodic_key",
+                    "act_set_periodic_shift",
+                    "act_adjust_periodic_shift",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_homophonic_anneal",
+                ],
+                "mode_warning": (
+                    "Treat this as periodic key recovery, not a static "
+                    "substitution mapping."
+                ),
+            },
+            "transposition_homophonic": {
+                "foreground_tools": [
+                    "observe_transform_suspicion",
+                    "search_transform_candidates",
+                    "search_transform_homophonic",
+                    "search_review_transform_finalists",
+                    "act_install_transform_finalists",
+                    "act_rate_transform_finalist",
+                    "act_apply_transform_pipeline",
+                    "search_homophonic_anneal",
+                    "workspace_branch_cards",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_periodic_polyalphabetic",
+                ],
+                "mode_warning": (
+                    "Do not repair local words until a transformed branch "
+                    "contains coherent text, not just isolated words."
+                ),
+            },
+            "quagmire3": {
+                "foreground_tools": [
+                    "observe_periodic_ic",
+                    "observe_kasiski",
+                    "observe_phase_frequency",
+                    "search_periodic_polyalphabetic",
+                    "search_quagmire3_keyword_alphabet",
+                    "workspace_branch_cards",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_homophonic_anneal",
+                    "search_transform_homophonic",
+                ],
+                "mode_warning": (
+                    "This is a keyed-tableau periodic hypothesis. Clear "
+                    "ordinary Vigenere first, then test Quagmire III. "
+                    "Supplying context keywords should be labeled as seeded, "
+                    "not blind."
+                ),
+            },
+            "keyed_tableau_polyalphabetic": {
+                "foreground_tools": [
+                    "observe_periodic_ic",
+                    "observe_kasiski",
+                    "observe_phase_frequency",
+                    "search_periodic_polyalphabetic",
+                    "search_quagmire3_keyword_alphabet",
+                    "workspace_branch_cards",
+                    "score_panel",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_homophonic_anneal",
+                    "search_transform_homophonic",
+                ],
+                "mode_warning": (
+                    "This mode covers structured keyed tableaux. Quagmire III "
+                    "is the first implemented child hypothesis; broader "
+                    "Quagmire/tableau search remains experimental."
+                ),
+            },
+            "transposition": {
+                "foreground_tools": [
+                    "observe_transform_suspicion",
+                    "search_transform_candidates",
+                    "act_apply_transform_pipeline",
+                    "workspace_branch_cards",
+                    "workspace_update_hypothesis",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "act_set_periodic_key",
+                ],
+                "mode_warning": "Focus on order correction before key repair.",
+            },
+            "fractionation_transposition": {
+                "foreground_tools": [
+                    "observe_cipher_shape",
+                    "observe_cipher_id",
+                    "meta_request_tool",
+                    "workspace_update_hypothesis",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_anneal",
+                ],
+                "mode_warning": (
+                    "Current support is diagnostic/capability-gap oriented; "
+                    "request missing Polybius/fractionation tools if evidence "
+                    "supports the mode."
+                ),
+            },
+            "playfair": {
+                "foreground_tools": [
+                    "observe_cipher_shape",
+                    "observe_cipher_id",
+                    "meta_request_tool",
+                    "workspace_update_hypothesis",
+                ],
+                "discouraged_tools": [
+                    "act_set_mapping",
+                    "act_bulk_set",
+                    "act_apply_word_repair",
+                    "search_anneal",
+                ],
+                "mode_warning": (
+                    "Current support is diagnostic/capability-gap oriented; "
+                    "single-symbol substitution repairs are the wrong key model."
+                ),
+            },
+        }
+        entry = menus.get(mode, {
+            "foreground_tools": [
+                "observe_cipher_id",
+                "observe_cipher_shape",
+                "workspace_create_hypothesis_branch",
+                "workspace_hypothesis_next_steps",
+            ],
+            "discouraged_tools": [],
+            "mode_warning": (
+                "No focused menu exists for this mode yet. Use diagnostics, "
+                "record evidence, and switch hypotheses if needed."
+            ),
+        })
+        return {
+            "always_available": always_available,
+            "foreground_tools": entry["foreground_tools"],
+            "escape_tools": escape_tools,
+            "discouraged_tools": entry["discouraged_tools"],
+            "mode_warning": entry["mode_warning"],
+            "note": (
+                "This is a soft foreground menu, not hard gating. Tools may "
+                "still be callable, but discouraged tools usually indicate a "
+                "mode mismatch or premature local repair."
+            ),
+        }
+
+    def _mode_scoped_suggestions(
+        self,
+        branch_name: str,
+        fallback: list[str],
+    ) -> list[str]:
+        """Keep guardrail suggestions inside the branch's active cipher mode."""
+        if not self.workspace.has_branch(branch_name):
+            return fallback
+        branch = self.workspace.get_branch(branch_name)
+        mode = str(branch.metadata.get("cipher_mode") or "").strip()
+        if mode in {
+            "periodic_polyalphabetic",
+            "polyalphabetic_vigenere",
+            "keyed_tableau_polyalphabetic",
+            "quagmire3",
+        }:
+            tools = [
+                "workspace_hypothesis_next_steps",
+                "observe_periodic_ic",
+                "observe_kasiski",
+                "observe_phase_frequency",
+                "search_periodic_polyalphabetic",
+                "search_quagmire3_keyword_alphabet",
+                "workspace_branch_cards",
+            ]
+            return [tool for tool in tools if tool]
+        if mode in {"transposition", "transposition_homophonic"}:
+            return [
+                "workspace_hypothesis_next_steps",
+                "observe_transform_suspicion",
+                "search_transform_candidates",
+                "search_transform_homophonic",
+                "search_review_transform_finalists",
+                "workspace_branch_cards",
+            ]
+        if mode in {"monoalphabetic_substitution", "simple_substitution", "homophonic_substitution"}:
+            return fallback
+        return fallback
+
+    def _tool_tried_for_branch(self, tool_name: str, branch_name: str) -> bool:
+        for call in self.call_log:
+            if call.tool_name != tool_name:
+                continue
+            args = call.arguments or {}
+            if tool_name == "search_quagmire3_keyword_alphabet" and bool(args.get("estimate_only", False)):
+                continue
+            called_branch = args.get("branch")
+            if called_branch is None or called_branch == branch_name:
+                return True
+        return False
+
+    def _quagmire_budget_class(self, nominal_proposals: int | float | None) -> str:
+        if nominal_proposals is None:
+            return "unknown"
+        try:
+            proposals = int(nominal_proposals)
+        except (TypeError, ValueError):
+            return "unknown"
+        if proposals >= 50_000_000:
+            return "broad"
+        if proposals >= 1_000_000:
+            return "moderate"
+        return "diagnostic"
+
+    def _quagmire_budget_rank(self, budget_class: str) -> int:
+        return {
+            "unknown": 0,
+            "diagnostic": 1,
+            "moderate": 2,
+            "broad": 3,
+        }.get(budget_class, 0)
+
+    def _quagmire_search_status(self, branch_name: str | None = None) -> dict[str, Any]:
+        best: dict[str, Any] | None = None
+        if branch_name is not None and self.workspace.has_branch(branch_name):
+            metadata = self.workspace.get_branch(branch_name).metadata
+            search_metadata = metadata.get("search_metadata")
+            if isinstance(search_metadata, dict):
+                nominal = search_metadata.get("nominal_proposals")
+                budget_class = str(
+                    search_metadata.get("budget_class")
+                    or self._quagmire_budget_class(nominal)
+                )
+                best = {
+                    "iteration": None,
+                    "branch": branch_name,
+                    "status": "completed",
+                    "engine": search_metadata.get("engine"),
+                    "budget_class": budget_class,
+                    "nominal_proposals": nominal,
+                    "source": "branch_search_metadata",
+                    "best_candidate_preview": metadata.get("decoded_text", "")[:240],
+                }
+        for name in self.workspace.branch_names():
+            metadata = self.workspace.get_branch(name).metadata
+            search_metadata = metadata.get("search_metadata")
+            if not isinstance(search_metadata, dict):
+                continue
+            nominal = search_metadata.get("nominal_proposals")
+            budget_class = str(
+                search_metadata.get("budget_class")
+                or self._quagmire_budget_class(nominal)
+            )
+            entry = {
+                "iteration": None,
+                "branch": name,
+                "status": "completed",
+                "engine": search_metadata.get("engine"),
+                "budget_class": budget_class,
+                "nominal_proposals": nominal,
+                "source": "branch_search_metadata",
+                "best_candidate_preview": metadata.get("decoded_text", "")[:240],
+            }
+            if (
+                best is None
+                or self._quagmire_budget_rank(budget_class)
+                > self._quagmire_budget_rank(str(best.get("budget_class") or "unknown"))
+            ):
+                best = entry
+        for call in self.call_log:
+            if call.tool_name != "search_quagmire3_keyword_alphabet":
+                continue
+            args = call.arguments or {}
+            if bool(args.get("estimate_only", False)):
+                continue
+            try:
+                payload = json.loads(call.result or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            nominal = payload.get("nominal_proposals")
+            if nominal is None:
+                nominal = payload.get("budget_estimate", {}).get("nominal_proposals")
+            budget_class = str(payload.get("budget_class") or self._quagmire_budget_class(nominal))
+            entry = {
+                "iteration": call.iteration,
+                "branch": args.get("branch"),
+                "status": payload.get("status"),
+                "engine": payload.get("engine"),
+                "budget_class": budget_class,
+                "nominal_proposals": nominal,
+                "source": "tool_call",
+                "best_candidate_preview": (
+                    (payload.get("top_candidates") or [{}])[0].get("preview")
+                    if isinstance(payload.get("top_candidates"), list) and payload.get("top_candidates")
+                    else None
+                ),
+            }
+            if (
+                best is None
+                or self._quagmire_budget_rank(budget_class)
+                > self._quagmire_budget_rank(str(best.get("budget_class") or "unknown"))
+            ):
+                best = entry
+        if best is None:
+            return {
+                "seen": False,
+                "sufficient_to_reject": False,
+                "required_minimum_budget_class": "moderate",
+            }
+        budget_class = str(best.get("budget_class") or "unknown")
+        return {
+            "seen": True,
+            "sufficient_to_reject": (
+                self._quagmire_budget_rank(budget_class)
+                >= self._quagmire_budget_rank("moderate")
+            ),
+            "required_minimum_budget_class": "moderate",
+            **best,
+        }
+
+    def _quagmire_budget_guidance(self, mode: str) -> dict[str, Any] | None:
+        if mode not in {"periodic_polyalphabetic", "polyalphabetic_vigenere", "quagmire3", "keyed_tableau_polyalphabetic"}:
+            return None
+        return {
+            "tool": "search_quagmire3_keyword_alphabet",
+            "principle": (
+                "Size Quagmire III search explicitly. First call with "
+                "estimate_only=true, using plausible cycleword lengths from "
+                "periodic IC/Kasiski/phase evidence. Then run the smallest "
+                "budget that can plausibly test the hypothesis."
+            ),
+            "profiles": [
+                {
+                    "name": "diagnostic",
+                    "purpose": "Quick smoke to verify tool path and candidate shape.",
+                    "suggested_args": {
+                        "engine": "rust_shotgun",
+                        "estimate_only": True,
+                        "keyword_lengths": [7],
+                        "cycleword_lengths": [8],
+                        "hillclimbs": 1000,
+                        "restarts": 100,
+                        "threads": 0,
+                    },
+                },
+                {
+                    "name": "moderate",
+                    "purpose": "First serious K2-sized run once period/length evidence is plausible.",
+                    "suggested_args": {
+                        "engine": "rust_shotgun",
+                        "estimate_only": True,
+                        "keyword_lengths": [7],
+                        "cycleword_lengths": [8],
+                        "hillclimbs": 10000,
+                        "restarts": 500,
+                        "threads": 0,
+                        "top_n": 10,
+                        "install_top_n": 3,
+                    },
+                },
+                {
+                    "name": "broader_length_sweep",
+                    "purpose": "Use when keyword/cycleword lengths are uncertain and the user accepts a larger run.",
+                    "suggested_args": {
+                        "engine": "rust_shotgun",
+                        "estimate_only": True,
+                        "keyword_lengths": [5, 6, 7, 8, 9],
+                        "cycleword_lengths": [6, 7, 8, 9, 10],
+                        "hillclimbs": 5000,
+                        "restarts": 250,
+                        "threads": 0,
+                    },
+                },
+            ],
+            "seeded_keyword_warning": (
+                "Do not pass likely title/source words as initial_keywords "
+                "unless intentionally running a context-seeded experiment. "
+                "If initial_keywords are supplied, label the result as seeded "
+                "rather than blind key recovery."
+            ),
+        }
+
+    def _pending_required_tools_for_branch(self, branch_name: str) -> dict[str, Any]:
+        branch = self.workspace.get_branch(branch_name)
+        metadata = branch.metadata
+        mode = str(metadata.get("cipher_mode") or "unknown").strip()
+        required = list(metadata.get("required_tools_before_rejection") or [])
+        required.extend(
+            tool for tool in self._polyalphabetic_required_tools_for_mode(mode)
+            if tool not in required
+        )
+
+        context_prior = metadata.get("context_mode_prior")
+        statistical_prior = None
+        family_coverage_debt = None
+        if mode in {"periodic_polyalphabetic", "polyalphabetic_vigenere"}:
+            search_tried = self._tool_tried_for_branch(
+                "search_periodic_polyalphabetic",
+                branch_name,
+            )
+            quagmire_tried = self._tool_tried_for_branch(
+                "search_quagmire3_keyword_alphabet",
+                branch_name,
+            )
+            if search_tried and not quagmire_tried:
+                statistical_prior = self._polyalphabetic_signal_prior()
+                if context_prior or statistical_prior:
+                    if "search_quagmire3_keyword_alphabet" not in required:
+                        required.append("search_quagmire3_keyword_alphabet")
+                    family_coverage_debt = (
+                        "Ordinary A-Z Vigenere/Beaufort/Gronsfeld has been "
+                        "tested, but keyed-tableau/Quagmire has not. Do not "
+                        "treat the whole polyalphabetic family as rejected yet."
+                    )
+
+        quagmire_status = self._quagmire_search_status(branch_name)
+        pending = []
+        for tool in required:
+            if tool == "search_quagmire3_keyword_alphabet":
+                if not quagmire_status["sufficient_to_reject"]:
+                    pending.append(tool)
+                continue
+            if not self._tool_tried_for_branch(tool, branch_name):
+                pending.append(tool)
+        return {
+            "required_tools_before_rejection": required,
+            "pending_required_tools": pending,
+            "context_mode_prior": context_prior,
+            "statistical_family_prior": statistical_prior,
+            "family_coverage_debt": family_coverage_debt,
+            "quagmire_search_status": (
+                quagmire_status
+                if "search_quagmire3_keyword_alphabet" in required
+                else None
+            ),
+        }
+
+    def _hypothesis_next_steps(self, branch_name: str) -> dict[str, Any]:
+        branch = self.workspace.get_branch(branch_name)
+        mode = str(branch.metadata.get("cipher_mode") or "unknown")
+        playbook = self._mode_playbook(mode)
+        steps = []
+        for index, step in enumerate(playbook, 1):
+            tried = self._tool_tried_for_branch(step["tool"], branch_name)
+            steps.append({
+                "index": index,
+                "tool": step["tool"],
+                "purpose": step["purpose"],
+                "status": "tried" if tried else "pending",
+            })
+        next_step = next((step for step in steps if step["status"] == "pending"), None)
+        required = self._pending_required_tools_for_branch(branch_name)
+        if required["pending_required_tools"]:
+            required_tool = required["pending_required_tools"][0]
+            next_step = next(
+                (step for step in steps if step["tool"] == required_tool),
+                {
+                    "index": None,
+                    "tool": required_tool,
+                    "purpose": "Required before rejecting this cipher-family hypothesis.",
+                    "status": "pending_required",
+                },
+            )
+        return {
+            "branch": branch_name,
+            "cipher_mode": mode,
+            "mode_status": branch.metadata.get("mode_status", "active"),
+            "mode_confidence": branch.metadata.get("mode_confidence"),
+            "mode_evidence": branch.metadata.get("mode_evidence") or branch.metadata.get("hypothesis_notes"),
+            "mode_counter_evidence": branch.metadata.get("mode_counter_evidence"),
+            "tool_menu": self._mode_tool_menu(mode),
+            "playbook": steps,
+            "next_step": next_step,
+            "already_tried_tools": [step["tool"] for step in steps if step["status"] == "tried"],
+            "pending_tools": [step["tool"] for step in steps if step["status"] == "pending"],
+            "quagmire_budget_guidance": self._quagmire_budget_guidance(mode),
+            **required,
+        }
+
+    _SUBSTITUTION_REPAIR_COMPATIBLE_MODES = {
+        "",
+        "unknown",
+        "monoalphabetic_substitution",
+        "simple_substitution",
+        "homophonic_substitution",
+    }
+
+    def _mode_mismatch_repair_block(
+        self,
+        branch_name: str,
+        tool_name: str,
+        *,
+        allow_override: bool = False,
+    ) -> dict[str, Any] | None:
+        """Block accidental substitution-style edits on non-substitution modes."""
+        branch = self.workspace.get_branch(branch_name)
+        mode = str(branch.metadata.get("cipher_mode") or "").strip()
+        key_type = str(branch.metadata.get("key_type") or "").strip()
+        if allow_override:
+            return None
+        if mode in self._SUBSTITUTION_REPAIR_COMPATIBLE_MODES and key_type != "PeriodicShiftKey":
+            return None
+        if mode == "periodic_polyalphabetic" or key_type == "PeriodicShiftKey":
+            next_tools = [
+                "decode_show_phases",
+                "observe_phase_frequency",
+                "act_set_periodic_shift",
+                "act_adjust_periodic_shift",
+                "search_periodic_polyalphabetic",
+                "workspace_update_hypothesis",
+            ]
+            note = (
+                "This branch is a periodic polyalphabetic hypothesis. A "
+                "cipher-symbol -> plaintext-letter mapping edits the wrong key "
+                "model. Use phase/key tools instead, or override only if you "
+                "are intentionally abandoning the periodic hypothesis."
+            )
+        elif mode in {"transposition", "transposition_homophonic"}:
+            next_tools = [
+                "observe_transform_suspicion",
+                "search_transform_candidates",
+                "search_transform_homophonic",
+                "act_apply_transform_pipeline",
+                "workspace_update_hypothesis",
+            ]
+            note = (
+                "This branch is an order/transform hypothesis. Local letter "
+                "repair is premature unless the transformed reading is already "
+                "coherent."
+            )
+        elif mode in {"fractionation_transposition", "playfair", "polygraphic_substitution"}:
+            next_tools = [
+                "observe_cipher_shape",
+                "workspace_update_hypothesis",
+            ]
+            note = (
+                "This branch is not modeled as single-symbol substitution. "
+                "Use mode-specific diagnostics before changing individual "
+                "symbol mappings."
+            )
+        else:
+            next_tools = [
+                self._recommended_tool_for_cipher_mode(mode),
+                "workspace_update_hypothesis",
+            ]
+            note = (
+                "This branch carries a non-substitution cipher-mode hypothesis. "
+                "Use mode-appropriate tools or explicitly override if you are "
+                "changing hypotheses."
+            )
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "branch": branch_name,
+            "attempted_tool": tool_name,
+            "reason": "mode_mismatch_substitution_repair_blocked",
+            "cipher_mode": mode or "unknown",
+            "key_type": key_type or None,
+            "suggested_next_tools": next_tools,
+            "override_argument": "allow_mode_mismatch_repair=true",
+            "note": note,
+        }
 
     def _branch_decoded_text(self, branch_name: str) -> str:
         branch = self.workspace.get_branch(branch_name)
@@ -2392,10 +3721,16 @@ class WorkspaceToolExecutor:
         word. With `max_words=None` returns the full sequence.
         """
         ws = self.workspace
-        metadata_text = ws.get_branch(branch_name).metadata.get("decoded_text")
+        branch_state = ws.get_branch(branch_name)
+        metadata_text = branch_state.metadata.get("decoded_text")
         if isinstance(metadata_text, str) and metadata_text.strip():
             if any(ch.isspace() for ch in metadata_text.strip()):
                 words = metadata_text.split()
+            elif branch_state.word_spans is not None:
+                words = [
+                    metadata_text[start:end]
+                    for start, end in ws.effective_word_spans(branch_name)
+                ]
             else:
                 words = [
                     metadata_text[i : i + 80]
@@ -2932,7 +4267,10 @@ class WorkspaceToolExecutor:
             "short_hit_fraction": round(short_hit_fraction, 4),
             "longest_dictionary_run": longest_run,
             "escalated_transform_search_seen": self._has_escalated_transform_search(),
-            "suggested_next_tools": suggested_next_tools,
+            "suggested_next_tools": self._mode_scoped_suggestions(
+                branch_name,
+                suggested_next_tools,
+            ),
         }
 
     def _first_reading_mismatches(
@@ -3242,6 +4580,67 @@ class WorkspaceToolExecutor:
         lowered = rationale.lower()
         return any(term in lowered for term in self._BOUNDARY_DECLARATION_TERMS)
 
+    def _word_boundary_declaration_block(
+        self,
+        branch_name: str,
+        *,
+        confidence: float,
+        forced_partial: bool,
+    ) -> dict[str, Any] | None:
+        """Require one segmentation pass before declaring a solved stream.
+
+        Solver-backed polyalphabetic branches can carry a plaintext stream in
+        metadata instead of in the substitution key. When that stream is
+        continuous text, a declaration is usually premature until the agent has
+        installed an explicit word-boundary overlay for the artifact and final
+        scoring/reporting.
+        """
+        if forced_partial or confidence < 0.75:
+            return None
+        branch = self.workspace.get_branch(branch_name)
+        metadata_text = branch.metadata.get("decoded_text")
+        if not isinstance(metadata_text, str) or not metadata_text.strip():
+            return None
+        decoded = metadata_text.strip()
+        if any(ch.isspace() for ch in decoded):
+            return None
+        if branch.word_spans is not None:
+            return None
+        if len(sig.normalize_for_scoring(decoded)) < 80:
+            return None
+
+        mode = str(branch.metadata.get("cipher_mode") or "").strip()
+        key_type = str(branch.metadata.get("key_type") or "").strip()
+        if mode not in self._POLY_MODE_NAMES and key_type not in {
+            "PeriodicShiftKey",
+            "QuagmireKey",
+        }:
+            return None
+
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "branch": branch_name,
+            "reason": "word_boundary_pass_required",
+            "cipher_mode": mode or None,
+            "key_type": key_type or None,
+            "decoded_stream_preview": decoded[:220],
+            "note": (
+                "This branch has a high-confidence decoded stream but no "
+                "word-boundary overlay. Before declaring, do a boundary pass "
+                "so the final artifact and word scoring reflect the readable "
+                "plaintext. If the letters are already correct, propose the "
+                "same letters with spaces and call act_resegment_by_reading."
+            ),
+            "suggested_next_tools": [
+                "decode_repair_no_boundary",
+                "decode_validate_reading_repair",
+                "act_resegment_by_reading",
+                "workspace_branch_cards",
+                "meta_declare_solution",
+            ],
+        }
+
     _TRANSFORM_DECLARATION_TERMS = (
         "transform", "transposition", "transpose", "columnar", "vigenere",
         "polyalpha", "polyalphabetic", "period", "key-period", "key period",
@@ -3361,6 +4760,7 @@ class WorkspaceToolExecutor:
         mode = str(args["cipher_mode"]).strip()
         rationale = str(args["rationale"]).strip()
         confidence = str(args.get("mode_confidence") or "medium").strip().lower()
+        evidence_source = str(args.get("evidence_source") or "agent_inference").strip()
         branch = self.workspace.fork(new_name, from_branch=from_branch)
         branch.metadata.update({
             "cipher_mode": mode,
@@ -3368,7 +4768,46 @@ class WorkspaceToolExecutor:
             "mode_status": "active",
             "mode_evidence": rationale,
             "hypothesis_notes": rationale,
+            "evidence_source": evidence_source,
         })
+        context_prior = None
+        if evidence_source == "benchmark_context" and mode in self._POLY_MODE_NAMES:
+            required = self._polyalphabetic_required_tools_for_mode(mode)
+            if mode in {"keyed_tableau_polyalphabetic", "quagmire3"}:
+                required = ["search_quagmire3_keyword_alphabet"]
+            context_prior = {
+                "prior": (
+                    "keyed_tableau_polyalphabetic"
+                    if mode in {"keyed_tableau_polyalphabetic", "quagmire3"}
+                    else mode
+                ),
+                "confidence": "agent_declared_context_supported",
+                "evidence": [{
+                    "branch": new_name,
+                    "cipher_mode": mode,
+                    "evidence_source": evidence_source,
+                    "mode_evidence": rationale,
+                }],
+                "required_tools_before_rejection": required,
+                "note": (
+                    "The agent read exposed benchmark context and recorded this "
+                    "as a controlling cipher-family assumption."
+                ),
+            }
+            branch.metadata.update({
+                "context_supported_mode": True,
+                "context_mode_prior": context_prior,
+                "context_assumption_note": (
+                    "Agent-declared from exposed benchmark context. If this "
+                    "assumption is wrong, off-family searches may be suppressed."
+                ),
+                "required_tools_before_rejection": required,
+                "next_recommended_action": (
+                    "Context-supported cipher family recorded. Use the "
+                    "mode-specific playbook and run required tools before "
+                    "rejecting or leaving this family."
+                ),
+            })
         self.workspace.tag(new_name, "hypothesis")
         self.workspace.tag(new_name, f"mode:{mode}")
         return {
@@ -3379,10 +4818,19 @@ class WorkspaceToolExecutor:
             "mode_confidence": confidence,
             "mode_status": "active",
             "rationale": rationale,
+            "evidence_source": evidence_source,
+            "context_mode_prior": context_prior,
+            "required_tools_before_rejection": (
+                context_prior["required_tools_before_rejection"]
+                if context_prior else []
+            ),
             "note": (
                 "This branch records a cipher-type hypothesis. Use mode-"
                 "appropriate tools on it, and reject/supersede it if the "
-                "decoded text or diagnostics do not support the hypothesis."
+                "decoded text or diagnostics do not support the hypothesis. "
+                "If you set evidence_source='benchmark_context', the executor "
+                "treats that as your explicit context assumption and requires "
+                "mode-appropriate tools before rejection."
             ),
         }
 
@@ -3393,6 +4841,27 @@ class WorkspaceToolExecutor:
         if status not in {"rejected", "superseded"}:
             return {"error": "status must be rejected or superseded"}
         reason = str(args["reason"]).strip()
+        pending = self._pending_required_tools_for_branch(branch_name)
+        if (
+            pending["pending_required_tools"]
+            and not bool(args.get("acknowledge_pending_required_tools", False))
+        ):
+            return {
+                "status": "blocked",
+                "branch": branch_name,
+                "reason": "pending_required_tools_before_rejection",
+                "cipher_mode": branch.metadata.get("cipher_mode"),
+                "attempted_status": status,
+                **pending,
+                "note": (
+                    "Rejection blocked. This hypothesis still has required "
+                    "family-level work pending. Plain Vigenere failure does "
+                    "not reject keyed-tableau/Kryptos-style polyalphabetic "
+                    "ciphers. Run the pending tools, or if this is truly "
+                    "impossible call workspace_reject_hypothesis again with "
+                    "acknowledge_pending_required_tools=true and explain why."
+                ),
+            }
         branch.metadata["mode_status"] = status
         branch.metadata["rejection_reason"] = reason
         self.workspace.tag(branch_name, status)
@@ -3402,6 +4871,82 @@ class WorkspaceToolExecutor:
             "mode_status": status,
             "cipher_mode": branch.metadata.get("cipher_mode"),
             "reason": reason,
+        }
+
+    def _tool_workspace_update_hypothesis(self, args: dict) -> Any:
+        branch_name = args["branch"]
+        branch = self.workspace.get_branch(branch_name)
+        status = str(args.get("mode_status") or "active").strip().lower()
+        if status not in {"active", "paused", "rejected", "superseded"}:
+            return {"error": "mode_status must be active, paused, rejected, or superseded"}
+        if args.get("cipher_mode"):
+            mode = str(args["cipher_mode"]).strip()
+            branch.metadata["cipher_mode"] = mode
+            self.workspace.tag(branch_name, f"mode:{mode}")
+        if args.get("evidence_source"):
+            evidence_source = str(args["evidence_source"]).strip()
+            branch.metadata["evidence_source"] = evidence_source
+            mode = str(branch.metadata.get("cipher_mode") or "").strip()
+            if evidence_source == "benchmark_context" and mode in self._POLY_MODE_NAMES:
+                required = self._polyalphabetic_required_tools_for_mode(mode)
+                if mode in {"keyed_tableau_polyalphabetic", "quagmire3"}:
+                    required = ["search_quagmire3_keyword_alphabet"]
+                context_prior = {
+                    "prior": (
+                        "keyed_tableau_polyalphabetic"
+                        if mode in {"keyed_tableau_polyalphabetic", "quagmire3"}
+                        else mode
+                    ),
+                    "confidence": "agent_declared_context_supported",
+                    "evidence": [{
+                        "branch": branch_name,
+                        "cipher_mode": mode,
+                        "evidence_source": evidence_source,
+                        "mode_evidence": branch.metadata.get("mode_evidence"),
+                    }],
+                    "required_tools_before_rejection": required,
+                    "note": (
+                        "The agent read exposed benchmark context and recorded "
+                        "this as a controlling cipher-family assumption."
+                    ),
+                }
+                branch.metadata.update({
+                    "context_supported_mode": True,
+                    "context_mode_prior": context_prior,
+                    "context_assumption_note": (
+                        "Agent-declared from exposed benchmark context."
+                    ),
+                    "required_tools_before_rejection": required,
+                })
+        if args.get("mode_confidence"):
+            branch.metadata["mode_confidence"] = str(args["mode_confidence"]).strip().lower()
+        if args.get("evidence"):
+            branch.metadata["mode_evidence"] = str(args["evidence"]).strip()
+        if args.get("counter_evidence"):
+            branch.metadata["mode_counter_evidence"] = str(args["counter_evidence"]).strip()
+        if args.get("next_recommended_action"):
+            branch.metadata["next_recommended_action"] = str(args["next_recommended_action"]).strip()
+        branch.metadata["mode_status"] = status
+        self.workspace.tag(branch_name, "hypothesis")
+        if status in {"rejected", "superseded"}:
+            self.workspace.tag(branch_name, status)
+        return {
+            "status": "ok",
+            "branch": branch_name,
+            "cipher_mode": branch.metadata.get("cipher_mode", "unknown"),
+            "mode_status": branch.metadata.get("mode_status"),
+            "mode_confidence": branch.metadata.get("mode_confidence"),
+            "mode_evidence": branch.metadata.get("mode_evidence"),
+            "mode_counter_evidence": branch.metadata.get("mode_counter_evidence"),
+            "next_recommended_action": branch.metadata.get("next_recommended_action"),
+            "evidence_source": branch.metadata.get("evidence_source"),
+            "context_supported_mode": branch.metadata.get("context_supported_mode"),
+            "required_tools_before_rejection": branch.metadata.get("required_tools_before_rejection", []),
+            "note": (
+                "Hypothesis metadata updated only; no key, token order, or "
+                "decoded text changed. Use workspace_hypothesis_cards to "
+                "compare active and rejected modes."
+            ),
         }
 
     def _tool_workspace_hypothesis_cards(self, _args: dict) -> Any:
@@ -3419,7 +4964,12 @@ class WorkspaceToolExecutor:
                 "mode_status": metadata.get("mode_status", "active"),
                 "mode_confidence": metadata.get("mode_confidence"),
                 "mode_evidence": metadata.get("mode_evidence") or metadata.get("hypothesis_notes"),
+                "mode_counter_evidence": metadata.get("mode_counter_evidence"),
+                "next_recommended_action": metadata.get("next_recommended_action"),
                 "rejection_reason": metadata.get("rejection_reason"),
+                "context_supported_mode": metadata.get("context_supported_mode"),
+                "context_mode_prior": metadata.get("context_mode_prior"),
+                "required_tools_before_rejection": metadata.get("required_tools_before_rejection", []),
                 "periodic_key": metadata.get("periodic_key"),
                 "periodic_variant": metadata.get("periodic_variant"),
                 "scores": card.get("scores"),
@@ -3433,6 +4983,33 @@ class WorkspaceToolExecutor:
                 "Compare hypotheses by mode evidence and coherent text, not by "
                 "raw scores alone. If all active cards are word islands, reject "
                 "or supersede the bad basin and try another mode."
+            ),
+        }
+
+    def _tool_workspace_hypothesis_next_steps(self, args: dict) -> Any:
+        requested = args.get("branch")
+        if requested:
+            branches = [str(requested)]
+        else:
+            branches = []
+            for name in self.workspace.branch_names():
+                branch = self.workspace.get_branch(name)
+                metadata = branch.metadata
+                if not metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                    continue
+                if metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                    continue
+                branches.append(name)
+        reports = [self._hypothesis_next_steps(name) for name in branches]
+        return {
+            "status": "ok",
+            "branches": branches,
+            "reports": reports,
+            "note": (
+                "Use `next_step` as the default move unless your reading of "
+                "the decoded text gives a stronger reason. If the playbook is "
+                "exhausted and the text is incoherent, reject or pause the "
+                "hypothesis instead of doing local repairs."
             ),
         }
 
@@ -3499,6 +5076,138 @@ class WorkspaceToolExecutor:
                 continue
             return True
         return False
+
+    def _has_seen_hypothesis_next_steps(self, branch_name: str) -> bool:
+        min_iteration = 0
+        if self.workspace.has_branch(branch_name):
+            min_iteration = int(self.workspace.get_branch(branch_name).created_iteration or 0)
+        for call in self.call_log:
+            if call.tool_name != "workspace_hypothesis_next_steps":
+                continue
+            if int(getattr(call, "iteration", 0) or 0) < min_iteration:
+                continue
+            args = call.arguments or {}
+            requested_branch = args.get("branch")
+            if requested_branch not in {None, "", branch_name}:
+                continue
+            return True
+        return False
+
+    def _hypothesis_declaration_block(self, branch_name: str) -> dict[str, Any] | None:
+        branch = self.workspace.get_branch(branch_name)
+        metadata = branch.metadata
+        if not metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+            return None
+        if self._has_seen_hypothesis_next_steps(branch_name):
+            return None
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "branch": branch_name,
+            "reason": "hypothesis_next_steps_required",
+            "cipher_mode": metadata.get("cipher_mode", "unknown"),
+            "mode_status": metadata.get("mode_status", "active"),
+            "note": (
+                "This branch is tagged as a cipher-mode hypothesis. Before "
+                "declaring, call workspace_hypothesis_next_steps so the "
+                "artifact records the mode-specific playbook, the tools "
+                "already tried, and any pending bigger-swing actions."
+            ),
+            "suggested_next_tools": [
+                "workspace_hypothesis_next_steps",
+                "workspace_branch_cards",
+                "meta_declare_solution",
+            ],
+        }
+
+    def _family_coverage_declaration_block(
+        self,
+        branch_name: str,
+        *,
+        forced_partial: bool,
+    ) -> dict[str, Any] | None:
+        if forced_partial:
+            return None
+        if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return None
+
+        branch_reports = []
+        for name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(name)
+            metadata = branch.metadata
+            if not metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                continue
+            if metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            pending = self._pending_required_tools_for_branch(name)
+            if pending["pending_required_tools"]:
+                branch_reports.append({
+                    "branch": name,
+                    "cipher_mode": metadata.get("cipher_mode"),
+                    "mode_evidence": metadata.get("mode_evidence") or metadata.get("hypothesis_notes"),
+                    **pending,
+                })
+
+        context_prior = self._context_keyed_tableau_prior()
+        quagmire_status = self._quagmire_search_status()
+        if context_prior and not quagmire_status["sufficient_to_reject"]:
+            if not branch_reports:
+                branch_reports.append({
+                    "branch": None,
+                    "cipher_mode": context_prior["prior"],
+                    "context_mode_prior": context_prior,
+                    "pending_required_tools": ["search_quagmire3_keyword_alphabet"],
+                    "required_tools_before_rejection": context_prior["required_tools_before_rejection"],
+                    "quagmire_search_status": quagmire_status,
+                    "family_coverage_debt": context_prior["note"],
+                })
+
+        statistical_prior = self._polyalphabetic_signal_prior()
+        if (
+            statistical_prior
+            and self._has_seen_any_tool({"search_periodic_polyalphabetic"})
+            and not quagmire_status["sufficient_to_reject"]
+        ):
+            if not branch_reports:
+                branch_reports.append({
+                    "branch": None,
+                    "cipher_mode": "polyalphabetic_family",
+                    "statistical_family_prior": statistical_prior,
+                    "pending_required_tools": ["search_quagmire3_keyword_alphabet"],
+                    "required_tools_before_rejection": ["search_quagmire3_keyword_alphabet"],
+                    "quagmire_search_status": quagmire_status,
+                    "family_coverage_debt": statistical_prior["note"],
+                })
+
+        if not branch_reports:
+            return None
+
+        pending_tools = sorted({
+            tool
+            for report in branch_reports
+            for tool in report.get("pending_required_tools", [])
+        })
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "branch": branch_name,
+            "reason": "family_coverage_pending",
+            "pending_family_coverage": branch_reports,
+            "note": (
+                "Declaration blocked because a supported cipher-family "
+                "hypothesis still has required higher-level work pending. "
+                "A bad ordinary Vigenere or word-island branch is not enough "
+                "to stop while keyed-tableau/Quagmire remains untested and "
+                "there is still iteration budget. Take the pending bigger "
+                "swing, then compare branches again."
+            ),
+            "suggested_next_tools": [
+                *pending_tools,
+                "workspace_hypothesis_next_steps",
+                "workspace_branch_cards",
+                "meta_declare_solution",
+            ],
+        }
 
     def _unresolved_repair_agenda_items(self, branch: str) -> list[dict[str, Any]]:
         return [
@@ -4045,13 +5754,316 @@ class WorkspaceToolExecutor:
             **branch_note,
             **result,
             "installed_branches": installed,
+            "scope_note": (
+                "This search tested ordinary A-Z periodic-shift families "
+                "(Vigenere, Beaufort, variant Beaufort, Gronsfeld). It does "
+                "not rule out keyed-tableau/Kryptos/Quagmire-style "
+                "polyalphabetic ciphers."
+            ),
+            "recommended_next_tools": [
+                "search_quagmire3_keyword_alphabet",
+                "workspace_hypothesis_next_steps",
+                "workspace_branch_cards",
+            ],
             "note": (
                 "Periodic polyalphabetic candidates are stored as mode-specific "
                 "branch metadata, not substitution keys. Use decode_show, "
                 "decode_show_phases, act_set_periodic_key, "
                 "act_set_periodic_shift, workspace_hypothesis_cards, and "
                 "contextual reading to judge whether a candidate is coherent "
-                "before repairing locally."
+                "before repairing locally. If these ordinary shift candidates "
+                "are incoherent while context or statistics still supports a "
+                "polyalphabetic family, escalate to "
+                "search_quagmire3_keyword_alphabet rather than rejecting the "
+                "family."
+            ),
+        }
+
+    def _tool_search_quagmire3_keyword_alphabet(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        top_n = max(1, min(int(args.get("top_n", 5)), 20))
+        install_top_n = max(0, min(int(args.get("install_top_n", 1)), top_n))
+
+        def int_list(name: str) -> list[int] | None:
+            raw = args.get(name)
+            if raw is None:
+                return None
+            if isinstance(raw, str):
+                raw = [item.strip() for item in raw.split(",") if item.strip()]
+            return [int(item) for item in raw]
+
+        def str_list(name: str) -> list[str]:
+            raw = args.get(name) or []
+            if isinstance(raw, str):
+                raw = [item.strip() for item in raw.split(",") if item.strip()]
+            return [str(item).strip() for item in raw if str(item).strip()]
+
+        initial_keywords = str_list("initial_keywords")
+        engine = str(args.get("engine") or "rust_shotgun").strip().lower()
+        keyword_lengths = int_list("keyword_lengths")
+        cycleword_lengths = int_list("cycleword_lengths")
+        hillclimbs = max(0, min(int(args.get("hillclimbs", 500)), 1_000_000))
+        restarts = max(1, min(int(args.get("restarts", 8)), 1_000_000))
+        threads = max(0, min(int(args.get("threads", 0)), 256))
+        budget_estimate: dict[str, Any] | None = None
+        if engine == "rust_shotgun":
+            try:
+                from analysis.polyalphabetic_fast import estimate_quagmire3_shotgun_budget
+
+                budget_estimate = estimate_quagmire3_shotgun_budget(
+                    keyword_lengths=keyword_lengths,
+                    cycleword_lengths=cycleword_lengths,
+                    hillclimbs=hillclimbs,
+                    restarts=restarts,
+                    threads=threads,
+                )
+            except Exception as exc:  # noqa: BLE001
+                budget_estimate = {
+                    "engine": "rust_shotgun",
+                    "status": "estimate_error",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+        else:
+            steps = max(0, min(int(args.get("steps", 200)), 20_000))
+            keyword_count = len(keyword_lengths or [7])
+            cycleword_count = len(cycleword_lengths or [8])
+            budget_estimate = {
+                "engine": "python_screen",
+                "keyword_lengths": keyword_lengths or [7],
+                "cycleword_lengths": cycleword_lengths or [8],
+                "restarts": restarts,
+                "steps_per_start": steps,
+                "approx_screen_mutations": keyword_count * cycleword_count * restarts * max(1, steps),
+                "note": (
+                    "Python screen is reference/diagnostic scaffolding. Use "
+                    "small budgets only; broad Quagmire searches should use "
+                    "rust_shotgun."
+                ),
+            }
+        rust_kernel_status: dict[str, Any] | None = None
+        try:
+            from analysis.polyalphabetic_fast import fast_kernel_status
+
+            rust_kernel_status = fast_kernel_status()
+        except Exception as exc:  # noqa: BLE001
+            rust_kernel_status = {
+                "available": False,
+                "import_error": f"{type(exc).__name__}: {exc}",
+            }
+        if bool(args.get("estimate_only", False)):
+            estimate_nominal = (
+                budget_estimate.get("nominal_proposals")
+                if isinstance(budget_estimate, dict)
+                else None
+            )
+            estimate_budget_class = self._quagmire_budget_class(estimate_nominal)
+            return {
+                "branch": branch_name,
+                **branch_note,
+                "status": "estimated",
+                "solver": "quagmire3_budget_estimate",
+                "engine": engine,
+                "budget_class": estimate_budget_class,
+                "budget_sufficiency": (
+                    "diagnostic_only"
+                    if self._quagmire_budget_rank(estimate_budget_class)
+                    < self._quagmire_budget_rank("moderate")
+                    else "sufficient_to_test_family_rejection"
+                ),
+                "budget_estimate": budget_estimate,
+                "rust_fast_kernel": rust_kernel_status,
+                "seeded_initial_keywords": bool(initial_keywords),
+                "installed_branches": [],
+                "recommended_next_action": (
+                    "If the estimated runtime is acceptable and the search is "
+                    "the right cipher-family hypothesis, rerun this tool with "
+                    "estimate_only=false. Start diagnostic, then moderate, "
+                    "then broad unless context strongly justifies a broad run."
+                ),
+                "recommended_next_tools": [
+                    "search_quagmire3_keyword_alphabet",
+                    "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                ],
+            }
+        if engine == "rust_shotgun":
+            try:
+                from analysis.polyalphabetic_fast import search_quagmire3_shotgun_fast
+
+                result = search_quagmire3_shotgun_fast(
+                    effective,
+                    language=self.language,
+                    keyword_lengths=keyword_lengths,
+                    cycleword_lengths=cycleword_lengths,
+                    hillclimbs=hillclimbs,
+                    restarts=restarts,
+                    seed=int(args.get("seed", 1)),
+                    top_n=top_n,
+                    slip_probability=max(0.0, float(args.get("slip_probability", 0.001))),
+                    backtrack_probability=max(0.0, float(args.get("backtrack_probability", 0.15))),
+                    threads=threads,
+                    initial_keywords=initial_keywords,
+                )
+            except Exception as exc:  # noqa: BLE001
+                result = {
+                    "status": "error",
+                    "solver": "quagmire3_shotgun_rust",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "rust_fast_kernel": rust_kernel_status,
+                    "diagnostic_engine_available": "python_screen",
+                    "engine_equivalence": (
+                        "`python_screen` is available as a smaller diagnostic "
+                        "search, but it is not equivalent to the compiled "
+                        "parallel `rust_shotgun` loop and should not be used "
+                        "for large-scale/blind Quagmire claims."
+                    ),
+                    "recommended_next_action": (
+                        "Ask the user to run `scripts/build_rust_fast.sh`, "
+                        "verify with `decipher doctor`, and rerun with "
+                        "engine='rust_shotgun'. Only use engine='python_screen' "
+                        "for a deliberately small diagnostic probe."
+                    ),
+                    "note": (
+                        "Rust shotgun engine failed. Do not silently treat a "
+                        "Python diagnostic path as the same experiment. Run "
+                        "`scripts/build_rust_fast.sh` and then "
+                        "`PYTHONPATH=src .venv/bin/decipher doctor`."
+                    ),
+                }
+        else:
+            result = polyalphabetic.search_quagmire3_keyword_alphabet(
+                effective,
+                language=self.language,
+                keyword_lengths=keyword_lengths,
+                cycleword_lengths=cycleword_lengths,
+                initial_keywords=initial_keywords,
+                steps=max(0, min(int(args.get("steps", 200)), 20_000)),
+                restarts=restarts,
+                seed=int(args.get("seed", 1)),
+                top_n=top_n,
+                refine=True,
+                screen_top_n=max(1, min(int(args.get("screen_top_n", 64)), 5_000)),
+                word_weight=max(0.0, float(args.get("word_weight", 0.25))),
+                dictionary_keyword_limit=max(
+                    0,
+                    min(int(args.get("dictionary_keyword_limit", 0)), 50_000),
+                ),
+            )
+
+        nominal_proposals = result.get("nominal_proposals")
+        if nominal_proposals is None and isinstance(budget_estimate, dict):
+            nominal_proposals = budget_estimate.get("nominal_proposals")
+        budget_class = self._quagmire_budget_class(nominal_proposals)
+        budget_sufficiency = (
+            "sufficient_to_test_family_rejection"
+            if self._quagmire_budget_rank(budget_class) >= self._quagmire_budget_rank("moderate")
+            else "diagnostic_only"
+        )
+
+        installed: list[dict[str, Any]] = []
+        prefix = str(args.get("new_branch_prefix") or "quag3").strip() or "quag3"
+        if result.get("status") == "completed" and install_top_n > 0:
+            for idx, candidate in enumerate(result.get("top_candidates", [])[:install_top_n], 1):
+                metadata = dict(candidate.get("metadata") or {})
+                alphabet_keyword = str(metadata.get("alphabet_keyword") or "unknown")
+                cycleword = str(metadata.get("cycleword") or candidate.get("key") or "unknown")
+                base_name = f"{prefix}_{alphabet_keyword}_{cycleword}_{idx}"
+                new_name = self._unique_branch_name(base_name)
+                new_branch = self.workspace.fork(new_name, from_branch=branch_name)
+                new_branch.metadata.update({
+                    "cipher_mode": "quagmire3",
+                    "mode_status": "active",
+                    "mode_confidence": "medium",
+                    "mode_evidence": (
+                        "Installed by search_quagmire3_keyword_alphabet from "
+                        f"alphabet keyword {alphabet_keyword!r} and cycleword "
+                        f"{cycleword!r}."
+                    ),
+                    "mode_counter_evidence": (
+                        "This bounded search can overfit word islands. Treat "
+                        "explicit initial_keywords as seeded context, not a "
+                        "blind recovery."
+                    ),
+                    "key_type": "QuagmireKey",
+                    "quagmire_type": metadata.get("quagmire_type", "quag3"),
+                    "alphabet_keyword": alphabet_keyword,
+                    "cycleword": cycleword,
+                    "cycleword_shifts": metadata.get("cycleword_shifts", candidate.get("shifts")),
+                    "plaintext_alphabet": metadata.get("plaintext_alphabet"),
+                    "ciphertext_alphabet": metadata.get("ciphertext_alphabet"),
+                    "quagmire_score": candidate.get("score"),
+                    "quagmire_selection_score": candidate.get("selection_score"),
+                    "decoded_text": candidate.get("plaintext", ""),
+                    "decoded_text_source": "search_quagmire3_keyword_alphabet",
+                    "search_metadata": {
+                        "solver": result.get("solver"),
+                        "seed": result.get("seed"),
+                        "engine": engine,
+                        "threads": result.get("threads"),
+                        "hillclimbs_per_restart": result.get("hillclimbs_per_restart"),
+                        "nominal_proposals": nominal_proposals,
+                        "budget_class": budget_class,
+                        "budget_sufficiency": budget_sufficiency,
+                        "restart_jobs": result.get("restart_jobs"),
+                        "steps_per_start": result.get("steps_per_start"),
+                        "restarts_per_length": result.get("restarts_per_length"),
+                        "keyword_states_screened": result.get("keyword_states_screened"),
+                        "screen_top_n": result.get("screen_top_n"),
+                        "word_weight": result.get("word_weight"),
+                        "seeded_initial_keywords": bool(initial_keywords),
+                        "start_type": metadata.get("start_type"),
+                    },
+                })
+                self.workspace.tag(new_name, "hypothesis")
+                self.workspace.tag(new_name, "mode:quagmire3")
+                self.workspace.tag(new_name, "mode:keyed_tableau_polyalphabetic")
+                installed.append({
+                    "branch": new_name,
+                    "alphabet_keyword": alphabet_keyword,
+                    "cycleword": cycleword,
+                    "period": candidate.get("period"),
+                    "score": candidate.get("score"),
+                    "selection_score": candidate.get("selection_score"),
+                    "start_type": metadata.get("start_type"),
+                    "seeded_initial_keywords": bool(initial_keywords),
+                    "preview": candidate.get("preview"),
+                })
+
+        return {
+            "branch": branch_name,
+            **branch_note,
+            **result,
+            "installed_branches": installed,
+            "seeded_initial_keywords": bool(initial_keywords),
+            "rust_fast_kernel": rust_kernel_status,
+            "budget_estimate": budget_estimate,
+            "nominal_proposals": nominal_proposals,
+            "budget_class": budget_class,
+            "budget_sufficiency": budget_sufficiency,
+            "budget_note": (
+                "For rust_shotgun, nominal_proposals = "
+                "len(keyword_lengths) * len(cycleword_lengths) * restarts * "
+                "hillclimbs. Use estimate_only=true before broad searches. "
+                "Diagnostic searches prove the tool path works, but do not "
+                "justify rejecting the Quagmire/keyed-tableau family."
+            ),
+            "engine_equivalence_note": (
+                "`rust_shotgun` is the compiled parallel broad-search engine. "
+                "`python_screen` is the older bounded diagnostic engine; it is "
+                "reference/test scaffolding and useful for quick probes, but "
+                "not an equivalent runtime path for large-scale search budgets."
+            ),
+            "recommended_next_tools": [
+                "workspace_branch_cards",
+                "workspace_hypothesis_next_steps",
+                "workspace_update_hypothesis",
+            ],
+            "note": (
+                "Quagmire III candidates are stored as mode-specific decoded "
+                "branches, not substitution keys. Read multiple candidates for "
+                "coherent text. If initial_keywords were supplied, label the "
+                "run as context-seeded rather than blind."
             ),
         }
 
@@ -5378,6 +7390,13 @@ class WorkspaceToolExecutor:
     # ------------------------------------------------------------------
     def _tool_act_set_mapping(self, args: dict) -> Any:
         branch = args["branch"]
+        blocked = self._mode_mismatch_repair_block(
+            branch,
+            "act_set_mapping",
+            allow_override=bool(args.get("allow_mode_mismatch_repair", False)),
+        )
+        if blocked is not None:
+            return blocked
         cipher_sym = args["cipher_symbol"]
         plain_letter = args["plain_letter"].upper()
         dry_run = bool(args.get("dry_run", False))
@@ -5512,6 +7531,13 @@ class WorkspaceToolExecutor:
 
     def _tool_act_bulk_set(self, args: dict) -> Any:
         branch = args["branch"]
+        blocked = self._mode_mismatch_repair_block(
+            branch,
+            "act_bulk_set",
+            allow_override=bool(args.get("allow_mode_mismatch_repair", False)),
+        )
+        if blocked is not None:
+            return blocked
         mappings = args.get("mappings", {})
         alpha = self._alpha()
         pt_alpha = self._pt_alpha()
@@ -5548,6 +7574,13 @@ class WorkspaceToolExecutor:
 
     def _tool_act_anchor_word(self, args: dict) -> Any:
         branch_name = args["branch"]
+        blocked = self._mode_mismatch_repair_block(
+            branch_name,
+            "act_anchor_word",
+            allow_override=bool(args.get("allow_mode_mismatch_repair", False)),
+        )
+        if blocked is not None:
+            return blocked
         idx = args["cipher_word_index"]
         target = args["plaintext"].upper()
         ws = self.workspace
@@ -5730,6 +7763,13 @@ class WorkspaceToolExecutor:
 
     def _tool_act_apply_word_repair(self, args: dict) -> Any:
         branch = args["branch"]
+        blocked = self._mode_mismatch_repair_block(
+            branch,
+            "act_apply_word_repair",
+            allow_override=bool(args.get("allow_mode_mismatch_repair", False)),
+        )
+        if blocked is not None:
+            return blocked
         dry_run = bool(args.get("dry_run", False))
         plan = self._word_repair_plan(args)
         token_mappings = plan.pop("_token_mappings", {})
@@ -5885,7 +7925,7 @@ class WorkspaceToolExecutor:
             }
 
         proposed_words = self._reading_words_from_text(proposed_text)
-        token_count = len(self.workspace.cipher_text.tokens)
+        token_count = len(self.workspace.effective_tokens(branch))
         if sum(len(word) for word in proposed_words) != token_count:
             return {
                 "error": (
@@ -5952,7 +7992,7 @@ class WorkspaceToolExecutor:
             }
 
         proposed_words = self._reading_words_from_text(proposed_text)
-        token_count = len(self.workspace.cipher_text.tokens)
+        token_count = len(self.workspace.effective_tokens(branch))
         if sum(len(word) for word in proposed_words) != token_count:
             return {
                 "error": (
@@ -7953,6 +9993,22 @@ class WorkspaceToolExecutor:
                     "meta_declare_solution",
                 ],
             }
+        hypothesis_block = self._hypothesis_declaration_block(branch)
+        if hypothesis_block is not None:
+            return hypothesis_block
+        family_coverage_block = self._family_coverage_declaration_block(
+            branch,
+            forced_partial=forced_partial,
+        )
+        if family_coverage_block is not None:
+            return family_coverage_block
+        word_boundary_block = self._word_boundary_declaration_block(
+            branch,
+            confidence=confidence,
+            forced_partial=forced_partial,
+        )
+        if word_boundary_block is not None:
+            return word_boundary_block
         if self._should_guard_declaration_for_reading_workflow(branch, rationale):
             return {
                 "status": "blocked",
@@ -8024,14 +10080,14 @@ class WorkspaceToolExecutor:
                     "partial submission when no useful remaining tool action is "
                     "available."
                 ),
-                "suggested_next_tools": [
+                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
                     "observe_transform_pipeline",
                     "observe_transform_suspicion",
                     "search_transform_homophonic",
                     "search_automated_solver",
                     "workspace_branch_cards",
                     "meta_declare_solution",
-                ],
+                ]),
             }
         if self._should_guard_more_work_declaration(
             further_iterations_helpful is True,
@@ -8050,13 +10106,13 @@ class WorkspaceToolExecutor:
                     "that bigger swing before submitting a partial/hypothesis "
                     "result."
                 ),
-                "suggested_next_tools": [
+                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
                     "workspace_branch_cards",
                     "decode_diagnose",
                     "search_homophonic_anneal",
                     "observe_transform_suspicion",
                     "meta_declare_solution",
-                ],
+                ]),
             }
         if self._should_guard_premature_partial_declaration(
             confidence,
@@ -8076,14 +10132,14 @@ class WorkspaceToolExecutor:
                     "declarations for the final stretch of the run unless the "
                     "text is already plausibly readable."
                 ),
-                "suggested_next_tools": [
+                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
                     "observe_transform_suspicion",
                     "search_transform_homophonic",
                     "search_homophonic_anneal",
                     "search_automated_solver",
                     "workspace_branch_cards",
                     "meta_declare_solution",
-                ],
+                ]),
             }
         self.solution = SolutionDeclaration(
             branch=branch,
@@ -8102,7 +10158,97 @@ class WorkspaceToolExecutor:
             "branch": branch,
             "declared_at_iteration": self._current_iteration,
             "declaration_review": review,
+            "context_cipher_family_assumptions": self._context_cipher_family_assumptions(),
+            "context_cipher_family_overrides": self.context_family_overrides,
             "note": "Run will terminate after this tool result is recorded.",
+        }
+
+    def _tool_meta_declare_unsolved(self, args: dict) -> Any:
+        further_iterations_helpful = bool(args.get("further_iterations_helpful"))
+        if (
+            further_iterations_helpful
+            and self.max_iterations is not None
+            and self._current_iteration < self.max_iterations
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "unsolved_but_more_work_requested",
+                "note": (
+                    "You are trying to stop as unsolved while also saying more "
+                    "iterations would help and there is still iteration budget. "
+                    "Take the next high-leverage action instead, or call this "
+                    "again only when the remaining work is genuinely not useful."
+                ),
+                "suggested_next_tools": [
+                    "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                    "search_quagmire3_keyword_alphabet",
+                    "search_transform_homophonic",
+                ],
+            }
+        reports = []
+        for name in self.workspace.branch_names():
+            if not self.workspace.has_branch(name):
+                continue
+            branch = self.workspace.get_branch(name)
+            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                continue
+            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            pending = self._pending_required_tools_for_branch(name)
+            if pending["pending_required_tools"]:
+                reports.append({
+                    "branch": name,
+                    "cipher_mode": branch.metadata.get("cipher_mode"),
+                    **pending,
+                })
+        if reports and not (
+            self.max_iterations is not None and self._current_iteration >= self.max_iterations
+        ):
+            pending_tools = sorted({
+                tool
+                for report in reports
+                for tool in report.get("pending_required_tools", [])
+            })
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "family_coverage_pending_before_unsolved",
+                "pending_family_coverage": reports,
+                "note": (
+                    "Do not declare the run unsolved while an active "
+                    "cipher-family hypothesis still has required higher-level "
+                    "work pending. Run the pending tools, then stop as unsolved "
+                    "if no coherent branch emerges."
+                ),
+                "suggested_next_tools": [
+                    *pending_tools,
+                    "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                    "meta_declare_unsolved",
+                ],
+            }
+        best_branch = str(args.get("best_branch") or "").strip() or None
+        if best_branch and not self.workspace.has_branch(best_branch):
+            return {"error": f"Branch not found: {best_branch}"}
+        self.unsolved_declaration = {
+            "rationale": str(args["rationale"]),
+            "branches_considered": list(args.get("branches_considered") or []),
+            "best_branch": best_branch,
+            "reading_summary": str(args.get("reading_summary") or ""),
+            "further_iterations_helpful": further_iterations_helpful,
+            "further_iterations_note": str(args.get("further_iterations_note") or ""),
+            "declared_at_iteration": self._current_iteration,
+        }
+        self.terminated = True
+        return {
+            "status": "ok",
+            "accepted": True,
+            "outcome": "unsolved",
+            "declared_at_iteration": self._current_iteration,
+            "unsolved_declaration": self.unsolved_declaration,
+            "note": "Run will terminate after this tool result is recorded as unsolved.",
         }
 
 

@@ -1,0 +1,16 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "decipher-fast"
+version = "0.1.0"
+description = "Optional Rust fast kernels for Decipher"
+requires-python = ">=3.11"
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+]
+
+[tool.maturin]
+module-name = "decipher_fast"
+features = ["pyo3/extension-module"]

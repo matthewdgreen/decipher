@@ -25,6 +25,7 @@ from agent.orchestration import AgentMode
 from agent.prompts_v2 import get_system_prompt, initial_context
 from agent.resume import inherited_repair_agenda, install_resume_branches
 from agent.tools_v2 import TOOL_DEFINITIONS, WorkspaceToolExecutor
+from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, ic, ngram, pattern
 from analysis import signals as sig
 from analysis.segment import segment_text
@@ -82,15 +83,29 @@ def _select_word_indices(n_words: int) -> list[int]:
 
 
 def _pick_panel_branches(workspace: Workspace) -> list[str]:
-    """Pick up to MAX_BRANCHES_IN_PANEL branches to show. Prefer most-mapped;
-    always include main if it has mappings or is the only branch."""
+    """Pick up to MAX_BRANCHES_IN_PANEL branches to show.
+
+    Branches from periodic/keyed-tableau tools often store decoded text in
+    metadata instead of a substitution mapping. Treat those as readable panel
+    branches; otherwise the UI keeps showing empty `main` while the useful
+    candidate is hidden.
+    """
     entries = []
     for name in workspace.branch_names():
         b = workspace.get_branch(name)
-        entries.append((name, len(b.key)))
-    # Sort by mapped count desc, with main as a tiebreaker priority
-    entries.sort(key=lambda e: (-e[1], 0 if e[0] == "main" else 1, e[0]))
-    selected = [name for name, _ in entries[:MAX_BRANCHES_IN_PANEL]]
+        has_metadata_decode = _metadata_decoded_text(workspace, name) is not None
+        display_weight = len(b.key)
+        if has_metadata_decode and display_weight == 0:
+            display_weight = workspace.cipher_text.alphabet.size
+        entries.append((
+            name,
+            display_weight,
+            1 if has_metadata_decode else 0,
+            int(b.created_iteration or 0),
+        ))
+    # Prefer visible decoded branches, then newer branches, with empty main last.
+    entries.sort(key=lambda e: (-e[1], -e[2], -e[3], 0 if e[0] == "main" else -1, e[0]))
+    selected = [name for name, *_ in entries[:MAX_BRANCHES_IN_PANEL]]
     # Always include main if not selected and has mappings
     if "main" not in selected:
         main_mapped = len(workspace.get_branch("main").key)
@@ -99,6 +114,33 @@ def _pick_panel_branches(workspace: Workspace) -> list[str]:
         elif main_mapped > 0:
             selected.append("main")
     return selected
+
+
+def _metadata_decoded_text(workspace: Workspace, branch_name: str) -> str | None:
+    decoded = workspace.get_branch(branch_name).metadata.get("decoded_text")
+    if isinstance(decoded, str) and decoded.strip():
+        return decoded.strip()
+    return None
+
+
+def _metadata_decoded_words(workspace: Workspace, branch_name: str) -> list[str] | None:
+    metadata_text = _metadata_decoded_text(workspace, branch_name)
+    if metadata_text is None:
+        return None
+    if any(ch.isspace() for ch in metadata_text):
+        return metadata_text.split()
+    branch = workspace.get_branch(branch_name)
+    if branch.word_spans is None:
+        return [metadata_text]
+    spans = workspace.effective_word_spans(branch_name)
+    return [metadata_text[start:end] for start, end in spans]
+
+
+def _decoded_text_for_panel(workspace: Workspace, branch_name: str) -> str:
+    metadata_words = _metadata_decoded_words(workspace, branch_name)
+    if metadata_words is not None:
+        return " ".join(metadata_words)
+    return workspace.apply_key(branch_name)
 
 
 PANEL_HEADER_MARKER = "## Workspace panel — iteration "
@@ -133,6 +175,7 @@ PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "score_dictionary",
     "observe_transform_pipeline",
     "workspace_branch_cards",
+    "workspace_hypothesis_next_steps",
     "decode_plan_word_repair",
     "decode_plan_word_repair_menu",
     "act_apply_word_repair",
@@ -148,13 +191,16 @@ PENULTIMATE_ALLOWED_TOOL_NAMES = {
     "act_rate_transform_finalist",
     "act_apply_transform_pipeline",
     "meta_declare_solution",
+    "meta_declare_unsolved",
 }
 
 FINAL_ALLOWED_TOOL_NAMES = {
     "workspace_branch_cards",
+    "workspace_hypothesis_next_steps",
     "repair_agenda_list",
     "repair_agenda_update",
     "meta_declare_solution",
+    "meta_declare_unsolved",
 }
 
 REPAIR_SANDBOX_TOOL_NAMES = {
@@ -203,13 +249,15 @@ FINAL_ITERATION_PREFLIGHT = (
     "You are on the last iteration. You MUST end by calling "
     "`meta_declare_solution(branch='...', rationale='...', self_confidence=..., "
     "reading_summary='...', further_iterations_helpful=..., "
-    "further_iterations_note='...')` now. Only final bookkeeping tools are available. "
+    "further_iterations_note='...')` if you have a plausible decipherment, or "
+    "`meta_declare_unsolved(...)` if no branch is coherent. Only final "
+    "bookkeeping tools are available. "
     "If there are multiple "
     "branches, call `workspace_branch_cards` first. If any repair agenda item "
     "is open but you have decided not to apply it, call `repair_agenda_update` "
-    "with status `held` or `rejected`, then declare in the same response. An "
-    "imperfect declared branch scores; no declaration is treated as a failed "
-    "run. The reading_summary should explain what the text appears to be about "
+    "with status `held` or `rejected`, then declare in the same response. Do "
+    "not label gibberish as solved just to terminate. The reading_summary "
+    "should explain what the text appears to be about "
     "in plain language, especially for non-English target languages, and the "
     "further_iterations fields should say whether more work would likely help."
 )
@@ -545,7 +593,7 @@ def _workspace_snapshot_payload(
         workspace, language, word_set, freq_rank
     )
     b = workspace.get_branch(branch)
-    decryption = workspace.apply_key(branch)
+    decryption = _decoded_text_for_panel(workspace, branch)
     branches = []
     for name in workspace.branch_names():
         candidate = workspace.get_branch(name)
@@ -586,9 +634,9 @@ def _score_branch_for_panel(
     Returns (None, None) if the branch has no mappings (nothing to score).
     """
     branch = workspace.get_branch(branch_name)
-    if not branch.key:
+    decrypted = _decoded_text_for_panel(workspace, branch_name)
+    if not branch.key and _metadata_decoded_text(workspace, branch_name) is None:
         return None, None
-    decrypted = workspace.apply_key(branch_name)
     normalized = sig.normalize_for_scoring(decrypted)
     if not normalized.strip():
         return None, None
@@ -683,12 +731,19 @@ def build_workspace_panel(
 
     for name in branch_names:
         branch = workspace.get_branch(name)
-        branch_words = workspace.effective_words(name)
-        branch_word_count = len(branch_words)
-        branch_indices = _select_word_indices(branch_word_count)
-        decoded = [
-            _render_decoded_word(branch_words[i], branch.key, pt_alpha) for i in branch_indices
-        ]
+        metadata_text = _metadata_decoded_text(workspace, name)
+        if metadata_text is not None:
+            branch_words = _metadata_decoded_words(workspace, name) or [metadata_text]
+            branch_word_count = 1
+            branch_word_count = len(branch_words)
+            decoded = [" | ".join(branch_words[:120])[:1200]]
+        else:
+            branch_words = workspace.effective_words(name)
+            branch_word_count = len(branch_words)
+            branch_indices = _select_word_indices(branch_word_count)
+            decoded = [
+                _render_decoded_word(branch_words[i], branch.key, pt_alpha) for i in branch_indices
+            ]
         dict_rate, quad = branch_scores[name]
         score_bits = []
         if dict_rate is not None:
@@ -699,10 +754,14 @@ def build_workspace_panel(
         boundary_note = ""
         if branch.word_spans is not None:
             boundary_note = f"  custom_boundaries={branch_word_count}"
+        key_note = ""
+        if metadata_text is not None:
+            key_type = branch.metadata.get("key_type") or "metadata_decode"
+            key_note = f"  key_type={key_type}"
         lines.append("")
         lines.append(
             f"### Branch `{name}` — {len(branch.key)}/{alpha.size} symbols mapped"
-            f"{score_str}{boundary_note}"
+            f"{score_str}{boundary_note}{key_note}"
         )
         lines.append("```")
         lines.append(" | ".join(decoded))
@@ -857,9 +916,9 @@ def build_workspace_panel(
         lines.append(
             "🚨 **THIS IS THE FINAL ITERATION.** "
             "You have NO more turns after this. "
-            "You MUST call `meta_declare_solution` RIGHT NOW on your best branch, "
-            "or the run ends with score=0.00. "
-            "An imperfect declaration always beats no declaration."
+        "You MUST call `meta_declare_solution` RIGHT NOW if you have a plausible "
+        "decipherment, or `meta_declare_unsolved` if the run has honestly failed "
+        "to recover coherent text. Do not submit gibberish as solved."
         )
 
     return "\n".join(lines)
@@ -964,6 +1023,14 @@ def run_v2(
 
     # --- initial context ---
     ic_value = ic.index_of_coincidence(cipher_text.tokens, cipher_text.alphabet.size)
+    fingerprint = cipher_id_analysis.compute_cipher_fingerprint(
+        cipher_text.tokens,
+        cipher_text.alphabet.size,
+        language=language,
+        word_group_count=len(cipher_text.words),
+    )
+    artifact.cipher_id_report = fingerprint.to_dict()
+    cipher_id_context = cipher_id_analysis.format_fingerprint_for_context(fingerprint)
     context_parts = [part for part in [prior_context, _preflight_context(automated_preflight)] if part]
     context_msg = initial_context(
         cipher_display=cipher_text.raw,
@@ -973,6 +1040,7 @@ def run_v2(
         ic_value=ic_value,
         language=language,
         prior_context="\n\n".join(context_parts) if context_parts else None,
+        cipher_id_context=cipher_id_context,
     )
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": context_msg}]
@@ -1045,6 +1113,14 @@ def run_v2(
                 system=system,
                 max_tokens=8192,
             )
+        except KeyboardInterrupt:
+            artifact.status = "stopped"
+            artifact.error_message = (
+                f"Interrupted by user during model call on iteration {iteration}; "
+                "partial artifact preserved."
+            )
+            emit("interrupted", {"message": artifact.error_message})
+            break
         except ModelProviderError as e:
             artifact.status = "error"
             artifact.error_message = f"API error on iteration {iteration}: {e}"
@@ -1103,7 +1179,27 @@ def run_v2(
                     inner_step=inner_step,
                     mode=turn_mode,
                 )
-                result = executor.execute(tu["name"], tu["input"], tool_use_id=tu["id"])
+                try:
+                    result = executor.execute(tu["name"], tu["input"], tool_use_id=tu["id"])
+                except KeyboardInterrupt:
+                    artifact.status = "stopped"
+                    artifact.error_message = (
+                        f"Interrupted by user during tool `{tu['name']}` on "
+                        f"iteration {iteration}; partial artifact preserved."
+                    )
+                    emit("interrupted", {
+                        "message": artifact.error_message,
+                        "tool": tu["name"],
+                    })
+                    tool_results_blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu["id"],
+                        "content": json.dumps({
+                            "status": "stopped",
+                            "error": artifact.error_message,
+                        }),
+                    })
+                    break
                 if _is_tool_gated_result(result):
                     gated_tools.append(tu["name"])
                 if _is_boundary_projection_count_failure(tu["name"], result):
@@ -1130,6 +1226,9 @@ def run_v2(
                     inner_step=inner_step,
                     mode=turn_mode,
                 )
+
+            if artifact.status == "stopped":
+                break
 
             retry_kind = ""
             retry_preflight = ""
@@ -1260,10 +1359,21 @@ def run_v2(
                     system=system,
                     max_tokens=8192,
                 )
+            except KeyboardInterrupt:
+                artifact.status = "stopped"
+                artifact.error_message = (
+                    f"Interrupted by user during retry model call on iteration "
+                    f"{iteration}; partial artifact preserved."
+                )
+                emit("interrupted", {"message": artifact.error_message})
+                break
             except ModelProviderError as e:
                 artifact.status = "error"
                 artifact.error_message = f"API error on iteration {iteration}: {e}"
                 emit("error", {"message": artifact.error_message})
+                break
+
+            if artifact.status == "stopped":
                 break
 
             record_usage(retry_response)
@@ -1293,6 +1403,9 @@ def run_v2(
             inner_step += 1
 
         if artifact.status == "error":
+            break
+        if artifact.status == "stopped":
+            messages.append({"role": "user", "content": tool_results_blocks})
             break
         if artifact.status == "exhausted":
             messages.append({"role": "user", "content": tool_results_blocks})
@@ -1338,11 +1451,18 @@ def run_v2(
         messages.append({"role": "user", "content": tool_results_blocks})
 
         if executor.terminated:
-            artifact.status = "solved"
-            emit("declared_solution", {
-                "branch": executor.solution.branch if executor.solution else None,
-                "confidence": executor.solution.self_confidence if executor.solution else None,
-            })
+            if getattr(executor, "unsolved_declaration", None) is not None:
+                artifact.status = "unsolved"
+                emit("declared_unsolved", {
+                    "best_branch": executor.unsolved_declaration.get("best_branch"),
+                    "further_iterations_helpful": executor.unsolved_declaration.get("further_iterations_helpful"),
+                })
+            else:
+                artifact.status = "solved"
+                emit("declared_solution", {
+                    "branch": executor.solution.branch if executor.solution else None,
+                    "confidence": executor.solution.self_confidence if executor.solution else None,
+                })
             break
 
     else:
@@ -1350,7 +1470,11 @@ def run_v2(
         artifact.status = "exhausted"
         emit("max_iterations_reached", {"iterations": max_iterations})
 
-    if artifact.status in {"exhausted", "error"} and executor.solution is None:
+    if (
+        artifact.status in {"exhausted", "error"}
+        and executor.solution is None
+        and getattr(executor, "unsolved_declaration", None) is None
+    ):
         best_branch, best_scores = _best_branch_for_auto_declare(
             workspace, language, word_set, freq_rank
         )
@@ -1387,9 +1511,13 @@ def run_v2(
     artifact.tool_calls = list(executor.call_log)
     artifact.tool_requests = list(executor.tool_requests)
     artifact.repair_agenda = [dict(item) for item in executor.repair_agenda]
+    artifact.cipher_hypotheses = _hypothesis_cards_for_artifact(workspace)
     if benchmark_context is not None and hasattr(benchmark_context, "to_artifact_dict"):
         artifact.benchmark_context = benchmark_context.to_artifact_dict()
     artifact.solution = executor.solution
+    if getattr(executor, "unsolved_declaration", None) is not None:
+        artifact.final_summary = str(executor.unsolved_declaration.get("reading_summary") or "")
+        artifact.error_message = str(executor.unsolved_declaration.get("rationale") or "")
     artifact.branches = [
         _branch_snapshot_for(workspace, name) for name in workspace.branch_names()
     ]
@@ -1414,9 +1542,10 @@ def _branch_snapshot_for(workspace: Workspace, name: str) -> Any:
         created_iteration=branch.created_iteration,
         key=dict(branch.key),
         mapped_count=len(branch.key),
-        decryption=workspace.apply_key(name),
+        decryption=_decoded_text_for_panel(workspace, name),
         signals={},  # panel not computed here; caller can add post-hoc
         tags=list(branch.tags),
+        metadata=dict(branch.metadata),
         word_spans=list(branch.word_spans) if branch.word_spans is not None else None,
         token_order=list(branch.token_order) if branch.token_order is not None else None,
         transform_pipeline=(
@@ -1425,6 +1554,31 @@ def _branch_snapshot_for(workspace: Workspace, name: str) -> Any:
             else None
         ),
     )
+
+
+def _hypothesis_cards_for_artifact(workspace: Workspace) -> list[dict[str, Any]]:
+    """Persist the final cipher-mode hypothesis trail in a compact form."""
+    cards: list[dict[str, Any]] = []
+    for name in workspace.branch_names():
+        branch = workspace.get_branch(name)
+        metadata = branch.metadata
+        mode = metadata.get("cipher_mode")
+        if not mode and "hypothesis" not in branch.tags:
+            continue
+        cards.append({
+            "branch": name,
+            "parent": branch.parent,
+            "created_iteration": branch.created_iteration,
+            "cipher_mode": mode or "unknown",
+            "mode_status": metadata.get("mode_status", "active"),
+            "mode_confidence": metadata.get("mode_confidence"),
+            "mode_evidence": metadata.get("mode_evidence") or metadata.get("hypothesis_notes"),
+            "mode_counter_evidence": metadata.get("mode_counter_evidence"),
+            "next_recommended_action": metadata.get("next_recommended_action"),
+            "rejection_reason": metadata.get("rejection_reason"),
+            "tags": list(branch.tags),
+        })
+    return cards
 
 
 def _preflight_context(automated_preflight: dict[str, Any] | None) -> str | None:
