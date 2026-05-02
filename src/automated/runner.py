@@ -327,6 +327,7 @@ def run_automated(
                 if should_screen else None
             )
         rank = None
+        rank_escalation = None
         if screen is not None and transform_search in {"rank", "full", "promote"}:
             rank_max_candidates = transform_profile["max_candidates"]
             if transform_search == "promote":
@@ -342,6 +343,37 @@ def run_automated(
                 confirm_count=transform_profile["confirm_count"],
                 adaptive_confirmations=transform_profile["adaptive_confirmations"],
             )
+            rank_escalation = None
+            if _should_auto_escalate_transform_rank_to_full(
+                transform_search=transform_search,
+                homophonic_budget=homophonic_budget,
+                homophonic_solver=homophonic_solver,
+                rank=rank,
+            ):
+                rank_escalation = _transform_rank_escalation_summary(rank)
+                rank = _rank_transform_candidates(
+                    cipher_text=cipher_text,
+                    language=language,
+                    screen=screen,
+                    budget="full",
+                    solver_profile=homophonic_solver,
+                    max_candidates=max(rank_max_candidates, 12),
+                    confirm_count=transform_profile["confirm_count"],
+                    adaptive_confirmations=transform_profile["adaptive_confirmations"],
+                )
+                rank_escalation.update({
+                    "status": "escalated",
+                    "escalated_budget": "full",
+                    "escalated_selection": (rank or {}).get("selection")
+                    if isinstance(rank, dict) else None,
+                    "policy": (
+                        "When Rust screen-budget transform ranking finds no "
+                        "robust candidate but the user requested full "
+                        "homophonic budget, Decipher automatically reruns the "
+                        "same shortlist with full-budget Rust ranking instead "
+                        "of returning only a diagnostic basin."
+                    ),
+                })
         transform_search_report = {
             "mode": transform_search,
             "profile": transform_search_profile,
@@ -349,6 +381,7 @@ def run_automated(
             "suspicion": suspicion,
             "screen": screen,
             "rank": rank,
+            "rank_escalation": rank_escalation,
             "status": "promoted" if transform_search == "promote" and screen else "screened" if screen else "not_screened",
             "note": (
                 "Transform-search diagnostics and optional solver-backed "
@@ -637,6 +670,61 @@ def _selected_ranked_transform_candidate(
     if not best.get("decryption"):
         return None
     return best
+
+
+def _rank_report_has_selected_candidate(rank: dict[str, Any] | None) -> bool:
+    if not isinstance(rank, dict):
+        return False
+    selection = rank.get("selection")
+    if isinstance(selection, dict):
+        return bool(selection.get("selected") and selection.get("selected_candidate_id"))
+    candidates = rank.get("top_ranked_candidates") or []
+    return bool(candidates and candidates[0].get("status") == "completed")
+
+
+def _should_auto_escalate_transform_rank_to_full(
+    *,
+    transform_search: str,
+    homophonic_budget: str,
+    homophonic_solver: str,
+    rank: dict[str, Any] | None,
+) -> bool:
+    if transform_search != "rank":
+        return False
+    if homophonic_budget != "full" or homophonic_solver != "zenith_native":
+        return False
+    if not isinstance(rank, dict) or rank.get("budget") == "full":
+        return False
+    if _rank_report_has_selected_candidate(rank):
+        return False
+    if _zenith_native_engine() != "rust" or _transform_rank_engine() != "rust":
+        return False
+    return _env_bool("DECIPHER_TRANSFORM_AUTO_FULL_ESCALATION", True)
+
+
+def _transform_rank_escalation_summary(rank: dict[str, Any] | None) -> dict[str, Any]:
+    rank = rank or {}
+    selection = rank.get("selection") if isinstance(rank.get("selection"), dict) else {}
+    diagnostics = rank.get("diagnostics") if isinstance(rank.get("diagnostics"), dict) else {}
+    top = [
+        {
+            "candidate_id": candidate.get("candidate_id"),
+            "family": candidate.get("family"),
+            "finalist_label": candidate.get("finalist_label"),
+            "confirmed_selection_score": candidate.get("confirmed_selection_score"),
+            "anneal_score": candidate.get("anneal_score"),
+        }
+        for candidate in (rank.get("top_ranked_candidates") or [])[:8]
+        if isinstance(candidate, dict)
+    ]
+    return {
+        "trigger": "screen_rank_no_robust_candidate",
+        "initial_budget": rank.get("budget"),
+        "initial_selection": selection,
+        "initial_diagnostic_conclusion": diagnostics.get("conclusion"),
+        "initial_evaluated_candidates": rank.get("evaluated_candidates"),
+        "initial_top_candidates": top,
+    }
 
 
 def _effective_selected_transform_pipeline(candidate: dict[str, Any]) -> dict[str, Any] | None:
@@ -1043,7 +1131,7 @@ def _transform_search_profile_params(
             "include_program_search": True,
             "program_max_depth": 5,
             "program_beam_width": 48,
-            "max_candidates": 12 if transform_search == "full" else 10,
+            "max_candidates": 24,
             "confirm_count": 4,
             "adaptive_confirmations": 2,
         }
@@ -1079,72 +1167,85 @@ def _rank_transform_candidates(
     skipped: list[dict[str, Any]] = []
     seen_pipeline: set[str] = set()
     raw_candidates, triage_report = _two_stage_transform_rank_candidates(screen, max_candidates=max_candidates)
-    for index, candidate in enumerate(raw_candidates):
-        pipeline_raw = candidate.get("pipeline")
-        pipeline_key = json.dumps(pipeline_raw, sort_keys=True)
-        if pipeline_key in seen_pipeline:
-            continue
-        seen_pipeline.add(pipeline_key)
-        try:
-            pipeline = TransformPipeline.from_raw(pipeline_raw)
-            if pipeline is None:
-                raise ValueError("missing transform pipeline")
-            order = apply_transform_pipeline(list(range(len(cipher_text.tokens))), pipeline).tokens
-            if sorted(order) != list(range(len(cipher_text.tokens))):
-                raise ValueError("transform candidate is not a position permutation")
-            transform_result = apply_transform_pipeline(cipher_text.tokens, pipeline)
-            transformed_cipher = _cipher_text_from_tokens(
-                transform_result.tokens,
-                cipher_text.alphabet,
-                source=f"{cipher_text.source}:transform_rank:{index}",
-            )
-            started = time.time()
-            solver, key, decryption, step = _run_homophonic(
-                transformed_cipher,
-                language,
-                budget=budget,
-                refinement="none",
-                solver_profile=solver_profile,
-                ground_truth=None,
-            )
-            anneal_score = step.get("anneal_score")
-            quality_score = _plaintext_quality_score(decryption, language)
-            mutation_penalty = _transform_mutation_penalty(candidate)
-            selection_score = _transform_selection_score(
-                anneal_score=anneal_score,
-                quality_score=quality_score,
-                structural_score=candidate.get("score"),
-                mutation_penalty=mutation_penalty,
-            )
-            ranked.append({
-                "candidate_id": candidate.get("candidate_id"),
-                "family": candidate.get("family"),
-                "provenance": candidate.get("provenance"),
-                "params": candidate.get("params"),
-                "pipeline": pipeline.to_raw(),
-                "status": "completed",
-                "solver": solver,
-                "anneal_score": anneal_score,
-                "plaintext_quality_score": round(quality_score, 6),
-                "local_mutation_penalty": mutation_penalty,
-                "selection_score": round(selection_score, 6),
-                "elapsed_seconds": round(time.time() - started, 3),
-                "decryption_preview": decryption[:500],
-                "decryption": decryption,
-                "key": {str(k): v for k, v in key.items()},
-                "structural_score": candidate.get("score"),
-                "structural_delta_vs_identity": candidate.get("delta_vs_identity"),
-                "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
-                "best_period": (candidate.get("metrics") or {}).get("best_period"),
-                "inverse_best_period": (candidate.get("metrics") or {}).get("inverse_best_period"),
-            })
-        except Exception as exc:  # noqa: BLE001
-            skipped.append({
-                "candidate_id": candidate.get("candidate_id"),
-                "family": candidate.get("family"),
-                "pipeline": pipeline_raw,
-                "reason": f"{type(exc).__name__}: {exc}",
-            })
+    if (
+        solver_profile == "zenith_native"
+        and _zenith_native_engine() == "rust"
+        and _transform_rank_engine() == "rust"
+    ):
+        ranked, skipped = _rank_transform_candidates_rust_batch(
+            cipher_text=cipher_text,
+            language=language,
+            raw_candidates=raw_candidates,
+            budget=budget,
+        )
+    else:
+        for index, candidate in enumerate(raw_candidates):
+            pipeline_raw = candidate.get("pipeline")
+            pipeline_key = json.dumps(pipeline_raw, sort_keys=True)
+            if pipeline_key in seen_pipeline:
+                continue
+            seen_pipeline.add(pipeline_key)
+            try:
+                pipeline = TransformPipeline.from_raw(pipeline_raw)
+                if pipeline is None:
+                    raise ValueError("missing transform pipeline")
+                order = apply_transform_pipeline(list(range(len(cipher_text.tokens))), pipeline).tokens
+                if sorted(order) != list(range(len(cipher_text.tokens))):
+                    raise ValueError("transform candidate is not a position permutation")
+                transform_result = apply_transform_pipeline(cipher_text.tokens, pipeline)
+                transformed_cipher = _cipher_text_from_tokens(
+                    transform_result.tokens,
+                    cipher_text.alphabet,
+                    source=f"{cipher_text.source}:transform_rank:{index}",
+                )
+                started = time.time()
+                solver, key, decryption, step = _run_homophonic(
+                    transformed_cipher,
+                    language,
+                    budget=budget,
+                    refinement="none",
+                    solver_profile=solver_profile,
+                    ground_truth=None,
+                )
+                anneal_score = step.get("anneal_score")
+                quality_score = _plaintext_quality_score(decryption, language)
+                mutation_penalty = _transform_mutation_penalty(candidate)
+                selection_score = _transform_selection_score(
+                    anneal_score=anneal_score,
+                    quality_score=quality_score,
+                    structural_score=candidate.get("score"),
+                    mutation_penalty=mutation_penalty,
+                )
+                ranked.append({
+                    "candidate_id": candidate.get("candidate_id"),
+                    "family": candidate.get("family"),
+                    "provenance": candidate.get("provenance"),
+                    "params": candidate.get("params"),
+                    "pipeline": pipeline.to_raw(),
+                    "status": "completed",
+                    "solver": solver,
+                    "anneal_score": anneal_score,
+                    "plaintext_quality_score": round(quality_score, 6),
+                    "local_mutation_penalty": mutation_penalty,
+                    "selection_score": round(selection_score, 6),
+                    "elapsed_seconds": round(time.time() - started, 3),
+                    "decryption_preview": decryption[:500],
+                    "decryption": decryption,
+                    "key": {str(k): v for k, v in key.items()},
+                    "structural_score": candidate.get("score"),
+                    "structural_delta_vs_identity": candidate.get("delta_vs_identity"),
+                    "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
+                    "best_period": (candidate.get("metrics") or {}).get("best_period"),
+                    "inverse_best_period": (candidate.get("metrics") or {}).get("inverse_best_period"),
+                })
+            except Exception as exc:  # noqa: BLE001
+                skipped.append({
+                    "candidate_id": candidate.get("candidate_id"),
+                    "family": candidate.get("family"),
+                    "pipeline": pipeline_raw,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+    # Validation, confirmation, and selection are shared by both rank engines.
     validation_report = _validate_transform_finalists(ranked)
     _sort_ranked_transform_candidates(ranked, score_key="validated_selection_score")
     confirmation_report = _confirm_transform_finalists(
@@ -1198,6 +1299,116 @@ def _rank_transform_candidates(
             "This is bounded search, not exhaustive transform discovery."
         ),
     }
+
+
+def _rank_transform_candidates_rust_batch(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    raw_candidates: list[dict[str, Any]],
+    budget: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Evaluate transform finalists with the Rust transform+Zenith batch kernel."""
+
+    from analysis.zenith_fast import zenith_transform_candidates_batch_fast
+
+    bin_path = _zenith_native_model_path(language)
+    if bin_path is None:
+        raise FileNotFoundError(
+            f"zenith_native Rust transform ranking requires an ngram5 model for language={language!r}"
+        )
+    pt_alpha = _plaintext_alphabet(language)
+    plaintext_ids = list(range(pt_alpha.size))
+    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
+    budget_params = _homophonic_budget_params(
+        budget,
+        len(cipher_text.tokens) < 600,
+        search_profile=_homophonic_search_profile(),
+    )
+    seen_pipeline: set[str] = set()
+    payload_candidates: list[dict[str, Any]] = []
+    metadata_by_id: dict[str, dict[str, Any]] = {}
+    skipped: list[dict[str, Any]] = []
+    for candidate in raw_candidates:
+        pipeline_raw = candidate.get("pipeline")
+        pipeline_key = json.dumps(pipeline_raw, sort_keys=True)
+        if pipeline_key in seen_pipeline:
+            continue
+        seen_pipeline.add(pipeline_key)
+        candidate_id = str(candidate.get("candidate_id"))
+        payload_candidates.append(candidate)
+        metadata_by_id[candidate_id] = candidate
+
+    threads = _transform_rank_threads()
+    started = time.time()
+    batch = zenith_transform_candidates_batch_fast(
+        tokens=list(cipher_text.tokens),
+        candidates=payload_candidates,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        model_path=bin_path,
+        epochs=budget_params["epochs"],
+        sampler_iterations=budget_params["sampler_iterations"],
+        seeds=[int(seed) for seed in budget_params["seeds"]],
+        top_n=3,
+        threads=threads,
+    )
+    ranked: list[dict[str, Any]] = []
+    for row in batch.get("results", []):
+        candidate_id = str(row.get("candidate_id"))
+        candidate = metadata_by_id.get(candidate_id, {})
+        if row.get("status") != "completed":
+            skipped.append({
+                "candidate_id": candidate.get("candidate_id", candidate_id),
+                "family": candidate.get("family") or row.get("family"),
+                "pipeline": candidate.get("pipeline"),
+                "reason": row.get("reason") or "rust_batch_candidate_failed",
+            })
+            continue
+        decryption = str(row.get("decryption") or "")
+        anneal_score = _float_or_none(row.get("normalized_score"))
+        quality_score = _plaintext_quality_score(decryption, language)
+        mutation_penalty = _transform_mutation_penalty(candidate)
+        selection_score = _transform_selection_score(
+            anneal_score=anneal_score,
+            quality_score=quality_score,
+            structural_score=candidate.get("score"),
+            mutation_penalty=mutation_penalty,
+        )
+        ranked.append({
+            "candidate_id": candidate.get("candidate_id", candidate_id),
+            "family": candidate.get("family") or row.get("family"),
+            "provenance": candidate.get("provenance"),
+            "params": candidate.get("params"),
+            "pipeline": candidate.get("pipeline"),
+            "status": "completed",
+            "solver": "zenith_native",
+            "engine": "rust_batch",
+            "anneal_score": anneal_score,
+            "plaintext_quality_score": round(quality_score, 6),
+            "local_mutation_penalty": mutation_penalty,
+            "selection_score": round(selection_score, 6),
+            "elapsed_seconds": round(float(row.get("elapsed_seconds") or 0.0), 3),
+            "decryption_preview": decryption[:500],
+            "decryption": decryption,
+            "key": {str(k): int(v) for k, v in dict(row.get("key") or {}).items()},
+            "structural_score": candidate.get("score"),
+            "structural_delta_vs_identity": candidate.get("delta_vs_identity"),
+            "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
+            "best_period": (candidate.get("metrics") or {}).get("best_period"),
+            "inverse_best_period": (candidate.get("metrics") or {}).get("inverse_best_period"),
+            "rust_batch": {
+                "best_seed": row.get("best_seed"),
+                "attempts": row.get("attempts") or [],
+                "token_order_hash": row.get("token_order_hash"),
+                "candidate_elapsed_seconds": row.get("elapsed_seconds"),
+                "batch_elapsed_seconds": batch.get("elapsed_seconds"),
+                "threads": batch.get("threads"),
+                "seed_count": batch.get("seed_count"),
+                "total_elapsed_seconds": round(time.time() - started, 3),
+            },
+        })
+    return ranked, skipped
 
 
 def _validate_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any]:
@@ -1298,6 +1509,20 @@ def _confirm_transform_finalists(
     )
     if identity is not None and all(item.get("candidate_id") != "000_identity" for item in finalists):
         finalists.append(identity)
+    if (
+        solver_profile == "zenith_native"
+        and _zenith_native_engine() == "rust"
+        and _transform_rank_engine() == "rust"
+    ):
+        return _confirm_transform_finalists_rust_batch(
+            cipher_text=cipher_text,
+            language=language,
+            ranked=ranked,
+            finalists=finalists,
+            budget=budget,
+            confirm_count=confirm_count,
+            adaptive_confirmations=adaptive_confirmations,
+        )
     confirmed = []
     skipped = []
     confirmed_ids: set[str] = set()
@@ -1475,6 +1700,260 @@ def _confirm_transform_finalists(
             "offsets, always includes the identity control when available, "
             "and rewards candidates whose scores and plaintexts are stable "
             "across probes."
+        ),
+    }
+
+
+def _confirm_transform_finalists_rust_batch(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    ranked: list[dict[str, Any]],
+    finalists: list[dict[str, Any]],
+    budget: str,
+    confirm_count: int = 3,
+    adaptive_confirmations: int = 2,
+) -> dict[str, Any]:
+    """Confirm transform finalists using the Rust transform+Zenith batch kernel."""
+
+    from analysis.zenith_fast import zenith_transform_candidates_batch_fast
+
+    pt_alpha = _plaintext_alphabet(language)
+    plaintext_ids = list(range(pt_alpha.size))
+    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
+    bin_path = _zenith_native_model_path(language)
+    if bin_path is None:
+        raise FileNotFoundError(
+            f"Rust transform confirmation requires an ngram5 model for language={language!r}"
+        )
+    budget_params = _homophonic_budget_params(
+        budget,
+        len(cipher_text.tokens) < 600,
+        search_profile=_homophonic_search_profile(),
+    )
+    confirmed: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    confirmed_ids: set[str] = set()
+
+    def run_confirmation_batch(
+        items: list[dict[str, Any]],
+        *,
+        reason: str,
+        start_index: int,
+    ) -> None:
+        payload_candidates: list[dict[str, Any]] = []
+        metadata: dict[str, tuple[dict[str, Any], str, int, str]] = {}
+        for offset, item in enumerate(items):
+            seed_offset = 10_000 + (start_index + offset) * 1_000
+            original_id = str(item.get("candidate_id"))
+            batch_id = f"{original_id}__confirm_{seed_offset}"
+            pipeline = item.get("pipeline")
+            if not pipeline:
+                item["confirmation"] = {
+                    "status": "error",
+                    "seed_offset": seed_offset,
+                    "error": "missing transform pipeline",
+                }
+                item["confirmed_selection_score"] = (
+                    _float_or_none(item.get("validated_selection_score"))
+                    or _float_or_none(item.get("selection_score"))
+                    or float("-inf")
+                ) - 0.12
+                confirmed_ids.add(original_id)
+                skipped.append({
+                    "candidate_id": item.get("candidate_id"),
+                    "family": item.get("family"),
+                    "seed_offset": seed_offset,
+                    "confirmation_reason": reason,
+                    "reason": "missing transform pipeline",
+                })
+                continue
+            payload_candidates.append({
+                "candidate_id": batch_id,
+                "family": item.get("family"),
+                "pipeline": pipeline,
+                "grid": item.get("grid"),
+                "seed_offset": seed_offset,
+            })
+            metadata[batch_id] = (item, original_id, seed_offset, reason)
+
+        if not payload_candidates:
+            return
+        batch = zenith_transform_candidates_batch_fast(
+            tokens=list(cipher_text.tokens),
+            candidates=payload_candidates,
+            plaintext_ids=plaintext_ids,
+            id_to_letter=id_to_letter,
+            model_path=bin_path,
+            epochs=budget_params["epochs"],
+            sampler_iterations=budget_params["sampler_iterations"],
+            seeds=[int(seed) for seed in budget_params["seeds"]],
+            top_n=1,
+            threads=_transform_rank_threads(),
+        )
+        for row in batch.get("results", []):
+            batch_id = str(row.get("candidate_id"))
+            item, original_id, seed_offset, confirmation_reason = metadata[batch_id]
+            if row.get("status") != "completed":
+                item["confirmation"] = {
+                    "status": "error",
+                    "seed_offset": seed_offset,
+                    "error": row.get("reason") or "rust_batch_candidate_failed",
+                    "engine": "rust_batch",
+                }
+                item["confirmed_selection_score"] = (
+                    _float_or_none(item.get("validated_selection_score"))
+                    or _float_or_none(item.get("selection_score"))
+                    or float("-inf")
+                ) - 0.12
+                confirmed_ids.add(original_id)
+                skipped.append({
+                    "candidate_id": item.get("candidate_id"),
+                    "family": item.get("family"),
+                    "seed_offset": seed_offset,
+                    "confirmation_reason": confirmation_reason,
+                    "reason": item["confirmation"]["error"],
+                })
+                continue
+            decryption = str(row.get("decryption") or "")
+            anneal_score = _float_or_none(row.get("normalized_score"))
+            quality_score = _plaintext_quality_score(decryption, language)
+            mutation_penalty = _transform_mutation_penalty(item)
+            confirmation_selection = _transform_selection_score(
+                anneal_score=anneal_score,
+                quality_score=quality_score,
+                structural_score=item.get("structural_score"),
+                mutation_penalty=mutation_penalty,
+            )
+            primary_score = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            )
+            primary_text = str(item.get("decryption") or "")
+            distance = _plaintext_distance_ratio(primary_text, decryption)
+            stability_score = max(0.0, 1.0 - distance)
+            confirmation_delta = (
+                confirmation_selection - primary_score
+                if math.isfinite(primary_score) else None
+            )
+            penalty = 0.08 * (1.0 - stability_score)
+            reasons: list[str] = []
+            if confirmation_delta is not None and confirmation_delta < -0.08:
+                penalty += 0.08
+                reasons.append("confirmation_selection_dropped")
+            if stability_score < 0.55:
+                penalty += 0.05
+                reasons.append("confirmation_plaintext_unstable")
+            confirmed_score = (
+                min(primary_score, confirmation_selection)
+                if math.isfinite(primary_score) else confirmation_selection
+            )
+            confirmed_score -= penalty
+            confirmation = {
+                "status": "completed",
+                "solver": "zenith_native",
+                "engine": "rust_batch",
+                "seed_offset": seed_offset,
+                "best_seed": row.get("best_seed"),
+                "confirmation_reason": confirmation_reason,
+                "budget": budget,
+                "anneal_score": anneal_score,
+                "plaintext_quality_score": round(quality_score, 6),
+                "selection_score": round(confirmation_selection, 6),
+                "selection_delta_vs_primary": (
+                    round(confirmation_delta, 6)
+                    if confirmation_delta is not None else None
+                ),
+                "plaintext_distance_ratio": round(distance, 6),
+                "stability_score": round(stability_score, 6),
+                "confirmation_penalty": round(penalty, 6),
+                "confirmation_reasons": reasons,
+                "elapsed_seconds": round(float(row.get("elapsed_seconds") or 0.0), 3),
+                "decryption_preview": decryption[:500],
+                "key": {str(k): int(v) for k, v in dict(row.get("key") or {}).items()},
+            }
+            item["confirmation"] = confirmation
+            item["confirmed_selection_score"] = round(confirmed_score, 6)
+            confirmed_ids.add(original_id)
+            confirmed.append({
+                "candidate_id": item.get("candidate_id"),
+                "family": item.get("family"),
+                "seed_offset": seed_offset,
+                "confirmation_reason": confirmation_reason,
+                "selection_score": confirmation["selection_score"],
+                "selection_delta_vs_primary": confirmation["selection_delta_vs_primary"],
+                "stability_score": confirmation["stability_score"],
+                "confirmed_selection_score": item["confirmed_selection_score"],
+                "reasons": reasons,
+            })
+
+    run_confirmation_batch(finalists, reason="initial_finalist", start_index=0)
+    best_confirmed = max(
+        (
+            _float_or_none(item.get("confirmed_selection_score")) or float("-inf")
+            for item in ranked
+            if str(item.get("candidate_id")) in confirmed_ids
+        ),
+        default=float("-inf"),
+    )
+    adaptive_margin = 0.04
+    adaptive_items: list[dict[str, Any]] = []
+    max_adaptive_confirmations = max(0, adaptive_confirmations)
+    if max_adaptive_confirmations > 0 and math.isfinite(best_confirmed):
+        for item in ranked:
+            if len(adaptive_items) >= max_adaptive_confirmations:
+                break
+            candidate_id = str(item.get("candidate_id"))
+            if candidate_id in confirmed_ids:
+                continue
+            base_score = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            )
+            if base_score < best_confirmed - adaptive_margin:
+                continue
+            adaptive_items.append(item)
+    run_confirmation_batch(
+        adaptive_items,
+        reason="adaptive_near_margin",
+        start_index=len(confirmed_ids),
+    )
+
+    unconfirmed_penalty = 0.12
+    unconfirmed_count = 0
+    for item in ranked:
+        candidate_id = str(item.get("candidate_id"))
+        if candidate_id in confirmed_ids:
+            continue
+        base_score = (
+            _float_or_none(item.get("validated_selection_score"))
+            or _float_or_none(item.get("selection_score"))
+            or float("-inf")
+        )
+        item["confirmation"] = {
+            "status": "not_run",
+            "reason": "outside_confirmation_budget",
+            "unconfirmed_penalty": unconfirmed_penalty,
+        }
+        item["confirmed_selection_score"] = round(base_score - unconfirmed_penalty, 6)
+        unconfirmed_count += 1
+    return {
+        "stage": "independent_seed_confirmation",
+        "engine": "rust_batch",
+        "confirmed_candidate_count": len(confirmed),
+        "adaptive_confirmed_candidate_count": len(adaptive_items),
+        "adaptive_margin": adaptive_margin,
+        "unconfirmed_candidate_count": unconfirmed_count,
+        "unconfirmed_penalty": unconfirmed_penalty,
+        "skipped_candidates": skipped,
+        "confirmed_candidates": confirmed,
+        "policy": (
+            "Stage C reruns the top transform finalists with independent seed "
+            "offsets using the Rust transform+Zenith batch kernel, always "
+            "includes the identity control when available, and rewards "
+            "candidates whose scores and plaintexts are stable across probes."
         ),
     }
 
@@ -1849,10 +2328,10 @@ def _two_stage_transform_rank_candidates(
 
     priority = [
         "program_search",
+        "route_rows",
+        "route_columns",
         "banded_ndown_lock_shift",
         "ndownmacross",
-        "route_columns",
-        "route_rows",
         "row_reversals",
         "diagonal_route",
         "grille_route",
@@ -1873,7 +2352,21 @@ def _two_stage_transform_rank_candidates(
         bucket = class_buckets.get(class_name, [])
         if not bucket:
             continue
-        limit = 6 if class_name == "program_search" else 2 if class_name in {"banded_ndown_lock_shift", "ndownmacross", "route_columns", "split_grid", "columnar", "unwrap_columnar", "composite_route"} else 1
+        if class_name == "program_search":
+            reserved = 0
+            if class_buckets.get("route_rows"):
+                reserved += min(4, len(class_buckets["route_rows"]))
+            if class_buckets.get("route_columns"):
+                reserved += min(2, len(class_buckets["route_columns"]))
+            limit = min(14, max(1, max_candidates - 1 - reserved))
+        elif class_name == "route_rows":
+            limit = 4
+        elif class_name == "route_columns":
+            limit = 2
+        elif class_name in {"banded_ndown_lock_shift", "ndownmacross", "split_grid", "columnar", "unwrap_columnar", "composite_route"}:
+            limit = 2
+        else:
+            limit = 1
         candidates = (
             _program_diverse_transform_candidates(bucket, limit=limit)
             if class_name == "program_search"
@@ -1981,9 +2474,32 @@ def _program_diverse_transform_candidates(
             if add(key):
                 added += 1
 
-    add_prefixed("banded_ndown_constructed:", max_items=4)
-    for shape in ("route_repair_constructed", "program_other"):
-        add(shape)
+    def add_route_repair_by_grid(max_items: int) -> None:
+        grouped: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+        for candidate in bucket:
+            if not _program_shape_key(candidate).startswith("route_repair_constructed:"):
+                continue
+            grid = candidate.get("grid") if isinstance(candidate.get("grid"), dict) else {}
+            grouped.setdefault((grid.get("columns"), grid.get("rows")), []).append(candidate)
+        groups = []
+        for key, items in grouped.items():
+            items.sort(key=_transform_triage_sort_key, reverse=True)
+            groups.append((key, items[0]))
+        groups.sort(key=lambda entry: _transform_triage_sort_key(entry[1]), reverse=True)
+        added = 0
+        for _key, candidate in groups:
+            if added >= max_items or len(selected) >= limit:
+                break
+            candidate_id = str(candidate.get("candidate_id"))
+            if candidate_id in seen_ids:
+                continue
+            selected.append(candidate)
+            seen_ids.add(candidate_id)
+            added += 1
+
+    add_route_repair_by_grid(max_items=min(5, max(1, limit - 1)))
+    add_prefixed("banded_ndown_constructed:", max_items=max(1, limit - len(selected)))
+    add("program_other")
     for candidate in bucket:
         if len(selected) >= limit:
             break
@@ -1999,16 +2515,31 @@ def _program_shape_key(candidate: dict[str, Any]) -> str:
     params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
     template = str(params.get("template") or "")
     if template == "banded_ndown_constructed":
-        return f"{template}:{_banded_program_variant_key(params)}"
+        return f"{template}:{_banded_program_variant_key(candidate)}"
     if template == "route_repair_constructed":
-        return template
+        grid = candidate.get("grid") if isinstance(candidate.get("grid"), dict) else {}
+        labels = list(params.get("operation_labels") or [])
+        route_label = next((str(label) for label in labels if str(label).startswith("route_")), "route")
+        repair_label = next(
+            (
+                str(label)
+                for label in labels
+                if str(label).startswith("reverse_") or str(label).startswith("shift_")
+            ),
+            "repair",
+        )
+        return f"{template}:{route_label}:{repair_label}:{grid.get('columns')}:{grid.get('rows')}"
     return "program_other"
 
 
-def _banded_program_variant_key(params: dict[str, Any]) -> str:
+def _banded_program_variant_key(candidate: dict[str, Any]) -> str:
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
     labels = [str(label) for label in params.get("operation_labels") or []]
     top_across = "a?"
+    split_value = _banded_program_split(candidate)
+    split = f"s{split_value}" if split_value is not None else "s?"
     shift = "shift?"
+    tail = "tail?"
     for label in labels:
         if label.startswith("ndown_top") and "_a" in label:
             top_across = label.rsplit("_", 1)[-1]
@@ -2016,7 +2547,43 @@ def _banded_program_variant_key(params: dict[str, Any]) -> str:
             shift = "right"
         elif "shift_left" in label:
             shift = "left"
-    return f"{top_across}:{shift}"
+        if label.startswith("tail_repair"):
+            tail = label
+    return f"{split}:{top_across}:{shift}:{tail}"
+
+
+def _banded_program_split(candidate: dict[str, Any]) -> int | None:
+    params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
+    labels = [str(label) for label in params.get("operation_labels") or []]
+    for label in labels:
+        if label.startswith("ndown_top") and "_s" in label:
+            parsed_split = _program_split_from_label(label)
+            if parsed_split is not None:
+                return parsed_split
+    pipeline = candidate.get("pipeline") if isinstance(candidate.get("pipeline"), dict) else {}
+    steps = pipeline.get("steps") if isinstance(pipeline.get("steps"), list) else []
+    if steps:
+        data = steps[0].get("data") if isinstance(steps[0], dict) else None
+        if isinstance(data, dict) and data.get("rangeEnd") is not None:
+            try:
+                return int(data["rangeEnd"]) + 1
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def _program_split_from_label(label: str) -> int | None:
+    marker = "_s"
+    if marker not in label:
+        return None
+    tail = label.split(marker, 1)[1]
+    digits = []
+    for ch in tail:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    return int("".join(digits)) if digits else None
 
 
 def _transform_family_class(candidate: dict[str, Any]) -> str:
@@ -2082,6 +2649,21 @@ def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float,
     template_bonus = 0.0
     if params.get("template") == "banded_ndown_constructed":
         template_bonus = 0.18
+        labels = [str(label) for label in params.get("operation_labels") or []]
+        if "tail_repair_pack" in labels:
+            template_bonus += 0.02
+        split = _banded_program_split(candidate)
+        grid = candidate.get("grid") if isinstance(candidate.get("grid"), dict) else {}
+        rows = grid.get("rows")
+        if split is not None and isinstance(rows, int) and rows > 3:
+            preferred = max(1, rows // 2 - 1)
+            distance = abs(split - preferred)
+            if distance == 0:
+                template_bonus += 0.04
+            elif distance <= 2:
+                template_bonus += 0.025
+            elif distance <= 4:
+                template_bonus += 0.015
     elif params.get("template") == "route_repair_constructed":
         template_bonus = 0.10
     elif params.get("constructed_template_match") or params.get("calibration_template"):
@@ -3557,6 +4139,7 @@ def _run_homophonic_zenith_native(
     epochs = budget_params["epochs"]
     sampler_iterations = budget_params["sampler_iterations"]
     parallel_seed_workers = _homophonic_parallel_seed_workers(len(seeds))
+    engine = _zenith_native_engine()
 
     best_result = None
     best_score = float("-inf")
@@ -3578,6 +4161,7 @@ def _run_homophonic_zenith_native(
                     epochs=epochs,
                     sampler_iterations=sampler_iterations,
                     seed=seed,
+                    engine=engine,
                 ): seed
                 for seed in seeds
             }
@@ -3586,22 +4170,40 @@ def _run_homophonic_zenith_native(
                 seed_results.append((seed, future.result()))
         seed_results.sort(key=lambda item: seeds.index(item[0]))
     else:
-        model = load_zenith_binary_model(bin_path)
-        for seed in seeds:
-            seed_results.append((
-                seed,
-                zenith_solve(
-                    tokens=list(cipher_text.tokens),
-                    plaintext_ids=plaintext_ids,
-                    id_to_letter=id_to_letter,
-                    letter_to_id=letter_to_id,
-                    model=model,
-                    epochs=epochs,
-                    sampler_iterations=sampler_iterations,
-                    seed=seed,
-                    top_n=3,
-                ),
-            ))
+        if engine == "rust":
+            from analysis.zenith_fast import zenith_solve_fast
+
+            for seed in seeds:
+                seed_results.append((
+                    seed,
+                    zenith_solve_fast(
+                        tokens=list(cipher_text.tokens),
+                        plaintext_ids=plaintext_ids,
+                        id_to_letter=id_to_letter,
+                        model_path=bin_path,
+                        epochs=epochs,
+                        sampler_iterations=sampler_iterations,
+                        seed=seed,
+                        top_n=3,
+                    ),
+                ))
+        else:
+            model = load_zenith_binary_model(bin_path)
+            for seed in seeds:
+                seed_results.append((
+                    seed,
+                    zenith_solve(
+                        tokens=list(cipher_text.tokens),
+                        plaintext_ids=plaintext_ids,
+                        id_to_letter=id_to_letter,
+                        letter_to_id=letter_to_id,
+                        model=model,
+                        epochs=epochs,
+                        sampler_iterations=sampler_iterations,
+                        seed=seed,
+                        top_n=3,
+                    ),
+                ))
 
     for seed, candidate in seed_results:
         quality = _plaintext_quality(candidate.plaintext, candidate.key)
@@ -3674,6 +4276,7 @@ def _run_homophonic_zenith_native(
         "solver": "zenith_native",
         "model_source": str(bin_path),
         "model_note": "zenith_binary",
+        "engine": engine,
         "homophonic_budget": budget,
         "budget_params": budget_params,
         "homophonic_refinement": "none",
@@ -4314,6 +4917,36 @@ def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
     return value
 
 
+def _zenith_native_engine() -> str:
+    raw = os.environ.get("DECIPHER_ZENITH_NATIVE_ENGINE", "python").strip().lower()
+    if raw in {"py", "python", "reference"}:
+        return "python"
+    if raw in {"rs", "rust", "fast"}:
+        return "rust"
+    raise ValueError(
+        "DECIPHER_ZENITH_NATIVE_ENGINE must be one of: python, rust"
+    )
+
+
+def _transform_rank_engine() -> str:
+    raw = os.environ.get("DECIPHER_TRANSFORM_RANK_ENGINE", "python").strip().lower()
+    if raw in {"py", "python", "reference"}:
+        return "python"
+    if raw in {"rs", "rust", "fast"}:
+        return "rust"
+    raise ValueError(
+        "DECIPHER_TRANSFORM_RANK_ENGINE must be one of: python, rust"
+    )
+
+
+def _transform_rank_threads() -> int:
+    raw = os.environ.get("DECIPHER_TRANSFORM_RANK_THREADS", "0").strip() or "0"
+    try:
+        return max(0, int(raw))
+    except ValueError as exc:
+        raise ValueError("DECIPHER_TRANSFORM_RANK_THREADS must be an integer >= 0") from exc
+
+
 def _zenith_native_seed_worker(
     *,
     tokens: list[int],
@@ -4324,7 +4957,22 @@ def _zenith_native_seed_worker(
     epochs: int,
     sampler_iterations: int,
     seed: int,
+    engine: str = "python",
 ):
+    if engine == "rust":
+        from analysis.zenith_fast import zenith_solve_fast
+
+        return zenith_solve_fast(
+            tokens=tokens,
+            plaintext_ids=plaintext_ids,
+            id_to_letter=id_to_letter,
+            model_path=model_path,
+            epochs=epochs,
+            sampler_iterations=sampler_iterations,
+            seed=seed,
+            top_n=3,
+        )
+
     from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
 
     model = load_zenith_binary_model(model_path)

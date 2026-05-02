@@ -444,6 +444,14 @@ Vigenere-family metadata through the automated runner. Current scope:
   `decipher doctor` to check availability. Agent tools should not silently
   replace `rust_shotgun` with `python_screen`: the Python screen is
   reference/diagnostic scaffolding, not an equivalent large-scale search.
+- The Rust fast-kernel module also exposes the first Zenith-native
+  homophonic/transform acceleration path. `DECIPHER_ZENITH_NATIVE_ENGINE=rust`
+  selects the Rust one-seed Zenith solver, and
+  `DECIPHER_TRANSFORM_RANK_ENGINE=rust` selects the Rust transform-candidate
+  batch evaluator for solver-backed rank/full transform validation. Stage C
+  transform confirmation supports per-candidate seed offsets through the same
+  batch API. Keep the Python implementation as the reference path while
+  adding parity/contract tests before making new Rust paths default.
 
 Kryptos status:
 - K1/K2 are imported in `../cipher_benchmark` as solved calibration records.

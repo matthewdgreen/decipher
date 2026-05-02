@@ -84,6 +84,14 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     hypotheses unless the agent explicitly passes
     `allow_mode_mismatch_repair=true`. This keeps the agent from polishing the
     wrong key model while still allowing deliberate cross-mode experiments.
+  - Future agent-loop design: consider a provider-neutral `lead + background
+    scouts` mode for expensive unknown-cipher runs. The lead agent should own
+    final state, branch promotion, and declarations; background scouts should
+    be sandboxed, cheap, and bounded. Good first scout roles would be
+    `cipher-type scout` (parallel hypothesis diagnostics/search estimates) and
+    `candidate-reader scout` (readability/contextual scoring of finalist
+    plaintexts). Scouts should return structured findings and provenance, not
+    mutate shared state freely or run open-ended conversations.
   - Benchmark-context cipher-family priors are now executor-enforced. If an
     exposed context layer says a cipher is keyed-tableau/Kryptos-style
     polyalphabetic, off-family automated, homophonic, and transform search
@@ -276,6 +284,14 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     split-grid transforms, and region-wise routes.
   - Keep route candidates provenance-rich and inspectable, since these searches
     can explode combinatorially.
+  - Add Kryptos K3 as the next pure-transposition milestone. Import K3 into
+    `cipher_benchmark` as a solved transposition fixture, then add a
+    K3-style `MatrixRotate` transformer and `TransMatrix` double-rotation
+    pipeline step matching the Blake solver semantics (`w1`, `w2`, `cw|ccw`,
+    ragged final row support). Known-pipeline replay should be straightforward;
+    blind K3 recovery should use a new pure-transposition route-search path
+    that scores transformed English directly instead of running the
+    transform+homophonic harness.
   - Scale the new wide structural transform-search layer from the current
     cap-aware 600k-candidate generator toward practical historical Z340-scale
     sweeps: stream/report hundreds of thousands of candidates, avoid
@@ -287,6 +303,21 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     NumPy-backed position-only metric pass and compact family counters; a
     Z340 structural-only 600k run completed in about 173s. Real
     solver-backed validation must stay finalist-only.
+  - [x] Add the first Rust solver-backed transform validation path. With
+    `DECIPHER_ZENITH_NATIVE_ENGINE=rust` and
+    `DECIPHER_TRANSFORM_RANK_ENGINE=rust`, rank/full transform finalists now
+    use the Rust Zenith-native seed solver and Rust transform-candidate batch
+    evaluator; Stage C independent confirmation also runs through the Rust
+    batch path with per-candidate seed offsets. On the Z340 hidden-transform
+    replay fixture, `--transform-search rank --transform-search-profile wide
+    --homophonic-budget full` still reaches 96.2% character accuracy and now
+    completes in about 23s on the latest local validation run.
+  - [ ] Continue the Rust transform-search refactor by moving more of the
+    rank/full orchestration into a reusable candidate-evaluation engine:
+    share rank, confirmation, and final bakeoff code paths; preserve the
+    Python path as the reference implementation until parity tests cover
+    every selection gate; and keep K3/pure-transposition compatibility in the
+    candidate representation.
   - [x] Tighten solver-backed promotion ranking when several near-neighbor
     transform programs are promoted together. Full-budget promotion now runs a
     small final bakeoff over the screen-selected transform plus

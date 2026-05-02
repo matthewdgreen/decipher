@@ -281,6 +281,36 @@ def test_transform_candidate_screen_records_provenance_and_dedupes():
     assert "position_order_preview" in screen["top_candidates"][0]
 
 
+def test_wide_streaming_screen_keeps_simple_route_anchors_visible():
+    tokens = [i % 23 for i in range(460)]
+
+    screen = screen_transform_candidates(
+        tokens,
+        columns=17,
+        profile="wide",
+        top_n=5,
+        max_generated_candidates=25000,
+        streaming=True,
+        include_program_search=True,
+        program_max_depth=5,
+        program_beam_width=48,
+    )
+
+    anchor_families = [candidate["family"] for candidate in screen["anchor_candidates"]]
+    assert "route_rows_boustrophedon" in anchor_families
+    assert "route_columns_up" in anchor_families
+    assert "route_columns_down" in anchor_families
+
+
+def test_plausible_grid_dimensions_keep_ragged_common_widths():
+    dims = plausible_grid_dimensions(460, max_columns=120, max_results=24)
+    widths = [item["columns"] for item in dims]
+
+    assert 16 in widths
+    assert 17 in widths
+    assert 20 in widths
+
+
 def test_route_read_supports_diagonal_and_offset_chain_routes():
     tokens = list(range(12))
 

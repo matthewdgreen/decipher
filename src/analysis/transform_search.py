@@ -98,7 +98,8 @@ def plausible_grid_dimensions(
         if rows <= 1:
             continue
         remainder = token_count % width
-        if remainder and remainder > width // 4:
+        allowed_remainder = width - 1 if width in common_rank else width // 4
+        if remainder and remainder > allowed_remainder:
             continue
         key = (width, rows)
         if key in seen:
@@ -1337,6 +1338,7 @@ def _screen_transform_candidates_streaming(
     family_counts: Counter[str] = Counter()
     top_heap: list[tuple[float, float, int, CandidateScore]] = []
     anchor_heap: list[tuple[float, float, int, CandidateScore]] = []
+    anchor_best_by_key: dict[tuple[str, int | None, int | None], CandidateScore] = {}
     identity_candidate: dict[str, Any] | None = None
     sequence = 0
     candidate_count = 0
@@ -1481,8 +1483,18 @@ def _screen_transform_candidates_streaming(
                 identity_candidate = item.to_dict()
             sequence += 1
             push_heap(top_heap, item, limit=max(1, top_n))
-            if _anchor_candidate_key(item) is not None:
-                push_heap(anchor_heap, item, limit=max(24, top_n))
+            anchor_key = _anchor_candidate_key(item)
+            if anchor_key is not None:
+                if item.candidate.family.startswith("program_"):
+                    push_heap(anchor_heap, item, limit=max(24, top_n))
+                else:
+                    current = anchor_best_by_key.get(anchor_key)
+                    if (
+                        current is None
+                        or (item.score, item.delta_vs_identity)
+                        > (current.score, current.delta_vs_identity)
+                    ):
+                        anchor_best_by_key[anchor_key] = item
 
     fast_batch: list[TransformCandidate] = []
     for candidate in candidate_iter:
@@ -1522,13 +1534,30 @@ def _screen_transform_candidates_streaming(
     ]
     anchor_items: list[CandidateScore] = []
     anchor_seen_keys: set[tuple[str, int | None, int | None]] = set()
+    simple_anchor_items = sorted(
+        anchor_best_by_key.values(),
+        key=lambda item: (
+            _anchor_family_priority(item.candidate.family),
+            item.score,
+            item.delta_vs_identity,
+        ),
+        reverse=True,
+    )
+    for item in simple_anchor_items:
+        key = _anchor_candidate_key(item)
+        if key is None or key in anchor_seen_keys:
+            continue
+        anchor_seen_keys.add(key)
+        anchor_items.append(item)
+        if len(anchor_items) >= 48:
+            break
     for entry in sorted(anchor_heap, key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True):
         key = _anchor_candidate_key(entry[3])
         if key is None or key in anchor_seen_keys:
             continue
         anchor_seen_keys.add(key)
         anchor_items.append(entry[3])
-        if len(anchor_items) >= 24:
+        if len(anchor_items) >= 72:
             break
     top_family_counts = Counter(_family_count_key(item.candidate.family) for item in top_items)
     return {
@@ -1582,6 +1611,22 @@ def _anchor_candidate_key(item: CandidateScore) -> tuple[str, int | None, int | 
         return None
     grid = item.candidate.grid or {}
     return (family, grid.get("columns"), grid.get("rows"))
+
+
+def _anchor_family_priority(family: str) -> int:
+    """Keep simple route anchors visible even when repaired routes score higher."""
+
+    if family.startswith("route_rows_boustrophedon"):
+        return 90
+    if family.startswith("route_columns"):
+        return 80
+    if family.startswith("ndownmacross"):
+        return 70
+    if family.startswith("row_reversals"):
+        return 60
+    if family.startswith("banded_ndown_lock_shift"):
+        return 50
+    return 0
 
 
 def _family_count_key(family: str) -> str:

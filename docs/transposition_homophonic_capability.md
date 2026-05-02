@@ -516,6 +516,17 @@ Current implementation slice:
   structural scoring or solver-backed search. Invalid candidates, such as a
   non-permutation `NDownMAcross` probe on the 88-symbol Dorabella grid, are
   recorded as rejected/skipped candidates instead of crashing the tool.
+- Rust solver-backed validation is now available for the Zenith-native
+  transform rank path. Set `DECIPHER_ZENITH_NATIVE_ENGINE=rust` and
+  `DECIPHER_TRANSFORM_RANK_ENGINE=rust` to run transform finalist evaluation
+  and independent confirmation through the Rust batch kernel. On the Z340
+  hidden-transform fixture with the external Zenith model,
+  `--transform-search rank --transform-search-profile wide
+  --homophonic-budget full` auto-escalates from screen probes to full Rust
+  ranking when the screen basin is unstable, selects
+  `program_0853_d5_tail_repair_pack`, and reaches 96.2% character accuracy in
+  about 23s on the latest local validation run
+  (`artifacts/validate_z340_rust_rank_batch_confirm/...`).
 
 Recommended next step:
 

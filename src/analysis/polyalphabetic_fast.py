@@ -60,6 +60,8 @@ def fast_kernel_status() -> dict[str, Any]:
             "keyed_vigenere_alphabet_anneal",
             "quagmire3_shotgun_search",
             "transform_structural_metrics_batch",
+            "zenith_solve_seed",
+            "zenith_transform_candidates_batch",
         ],
         "note": (
             "Required runtime accelerator. Build this module before normal "

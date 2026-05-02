@@ -259,12 +259,14 @@ selects Rust; use `--engine python` only for explicit small reference screens.
 The Rust fast-kernel pytest coverage is:
 
 ```bash
-.venv/bin/python -m pytest tests/test_polyalphabetic_fast.py -q
+.venv/bin/python -m pytest tests/test_polyalphabetic_fast.py tests/test_zenith_solver.py -q
 ```
 
 It checks score parity for the existing keyed-Vigenere fast path, a seeded
 Quagmire III recovery, and the agent-facing `rust_shotgun` tool installation
-path.
+path. The Zenith tests also cover the Rust one-seed homophonic result
+contract and the Rust transform-candidate batch API, including per-candidate
+seed offsets used by transform confirmation.
 
 User-facing availability check:
 

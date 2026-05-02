@@ -204,6 +204,24 @@ Candidate breadth profiles (`--transform-search-profile`):
 | `broad` | Default; good balance of breadth and runtime |
 | `wide` | Expanded structural sweep with more grid dimensions |
 
+The Zenith-native transform rank path has an experimental Rust engine for
+large solver-backed finalist checks:
+
+```bash
+DECIPHER_ZENITH_NATIVE_ENGINE=rust \
+DECIPHER_TRANSFORM_RANK_ENGINE=rust \
+DECIPHER_TRANSFORM_RANK_THREADS=0 \
+decipher crack -f cipher.txt \
+  --transform-search rank \
+  --transform-search-profile wide \
+  --homophonic-budget full
+```
+
+`DECIPHER_TRANSFORM_RANK_THREADS=0` means "use all available cores." With
+Rust enabled, `rank` plus `--homophonic-budget full` may automatically
+escalate unstable screen-budget finalist probes to full-budget ranking; the
+artifact records this under `transform_search.rank_escalation`.
+
 ### Run the historical benchmark
 
 `decipher benchmark` also uses the automated solver by default.

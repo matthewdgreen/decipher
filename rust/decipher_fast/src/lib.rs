@@ -8,6 +8,10 @@ use rayon::prelude::*;
 use rayon::ThreadPoolBuilder;
 use sha1::{Digest, Sha1};
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::Read;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Instant;
 
 const AZ: &[u8; 26] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
 const ENGLISH_FREQ_ORDER: &[u8; 26] = b"ETAOINSHRDLUCMWFGYPBVKJXQZ";
@@ -115,6 +119,50 @@ struct FastTransformMetrics {
     periodic_structure_score: f64,
     matrix_rank_score: f64,
 }
+
+#[derive(Clone)]
+struct ZenithFastModel {
+    log_probs: Arc<Vec<f32>>,
+    letter_freq: [f64; 26],
+    order: usize,
+}
+
+#[derive(Clone)]
+struct ZenithFastCandidate {
+    plaintext: String,
+    key: HashMap<usize, usize>,
+    score: f64,
+    epoch: usize,
+}
+
+struct ZenithTransformAttempt {
+    seed: u64,
+    score: f64,
+    plaintext_preview: String,
+    elapsed_seconds: f64,
+}
+
+struct ZenithTransformBatchItem {
+    candidate_index: usize,
+    candidate_id: String,
+    family: String,
+    seed_offset: u64,
+    status: String,
+    reason: String,
+    elapsed_seconds: f64,
+    token_order_hash: Option<String>,
+    best_seed: Option<u64>,
+    plaintext: String,
+    decryption: String,
+    score: Option<f64>,
+    normalized_score: Option<f64>,
+    accepted_moves: usize,
+    improved_moves: usize,
+    key: HashMap<usize, usize>,
+    attempts: Vec<ZenithTransformAttempt>,
+}
+
+static ZENITH_MODEL_CACHE: OnceLock<Mutex<HashMap<String, Arc<ZenithFastModel>>>> = OnceLock::new();
 
 #[pyfunction]
 fn normalized_ngram_score(text: &str, log_probs: &PyDict, n: usize) -> PyResult<f64> {
@@ -472,6 +520,205 @@ fn transform_structural_metrics_batch(
         out.append(d)?;
     }
     Ok(out.into())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn zenith_solve_seed(
+    py: Python<'_>,
+    model_path: String,
+    tokens: Vec<usize>,
+    plaintext_ids: Vec<usize>,
+    id_to_letter: HashMap<usize, String>,
+    initial_key: HashMap<usize, usize>,
+    fixed_cipher_ids: Vec<usize>,
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seed: u64,
+    top_n: usize,
+) -> PyResult<PyObject> {
+    if tokens.len() < 5 {
+        return Err(PyValueError::new_err(
+            "Cipher text too short for order-5 Zenith model",
+        ));
+    }
+    if plaintext_ids.is_empty() {
+        return Err(PyValueError::new_err("plaintext_ids must not be empty"));
+    }
+    let model = load_zenith_fast_model(&model_path)?;
+    let result = zenith_solve_seed_inner(
+        &model,
+        &tokens,
+        &plaintext_ids,
+        &id_to_letter,
+        if initial_key.is_empty() {
+            None
+        } else {
+            Some(&initial_key)
+        },
+        &fixed_cipher_ids,
+        epochs.max(1),
+        sampler_iterations.max(1),
+        t_start,
+        t_end,
+        seed,
+        top_n.max(1),
+    )?;
+
+    let out = PyDict::new_bound(py);
+    out.set_item("plaintext", result.plaintext)?;
+    out.set_item("key", usize_map_to_pydict(py, &result.key)?)?;
+    out.set_item("score", result.score)?;
+    out.set_item("normalized_score", result.score)?;
+    out.set_item("epochs", epochs.max(1))?;
+    out.set_item("sampler_iterations", sampler_iterations.max(1))?;
+    out.set_item("accepted_moves", result.accepted_moves)?;
+    out.set_item("improved_moves", result.improved_moves)?;
+    out.set_item("elapsed_seconds", result.elapsed_seconds)?;
+    out.set_item("fixed_symbols", result.fixed_symbols)?;
+    out.set_item("metadata", result.metadata)?;
+    let candidates = PyList::empty_bound(py);
+    for candidate in result.candidates {
+        let item = PyDict::new_bound(py);
+        item.set_item("plaintext", candidate.plaintext)?;
+        item.set_item("key", usize_map_to_pydict(py, &candidate.key)?)?;
+        item.set_item("score", candidate.score)?;
+        item.set_item("normalized_score", candidate.score)?;
+        item.set_item("epoch", candidate.epoch)?;
+        candidates.append(item)?;
+    }
+    out.set_item("candidates", candidates)?;
+    Ok(out.into())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn zenith_transform_candidates_batch(
+    py: Python<'_>,
+    model_path: String,
+    tokens: Vec<usize>,
+    candidates: &PyList,
+    plaintext_ids: Vec<usize>,
+    id_to_letter: HashMap<usize, String>,
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seeds: Vec<u64>,
+    top_n: usize,
+    threads: usize,
+) -> PyResult<PyObject> {
+    if tokens.len() < 5 {
+        return Err(PyValueError::new_err(
+            "Cipher text too short for order-5 Zenith model",
+        ));
+    }
+    if plaintext_ids.is_empty() {
+        return Err(PyValueError::new_err("plaintext_ids must not be empty"));
+    }
+    let mut parsed = Vec::with_capacity(candidates.len());
+    for item in candidates.iter() {
+        let dict = item.downcast::<PyDict>()?;
+        let candidate_id = dict
+            .get_item("candidate_id")?
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_else(|| parsed.len().to_string());
+        let family = dict
+            .get_item("family")?
+            .and_then(|v| v.extract::<String>().ok())
+            .unwrap_or_else(|| "unknown".to_string());
+        let seed_offset = dict
+            .get_item("seed_offset")?
+            .and_then(|v| v.extract::<u64>().ok())
+            .unwrap_or(0);
+        parsed.push((candidate_id, family, seed_offset, parse_transform_candidate(dict)?));
+    }
+    let model = load_zenith_fast_model(&model_path)?;
+    let seed_list = if seeds.is_empty() { vec![0] } else { seeds };
+    let worker_count = if threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        threads.max(1)
+    };
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("failed to build rayon pool: {e}")))?;
+    let started = Instant::now();
+    let results: Vec<ZenithTransformBatchItem> = pool.install(|| {
+        parsed
+            .par_iter()
+            .enumerate()
+            .map(|(index, (candidate_id, family, seed_offset, candidate))| {
+                solve_transformed_candidate_batch_item(
+                    index,
+                    candidate_id,
+                    family,
+                    *seed_offset,
+                    candidate,
+                    &tokens,
+                    &model,
+                    &plaintext_ids,
+                    &id_to_letter,
+                    epochs.max(1),
+                    sampler_iterations.max(1),
+                    t_start,
+                    t_end,
+                    &seed_list,
+                    top_n.max(1),
+                )
+            })
+            .collect()
+    });
+
+    let out = PyList::empty_bound(py);
+    for result in results {
+        let d = PyDict::new_bound(py);
+        d.set_item("candidate_index", result.candidate_index)?;
+        d.set_item("candidate_id", result.candidate_id)?;
+        d.set_item("family", result.family)?;
+        d.set_item("seed_offset", result.seed_offset)?;
+        d.set_item("status", result.status)?;
+        d.set_item("reason", result.reason)?;
+        d.set_item("elapsed_seconds", result.elapsed_seconds)?;
+        d.set_item("token_order_hash", result.token_order_hash)?;
+        d.set_item("best_seed", result.best_seed)?;
+        d.set_item("plaintext", result.plaintext)?;
+        d.set_item("decryption", result.decryption)?;
+        d.set_item("score", result.score)?;
+        d.set_item("normalized_score", result.normalized_score)?;
+        d.set_item("accepted_moves", result.accepted_moves)?;
+        d.set_item("improved_moves", result.improved_moves)?;
+        d.set_item("key", usize_map_to_pydict(py, &result.key)?)?;
+        let attempts = PyList::empty_bound(py);
+        for attempt in result.attempts {
+            let item = PyDict::new_bound(py);
+            item.set_item("seed", attempt.seed)?;
+            item.set_item("score", attempt.score)?;
+            item.set_item("normalized_score", attempt.score)?;
+            item.set_item("plaintext_preview", attempt.plaintext_preview)?;
+            item.set_item("elapsed_seconds", attempt.elapsed_seconds)?;
+            attempts.append(item)?;
+        }
+        d.set_item("attempts", attempts)?;
+        out.append(d)?;
+    }
+    let result = PyDict::new_bound(py);
+    result.set_item("status", "completed")?;
+    result.set_item("engine", "rust")?;
+    result.set_item("solver", "zenith_transform_candidates_batch")?;
+    result.set_item("threads", worker_count)?;
+    result.set_item("candidate_count", parsed.len())?;
+    result.set_item("seed_count", seed_list.len())?;
+    result.set_item("epochs", epochs.max(1))?;
+    result.set_item("sampler_iterations", sampler_iterations.max(1))?;
+    result.set_item("elapsed_seconds", started.elapsed().as_secs_f64())?;
+    result.set_item("results", out)?;
+    Ok(result.into())
 }
 
 fn parse_transform_candidate(raw: &PyDict) -> PyResult<FastTransformCandidate> {
@@ -2319,6 +2566,635 @@ fn key_string(shifts: &[usize], alphabet: &[u8; 26]) -> String {
     shifts.iter().map(|s| alphabet[s % 26] as char).collect()
 }
 
+struct ZenithFastSolveResult {
+    plaintext: String,
+    key: HashMap<usize, usize>,
+    score: f64,
+    accepted_moves: usize,
+    improved_moves: usize,
+    elapsed_seconds: f64,
+    fixed_symbols: usize,
+    metadata: HashMap<String, String>,
+    candidates: Vec<ZenithFastCandidate>,
+}
+
+fn load_zenith_fast_model(path: &str) -> PyResult<Arc<ZenithFastModel>> {
+    let cache = ZENITH_MODEL_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    {
+        let guard = cache
+            .lock()
+            .map_err(|_| PyValueError::new_err("Zenith model cache lock poisoned"))?;
+        if let Some(model) = guard.get(path) {
+            return Ok(model.clone());
+        }
+    }
+
+    let model = Arc::new(read_zenith_fast_model(path)?);
+    let mut guard = cache
+        .lock()
+        .map_err(|_| PyValueError::new_err("Zenith model cache lock poisoned"))?;
+    Ok(guard
+        .entry(path.to_string())
+        .or_insert_with(|| model.clone())
+        .clone())
+}
+
+fn read_zenith_fast_model(path: &str) -> PyResult<ZenithFastModel> {
+    let mut fh = File::open(path)
+        .map_err(|e| PyValueError::new_err(format!("failed to open Zenith model {path}: {e}")))?;
+    let magic = read_u32_be(&mut fh)?;
+    let version = read_u32_be(&mut fh)?;
+    let order = read_u32_be(&mut fh)? as usize;
+    let _max_ngrams = read_u32_be(&mut fh)?;
+    if magic != 0x5A4D4D43 {
+        return Err(PyValueError::new_err(format!(
+            "Not a Zenith model file (bad magic 0x{magic:08X})"
+        )));
+    }
+    if version != 1 {
+        return Err(PyValueError::new_err(format!(
+            "Unsupported Zenith model version {version}"
+        )));
+    }
+    if order != 5 {
+        return Err(PyValueError::new_err(format!(
+            "Only order-5 models are supported; got order={order}"
+        )));
+    }
+    let _unknown_prob = read_f32_be(&mut fh)?;
+    let _total_nodes = read_u32_be(&mut fh)?;
+    let first_order_count = read_u32_be(&mut fh)? as usize;
+    let mut counts = [0u64; 26];
+    let mut total = 0u64;
+    for _ in 0..first_order_count {
+        let char_code = read_u16_be(&mut fh)?;
+        let count = read_i64_be(&mut fh)?;
+        let _log_prob = read_f64_be(&mut fh)?;
+        let ch = char::from_u32(char_code as u32)
+            .unwrap_or('\0')
+            .to_ascii_uppercase();
+        if ch.is_ascii_uppercase() && count > 0 {
+            let idx = (ch as u8 - b'A') as usize;
+            counts[idx] = count as u64;
+            total += count as u64;
+        }
+    }
+    let mut letter_freq = [0.0f64; 26];
+    if total > 0 {
+        for i in 0..26 {
+            letter_freq[i] = counts[i] as f64 / total as f64;
+        }
+    } else {
+        letter_freq.fill(1.0 / 26.0);
+    }
+    let array_length = read_u32_be(&mut fh)? as usize;
+    if array_length != 26usize.pow(5) {
+        return Err(PyValueError::new_err(format!(
+            "Unexpected array length {array_length}; expected {}",
+            26usize.pow(5)
+        )));
+    }
+    let mut bytes = vec![0u8; array_length * 4];
+    fh.read_exact(&mut bytes)
+        .map_err(|e| PyValueError::new_err(format!("truncated Zenith model array: {e}")))?;
+    let mut log_probs = Vec::with_capacity(array_length);
+    for chunk in bytes.chunks_exact(4) {
+        log_probs.push(f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    Ok(ZenithFastModel {
+        log_probs: Arc::new(log_probs),
+        letter_freq,
+        order,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn zenith_solve_seed_inner(
+    model: &ZenithFastModel,
+    tokens: &[usize],
+    plaintext_ids: &[usize],
+    id_to_letter: &HashMap<usize, String>,
+    initial_key: Option<&HashMap<usize, usize>>,
+    fixed_cipher_ids: &[usize],
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seed: u64,
+    top_n: usize,
+) -> PyResult<ZenithFastSolveResult> {
+    let started = Instant::now();
+    let order = model.order;
+    let step = order / 2;
+    let ngram_count = ((tokens.len() - order) / step) + 1;
+    let fixed: std::collections::HashSet<usize> = fixed_cipher_ids.iter().copied().collect();
+    let mut symbol_ids = tokens.to_vec();
+    symbol_ids.sort_unstable();
+    symbol_ids.dedup();
+    let mutable_symbol_ids: Vec<usize> = symbol_ids
+        .iter()
+        .copied()
+        .filter(|sid| !fixed.contains(sid))
+        .collect();
+    let occurrences = occurrence_map_usize(tokens);
+    let sym_aff =
+        precompute_affected_windows(&mutable_symbol_ids, &occurrences, tokens.len(), order, step);
+    let entropy_table = entropy_table(tokens.len());
+    let bucket = build_zenith_bucket(&model.letter_freq);
+    let fallback_id = plaintext_ids[0];
+    let mut id_to_lo = HashMap::new();
+    let mut letter_to_id = [None; 26];
+    for (pt_id, raw) in id_to_letter {
+        if let Some(ch) = raw.chars().next() {
+            let upper = ch.to_ascii_uppercase();
+            if upper.is_ascii_uppercase() {
+                let lo = (upper as u8 - b'A') as usize;
+                id_to_lo.insert(*pt_id, lo);
+                letter_to_id[lo] = Some(*pt_id);
+            }
+        }
+    }
+    let fallback_lo = *id_to_lo.get(&fallback_id).unwrap_or(&0);
+    let mut rng = StdRng::seed_from_u64(seed);
+    let mut best_key = HashMap::new();
+    let mut best_chars = Vec::new();
+    let mut best_score = f64::NEG_INFINITY;
+    let mut accepted_moves = 0usize;
+    let mut improved_moves = 0usize;
+    let mut candidates = Vec::new();
+
+    for epoch in 0..epochs {
+        let mut key = random_zenith_key(
+            &symbol_ids,
+            &bucket,
+            &letter_to_id,
+            fallback_id,
+            &mut rng,
+            if epoch == 0 { initial_key } else { None },
+        );
+        for sid in &fixed {
+            if let Some(initial) = initial_key.and_then(|m| m.get(sid)) {
+                key.insert(*sid, *initial);
+            }
+        }
+        let mut symbol_to_lo = HashMap::new();
+        for sid in &symbol_ids {
+            let pt_id = *key.get(sid).unwrap_or(&fallback_id);
+            symbol_to_lo.insert(*sid, *id_to_lo.get(&pt_id).unwrap_or(&fallback_lo));
+        }
+        let mut chars: Vec<usize> = tokens
+            .iter()
+            .map(|t| *symbol_to_lo.get(t).unwrap_or(&fallback_lo))
+            .collect();
+        let mut window_scores = full_zenith_window_scores(&chars, model, order, step);
+        let mut sum_log_prob: f64 = window_scores.iter().sum();
+        let mut counts = [0usize; 26];
+        for lo in &chars {
+            counts[*lo] += 1;
+        }
+        let mut entropy = compute_entropy_fast(&counts, &entropy_table);
+        let mut current_score = zenith_objective(sum_log_prob, ngram_count, entropy);
+        let mut epoch_best_score = current_score;
+        let mut epoch_best_key = key.clone();
+        let mut epoch_best_chars = chars.clone();
+        if current_score > best_score {
+            best_score = current_score;
+            best_key = key.clone();
+            best_chars = chars.clone();
+        }
+        let temp_span = t_start - t_end;
+
+        for si in 0..sampler_iterations {
+            let ratio = (sampler_iterations - si) as f64 / sampler_iterations.max(1) as f64;
+            let temp = (t_end + temp_span * ratio).max(1e-12);
+            for cipher_sym in &mutable_symbol_ids {
+                let proposal_raw = bucket[rng.gen_range(0..bucket.len())];
+                let proposal_id = letter_to_id[proposal_raw].unwrap_or(fallback_id);
+                let new_lo = *id_to_lo.get(&proposal_id).unwrap_or(&fallback_lo);
+                let positions = occurrences.get(cipher_sym).ok_or_else(|| {
+                    PyValueError::new_err("internal error: missing symbol occurrences")
+                })?;
+                let old_lo = chars[positions[0]];
+                if new_lo == old_lo {
+                    continue;
+                }
+                let aff = sym_aff.get(cipher_sym).ok_or_else(|| {
+                    PyValueError::new_err("internal error: missing affected windows")
+                })?;
+                if aff.is_empty() {
+                    continue;
+                }
+                let old_contrib: f64 = aff.iter().map(|wi| window_scores[*wi]).sum();
+                for pos in positions {
+                    chars[*pos] = new_lo;
+                }
+                counts[old_lo] -= positions.len();
+                counts[new_lo] += positions.len();
+                let mut new_vals = Vec::with_capacity(aff.len());
+                for wi in aff {
+                    new_vals.push(lookup_zenith_window(&chars, wi * step, model));
+                }
+                let new_contrib: f64 = new_vals.iter().sum();
+                let proposal_sum = sum_log_prob - old_contrib + new_contrib;
+                let proposal_entropy = compute_entropy_fast(&counts, &entropy_table);
+                let proposal_score = zenith_objective(proposal_sum, ngram_count, proposal_entropy);
+                let delta = proposal_score - current_score;
+                if delta >= 0.0 || rng.gen::<f64>() < (delta / temp).exp() {
+                    key.insert(*cipher_sym, proposal_id);
+                    for (idx, wi) in aff.iter().enumerate() {
+                        window_scores[*wi] = new_vals[idx];
+                    }
+                    sum_log_prob = proposal_sum;
+                    entropy = proposal_entropy;
+                    current_score = proposal_score;
+                    accepted_moves += 1;
+                    if delta > 0.0 {
+                        improved_moves += 1;
+                    }
+                    if current_score > best_score {
+                        best_score = current_score;
+                        best_key = key.clone();
+                        best_chars = chars.clone();
+                    }
+                    if current_score > epoch_best_score {
+                        epoch_best_score = current_score;
+                        epoch_best_key = key.clone();
+                        epoch_best_chars = chars.clone();
+                    }
+                } else {
+                    for pos in positions {
+                        chars[*pos] = old_lo;
+                    }
+                    counts[new_lo] -= positions.len();
+                    counts[old_lo] += positions.len();
+                }
+            }
+        }
+        candidates.push(ZenithFastCandidate {
+            plaintext: chars_to_string(&epoch_best_chars),
+            key: epoch_best_key,
+            score: epoch_best_score,
+            epoch: epoch + 1,
+        });
+    }
+    candidates.push(ZenithFastCandidate {
+        plaintext: chars_to_string(&best_chars),
+        key: best_key.clone(),
+        score: best_score,
+        epoch: 0,
+    });
+    candidates.sort_by(|a, b| b.score.total_cmp(&a.score));
+    candidates.truncate(top_n.max(1));
+    let mut metadata = HashMap::new();
+    metadata.insert("solver".to_string(), "zenith_native_rust".to_string());
+    metadata.insert("order".to_string(), order.to_string());
+    metadata.insert("step".to_string(), step.to_string());
+    metadata.insert("ngram_count".to_string(), ngram_count.to_string());
+    metadata.insert("t_start".to_string(), t_start.to_string());
+    metadata.insert("t_end".to_string(), t_end.to_string());
+    metadata.insert(
+        "mutable_symbols".to_string(),
+        mutable_symbol_ids.len().to_string(),
+    );
+    metadata.insert("cipher_symbols".to_string(), symbol_ids.len().to_string());
+    metadata.insert("stopped_early".to_string(), "false".to_string());
+    Ok(ZenithFastSolveResult {
+        plaintext: chars_to_string(&best_chars),
+        key: best_key,
+        score: best_score,
+        accepted_moves,
+        improved_moves,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        fixed_symbols: fixed.len(),
+        metadata,
+        candidates,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn solve_transformed_candidate_batch_item(
+    candidate_index: usize,
+    candidate_id: &str,
+    family: &str,
+    seed_offset: u64,
+    candidate: &FastTransformCandidate,
+    tokens: &[usize],
+    model: &ZenithFastModel,
+    plaintext_ids: &[usize],
+    id_to_letter: &HashMap<usize, String>,
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seeds: &[u64],
+    top_n: usize,
+) -> ZenithTransformBatchItem {
+    let started = Instant::now();
+    let position_order =
+        match apply_fast_pipeline(&(0..tokens.len()).collect::<Vec<_>>(), &candidate.pipeline) {
+            Ok(order) => order,
+            Err(reason) => {
+                return invalid_zenith_transform_batch_item(
+                    candidate_index,
+                    candidate_id,
+                    family,
+                    seed_offset,
+                    started,
+                    reason,
+                    None,
+                )
+            }
+        };
+    let order_hash = token_hash(&position_order);
+    if position_order.len() != tokens.len() {
+        return invalid_zenith_transform_batch_item(
+            candidate_index,
+            candidate_id,
+            family,
+            seed_offset,
+            started,
+            format!("length_changed:{}", position_order.len()),
+            Some(order_hash),
+        );
+    }
+    if !is_permutation(&position_order, tokens.len()) {
+        return invalid_zenith_transform_batch_item(
+            candidate_index,
+            candidate_id,
+            family,
+            seed_offset,
+            started,
+            "not_a_permutation".to_string(),
+            Some(order_hash),
+        );
+    }
+    let transformed_tokens: Vec<usize> = position_order.iter().map(|idx| tokens[*idx]).collect();
+    let mut attempts = Vec::new();
+    let mut best: Option<(u64, ZenithFastSolveResult)> = None;
+    for seed in seeds {
+        let effective_seed = seed.saturating_add(seed_offset);
+        let attempt_started = Instant::now();
+        match zenith_solve_seed_inner(
+            model,
+            &transformed_tokens,
+            plaintext_ids,
+            id_to_letter,
+            None,
+            &[],
+            epochs,
+            sampler_iterations,
+            t_start,
+            t_end,
+            effective_seed,
+            top_n,
+        ) {
+            Ok(result) => {
+                attempts.push(ZenithTransformAttempt {
+                    seed: effective_seed,
+                    score: result.score,
+                    plaintext_preview: result.plaintext.chars().take(240).collect(),
+                    elapsed_seconds: attempt_started.elapsed().as_secs_f64(),
+                });
+                if best
+                    .as_ref()
+                    .map(|(_, current)| result.score > current.score)
+                    .unwrap_or(true)
+                {
+                    best = Some((effective_seed, result));
+                }
+            }
+            Err(err) => {
+                attempts.push(ZenithTransformAttempt {
+                    seed: effective_seed,
+                    score: f64::NEG_INFINITY,
+                    plaintext_preview: format!("error: {err}"),
+                    elapsed_seconds: attempt_started.elapsed().as_secs_f64(),
+                });
+            }
+        }
+    }
+    if let Some((best_seed, result)) = best {
+        ZenithTransformBatchItem {
+            candidate_index,
+            candidate_id: candidate_id.to_string(),
+            family: family.to_string(),
+            seed_offset,
+            status: "completed".to_string(),
+            reason: "ok".to_string(),
+            elapsed_seconds: started.elapsed().as_secs_f64(),
+            token_order_hash: Some(order_hash),
+            best_seed: Some(best_seed),
+            plaintext: result.plaintext.clone(),
+            decryption: result.plaintext,
+            score: Some(result.score),
+            normalized_score: Some(result.score),
+            accepted_moves: result.accepted_moves,
+            improved_moves: result.improved_moves,
+            key: result.key,
+            attempts,
+        }
+    } else {
+        invalid_zenith_transform_batch_item(
+            candidate_index,
+            candidate_id,
+            family,
+            seed_offset,
+            started,
+            "all_seed_attempts_failed".to_string(),
+            Some(order_hash),
+        )
+    }
+}
+
+fn invalid_zenith_transform_batch_item(
+    candidate_index: usize,
+    candidate_id: &str,
+    family: &str,
+    seed_offset: u64,
+    started: Instant,
+    reason: String,
+    token_order_hash: Option<String>,
+) -> ZenithTransformBatchItem {
+    ZenithTransformBatchItem {
+        candidate_index,
+        candidate_id: candidate_id.to_string(),
+        family: family.to_string(),
+        seed_offset,
+        status: "error".to_string(),
+        reason,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        token_order_hash,
+        best_seed: None,
+        plaintext: String::new(),
+        decryption: String::new(),
+        score: None,
+        normalized_score: None,
+        accepted_moves: 0,
+        improved_moves: 0,
+        key: HashMap::new(),
+        attempts: Vec::new(),
+    }
+}
+
+fn random_zenith_key(
+    symbol_ids: &[usize],
+    bucket: &[usize],
+    letter_to_id: &[Option<usize>; 26],
+    fallback_id: usize,
+    rng: &mut StdRng,
+    initial_key: Option<&HashMap<usize, usize>>,
+) -> HashMap<usize, usize> {
+    let mut key = HashMap::new();
+    for sid in symbol_ids {
+        if let Some(initial) = initial_key.and_then(|m| m.get(sid)) {
+            key.insert(*sid, *initial);
+            continue;
+        }
+        let lo = bucket[rng.gen_range(0..bucket.len())];
+        key.insert(*sid, letter_to_id[lo].unwrap_or(fallback_id));
+    }
+    key
+}
+
+fn build_zenith_bucket(letter_freq: &[f64; 26]) -> Vec<usize> {
+    let mut bucket = Vec::new();
+    let flatten_weight = 0.8;
+    let flat_mass = (1.0 / 26.0) * flatten_weight;
+    for (idx, prob) in letter_freq.iter().enumerate() {
+        let scaled = prob * (1.0 - flatten_weight);
+        let bias = ((scaled + flat_mass) * 1000.0).floor().max(1.0) as usize;
+        for _ in 0..bias {
+            bucket.push(idx);
+        }
+    }
+    if bucket.is_empty() {
+        bucket.extend(0..26);
+    }
+    bucket
+}
+
+fn occurrence_map_usize(tokens: &[usize]) -> HashMap<usize, Vec<usize>> {
+    let mut out: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (idx, token) in tokens.iter().enumerate() {
+        out.entry(*token).or_default().push(idx);
+    }
+    out
+}
+
+fn precompute_affected_windows(
+    mutable_symbol_ids: &[usize],
+    occurrences: &HashMap<usize, Vec<usize>>,
+    text_len: usize,
+    order: usize,
+    step: usize,
+) -> HashMap<usize, Vec<usize>> {
+    let max_start = text_len.saturating_sub(order);
+    let mut out = HashMap::new();
+    for sid in mutable_symbol_ids {
+        let mut idxs = Vec::new();
+        if let Some(positions) = occurrences.get(sid) {
+            for pos in positions {
+                let lo = pos.saturating_sub(order - 1);
+                let hi = (*pos).min(max_start);
+                for s in lo..=hi {
+                    if s % step == 0 {
+                        idxs.push(s / step);
+                    }
+                }
+            }
+        }
+        idxs.sort_unstable();
+        idxs.dedup();
+        out.insert(*sid, idxs);
+    }
+    out
+}
+
+fn entropy_table(n: usize) -> Vec<f64> {
+    let mut table = vec![0.0; n + 1];
+    for (i, slot) in table.iter_mut().enumerate().skip(1) {
+        let p = i as f64 / n as f64;
+        *slot = (p.log2() * p).abs();
+    }
+    table
+}
+
+fn compute_entropy_fast(counts: &[usize; 26], table: &[f64]) -> f64 {
+    counts.iter().map(|count| table[*count]).sum()
+}
+
+fn full_zenith_window_scores(
+    chars: &[usize],
+    model: &ZenithFastModel,
+    order: usize,
+    step: usize,
+) -> Vec<f64> {
+    let max_start = chars.len() - order;
+    (0..=max_start)
+        .step_by(step)
+        .map(|start| lookup_zenith_window(chars, start, model))
+        .collect()
+}
+
+fn lookup_zenith_window(chars: &[usize], start: usize, model: &ZenithFastModel) -> f64 {
+    let idx = chars[start] * 26usize.pow(4)
+        + chars[start + 1] * 26usize.pow(3)
+        + chars[start + 2] * 26usize.pow(2)
+        + chars[start + 3] * 26
+        + chars[start + 4];
+    model.log_probs[idx] as f64
+}
+
+fn zenith_objective(sum_log_prob: f64, ngram_count: usize, entropy: f64) -> f64 {
+    if entropy <= 0.0 {
+        return f64::NEG_INFINITY;
+    }
+    let mean = sum_log_prob / ngram_count.max(1) as f64;
+    mean / entropy.powf(1.0 / 2.75)
+}
+
+fn chars_to_string(chars: &[usize]) -> String {
+    chars.iter().map(|lo| (b'A' + *lo as u8) as char).collect()
+}
+
+fn usize_map_to_pydict<'py>(
+    py: Python<'py>,
+    value: &HashMap<usize, usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new_bound(py);
+    for (k, v) in value {
+        d.set_item(*k, *v)?;
+    }
+    Ok(d)
+}
+
+fn read_exact<const N: usize>(fh: &mut File) -> PyResult<[u8; N]> {
+    let mut buf = [0u8; N];
+    fh.read_exact(&mut buf)
+        .map_err(|e| PyValueError::new_err(format!("failed reading Zenith model: {e}")))?;
+    Ok(buf)
+}
+
+fn read_u16_be(fh: &mut File) -> PyResult<u16> {
+    Ok(u16::from_be_bytes(read_exact::<2>(fh)?))
+}
+
+fn read_u32_be(fh: &mut File) -> PyResult<u32> {
+    Ok(u32::from_be_bytes(read_exact::<4>(fh)?))
+}
+
+fn read_i64_be(fh: &mut File) -> PyResult<i64> {
+    Ok(i64::from_be_bytes(read_exact::<8>(fh)?))
+}
+
+fn read_f32_be(fh: &mut File) -> PyResult<f32> {
+    Ok(f32::from_be_bytes(read_exact::<4>(fh)?))
+}
+
+fn read_f64_be(fh: &mut File) -> PyResult<f64> {
+    Ok(f64::from_be_bytes(read_exact::<8>(fh)?))
+}
+
 fn period_complexity_penalty(period: usize) -> f64 {
     (period as f64).ln() * 0.02
 }
@@ -2333,5 +3209,7 @@ fn decipher_fast(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(keyed_vigenere_alphabet_anneal, m)?)?;
     m.add_function(wrap_pyfunction!(quagmire3_shotgun_search, m)?)?;
     m.add_function(wrap_pyfunction!(transform_structural_metrics_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(zenith_solve_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(zenith_transform_candidates_batch, m)?)?;
     Ok(())
 }

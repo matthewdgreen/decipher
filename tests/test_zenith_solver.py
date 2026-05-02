@@ -31,6 +31,7 @@ from analysis.zenith_solver import (
     zenith_solve,
     _zenith_score,
 )
+from analysis.polyalphabetic_fast import FAST_AVAILABLE
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +426,101 @@ def test_zenith_solve_respects_fixed_cipher_ids():
     assert result.key[1] == letter_to_id["B"]
     assert result.metadata["mutable_symbols"] == 2
     assert result.fixed_symbols == 2
+
+
+@pytest.mark.skipif(
+    not FAST_AVAILABLE,
+    reason="decipher_fast Rust extension is not installed",
+)
+def test_zenith_solve_fast_matches_result_contract_and_fixed_symbols(tmp_path):
+    """The Rust fast kernel should preserve the Python Zenith result contract."""
+
+    from analysis.zenith_fast import zenith_solve_fast
+
+    bin_path = tmp_path / "tiny_zenith.array.bin"
+    _write_minimal_bin(bin_path)
+
+    tokens = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1]
+    plaintext_ids = list(range(26))
+    id_to_letter = {i: chr(ord("A") + i) for i in plaintext_ids}
+    initial_key = {0: 0, 1: 1, 2: 2, 3: 3}
+
+    result = zenith_solve_fast(
+        tokens=tokens,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        model_path=bin_path,
+        initial_key=initial_key,
+        fixed_cipher_ids={0, 1},
+        epochs=2,
+        sampler_iterations=20,
+        seed=7,
+        top_n=2,
+    )
+
+    assert len(result.plaintext) == len(tokens)
+    assert result.key[0] == 0
+    assert result.key[1] == 1
+    assert result.fixed_symbols == 2
+    assert result.metadata["solver"] == "zenith_native"
+    assert result.metadata["engine"] == "rust"
+    assert result.candidates
+
+
+@pytest.mark.skipif(
+    not FAST_AVAILABLE,
+    reason="decipher_fast Rust extension is not installed",
+)
+def test_zenith_transform_candidates_batch_fast_preserves_candidate_contract(tmp_path):
+    from analysis.zenith_fast import zenith_transform_candidates_batch_fast
+
+    bin_path = tmp_path / "tiny_zenith.array.bin"
+    _write_minimal_bin(bin_path)
+    tokens = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1]
+    plaintext_ids = list(range(26))
+    id_to_letter = {i: chr(ord("A") + i) for i in plaintext_ids}
+    candidates = [
+        {
+            "candidate_id": "000_identity",
+            "family": "identity",
+            "pipeline": {"steps": []},
+            "grid": None,
+        },
+        {
+            "candidate_id": "001_reverse",
+            "family": "whole_reverse",
+            "pipeline": {"steps": [{"name": "Reverse", "data": {}}]},
+            "grid": None,
+            "seed_offset": 1000,
+        },
+    ]
+
+    result = zenith_transform_candidates_batch_fast(
+        tokens=tokens,
+        candidates=candidates,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        model_path=bin_path,
+        epochs=1,
+        sampler_iterations=10,
+        seeds=[1, 2],
+        top_n=1,
+        threads=2,
+    )
+
+    assert result["status"] == "completed"
+    assert result["engine"] == "rust"
+    assert result["candidate_count"] == 2
+    assert result["seed_count"] == 2
+    rows = result["results"]
+    assert [row["candidate_id"] for row in rows] == ["000_identity", "001_reverse"]
+    assert all(row["status"] == "completed" for row in rows)
+    assert all(len(row["decryption"]) == len(tokens) for row in rows)
+    assert all(row["attempts"] for row in rows)
+    assert rows[0]["seed_offset"] == 0
+    assert rows[0]["attempts"][0]["seed"] == 1
+    assert rows[1]["seed_offset"] == 1000
+    assert rows[1]["attempts"][0]["seed"] == 1001
 
 
 # ---------------------------------------------------------------------------
