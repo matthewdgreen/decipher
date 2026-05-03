@@ -188,6 +188,53 @@ class OpenAIModelProvider:
         return _openai_chat_response_to_model_response(response)
 
 
+class OllamaModelProvider:
+    """Adapter for locally-running Ollama models.
+
+    Ollama exposes an OpenAI-compatible REST API at http://localhost:11434/v1,
+    so this adapter reuses the OpenAI chat-completions path with a custom
+    base URL.  No API key is required.
+
+    Set OLLAMA_HOST to override the default base URL, e.g.:
+        OLLAMA_HOST=http://192.168.1.10:11434
+    """
+
+    provider_name = "ollama"
+
+    def __init__(self, model: str) -> None:
+        import os
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover
+            raise ModelProviderError(
+                "Ollama provider requires the `openai` package. "
+                "Install with: pip install -e '.[providers]'"
+            ) from exc
+        host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        self.model = model
+        self.client = OpenAI(base_url=f"{host.rstrip('/')}/v1", api_key="ollama")
+
+    def send(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        max_tokens: int = 4096,
+    ) -> ModelResponse:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=_messages_to_openai_chat(messages, system=system),
+                tools=_tools_to_openai_chat(tools),
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ModelProviderError(str(exc)) from exc
+        return _openai_chat_response_to_model_response(response)
+
+
 class GeminiModelProvider:
     """Adapter for Google Gemini models with function declarations."""
 
@@ -243,6 +290,7 @@ def canonical_provider(provider: str | None) -> str:
         "gpt": "openai",
         "google": "gemini",
         "gemini": "gemini",
+        "ollama": "ollama",
     }
     if value not in aliases:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -270,6 +318,8 @@ def default_model_for_provider(provider: str) -> str:
         return "gpt-5.4"
     if provider == "gemini":
         return "gemini-3-flash-preview"
+    if provider == "ollama":
+        return "qwen3:14b"
     return "claude-sonnet-4-6"
 
 
@@ -288,6 +338,8 @@ def make_model_provider(
         return OpenAIModelProvider(api_key=api_key, model=model)
     if provider == "gemini":
         return GeminiModelProvider(api_key=api_key, model=model)
+    if provider == "ollama":
+        return OllamaModelProvider(model=model)
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -303,6 +355,18 @@ def ensure_model_provider(api_or_provider: Any) -> AgentModelProvider:
 
 
 _PRICING: dict[str, dict[str, tuple[float, float, float]]] = {
+    # Ollama models run locally — no per-token cost.
+    # Models listed here are the ones with documented tool-calling support;
+    # any model name accepted by the local Ollama instance will also work.
+    "ollama": {
+        "qwen3:8b": (0.0, 0.0, 0.0),
+        "qwen3:14b": (0.0, 0.0, 0.0),
+        "qwen3:30b-a3b": (0.0, 0.0, 0.0),
+        "qwen3:32b": (0.0, 0.0, 0.0),
+        "llama3.1:8b": (0.0, 0.0, 0.0),
+        "llama3.1:70b": (0.0, 0.0, 0.0),
+        "mistral-nemo": (0.0, 0.0, 0.0),
+    },
     "anthropic": {
         "claude-opus-4": (15.00, 75.00, 1.50),
         "claude-sonnet-4": (3.00, 15.00, 0.30),

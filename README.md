@@ -587,13 +587,19 @@ for defaults, key locations, and the full provider table.
 decipher crack -f cipher.txt --agentic --model claude-sonnet-4-6
 
 # OpenAI
-decipher crack -f cipher.txt --agentic --model gpt-5.4-mini
+decipher crack -f cipher.txt --agentic --model gpt-5.4
 
 # Gemini
 decipher crack -f cipher.txt --agentic --model gemini-3-flash-preview
+
+# Ollama (local — no API key required; Ollama must be running)
+decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
 Recommended for historical manuscript analysis: `claude-sonnet-4-6`.
+Ollama effectiveness is highly model-dependent; models with documented
+tool-calling support (e.g. `qwen3:14b`, `qwen3:8b`, `llama3.1:8b`) work
+best. Run `decipher doctor` to see which Ollama models are currently installed.
 
 ### Terminal display mode
 
@@ -618,10 +624,12 @@ you intend to use.
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
+| Ollama (local) | `ollama` | *(none — no key required)* | `qwen3:14b` |
 
 The provider is inferred automatically from a recognized model name prefix
 (`claude-` → Anthropic, `gpt-`/`o1`/`o3`/`o4` → OpenAI, `gemini-` →
-Gemini), so you usually don't need to pass `--provider` explicitly.
+Gemini). Ollama model names have no standard prefix, so pass
+`--provider ollama` explicitly.
 
 **Four ways to supply a key** (tried in this order):
 

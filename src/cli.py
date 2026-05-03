@@ -25,6 +25,7 @@ _PROVIDER_ENV_KEYS = {
     "anthropic": ["ANTHROPIC_API_KEY"],
     "openai": ["OPENAI_API_KEY"],
     "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    # Ollama is local — no API key required.
 }
 
 _PROVIDER_KEYRING_ACCOUNTS = {
@@ -32,6 +33,9 @@ _PROVIDER_KEYRING_ACCOUNTS = {
     "openai": "openai_api_key",
     "gemini": "gemini_api_key",
 }
+
+# Providers that run locally and never need an API key.
+_LOCAL_PROVIDERS = {"ollama"}
 
 
 def _repo_root() -> Path:
@@ -82,6 +86,8 @@ def get_api_key(provider: str = "anthropic") -> str:
     from agent.model_provider import canonical_provider
 
     provider = canonical_provider(provider)
+    if provider in _LOCAL_PROVIDERS:
+        return ""  # local providers need no key
     for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
         key = os.environ.get(env_name)
         if key:
@@ -167,6 +173,8 @@ def _require_rust_fast_kernel() -> None:
 
 def _provider_key_status(provider: str) -> dict:
     """Return key presence and source for one provider (never reveals the key value)."""
+    if provider in _LOCAL_PROVIDERS:
+        return {"found": True, "source": "local — no key required"}
     for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
         if os.environ.get(env_name):
             return {"found": True, "source": f"env:{env_name}"}
@@ -182,6 +190,24 @@ def _provider_key_status(provider: str) -> dict:
     except Exception:
         pass
     return {"found": False, "source": None}
+
+
+def _ollama_status() -> dict:
+    """Check whether Ollama is reachable and return installed model names."""
+    import os
+    import urllib.error
+    import urllib.request
+
+    host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+    url = f"{host.rstrip('/')}/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            import json
+            data = json.loads(resp.read())
+        models = [m["name"] for m in data.get("models", [])]
+        return {"running": True, "host": host, "models": models}
+    except Exception:
+        return {"running": False, "host": host, "models": []}
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -200,6 +226,16 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             "models": models,
             "key": key_status,
         }
+
+    # Ollama: live check for running daemon + installed models
+    ollama = _ollama_status()
+    providers_info["ollama"] = {
+        "default_model": default_model_for_provider("ollama"),
+        "models": ollama["models"],
+        "key": _provider_key_status("ollama"),
+        "running": ollama["running"],
+        "host": ollama["host"],
+    }
 
     if getattr(args, "json", False):
         import json
@@ -235,9 +271,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"  Note: {rust_status['note']}")
     print()
 
-    # --- Providers / API keys ---
+    # --- Cloud providers / API keys ---
     print("LLM providers:")
-    for provider, info in providers_info.items():
+    for provider in ("anthropic", "openai", "gemini"):
+        info = providers_info[provider]
         key = info["key"]
         key_line = f"key: {key['source']}" if key["found"] else "key: not found"
         print(f"  {provider}  ({key_line})")
@@ -246,6 +283,25 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print()
     print("  To add a key: export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,")
     print("  or write it to .decipher_keys/<provider>_api_key.")
+    print()
+
+    # --- Ollama ---
+    ollama_info = providers_info["ollama"]
+    host = ollama_info["host"]
+    if ollama_info["running"]:
+        installed = ollama_info["models"]
+        print(f"Ollama  (running at {host})")
+        print(f"  default model : {ollama_info['default_model']}")
+        if installed:
+            print(f"  installed     : {', '.join(installed)}")
+        else:
+            print("  installed     : (none — run: ollama pull qwen3:14b)")
+    else:
+        print(f"Ollama  (not running at {host})")
+        print("  Start with: ollama serve")
+        print("  Install models with: ollama pull qwen3:14b")
+    print()
+    print("  Usage: decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b")
 
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
@@ -877,7 +933,7 @@ def main() -> None:
     bench.add_argument("--max-iterations", "-i", type=int, default=25)
     bench.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
         help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
     )
     bench.add_argument(
@@ -1013,7 +1069,7 @@ def main() -> None:
     crack.add_argument("--max-iterations", "-i", type=int, default=25)
     crack.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
         help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
     )
     crack.add_argument("--model", "-m", help="LLM model name. Defaults by provider.")
@@ -1130,7 +1186,7 @@ def main() -> None:
     )
     resume.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
         help="LLM provider for the continuation. Default is inferred from --model.",
     )
     resume.add_argument("--model", "-m", help="LLM model name (default: prior artifact model)")
@@ -1197,7 +1253,7 @@ def main() -> None:
     tg.add_argument("--max-iterations", "-i", type=int, default=25)
     tg.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
         help="LLM provider for generation/agentic runs. Default is inferred from --model, else anthropic.",
     )
     tg.add_argument("--model", "-m")
