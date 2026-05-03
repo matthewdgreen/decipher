@@ -63,35 +63,20 @@ pre-`zenith_native` code for comparison, pass `--legacy-homophonic`.
 On multi-core machines, `zenith_native` auto-sizes parallel seed workers by
 default. Override explicitly with `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`.
 
-### Required Rust Fast Kernels
-
-Decipher requires the Rust/PyO3 module `decipher_fast` for normal CLI runs.
-This avoids silently replacing broad compiled searches with slow Python
-diagnostics. The `scripts/setup_dev.sh` command above installs the Python
-package and builds the Rust module.
-
-If you only need to rebuild the Rust module after changing Rust code:
-
-```bash
-cd /path/to/decipher
-scripts/build_rust_fast.sh
-```
-
-Check whether the module is available:
-
-```bash
-PYTHONPATH=src .venv/bin/decipher doctor
-```
-
-If `decipher_fast` is missing, benchmark/crack/testgen runs abort immediately
-with build instructions. The remaining Python Quagmire path is reference and
-diagnostic scaffolding only; do not treat it as a runtime fallback for
-large-scale searches.
+The Rust extension (`decipher_fast`) is built automatically by `setup_dev.sh`.
+See [Rust Fast Kernels](#rust-fast-kernels) at the end of this document if you
+need to rebuild it in isolation or verify the installation.
 
 ## Unit Tests
 
 ```bash
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
+```
+
+For a fast smoke-check (completes in under two minutes):
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -m "not slow"
 ```
 
 ## Automated Solving
@@ -128,6 +113,19 @@ Homophonic tuning environment variables:
 - `DECIPHER_HOMOPHONIC_REPAIR_PROFILE=dev|full` — shrink repair breadth for local iteration
 - `DECIPHER_HOMOPHONIC_POLISH=1` — opt into the experimental shared no-boundary
   segmentation/repair pass for post-`zenith_native` continuous output
+
+### Crack with the agentic solver
+
+Add `--agentic` to any `crack` or `benchmark` command to use the LLM-driven
+solver. **This requires an API key** — see [API key setup](#api-key-setup) for
+where to put it.
+
+```bash
+decipher crack -f cipher.txt --language en --agentic
+```
+
+The automated solver runs as a free preflight pass before the agent starts, so
+`--agentic` strictly adds capability on top of the automated path.
 
 ### Transposition + homophonic search
 
@@ -642,6 +640,30 @@ tables and usage notes.
 | `inspect_*` / `list_*` | inspect_benchmark_context, list_related_records, inspect_related_transcription, inspect_related_solution, list_associated_documents, inspect_associated_document | Benchmark context examination |
 | `run_python` | (one tool) | Escape hatch with required justification |
 | `meta_*` | request_tool, declare_solution | Run control |
+
+## Rust Fast Kernels
+
+Decipher requires the Rust/PyO3 module `decipher_fast` for normal CLI runs.
+This avoids silently replacing broad compiled searches with slow Python
+diagnostics. `scripts/setup_dev.sh` builds it automatically as part of first-time
+setup.
+
+To rebuild the module after changing Rust code:
+
+```bash
+scripts/build_rust_fast.sh
+```
+
+To verify the module is present and on the expected path:
+
+```bash
+PYTHONPATH=src .venv/bin/decipher doctor
+```
+
+If `decipher_fast` is missing, `benchmark`/`crack`/`testgen` runs abort
+immediately with build instructions. The remaining Python fallback path is
+reference and diagnostic scaffolding only; do not treat it as a runtime
+fallback for large-scale searches.
 
 ## License
 
