@@ -165,38 +165,87 @@ def _require_rust_fast_kernel() -> None:
         sys.exit(2)
 
 
+def _provider_key_status(provider: str) -> dict:
+    """Return key presence and source for one provider (never reveals the key value)."""
+    for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
+        if os.environ.get(env_name):
+            return {"found": True, "source": f"env:{env_name}"}
+    if _read_dotenv_key(provider):
+        return {"found": True, "source": ".env file"}
+    if _read_key_file(provider):
+        return {"found": True, "source": f".decipher_keys/{provider}_api_key"}
+    try:
+        import keyring
+        account = _PROVIDER_KEYRING_ACCOUNTS.get(provider, f"{provider}_api_key")
+        if keyring.get_password("decipher", account):
+            return {"found": True, "source": f"keychain:{account}"}
+    except Exception:
+        pass
+    return {"found": False, "source": None}
+
+
 def cmd_doctor(args: argparse.Namespace) -> None:
     from analysis.polyalphabetic_fast import fast_kernel_status
+    from agent.model_provider import default_model_for_provider, _PRICING
 
-    status = fast_kernel_status()
+    rust_status = fast_kernel_status()
+
+    # Build provider info: key status + model list
+    providers_info = {}
+    for provider in ("anthropic", "openai", "gemini"):
+        key_status = _provider_key_status(provider)
+        models = sorted(_PRICING.get(provider, {}).keys())
+        providers_info[provider] = {
+            "default_model": default_model_for_provider(provider),
+            "models": models,
+            "key": key_status,
+        }
+
     if getattr(args, "json", False):
         import json
-
-        print(json.dumps({"rust_fast_kernel": status}, indent=2))
+        print(json.dumps({
+            "rust_fast_kernel": rust_status,
+            "providers": providers_info,
+        }, indent=2))
         return
 
     print("Decipher environment check")
     print()
+
+    # --- Rust kernels ---
     print("Rust fast kernels:")
-    if status["available"]:
+    if rust_status["available"]:
         print("  status: available")
-        print(f"  module: {status.get('module_file')}")
+        print(f"  module: {rust_status.get('module_file')}")
     else:
         print("  status: not installed")
-        if status.get("import_error"):
-            print(f"  import error: {status['import_error']}")
+        if rust_status.get("import_error"):
+            print(f"  import error: {rust_status['import_error']}")
         print()
         print("  Build from the repo root with:")
         print("    scripts/build_rust_fast.sh")
         print()
         print("  Manual equivalent:")
-        print(f"    {status['build_command']}")
+        print(f"    {rust_status['build_command']}")
     print()
     print("  Features:")
-    for feature in status["features"]:
+    for feature in rust_status["features"]:
         print(f"    - {feature}")
     print()
-    print(f"  Note: {status['note']}")
+    print(f"  Note: {rust_status['note']}")
+    print()
+
+    # --- Providers / API keys ---
+    print("LLM providers:")
+    for provider, info in providers_info.items():
+        key = info["key"]
+        key_line = f"key: {key['source']}" if key["found"] else "key: not found"
+        print(f"  {provider}  ({key_line})")
+        print(f"    default model : {info['default_model']}")
+        print(f"    known models  : {', '.join(info['models']) or '(none)'}")
+    print()
+    print("  To add a key: export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,")
+    print("  or write it to .decipher_keys/<provider>_api_key.")
 
 
 def cmd_benchmark(args: argparse.Namespace) -> None:
@@ -809,12 +858,12 @@ def main() -> None:
 
     doctor = subparsers.add_parser(
         "doctor",
-        help="Check optional local dependencies such as Rust fast kernels",
+        help="Check Rust kernels, LLM providers, and API key configuration",
     )
     doctor.add_argument(
         "--json",
         action="store_true",
-        help="Emit machine-readable dependency status.",
+        help="Emit machine-readable status as JSON.",
     )
 
     # benchmark
