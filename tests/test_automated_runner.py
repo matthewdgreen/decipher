@@ -341,6 +341,7 @@ def test_automated_transform_search_rank_can_select_candidate(monkeypatch):
     assert result.final_decryption == "TRANSFORMED"
     rank = result.artifact["transform_search"]["rank"]
     assert rank["top_ranked_candidates"]
+    assert rank["evaluation"]["stage"] == "transform_homophonic_finalist_menu_evaluation"
     assert rank["validation"]["policy"]
     assert rank["confirmation"]["policy"]
     assert rank["finalists"]["policy"]

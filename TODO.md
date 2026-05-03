@@ -420,10 +420,27 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       rows. Local validation in
       `artifacts/validate_pure_transposition_route_breadth` passed all 7
       ladder cases.
-    - [ ] Expand the pure-transposition ladder further with spiral offsets,
-      route+rotation composites, grille/mask-like examples, and
-      short/medium/long no-boundary examples with calibrated watch/pass
-      thresholds.
+    - [x] Add first route+orientation-repair composite breadth. The
+      pure-transposition generator now emits bounded `route_composite_*`
+      candidates such as `RouteRead(columns_down) + MatrixRotate(width,cw)`
+      and `RouteRead(...) + Reverse`, and the ladder includes
+      `synth_en_150ptnb_route_composite_s38` as a hidden-pipeline known-good
+      row. The same slice added shifted `RouteRead` order offsets in both the
+      Python transformer path and the Rust fast-kernel path, plus bounded
+      `route_offset_*` candidates. The ladder now includes
+      `synth_en_150ptnb_spiral_offset_s39` as a hidden-pipeline known-good
+      row. The next slice added `MaskRoute`, a bounded mask/grille-like
+      transformer that reads selected grid cells first and then the complement,
+      with matching Rust fast-kernel support and `mask_route_*` candidates.
+      The ladder now includes `synth_en_150ptnb_mask_border_s40` as a
+      hidden-pipeline known-good row. Full ladder validation in
+      `artifacts/validate_pure_transposition_ladder_mask` passes all 10 rows;
+      `split_grid_s33` and plain `spiral_s35` remain `shared_hard` rows
+      because broader route breadth exposes plausible wrong-family basins.
+    - [ ] Expand the pure-transposition ladder further with route+rotation
+      composites beyond the first bounded slice, richer turning-grille/mask
+      families, and short/medium/long no-boundary examples with calibrated
+      watch/pass thresholds.
     - [x] Add a better pure-transposition finalist validator/reranker that
       distinguishes true coherent plaintext from high-scoring word islands:
       direct n-gram score, strict word-hit score, edit-aware segmentation,
@@ -469,12 +486,14 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     `--transform-search rank --transform-search-profile wide
     --homophonic-budget full` still reaches 96.2% character accuracy and now
     completes in about 23s on the latest local validation run.
-  - [ ] Continue the Rust transform-search refactor by moving more of the
-    rank/full orchestration into a reusable candidate-evaluation engine:
-    share rank, confirmation, and final bakeoff code paths; preserve the
-    Python path as the reference implementation until parity tests cover
-    every selection gate; and keep K3/pure-transposition compatibility in the
-    candidate representation.
+  - [x] Continue the Rust transform-search refactor by moving rank/full
+    orchestration into a reusable candidate-evaluation skeleton:
+    `analysis.transform_evaluation.evaluate_finalist_menu` now owns the shared
+    flow for validation, pre-confirmation sorting, optional confirmation
+    callbacks, family labels/gates, final sorting, selection, diagnostics, and
+    normalized artifact shape. Pure-transposition direct scoring and
+    transform+homophonic solver probes still supply different expensive probe
+    engines, but they now converge before reporting/agent review.
     - [x] Add the first shared K3-compatible candidate-plan abstraction for
       pure-transposition screens. `PureTranspositionSearchConfig` and
       `iter_pure_transposition_candidates` keep direct route/columnar,
@@ -488,11 +507,16 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       transform+homophonic solver finalists. This keeps reports and agent
       finalist review aligned while preserving separate solver-specific probe
       and confirmation loops for now.
-    - [ ] Move solver-specific probe/confirmation/final bakeoff orchestration
-      behind the same candidate-evaluation interface, so pure-transposition
-      direct scoring, transform+homophonic Rust batch probes, confirmation
-      reruns, and future K3-compatible screens all return one normalized
-      finalist-menu shape.
+    - [x] Move solver-specific probe/confirmation/final bakeoff orchestration
+      behind the same candidate-evaluation interface. The interface accepts
+      path-specific probe results plus optional confirmation/label/selection
+      callbacks, so pure-transposition direct scoring, transform+homophonic
+      Rust batch probes, confirmation reruns, and future K3-compatible screens
+      all return one normalized finalist-menu shape.
+    - [ ] Continue tightening the interface by moving more of the Rust batch
+      request construction and confirmation payload normalization out of
+      `automated.runner` once the current artifact shape has been validated on
+      Z340/K3 frontier runs.
     - Architecture cleanup target: one Rust-backed evaluation API should
       handle pure-transposition direct scoring, transform+homophonic finalist
       validation, and future K3-style extensions without forking candidate

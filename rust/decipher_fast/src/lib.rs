@@ -521,7 +521,10 @@ fn k3_transmatrix_search(
         d.set_item("selection_score", round5(*score))?;
         d.set_item("plaintext", plaintext)?;
         d.set_item("preview", plaintext.chars().take(240).collect::<String>())?;
-        d.set_item("pipeline", transmatrix_pipeline_dict(py, *w1, *w2, direction)?)?;
+        d.set_item(
+            "pipeline",
+            transmatrix_pipeline_dict(py, *w1, *w2, direction)?,
+        )?;
         out.append(d)?;
     }
 
@@ -648,14 +651,16 @@ fn pure_transposition_score_batch(
         parsed
             .par_iter()
             .enumerate()
-            .map(|(index, candidate)| match apply_fast_pipeline(&tokens, &candidate.pipeline) {
-                Ok(transformed) => {
-                    let score = dense_score_indices(&transformed, &table);
-                    let plaintext = indices_to_string(&transformed);
-                    (index, true, String::new(), score, plaintext)
-                }
-                Err(reason) => (index, false, reason, f64::NEG_INFINITY, String::new()),
-            })
+            .map(
+                |(index, candidate)| match apply_fast_pipeline(&tokens, &candidate.pipeline) {
+                    Ok(transformed) => {
+                        let score = dense_score_indices(&transformed, &table);
+                        let plaintext = indices_to_string(&transformed);
+                        (index, true, String::new(), score, plaintext)
+                    }
+                    Err(reason) => (index, false, reason, f64::NEG_INFINITY, String::new()),
+                },
+            )
             .collect()
     });
     let valid_count = scored.iter().filter(|item| item.1).count();
@@ -678,7 +683,14 @@ fn pure_transposition_score_batch(
     }
 
     let result = PyDict::new_bound(py);
-    result.set_item("status", if valid_count > 0 { "completed" } else { "no_valid_candidates" })?;
+    result.set_item(
+        "status",
+        if valid_count > 0 {
+            "completed"
+        } else {
+            "no_valid_candidates"
+        },
+    )?;
     result.set_item("solver", "pure_transposition_score_batch_rust")?;
     result.set_item("threads", worker_count)?;
     result.set_item("candidate_count", parsed.len())?;
@@ -799,7 +811,12 @@ fn zenith_transform_candidates_batch(
             .get_item("seed_offset")?
             .and_then(|v| v.extract::<u64>().ok())
             .unwrap_or(0);
-        parsed.push((candidate_id, family, seed_offset, parse_transform_candidate(dict)?));
+        parsed.push((
+            candidate_id,
+            family,
+            seed_offset,
+            parse_transform_candidate(dict)?,
+        ));
     }
     let model = load_zenith_fast_model(&model_path)?;
     let seed_list = if seeds.is_empty() { vec![0] } else { seeds };
@@ -1186,6 +1203,7 @@ fn apply_fast_step(
         "unwraptransposition" => columnar_transposition_fast(tokens, locked, &step.data, true),
         "routeread" => route_read_fast(tokens, locked, pipeline, &step.data),
         "splitgridroute" => split_grid_route_fast(tokens, locked, pipeline, &step.data),
+        "maskroute" => mask_route_fast(tokens, locked, pipeline, &step.data),
         "gridpermute" => grid_permute_fast(tokens, locked, pipeline, &step.data),
         "railfenceroute" => rail_fence_route_fast(tokens, locked, &step.data),
         "matrixrotate" => matrix_rotate_step_fast(tokens, locked, &step.data),
@@ -1394,7 +1412,7 @@ fn route_read_fast(
     if positions.len() != rows * columns {
         return Err(format!("route {route:?} did not cover the grid"));
     }
-    let order: Vec<usize> = positions
+    let mut order: Vec<usize> = positions
         .into_iter()
         .map(|(row, col)| row * columns + col)
         .filter(|idx| *idx < usable)
@@ -1403,6 +1421,15 @@ fn route_read_fast(
         return Err(format!(
             "route {route:?} did not produce a grid permutation"
         ));
+    }
+    let order_offset = fast_int(
+        data,
+        "orderOffset",
+        fast_int(data, "order_offset", fast_int(data, "offset", 0)),
+    );
+    if !order.is_empty() && order_offset != 0 {
+        let shift = order_offset.rem_euclid(order.len() as i64) as usize;
+        order.rotate_left(shift);
     }
     let mut new_tokens: Vec<usize> = order.iter().map(|idx| tokens[*idx]).collect();
     new_tokens.extend_from_slice(&tokens[usable..]);
@@ -1630,7 +1657,11 @@ fn rail_fence_route_fast(
     let rail_for = |position: usize| -> usize {
         let phase = (position + offset) % period;
         let rail = if phase < rails { phase } else { period - phase };
-        if invert { rails - 1 - rail } else { rail }
+        if invert {
+            rails - 1 - rail
+        } else {
+            rail
+        }
     };
 
     let mut rail_order: Vec<usize> = (0..rails).collect();
@@ -1664,6 +1695,100 @@ fn rail_fence_route_fast(
     let new_tokens: Vec<usize> = order.iter().map(|idx| tokens[*idx]).collect();
     let new_locked: Vec<bool> = order.iter().map(|idx| locked[*idx]).collect();
     Ok((new_tokens, new_locked))
+}
+
+fn mask_route_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    pipeline: &FastTransformPipeline,
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let columns = fast_int(data, "columns", pipeline.columns.unwrap_or(0) as i64) as usize;
+    let mut rows = fast_int(data, "rows", pipeline.rows.unwrap_or(0) as i64) as usize;
+    if columns <= 1 {
+        return Err("MaskRoute requires columns > 1".to_string());
+    }
+    if rows == 0 {
+        rows = tokens.len() / columns;
+    }
+    let usable = (rows * columns).min(tokens.len());
+    if rows <= 1 || usable == 0 {
+        return Ok((tokens.to_vec(), locked.to_vec()));
+    }
+    let pattern = fast_string(data, &["pattern", "mask"], "border").to_lowercase();
+    let first_route = fast_string(data, &["firstRoute", "first_route"], "rows").to_lowercase();
+    let second_route = fast_string(data, &["secondRoute", "second_route"], "rows").to_lowercase();
+    let mask_order = fast_string(data, &["maskOrder", "mask_order"], "mask_first").to_lowercase();
+
+    let mut first_positions: Vec<(usize, usize)> = Vec::new();
+    for (row, col) in route_positions(rows, columns, &first_route)? {
+        if mask_cell_matches(row, col, rows, columns, &pattern)? {
+            first_positions.push((row, col));
+        }
+    }
+    let second_positions: Vec<(usize, usize)> = route_positions(rows, columns, &second_route)?
+        .into_iter()
+        .filter_map(
+            |(row, col)| match mask_cell_matches(row, col, rows, columns, &pattern) {
+                Ok(true) => None,
+                Ok(false) => Some(Ok((row, col))),
+                Err(err) => Some(Err(err)),
+            },
+        )
+        .collect::<Result<Vec<(usize, usize)>, String>>()?;
+
+    let positions = match mask_order.as_str() {
+        "mask_first" | "normal" | "identity" => first_positions
+            .into_iter()
+            .chain(second_positions)
+            .collect::<Vec<(usize, usize)>>(),
+        "complement_first" | "inverse" | "mask_last" => second_positions
+            .into_iter()
+            .chain(first_positions)
+            .collect::<Vec<(usize, usize)>>(),
+        _ => return Err(format!("unsupported MaskRoute mask order: {mask_order}")),
+    };
+    let order: Vec<usize> = positions
+        .into_iter()
+        .map(|(row, col)| row * columns + col)
+        .filter(|idx| *idx < usable)
+        .collect();
+    if !is_permutation(&order, usable) {
+        return Err("MaskRoute did not produce a grid permutation".to_string());
+    }
+    let mut new_tokens: Vec<usize> = order.iter().map(|idx| tokens[*idx]).collect();
+    new_tokens.extend_from_slice(&tokens[usable..]);
+    let mut new_locked: Vec<bool> = order.iter().map(|idx| locked[*idx]).collect();
+    new_locked.extend_from_slice(&locked[usable..]);
+    Ok((new_tokens, new_locked))
+}
+
+fn mask_cell_matches(
+    row: usize,
+    col: usize,
+    rows: usize,
+    columns: usize,
+    pattern: &str,
+) -> Result<bool, String> {
+    match pattern {
+        "border" | "frame" | "outer" => {
+            Ok(row == 0 || row + 1 == rows || col == 0 || col + 1 == columns)
+        }
+        "interior" | "inner" => {
+            Ok(!(row == 0 || row + 1 == rows || col == 0 || col + 1 == columns))
+        }
+        "checkerboard_even" | "checker_even" | "even" => Ok((row + col) % 2 == 0),
+        "checkerboard_odd" | "checker_odd" | "odd" => Ok((row + col) % 2 == 1),
+        "cross" | "center_cross" => Ok(row == rows / 2 || col == columns / 2),
+        "x" | "diagonal_cross" => Ok(row == col || row + col == columns.saturating_sub(1)),
+        "quadrants_tl_br" | "tl_br" => {
+            Ok((row * 2 < rows && col * 2 < columns) || (row * 2 >= rows && col * 2 >= columns))
+        }
+        "quadrants_tr_bl" | "tr_bl" => {
+            Ok((row * 2 < rows && col * 2 >= columns) || (row * 2 >= rows && col * 2 < columns))
+        }
+        _ => Err(format!("unsupported MaskRoute pattern: {pattern}")),
+    }
 }
 
 fn route_positions(

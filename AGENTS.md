@@ -465,7 +465,9 @@ Vigenere-family metadata through the automated runner. Current scope:
   pipelines and scores the resulting A-Z text directly. The automated
   pure-transposition route now uses `analysis.pure_transposition` to generate
   a broad screen of grid/route/columnar families, direct `MatrixRotate`
-  candidates, and K3-style `TransMatrix` candidates. Python handles candidate
+  candidates, rail/fence-style routes, route+orientation-repair composites,
+  shifted/offset route reads, bounded mask/grille-like routes, and K3-style
+  `TransMatrix` candidates. Python handles candidate
   generation/orchestration/artifacts for this path, including branch-side
   `MatrixRotate`/`TransMatrix` application and a small identical-call
   pure-transposition screen cache. `PureTranspositionSearchConfig` is the
@@ -473,14 +475,14 @@ Vigenere-family metadata through the automated runner. Current scope:
   record its `candidate_plan` metadata. Keep older Python implementations as
   reference/regression paths, not as feature-parity obligations for new
   Rust-scale search work.
-- Transform finalist menus now share a Python-side validation layer in
+- Transform finalist menus now share a Python-side evaluation skeleton in
   `analysis.transform_evaluation`. Pure-transposition direct-score candidates
-  and transform+homophonic solver finalists both attach the same
-  `validation`, `validation_adjustment`, and weighted score-adjustment fields
-  before downstream selection/reporting. This is the first slice of the
-  reusable candidate-evaluation engine; solver-specific probe/confirmation
-  orchestration is still split between pure-transposition and Z340-style
-  transform+homophonic paths.
+  and transform+homophonic solver finalists both flow through
+  `evaluate_finalist_menu`: attach plaintext validation, sort finalists,
+  optionally run confirmation callbacks, apply labels/gates, final-sort,
+  select, diagnose, and return a normalized artifact shape. The expensive
+  probe engines still differ by cipher family, but downstream finalist
+  reporting and agent review now use the same menu structure.
 
 Kryptos status:
 - K1/K2/K3 are imported in `../cipher_benchmark` as solved calibration records.
@@ -496,7 +498,9 @@ Kryptos status:
 - A synthetic pure-transposition ladder now lives at
   `frontier/pure_transposition_ladder.jsonl`. It uses the `transposition_only`
   testgen mode to create no-substitution route/order cases for MatrixRotate,
-  diagonal route reads, split-grid routes, and non-Kryptos TransMatrix.
+  diagonal route reads, split-grid routes, spiral/rail/boustrophedon routes,
+  route+repair composites, shifted spiral routes, border-mask routes, and
+  non-Kryptos TransMatrix.
 - Agentic runs can invoke that same screen through
   `search_pure_transposition`. Pure-transposition searches now create
   `search_session_id` menus analogous to transform+homophonic searches:

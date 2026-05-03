@@ -204,6 +204,8 @@ def _apply_step(
         return _route_read(tokens, locked, pipeline, data)
     if name == "splitgridroute":
         return _split_grid_route(tokens, locked, pipeline, data)
+    if name == "maskroute":
+        return _mask_route(tokens, locked, pipeline, data)
     if name == "gridpermute":
         return _grid_permute(tokens, locked, pipeline, data)
     if name == "railfenceroute":
@@ -393,6 +395,10 @@ def _route_read(
     order = [row * columns + col for row, col in positions if row * columns + col < usable]
     if sorted(order) != list(range(usable)):
         raise ValueError(f"route {route!r} did not produce a grid permutation")
+    order_offset = int(data.get("orderOffset") or data.get("order_offset") or data.get("offset") or 0)
+    if order and order_offset:
+        shift = order_offset % len(order)
+        order = order[shift:] + order[:shift]
     new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
     new_locked = [locked[i] for i in order] + list(locked[usable:])
     return new_tokens, new_locked
@@ -435,6 +441,50 @@ def _split_grid_route(
     order = (second + first) if region_order == "swap" else (first + second)
     if sorted(order) != list(range(usable)):
         raise ValueError("SplitGridRoute did not produce a grid permutation")
+    new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
+    new_locked = [locked[i] for i in order] + list(locked[usable:])
+    return new_tokens, new_locked
+
+
+def _mask_route(
+    tokens: list[int],
+    locked: list[bool],
+    pipeline: TransformPipeline,
+    data: dict[str, Any],
+) -> tuple[list[int], list[bool]]:
+    columns = int(data.get("columns") or pipeline.columns or 0)
+    rows = int(data.get("rows") or pipeline.rows or 0)
+    if columns <= 1:
+        raise ValueError("MaskRoute requires columns > 1")
+    if rows <= 0:
+        rows = len(tokens) // columns
+    usable = min(rows * columns, len(tokens))
+    if rows <= 1 or usable <= 0:
+        return list(tokens), list(locked)
+    pattern = str(data.get("pattern") or data.get("mask") or "border").lower()
+    first_route = str(data.get("firstRoute") or data.get("first_route") or "rows").lower()
+    second_route = str(data.get("secondRoute") or data.get("second_route") or "rows").lower()
+    mask_order = str(data.get("maskOrder") or data.get("mask_order") or "mask_first").lower()
+
+    first_positions = [
+        (row, col)
+        for row, col in _route_positions(rows, columns, first_route)
+        if _mask_cell_matches(row, col, rows, columns, pattern)
+    ]
+    second_positions = [
+        (row, col)
+        for row, col in _route_positions(rows, columns, second_route)
+        if not _mask_cell_matches(row, col, rows, columns, pattern)
+    ]
+    if mask_order in {"complement_first", "inverse", "mask_last"}:
+        positions = second_positions + first_positions
+    elif mask_order in {"mask_first", "normal", "identity"}:
+        positions = first_positions + second_positions
+    else:
+        raise ValueError(f"unsupported MaskRoute mask order: {mask_order}")
+    order = [row * columns + col for row, col in positions if row * columns + col < usable]
+    if sorted(order) != list(range(usable)):
+        raise ValueError("MaskRoute did not produce a grid permutation")
     new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
     new_locked = [locked[i] for i in order] + list(locked[usable:])
     return new_tokens, new_locked
@@ -745,6 +795,26 @@ def _interleave_orders(
             seen.add(cell)
             out.append(cell)
     return out
+
+
+def _mask_cell_matches(row: int, col: int, rows: int, columns: int, pattern: str) -> bool:
+    if pattern in {"border", "frame", "outer"}:
+        return row in {0, rows - 1} or col in {0, columns - 1}
+    if pattern in {"interior", "inner"}:
+        return not _mask_cell_matches(row, col, rows, columns, "border")
+    if pattern in {"checkerboard_even", "checker_even", "even"}:
+        return (row + col) % 2 == 0
+    if pattern in {"checkerboard_odd", "checker_odd", "odd"}:
+        return (row + col) % 2 == 1
+    if pattern in {"cross", "center_cross"}:
+        return row == rows // 2 or col == columns // 2
+    if pattern in {"x", "diagonal_cross"}:
+        return row == col or row + col == columns - 1
+    if pattern in {"quadrants_tl_br", "tl_br"}:
+        return (row < rows / 2 and col < columns / 2) or (row >= rows / 2 and col >= columns / 2)
+    if pattern in {"quadrants_tr_bl", "tr_bl"}:
+        return (row < rows / 2 and col >= columns / 2) or (row >= rows / 2 and col < columns / 2)
+    raise ValueError(f"unsupported MaskRoute pattern: {pattern}")
 
 
 def _progressive_shift_positions(

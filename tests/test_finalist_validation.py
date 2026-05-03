@@ -7,7 +7,9 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from analysis.finalist_validation import validate_plaintext_finalist, validation_adjustment
 from analysis.transform_evaluation import (
+    FinalistMenuEvaluationPlan,
     FinalistMenuValidationPolicy,
+    evaluate_finalist_menu,
     sort_finalist_menu,
     validate_finalist_menu,
 )
@@ -129,3 +131,39 @@ def test_transform_finalist_menu_validation_attaches_scores_and_sorts():
         "coherent_candidate",
         "plausible_candidate",
     }
+
+
+def test_transform_finalist_evaluation_runs_confirmation_and_selection_callbacks():
+    candidates = [
+        {"candidate_id": "a", "status": "completed", "selection_score": 1.0, "plaintext": "QZXJQZXJ"},
+        {
+            "candidate_id": "b",
+            "status": "completed",
+            "selection_score": 1.0,
+            "plaintext": "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+        },
+    ]
+    calls = []
+
+    def confirm(items):
+        calls.append([item["candidate_id"] for item in items])
+        for item in items:
+            item["confirmed_selection_score"] = item["validated_selection_score"]
+        return {"stage": "fake_confirmation", "confirmed_candidate_count": len(items)}
+
+    report = evaluate_finalist_menu(
+        candidates,
+        plan=FinalistMenuEvaluationPlan(
+            stage="test_eval",
+            validation_policy=FinalistMenuValidationPolicy(
+                language="en",
+                plaintext_fields=("plaintext",),
+            ),
+        ),
+        confirm=confirm,
+    )
+
+    assert report["stage"] == "test_eval"
+    assert calls == [["b", "a"]]
+    assert report["confirmation"]["stage"] == "fake_confirmation"
+    assert report["selection"]["selected_candidate_id"] == "b"

@@ -17,16 +17,16 @@ from dataclasses import dataclass
 from typing import Any
 
 from analysis.transform_evaluation import (
+    FinalistMenuEvaluationPlan,
     FinalistMenuValidationPolicy,
-    sort_finalist_menu,
-    validate_finalist_menu,
+    evaluate_finalist_menu,
 )
 from analysis.transform_fast import score_pure_transposition_candidates_fast_batch
 from analysis.transform_search import TransformCandidate, iter_transform_candidates, plausible_grid_dimensions
 from analysis.transformers import TransformPipeline, TransformStep
 from models.cipher_text import CipherText
 
-_CACHE_VERSION = 3
+_CACHE_VERSION = 6
 _SCREEN_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
 
 
@@ -40,6 +40,9 @@ class PureTranspositionSearchConfig:
     include_matrix_rotate: bool = True
     include_transmatrix: bool = True
     include_rail_fence: bool = True
+    include_route_composites: bool = True
+    include_route_offsets: bool = True
+    include_mask_routes: bool = True
     transmatrix_min_width: int = 2
     transmatrix_max_width: int | None = None
     provenance: str = "pure_transposition_screen"
@@ -63,6 +66,9 @@ class PureTranspositionSearchConfig:
             "include_matrix_rotate": self.include_matrix_rotate,
             "include_transmatrix": self.include_transmatrix,
             "include_rail_fence": self.include_rail_fence,
+            "include_route_composites": self.include_route_composites,
+            "include_route_offsets": self.include_route_offsets,
+            "include_mask_routes": self.include_mask_routes,
             "transmatrix_min_width": self.transmatrix_min_width,
             "transmatrix_max_width": self.effective_transmatrix_max_width(),
             "provenance": self.provenance,
@@ -79,6 +85,9 @@ def screen_pure_transposition(
     include_matrix_rotate: bool = True,
     include_transmatrix: bool = True,
     include_rail_fence: bool = True,
+    include_route_composites: bool = True,
+    include_route_offsets: bool = True,
+    include_mask_routes: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     threads: int = 0,
@@ -97,6 +106,9 @@ def screen_pure_transposition(
         include_matrix_rotate=include_matrix_rotate,
         include_transmatrix=include_transmatrix,
         include_rail_fence=include_rail_fence,
+        include_route_composites=include_route_composites,
+        include_route_offsets=include_route_offsets,
+        include_mask_routes=include_mask_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -121,6 +133,9 @@ def screen_pure_transposition(
         include_matrix_rotate=include_matrix_rotate,
         include_transmatrix=include_transmatrix,
         include_rail_fence=include_rail_fence,
+        include_route_composites=include_route_composites,
+        include_route_offsets=include_route_offsets,
+        include_mask_routes=include_mask_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -152,22 +167,34 @@ def screen_pure_transposition(
             "plaintext": plaintext,
             "preview": row.get("preview", ""),
         })
-    validation_summary = validate_finalist_menu(
+    evaluation_report = evaluate_finalist_menu(
         top,
-        policy=FinalistMenuValidationPolicy(
-            language=language,
-            plaintext_fields=("plaintext", "preview"),
-            base_score_field="selection_score",
-            output_score_field="validated_selection_score",
-            adjustment_weight=1.0,
-            score_precision=5,
+        plan=FinalistMenuEvaluationPlan(
+            stage="pure_transposition_finalist_menu_evaluation",
+            validation_policy=FinalistMenuValidationPolicy(
+                language=language,
+                plaintext_fields=("plaintext", "preview"),
+                base_score_field="selection_score",
+                output_score_field="validated_selection_score",
+                adjustment_weight=1.0,
+                score_precision=5,
+            ),
+            pre_confirmation_score_field="validated_selection_score",
+            pre_confirmation_secondary_fields=("selection_score",),
+            final_score_fields=("validated_selection_score", "selection_score", "score"),
+            selection_policy=(
+                "Pure-transposition candidates are scored directly by the Rust "
+                "language-model batch kernel, then reranked with the shared "
+                "plaintext finalist validator. No homophonic confirmation "
+                "phase is required."
+            ),
+            note=(
+                "Direct-score pure-transposition finalist menu evaluated "
+                "through the shared transform finalist skeleton."
+            ),
         ),
     )
-    sort_finalist_menu(
-        top,
-        primary_score_field="validated_selection_score",
-        secondary_score_fields=("selection_score",),
-    )
+    top = list(evaluation_report.get("top_ranked_candidates") or top)
     for rank, row in enumerate(top, start=1):
         row["rank"] = rank
     top = top[:top_n]
@@ -184,13 +211,21 @@ def screen_pure_transposition(
         "candidate_count": scored.get("candidate_count", len(candidates)),
         "valid_candidate_count": scored.get("valid_candidate_count"),
         "validation_pool_size": validation_pool_n,
-        "validation": validation_summary,
+        "validation": evaluation_report.get("validation"),
+        "evaluation": {
+            key: value
+            for key, value in evaluation_report.items()
+            if key != "top_ranked_candidates"
+        },
         "elapsed_seconds": scored.get("elapsed_seconds"),
         "scoring_elapsed_seconds": scored.get("elapsed_seconds"),
         "candidate_plan": config.to_metadata(),
         "include_matrix_rotate": include_matrix_rotate,
         "include_transmatrix": include_transmatrix,
         "include_rail_fence": include_rail_fence,
+        "include_route_composites": include_route_composites,
+        "include_route_offsets": include_route_offsets,
+        "include_mask_routes": include_mask_routes,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": _effective_transmatrix_max_width(
             len(values),
@@ -230,6 +265,9 @@ def generate_pure_transposition_candidates(
     include_matrix_rotate: bool = True,
     include_transmatrix: bool = True,
     include_rail_fence: bool = True,
+    include_route_composites: bool = True,
+    include_route_offsets: bool = True,
+    include_mask_routes: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     config: PureTranspositionSearchConfig | None = None,
@@ -246,6 +284,9 @@ def generate_pure_transposition_candidates(
             include_matrix_rotate=include_matrix_rotate,
             include_transmatrix=include_transmatrix,
             include_rail_fence=include_rail_fence,
+            include_route_composites=include_route_composites,
+            include_route_offsets=include_route_offsets,
+            include_mask_routes=include_mask_routes,
             transmatrix_min_width=transmatrix_min_width,
             transmatrix_max_width=transmatrix_max_width,
         )
@@ -304,6 +345,42 @@ def iter_pure_transposition_candidates(
                 break
             ordinal += 1
             candidate = add(_rail_fence_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
+
+    if config.include_route_composites and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _route_composite_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_route_composite_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
+
+    if config.include_route_offsets and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _route_offset_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_route_offset_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
+
+    if config.include_mask_routes and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _mask_route_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_mask_route_candidate(ordinal, params, config.provenance))
             if candidate is not None:
                 yield candidate
 
@@ -469,6 +546,243 @@ def _rail_fence_params(token_count: int, profile: str) -> list[dict[str, Any]]:
     return out
 
 
+def _route_composite_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    route = str(params["route"])
+    width = int(params["width"])
+    repair = str(params["repair"])
+    steps = [TransformStep("RouteRead", {"route": route})]
+    if repair == "reverse":
+        steps.append(TransformStep("Reverse", {}))
+    elif repair in {"matrix_rotate_cw", "matrix_rotate_ccw"}:
+        direction = "cw" if repair.endswith("_cw") else "ccw"
+        steps.append(TransformStep("MatrixRotate", {"width": width, "direction": direction}))
+    else:
+        raise ValueError(f"unsupported route-composite repair: {repair}")
+    pipeline = TransformPipeline(columns=width, steps=tuple(steps))
+    return TransformCandidate(
+        candidate_id=f"rc_{ordinal:05d}_{width}_{route}_{repair}",
+        family=f"route_composite_{repair}",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _route_composite_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count <= 8:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    max_columns = min(token_count - 1, 90 if profile_key == "wide" else 45 if profile_key == "medium" else 24)
+    max_results = 28 if profile_key == "wide" else 16 if profile_key == "medium" else 8
+    widths: list[int] = []
+
+    def add_width(width: int) -> None:
+        if 1 < width <= max_columns and width not in widths:
+            widths.append(width)
+
+    for grid in plausible_grid_dimensions(
+        token_count,
+        max_columns=max_columns,
+        max_results=max_results,
+    ):
+        add_width(int(grid["columns"]))
+        add_width(int(grid["rows"]))
+    for width in (10, 12, 13, 14, 15, 16, 17, 18, 20, 21, 24):
+        add_width(width)
+    if profile_key == "wide":
+        for width in range(2, min(max_columns, 36) + 1):
+            add_width(width)
+
+    routes = (
+        (
+            "columns_down",
+            "columns_up",
+            "rows_boustrophedon",
+            "columns_boustrophedon",
+            "diagonal_down_right",
+            "diagonal_up_left",
+            "spiral_clockwise",
+            "spiral_counterclockwise",
+        )
+        if profile_key == "wide"
+        else (
+            "columns_down",
+            "columns_up",
+            "rows_boustrophedon",
+            "diagonal_down_right",
+            "spiral_clockwise",
+        )
+        if profile_key == "medium"
+        else ("columns_down", "rows_boustrophedon", "diagonal_down_right")
+    )
+    repairs = (
+        ("matrix_rotate_cw", "matrix_rotate_ccw", "reverse")
+        if profile_key != "small"
+        else ("matrix_rotate_cw", "reverse")
+    )
+    out: list[dict[str, Any]] = []
+    for width in widths:
+        for route in routes:
+            for repair in repairs:
+                out.append({"width": width, "route": route, "repair": repair})
+    return out
+
+
+def _route_offset_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    width = int(params["width"])
+    route = str(params["route"])
+    order_offset = int(params["orderOffset"])
+    pipeline = TransformPipeline(
+        columns=width,
+        steps=(TransformStep("RouteRead", {"route": route, "orderOffset": order_offset}),),
+    )
+    return TransformCandidate(
+        candidate_id=f"ro_{ordinal:05d}_{width}_{route}_{order_offset}",
+        family=f"route_offset_{route}",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _route_offset_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count <= 8:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    max_columns = min(token_count - 1, 80 if profile_key == "wide" else 40 if profile_key == "medium" else 24)
+    max_results = 24 if profile_key == "wide" else 14 if profile_key == "medium" else 8
+    widths: list[int] = []
+
+    def add_width(width: int) -> None:
+        if 1 < width <= max_columns and width not in widths:
+            widths.append(width)
+
+    for grid in plausible_grid_dimensions(
+        token_count,
+        max_columns=max_columns,
+        max_results=max_results,
+    ):
+        add_width(int(grid["columns"]))
+        add_width(int(grid["rows"]))
+    for width in (10, 12, 13, 14, 15, 16, 17, 18, 20, 21):
+        add_width(width)
+
+    routes = (
+        ("spiral_clockwise", "spiral_counterclockwise", "diagonal_down_right", "diagonal_up_left")
+        if profile_key != "small"
+        else ("spiral_clockwise", "diagonal_down_right")
+    )
+    offset_fractions = (4, 3, 2) if profile_key == "wide" else (4, 2)
+    out: list[dict[str, Any]] = []
+    for width in widths:
+        rows = token_count // width
+        usable = rows * width
+        if rows <= 0 or usable <= 0:
+            continue
+        offsets = {1, max(1, width // 2), max(1, width - 1)}
+        row_multipliers = (1, 2, 3, 5, 8) if profile_key == "wide" else (1, 2, 3)
+        for multiplier in row_multipliers:
+            offsets.add(width * multiplier)
+        for denom in offset_fractions:
+            offsets.add(max(1, usable // denom))
+        if profile_key == "wide":
+            offsets.update({max(1, usable // 5), max(1, usable // 6)})
+        for route in routes:
+            for order_offset in sorted(offset for offset in offsets if 0 < offset < usable):
+                out.append({"width": width, "route": route, "orderOffset": order_offset})
+    return out
+
+
+def _mask_route_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    width = int(params["width"])
+    pattern = str(params["pattern"])
+    first_route = str(params.get("firstRoute") or "rows")
+    second_route = str(params.get("secondRoute") or "rows")
+    mask_order = str(params.get("maskOrder") or "mask_first")
+    pipeline = TransformPipeline(
+        columns=width,
+        steps=(TransformStep("MaskRoute", {
+            "pattern": pattern,
+            "firstRoute": first_route,
+            "secondRoute": second_route,
+            "maskOrder": mask_order,
+        }),),
+    )
+    return TransformCandidate(
+        candidate_id=f"mk_{ordinal:05d}_{width}_{pattern}_{first_route}_{second_route}_{mask_order}",
+        family=f"mask_route_{pattern}",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _mask_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count <= 12:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    max_columns = min(token_count - 1, 70 if profile_key == "wide" else 36 if profile_key == "medium" else 20)
+    max_results = 18 if profile_key == "wide" else 10 if profile_key == "medium" else 6
+    widths: list[int] = []
+
+    def add_width(width: int) -> None:
+        if 1 < width <= max_columns and width not in widths:
+            widths.append(width)
+
+    for grid in plausible_grid_dimensions(
+        token_count,
+        max_columns=max_columns,
+        max_results=max_results,
+    ):
+        add_width(int(grid["columns"]))
+        add_width(int(grid["rows"]))
+    for width in (10, 12, 13, 14, 15, 16, 17, 18, 20, 21):
+        add_width(width)
+
+    patterns = (
+        ("border", "cross", "quadrants_tl_br", "quadrants_tr_bl")
+        if profile_key == "wide"
+        else ("border", "cross", "quadrants_tl_br")
+        if profile_key == "medium"
+        else ("border",)
+    )
+    route_pairs = (
+        (("rows", "rows"), ("rows_boustrophedon", "rows"), ("columns_down", "rows"))
+        if profile_key != "small"
+        else (("rows", "rows"),)
+    )
+    mask_orders = ("mask_first", "complement_first") if profile_key == "wide" else ("mask_first",)
+    out: list[dict[str, Any]] = []
+    for width in widths:
+        rows = token_count // width
+        usable = rows * width
+        if rows <= 1 or usable <= 0:
+            continue
+        for pattern in patterns:
+            for first_route, second_route in route_pairs:
+                for mask_order in mask_orders:
+                    out.append({
+                        "width": width,
+                        "pattern": pattern,
+                        "firstRoute": first_route,
+                        "secondRoute": second_route,
+                        "maskOrder": mask_order,
+                    })
+    return out
+
+
 def _effective_transmatrix_max_width(
     token_count: int,
     min_width: int,
@@ -517,6 +831,9 @@ def _screen_cache_key(
     include_transmatrix: bool,
     include_matrix_rotate: bool,
     include_rail_fence: bool,
+    include_route_composites: bool,
+    include_route_offsets: bool,
+    include_mask_routes: bool,
     transmatrix_min_width: int,
     transmatrix_max_width: int | None,
 ) -> str:
@@ -530,6 +847,9 @@ def _screen_cache_key(
         "include_matrix_rotate": include_matrix_rotate,
         "include_transmatrix": include_transmatrix,
         "include_rail_fence": include_rail_fence,
+        "include_route_composites": include_route_composites,
+        "include_route_offsets": include_route_offsets,
+        "include_mask_routes": include_mask_routes,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": transmatrix_max_width,
     }
@@ -558,6 +878,12 @@ def _trim_screen_cache() -> None:
 def _family_bucket(family: str) -> str:
     if family.startswith("matrix_rotate"):
         return "matrix_rotate"
+    if family.startswith("route_composite"):
+        return "route_composite"
+    if family.startswith("route_offset"):
+        return "route_offset"
+    if family.startswith("mask_route"):
+        return "mask_route"
     if family.startswith("route_"):
         return "route"
     if family.startswith("columnar_transposition"):

@@ -29,7 +29,9 @@ from analysis.segment import (
 )
 from analysis.solver import simulated_anneal
 from analysis.transform_evaluation import (
+    FinalistMenuEvaluationPlan,
     FinalistMenuValidationPolicy,
+    evaluate_finalist_menu,
     validate_finalist_menu,
 )
 from analysis.transformers import TransformPipeline, apply_transform_pipeline
@@ -1257,54 +1259,61 @@ def _rank_transform_candidates(
                     "pipeline": pipeline_raw,
                     "reason": f"{type(exc).__name__}: {exc}",
                 })
-    # Validation, confirmation, and selection are shared by both rank engines.
-    validation_report = _validate_transform_finalists(ranked, language=language)
-    _sort_ranked_transform_candidates(ranked, score_key="validated_selection_score")
-    confirmation_report = _confirm_transform_finalists(
-        cipher_text=cipher_text,
-        language=language,
-        ranked=ranked,
-        budget=budget,
-        solver_profile=solver_profile,
-        confirm_count=confirm_count,
-        adaptive_confirmations=adaptive_confirmations,
-    )
-    finalist_report = _label_transform_finalists(ranked)
-    ranked.sort(
-        key=lambda item: (
-            bool(item.get("selectable_transform_candidate")),
-            item.get("status") == "completed",
-            float(
-                item.get("confirmed_selection_score")
-                or item.get("validated_selection_score")
-                or item.get("selection_score")
-                or float("-inf")
+    # Validation, confirmation, gating, and selection now flow through the
+    # same finalist-menu skeleton used by pure-transposition screens. The
+    # expensive probe engines remain path-specific.
+    evaluation_report = evaluate_finalist_menu(
+        ranked,
+        plan=FinalistMenuEvaluationPlan(
+            stage="transform_homophonic_finalist_menu_evaluation",
+            pre_confirmation_score_field="validated_selection_score",
+            pre_confirmation_secondary_fields=("selection_score", "anneal_score", "structural_score"),
+            selection_policy=(
+                "Two-stage rank: a broad structural screen is reduced to a "
+                "family-diverse finalist set, solver probes produce candidate "
+                "plaintexts, the shared finalist evaluator attaches plaintext "
+                "validation evidence, then independent-seed confirmation and "
+                "family gates decide whether a transform is selectable."
             ),
-            float(item.get("anneal_score") or float("-inf")),
-            float(item.get("structural_score") or float("-inf")),
+            note=(
+                "Transform+homophonic finalist menu evaluated through the "
+                "shared transform finalist skeleton; solver probes and "
+                "confirmation batches remain Zenith/homophonic-specific."
+            ),
         ),
-        reverse=True,
+        validate=lambda items: _validate_transform_finalists(items, language=language),
+        confirm=lambda items: _confirm_transform_finalists(
+            cipher_text=cipher_text,
+            language=language,
+            ranked=items,
+            budget=budget,
+            solver_profile=solver_profile,
+            confirm_count=confirm_count,
+            adaptive_confirmations=adaptive_confirmations,
+        ),
+        label=_label_transform_finalists,
+        final_sort_key=_transform_final_sort_key,
+        choose=_choose_transform_candidate,
+        diagnose=_diagnose_transform_finalists,
     )
-    selection_report = _choose_transform_candidate(ranked)
-    diagnostic_report = _diagnose_transform_finalists(ranked, selection_report)
+    ranked = list(evaluation_report.get("top_ranked_candidates") or ranked)
     return {
         "budget": budget,
         "max_candidates": max_candidates,
-        "selection_policy": (
-            "Two-stage rank: a broad structural screen is reduced to a "
-            "family-diverse finalist set, then solver probes are ranked "
-            "primarily by anneal score with small quality/structural "
-            "tie-breakers, validation penalties, and an independent-seed "
-            "confirmation pass."
-        ),
+        "selection_policy": evaluation_report.get("selection_policy"),
         "triage": triage_report,
-        "evaluated_candidates": len(ranked),
+        "evaluated_candidates": evaluation_report.get("evaluated_candidates", len(ranked)),
         "skipped_candidates": skipped,
-        "validation": validation_report,
-        "confirmation": confirmation_report,
-        "finalists": finalist_report,
-        "selection": selection_report,
-        "diagnostics": diagnostic_report,
+        "evaluation": {
+            key: value
+            for key, value in evaluation_report.items()
+            if key != "top_ranked_candidates"
+        },
+        "validation": evaluation_report.get("validation"),
+        "confirmation": evaluation_report.get("confirmation"),
+        "finalists": evaluation_report.get("finalists"),
+        "selection": evaluation_report.get("selection"),
+        "diagnostics": evaluation_report.get("diagnostics"),
         "top_ranked_candidates": ranked,
         "note": (
             "Candidates are ranked by solver probes after the structural screen. "
@@ -1987,15 +1996,18 @@ def _confirm_transform_finalists_rust_batch(
     }
 
 
-def _sort_ranked_transform_candidates(ranked: list[dict[str, Any]], *, score_key: str) -> None:
-    ranked.sort(
-        key=lambda item: (
-            item.get("status") == "completed",
-            float(item.get(score_key) or item.get("selection_score") or float("-inf")),
-            float(item.get("anneal_score") or float("-inf")),
-            float(item.get("structural_score") or float("-inf")),
+def _transform_final_sort_key(item: dict[str, Any]) -> tuple[bool, bool, float, float, float]:
+    return (
+        bool(item.get("selectable_transform_candidate")),
+        item.get("status") == "completed",
+        float(
+            item.get("confirmed_selection_score")
+            or item.get("validated_selection_score")
+            or item.get("selection_score")
+            or float("-inf")
         ),
-        reverse=True,
+        float(item.get("anneal_score") or float("-inf")),
+        float(item.get("structural_score") or float("-inf")),
     )
 
 
@@ -2956,6 +2968,9 @@ def _run_pure_transposition(
     transmatrix_max_width = int(transmatrix_max_width_raw) if transmatrix_max_width_raw else None
     include_matrix_rotate = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_MATRIX_ROTATE", default=True)
     include_transmatrix = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_TRANSMATRIX", default=True)
+    include_route_composites = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_ROUTE_COMPOSITES", default=True)
+    include_route_offsets = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_ROUTE_OFFSETS", default=True)
+    include_mask_routes = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_MASK_ROUTES", default=True)
     top_n = int(os.environ.get("DECIPHER_PURE_TRANSPOSITION_TOP_N", os.environ.get("DECIPHER_K3_TRANSMATRIX_TOP_N", "25")))
     threads = pure_transposition_threads_from_env()
     result = screen_pure_transposition(
@@ -2966,6 +2981,9 @@ def _run_pure_transposition(
         max_candidates=max_candidates,
         include_matrix_rotate=include_matrix_rotate,
         include_transmatrix=include_transmatrix,
+        include_route_composites=include_route_composites,
+        include_route_offsets=include_route_offsets,
+        include_mask_routes=include_mask_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
         threads=threads,

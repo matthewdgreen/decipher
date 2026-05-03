@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from analysis.finalist_validation import validate_plaintext_finalist, validation_adjustment
 
@@ -25,6 +25,30 @@ class FinalistMenuValidationPolicy:
     output_score_field: str = "validated_selection_score"
     adjustment_weight: float = 1.0
     score_precision: int = 5
+
+
+@dataclass(frozen=True)
+class FinalistMenuEvaluationPlan:
+    """Shared orchestration settings for a transform finalist menu."""
+
+    stage: str = "transform_finalist_menu_evaluation"
+    validation_policy: FinalistMenuValidationPolicy | None = None
+    pre_confirmation_score_field: str = "validated_selection_score"
+    pre_confirmation_secondary_fields: tuple[str, ...] = ("selection_score", "score")
+    final_score_fields: tuple[str, ...] = (
+        "confirmed_selection_score",
+        "validated_selection_score",
+        "selection_score",
+        "score",
+    )
+    selection_policy: str = (
+        "Validate finalists, optionally confirm expensive candidates, label "
+        "or gate them, then select from a normalized finalist menu."
+    )
+    note: str = (
+        "Probe engines may differ, but downstream finalist evidence is shaped "
+        "through the same evaluation skeleton."
+    )
 
 
 def validate_finalist_menu(
@@ -88,6 +112,76 @@ def validate_finalist_menu(
     }
 
 
+def evaluate_finalist_menu(
+    candidates: list[dict[str, Any]],
+    *,
+    plan: FinalistMenuEvaluationPlan | None = None,
+    validate: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+    confirm: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+    label: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+    choose: Callable[[list[dict[str, Any]]], dict[str, Any]] | None = None,
+    diagnose: Callable[[list[dict[str, Any]], dict[str, Any]], dict[str, Any]] | None = None,
+    final_sort_key: Callable[[dict[str, Any]], Any] | None = None,
+) -> dict[str, Any]:
+    """Run the shared finalist-menu evaluation skeleton.
+
+    Callers still own expensive probing: a pure-transposition screen may arrive
+    with direct scores already attached, while a transform+homophonic ranker
+    may pass a confirmation callback that reruns a small finalist set. This
+    helper normalizes the surrounding bookkeeping and artifact shape.
+    """
+
+    cfg = plan or FinalistMenuEvaluationPlan()
+    if validate is not None:
+        validation_report = validate(candidates)
+    else:
+        validation_report = validate_finalist_menu(
+            candidates,
+            policy=cfg.validation_policy,
+        )
+    sort_finalist_menu(
+        candidates,
+        primary_score_field=cfg.pre_confirmation_score_field,
+        secondary_score_fields=cfg.pre_confirmation_secondary_fields,
+    )
+    confirmation_report = (
+        confirm(candidates)
+        if confirm is not None
+        else _no_confirmation_report()
+    )
+    finalist_report = (
+        label(candidates)
+        if label is not None
+        else _default_finalist_labels(candidates)
+    )
+    if final_sort_key is not None:
+        candidates.sort(key=final_sort_key, reverse=True)
+    else:
+        _sort_by_score_fields(candidates, cfg.final_score_fields)
+    selection_report = (
+        choose(candidates)
+        if choose is not None
+        else _choose_first_completed(candidates)
+    )
+    diagnostic_report = (
+        diagnose(candidates, selection_report)
+        if diagnose is not None
+        else _default_diagnostics(candidates, selection_report)
+    )
+    return {
+        "stage": cfg.stage,
+        "evaluated_candidates": len(candidates),
+        "selection_policy": cfg.selection_policy,
+        "validation": validation_report,
+        "confirmation": confirmation_report,
+        "finalists": finalist_report,
+        "selection": selection_report,
+        "diagnostics": diagnostic_report,
+        "top_ranked_candidates": candidates,
+        "note": cfg.note,
+    }
+
+
 def sort_finalist_menu(
     candidates: list[dict[str, Any]],
     *,
@@ -104,6 +198,105 @@ def sort_finalist_menu(
         ),
         reverse=True,
     )
+
+
+def _sort_by_score_fields(
+    candidates: list[dict[str, Any]],
+    fields: tuple[str, ...],
+) -> None:
+    candidates.sort(
+        key=lambda item: (
+            item.get("status") in {None, "completed"},
+            _score_tuple(item, fields[0], fields[1:]) if fields else (float("-inf"),),
+        ),
+        reverse=True,
+    )
+
+
+def _no_confirmation_report() -> dict[str, Any]:
+    return {
+        "stage": "confirmation_not_required",
+        "status": "not_run",
+        "policy": (
+            "No independent confirmation phase was requested for this finalist "
+            "menu; selection uses the scores and validation evidence already "
+            "attached to each candidate."
+        ),
+    }
+
+
+def _default_finalist_labels(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    label_counts: Counter[str] = Counter()
+    selectable = 0
+    for candidate in candidates:
+        if candidate.get("status") not in {None, "completed"}:
+            label = "failed_candidate"
+            is_selectable = False
+        else:
+            label = "direct_score_candidate"
+            is_selectable = True
+        candidate["finalist_label"] = label
+        candidate["selectable_transform_candidate"] = is_selectable
+        label_counts[label] += 1
+        selectable += int(is_selectable)
+    return {
+        "stage": "default_direct_score_labels",
+        "label_counts": dict(label_counts),
+        "selectable_candidate_count": selectable,
+        "policy": (
+            "Direct-score menus are selectable when the candidate completed; "
+            "callers may provide stricter family-specific gates."
+        ),
+    }
+
+
+def _choose_first_completed(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+    for candidate in candidates:
+        if candidate.get("status") in {None, "completed"}:
+            return {
+                "selected": True,
+                "selected_candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "finalist_label": candidate.get("finalist_label"),
+                "selection_score": _first_score(
+                    candidate,
+                    (
+                        "confirmed_selection_score",
+                        "validated_selection_score",
+                        "selection_score",
+                        "score",
+                    ),
+                ),
+                "reason": "best_completed_candidate_in_normalized_menu",
+            }
+    return {
+        "selected": False,
+        "selected_candidate_id": None,
+        "reason": "no_completed_candidate",
+    }
+
+
+def _default_diagnostics(
+    candidates: list[dict[str, Any]],
+    selection: dict[str, Any],
+) -> dict[str, Any]:
+    label_counts = Counter(str(item.get("finalist_label") or "unlabelled") for item in candidates)
+    return {
+        "stage": "default_finalist_menu_diagnostics",
+        "selected_candidate_id": selection.get("selected_candidate_id"),
+        "label_counts": dict(label_counts),
+        "completed_candidate_count": sum(
+            1 for item in candidates if item.get("status") in {None, "completed"}
+        ),
+    }
+
+
+def _first_score(candidate: dict[str, Any], fields: tuple[str, ...]) -> float | None:
+    for field in fields:
+        value = _float_or_none(candidate.get(field))
+        if value is not None:
+            return value
+    return None
 
 
 def _candidate_plaintext(candidate: dict[str, Any], fields: tuple[str, ...]) -> str:

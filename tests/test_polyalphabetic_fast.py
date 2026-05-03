@@ -234,6 +234,33 @@ def test_python_and_fast_route_read_order_offset_match():
     assert results[0]["position_order_preview"] == expected_order
 
 
+def test_python_and_fast_mask_route_match():
+    pipeline = TransformPipeline(
+        columns=6,
+        steps=(TransformStep("MaskRoute", {
+            "pattern": "border",
+            "firstRoute": "rows_boustrophedon",
+            "secondRoute": "rows",
+            "maskOrder": "mask_first",
+        }),),
+    )
+    tokens = list(range(36))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "mask_border",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order
+
+
 def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     candidates = generate_pure_transposition_candidates(
         token_count=120,
@@ -250,6 +277,7 @@ def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     assert "route_composite_matrix_rotate_cw" in families
     assert "route_composite_reverse" in families
     assert "route_offset_spiral_clockwise" in families
+    assert "mask_route_border" in families
 
 
 @_requires_k3
@@ -464,6 +492,45 @@ def test_pure_transposition_screen_recovers_route_offset_candidate():
     ]
     assert offset_hits
     assert result["candidate_plan"]["include_route_offsets"] is True
+
+
+def test_pure_transposition_screen_recovers_mask_route_candidate():
+    base_plaintext = (
+        "SOMEQUIETPLACEBEYONDTHEHILLWASWAITINGFORTHERAINTOEND"
+        "WHILETHEWINDOWSGLIMMEREDINTHEMORNINGLIGHT"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    pipeline = TransformPipeline(
+        columns=15,
+        steps=(TransformStep("MaskRoute", {
+            "pattern": "border",
+            "firstRoute": "rows_boustrophedon",
+            "secondRoute": "rows",
+            "maskOrder": "mask_first",
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    mask_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "mask_route_border"
+        and candidate["params"]["width"] == 15
+        and candidate["params"]["pattern"] == "border"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert mask_hits
+    assert result["candidate_plan"]["include_mask_routes"] is True
 
 
 def test_synthetic_builder_can_generate_pure_transposition_case(tmp_path):
