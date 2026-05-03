@@ -597,9 +597,12 @@ decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
 Recommended for historical manuscript analysis: `claude-sonnet-4-6`.
-Ollama effectiveness is highly model-dependent; models with documented
-tool-calling support (e.g. `qwen3:14b`, `qwen3:8b`, `llama3.1:8b`) work
-best. Run `decipher doctor` to see which Ollama models are currently installed.
+
+> **Ollama note:** The agentic solver relies heavily on structured tool
+> calling. You must use a model with documented tool-use support (e.g.
+> `qwen3:14b`, `qwen3:8b`, `llama3.1:8b`). Ollama support has not been
+> extensively tested and effectiveness will vary significantly by model.
+> Run `decipher doctor` to see which Ollama models are currently installed.
 
 ### Terminal display mode
 
