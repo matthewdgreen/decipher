@@ -7,6 +7,27 @@ from pathlib import Path
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# other_tools/ is intentionally excluded from the repo (.gitignore).
+# Tests that require files from it are skipped on a clean clone.
+# ---------------------------------------------------------------------------
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_K3_PATH = (
+    _REPO_ROOT
+    / "other_tools"
+    / "zenith-src"
+    / "zenith-inference"
+    / "src"
+    / "main"
+    / "resources"
+    / "ciphers"
+    / "kryptos3.json"
+)
+_requires_k3 = pytest.mark.skipif(
+    not _K3_PATH.exists(),
+    reason="other_tools/zenith-src not present (excluded from repo; local dev only)",
+)
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from analysis import ngram
@@ -191,6 +212,28 @@ def test_python_and_fast_rail_fence_route_match():
     assert results[0]["position_order_preview"] == expected_order
 
 
+def test_python_and_fast_route_read_order_offset_match():
+    pipeline = TransformPipeline(
+        columns=5,
+        steps=(TransformStep("RouteRead", {"route": "spiral_clockwise", "orderOffset": 7}),),
+    )
+    tokens = list(range(25))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "spiral_offset",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order
+
+
 def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     candidates = generate_pure_transposition_candidates(
         token_count=120,
@@ -204,22 +247,14 @@ def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     assert "matrix_rotate_ccw" in families
     assert "transmatrix" in families
     assert "rail_fence" in families
+    assert "route_composite_matrix_rotate_cw" in families
+    assert "route_composite_reverse" in families
+    assert "route_offset_spiral_clockwise" in families
 
 
+@_requires_k3
 def test_fast_k3_transmatrix_search_recovers_known_k3_plaintext():
-    repo_root = Path(__file__).resolve().parents[1]
-    k3_path = (
-        repo_root
-        / "other_tools"
-        / "zenith-src"
-        / "zenith-inference"
-        / "src"
-        / "main"
-        / "resources"
-        / "ciphers"
-        / "kryptos3.json"
-    )
-    payload = json.loads(k3_path.read_text(encoding="utf-8"))
+    payload = json.loads(_K3_PATH.read_text(encoding="utf-8"))
     values = [ord(ch) - ord("A") for ch in payload["ciphertext"] if "A" <= ch <= "Z"]
 
     result = search_k3_transmatrix_fast(
@@ -239,20 +274,9 @@ def test_fast_k3_transmatrix_search_recovers_known_k3_plaintext():
     assert best["pipeline"]["steps"][0]["name"] == "TransMatrix"
 
 
+@_requires_k3
 def test_pure_transposition_screen_recovers_k3_transmatrix():
-    repo_root = Path(__file__).resolve().parents[1]
-    k3_path = (
-        repo_root
-        / "other_tools"
-        / "zenith-src"
-        / "zenith-inference"
-        / "src"
-        / "main"
-        / "resources"
-        / "ciphers"
-        / "kryptos3.json"
-    )
-    payload = json.loads(k3_path.read_text(encoding="utf-8"))
+    payload = json.loads(_K3_PATH.read_text(encoding="utf-8"))
     ciphertext = "".join(ch for ch in payload["ciphertext"] if "A" <= ch <= "Z")
     ct = CipherText(raw=ciphertext, alphabet=Alphabet.from_text(ciphertext), separator=None)
 
@@ -267,6 +291,8 @@ def test_pure_transposition_screen_recovers_k3_transmatrix():
 
     best = result["best_candidate"]
     assert result["solver"] == "pure_transposition_screen_rust"
+    assert result["evaluation"]["stage"] == "pure_transposition_finalist_menu_evaluation"
+    assert result["evaluation"]["confirmation"]["stage"] == "confirmation_not_required"
     assert best["family"] == "transmatrix"
     assert best["plaintext"].startswith("SLOWLYDESPARATLYSLOWLYTHEREMAINS")
 
@@ -367,6 +393,77 @@ def test_pure_transposition_screen_recovers_rail_fence_candidate():
         and candidate["plaintext"] == plaintext
     ]
     assert rail_hits
+
+
+def test_pure_transposition_screen_recovers_route_composite_candidate():
+    base_plaintext = (
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOGANDTHENRUNSACROSSTHE"
+        "FIELDWHILEWATCHINGTHEMOONRISEABOVETHEQUIETRIVERBANK"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    pipeline = TransformPipeline(
+        columns=15,
+        steps=(
+            TransformStep("RouteRead", {"route": "columns_down"}),
+            TransformStep("MatrixRotate", {"width": 15, "direction": "cw"}),
+        ),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    composite_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "route_composite_matrix_rotate_cw"
+        and candidate["params"]["width"] == 15
+        and candidate["params"]["route"] == "columns_down"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert composite_hits
+    assert result["candidate_plan"]["include_route_composites"] is True
+
+
+def test_pure_transposition_screen_recovers_route_offset_candidate():
+    base_plaintext = (
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOGANDTHENRUNSACROSSTHE"
+        "FIELDWHILEWATCHINGTHEMOONRISEABOVETHEQUIETRIVERBANK"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    pipeline = TransformPipeline(
+        columns=15,
+        steps=(TransformStep("RouteRead", {"route": "spiral_clockwise", "orderOffset": 30}),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    offset_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "route_offset_spiral_clockwise"
+        and candidate["params"]["width"] == 15
+        and candidate["params"]["orderOffset"] == 30
+        and candidate["plaintext"] == plaintext
+    ]
+    assert offset_hits
+    assert result["candidate_plan"]["include_route_offsets"] is True
 
 
 def test_synthetic_builder_can_generate_pure_transposition_case(tmp_path):
@@ -520,20 +617,9 @@ def test_agent_pure_transposition_tool_installs_readable_branch():
     assert selected.metadata["decoded_text"] == plaintext
 
 
+@_requires_k3
 def test_automated_pure_transposition_route_uses_broad_rust_screen(monkeypatch):
-    repo_root = Path(__file__).resolve().parents[1]
-    k3_path = (
-        repo_root
-        / "other_tools"
-        / "zenith-src"
-        / "zenith-inference"
-        / "src"
-        / "main"
-        / "resources"
-        / "ciphers"
-        / "kryptos3.json"
-    )
-    payload = json.loads(k3_path.read_text(encoding="utf-8"))
+    payload = json.loads(_K3_PATH.read_text(encoding="utf-8"))
     ciphertext = "".join(ch for ch in payload["ciphertext"] if "A" <= ch <= "Z")
     ct = CipherText(raw=ciphertext, alphabet=Alphabet.from_text(ciphertext), separator=None)
     monkeypatch.setenv("DECIPHER_K3_TRANSMATRIX_MAX_WIDTH", "60")
@@ -552,6 +638,7 @@ def test_automated_pure_transposition_route_uses_broad_rust_screen(monkeypatch):
     assert result.final_decryption.startswith("SLOWLYDESPARATLYSLOWLYTHEREMAINS")
     step = next(step for step in result.steps if step["name"] == "screen_pure_transposition")
     assert step["solver"] == "pure_transposition_screen_rust"
+    assert step["selected"]["validation"]
     assert step["selected"]["family"] == "transmatrix"
     assert step["selected"]["pipeline"]["steps"][0]["name"] == "TransMatrix"
 
