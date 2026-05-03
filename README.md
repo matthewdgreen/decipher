@@ -578,22 +578,22 @@ Useful options:
 
 ### LLM provider and model selection
 
-Agentic mode supports multiple LLM providers:
+Pass `--model` to choose a model; the provider is inferred from the name
+prefix. Pass `--provider` explicitly if needed. See [API key setup](#api-key-setup)
+for defaults, key locations, and the full provider table.
 
 ```bash
-# Anthropic (default)
+# Anthropic
 decipher crack -f cipher.txt --agentic --model claude-sonnet-4-6
 
 # OpenAI
-decipher crack -f cipher.txt --agentic --provider openai --model gpt-4o
+decipher crack -f cipher.txt --agentic --model gpt-5.4-mini
 
 # Gemini
-decipher crack -f cipher.txt --agentic --provider gemini --model gemini-2.0-flash
+decipher crack -f cipher.txt --agentic --model gemini-3-flash-preview
 ```
 
-Recommended for historical manuscript analysis: `claude-sonnet-4-6`. The
-provider is inferred automatically from a recognized model name, or pass
-`--provider` explicitly.
+Recommended for historical manuscript analysis: `claude-sonnet-4-6`.
 
 ### Terminal display mode
 
@@ -610,13 +610,41 @@ Agentic runs support four display modes via `--display`:
 
 ### API key setup
 
-```bash
-export ANTHROPIC_API_KEY=sk-...
-```
+Agentic mode supports three providers. You only need a key for the provider
+you intend to use.
 
-Or store it in the macOS Keychain under service `decipher`, account
-`anthropic_api_key`. OpenAI and Gemini keys follow the same pattern
-(`OPENAI_API_KEY`, `GEMINI_API_KEY` / `GOOGLE_API_KEY`).
+| Provider | `--provider` value | Environment variable(s) | Default model |
+|----------|--------------------|------------------------|---------------|
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-7` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4-mini` |
+| Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
+
+The provider is inferred automatically from a recognized model name prefix
+(`claude-` → Anthropic, `gpt-`/`o1`/`o3`/`o4` → OpenAI, `gemini-` →
+Gemini), so you usually don't need to pass `--provider` explicitly.
+
+**Four ways to supply a key** (tried in this order):
+
+1. Environment variable:
+   ```bash
+   export ANTHROPIC_API_KEY=sk-ant-...
+   export OPENAI_API_KEY=sk-...
+   export GEMINI_API_KEY=...
+   ```
+
+2. `.env` file in the repo root or working directory:
+   ```
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+
+3. Key file at `.decipher_keys/<provider>_api_key` (repo root or working
+   directory):
+   ```bash
+   echo "sk-ant-..." > .decipher_keys/anthropic_api_key
+   ```
+
+4. macOS Keychain — service `decipher`, accounts `anthropic_api_key`,
+   `openai_api_key`, `gemini_api_key`.
 
 `--no-automated-preflight` suppresses the default no-LLM preflight pass before
 an agentic run (the preflight is generally cheap and useful).
