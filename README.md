@@ -596,7 +596,7 @@ decipher crack -f cipher.txt --agentic --model gemini-3-flash-preview
 decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
-Recommended for historical manuscript analysis: `claude-sonnet-4-6`.
+Recommended for historical manuscript analysis: `gpt-5.4` though `claude-sonnet-4-6` works as well.
 
 > **Ollama note:** The agentic solver relies heavily on structured tool
 > calling. You must use a model with documented tool-use support (e.g.
