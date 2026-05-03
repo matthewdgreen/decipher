@@ -40,6 +40,76 @@ These are major future projects, not active implementation threads. Keep them
 visible as north-star capabilities while current work stays focused on
 homophonic, transposition+homophonic, and historical manuscript benchmarks.
 
+- [ ] Build a complete cross-tool cipher-family inventory.
+  - Starting point: `docs/automated_tool_comparison.md`.
+  - Inventory every cipher family advertised by major reference tools
+    including AZdecrypt, CryptoCrack, CrypTool, dCode, Boxentriq, Ciphey,
+    quipqiup, Zenith, and zkdecrypto-lite.
+  - For each family, record Decipher's current status:
+    `solves_automated`, `agent_assists`, `diagnoses_only`, `planned`,
+    `unsupported`, or `out_of_scope_plugin`.
+  - Track known variants and aliases so the same family is not counted under
+    multiple names (for example ADFGX/ADFGVX, route/grille transpositions,
+    keyed Vigenere/Quagmire, Playfair/Two-square/Four-square).
+  - Use the inventory to produce an honest "supported cipher types" table in
+    docs and as machine-readable metadata for the unknown-cipher router.
+  - Longer-term goal: Decipher should either provide a solver/assistant for
+    every classical family in this inventory or clearly mark why it is
+    deferred, unsupported, or intended as a plugin.
+- [ ] Build dCode/Boxentriq-quality unknown-cipher diagnosis.
+  - Produce a first-pass ranked diagnosis report for unknown inputs, not just
+    scattered observations. The report should include confidence, evidence,
+    counterevidence, recommended next tools, and families not yet tested.
+  - Match or exceed the user-facing usefulness of web identifiers such as
+    dCode and Boxentriq while preserving Decipher's artifact/provenance model.
+  - Add statistical panels for alphabet shape, symbol count, IC/periodicity,
+    n-gram language fit, word-boundary pressure, fractionation/coordinate
+    signals, transposition-likelihood signals, null/noise hints, and
+    polygraphic structure.
+  - Feed the same structured diagnosis into agent hypothesis branches so the
+    agent can choose a cipher family deliberately, switch families when the
+    evidence changes, and leave a clear coverage trail in artifacts.
+  - Add regression tests with known families plus deliberately ambiguous
+    near-misses, so the router learns to say "uncertain" rather than forcing
+    a confident but wrong family.
+- [ ] Build a detailed transposition-search breadth inventory.
+  - Starting point: AZdecrypt's search-family list plus CryptoCrack/CrypTool
+    transposition coverage.
+  - Catalog route reads, diagonals, spirals, boustrophedon, rail/fence
+    variants, row/column permutations, keyed/unkeyed columnar, double
+    columnar, disrupted columnar, grilles/masks, turning grilles, periodic
+    transposition, split-grid/region routes, local reversals, skip/null
+    variants, and transposition combined with substitution/homophonic layers.
+  - For each family, define candidate parameters, inverse semantics where
+    applicable, expected search explosion, cheap structural scores, and when
+    to promote candidates into full solver validation.
+  - Convert the inventory into named Decipher search profiles (`screen`,
+    `broad`, `deep`, `overnight`) with estimated candidate counts and runtime
+    envelopes.
+  - Keep pure-transposition and transposition+homophonic paths compatible, so
+    K3-style direct scoring and Z340-style homophonic validation share
+    candidate provenance rather than forking into two unrelated systems.
+- [ ] Build a broad generated automated regression suite.
+  - This should be larger and less curated than the compact frontier suite:
+    many synthetic instances per supported family, generated on demand with
+    randomized plaintexts, keys, parameters, lengths, word-boundary policies,
+    and noise/null settings.
+  - Keep several layers:
+    - quick smoke: runs in minutes and checks every major family at least once;
+    - nightly: many seeds/families with automated-only solvers;
+    - overnight/deep: broad transform, transposition, Quagmire, and
+      homophonic stress cases;
+    - live-agent optional: small fake-provider and carefully bounded real-LLM
+      checks.
+  - Store generator specs and random seeds in artifacts so failures are
+    reproducible even when cases are generated on demand.
+  - Update the suite whenever a major capability lands; a new solver family is
+    not considered complete until it has quick-smoke rows, generated-stress
+    rows, and at least one "frontier" row that can fail meaningfully.
+  - Add reporting that separates regression failures from expected
+    beyond-frontier/watch cases, so improving one family does not hide
+    stochastic decay in another.
+
 - [ ] Periodic polyalphabetic ciphers.
   - Detailed plan: `docs/polyalphabetic_capability_plan.md`.
   - First slice implemented: A-Z Vigenere-family screen, explicit automated
@@ -163,6 +233,12 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     search strategies. If a true Python reference implementation for the
     Blake-style loop is added later, add candidate-distribution parity tests
     before using it as a runtime substitute.
+  - [ ] Once the Rust fast kernels have earned enough production confidence,
+    retire older large-scale Python solver implementations from the active
+    runtime path. Move retained Python code into a clearly named legacy or
+    reference area, keep only targeted parity/regression tests, and remove any
+    user-facing implication that Python is a supported scale-equivalent
+    fallback.
   - Rust Quagmire follow-ups: compare the Rust candidate distribution against
     Blake's solver on K2, add a stronger/principled quadgram source if the
     current Decipher wordlist quadgrams rank poorly, decide whether exact
@@ -338,8 +414,14 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       non-Kryptos `TransMatrix` pair using `transposition_only` synthetic
       specs. The split-grid row is deliberately marked `shared_hard` pending
       calibration.
-    - [ ] Expand the pure-transposition ladder further with spirals with
-      offsets, route+rotation composites, grille/mask-like examples, and
+    - [x] Add the first explicit route-breadth ladder rows beyond the earlier
+      diagonal/split-grid/K3-shaped cases. `frontier/pure_transposition_ladder.jsonl`
+      now includes spiral, boustrophedon, and rail-fence-style no-boundary
+      rows. Local validation in
+      `artifacts/validate_pure_transposition_route_breadth` passed all 7
+      ladder cases.
+    - [ ] Expand the pure-transposition ladder further with spiral offsets,
+      route+rotation composites, grille/mask-like examples, and
       short/medium/long no-boundary examples with calibrated watch/pass
       thresholds.
     - [x] Add a better pure-transposition finalist validator/reranker that
@@ -370,19 +452,21 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     sweeps: stream/report hundreds of thousands of candidates, avoid
     materializing every transformed token order, optimize structural metrics,
     and promote only a small finalist set into homophonic annealing. Current
-    Current wide families include banded NDown/lock/shift programs plus
+    wide families include banded NDown/lock/shift programs plus
     single- and double-repair route
     programs and can honor an explicit 600k cap. Large wide screens use a
     NumPy-backed position-only metric pass and compact family counters; a
     Z340 structural-only 600k run completed in about 173s. Real
     solver-backed validation must stay finalist-only.
-  - [x] Add the first Rust solver-backed transform validation path. With
-    `DECIPHER_ZENITH_NATIVE_ENGINE=rust` and
-    `DECIPHER_TRANSFORM_RANK_ENGINE=rust`, rank/full transform finalists now
-    use the Rust Zenith-native seed solver and Rust transform-candidate batch
-    evaluator; Stage C independent confirmation also runs through the Rust
-    batch path with per-candidate seed offsets. On the Z340 hidden-transform
-    replay fixture, `--transform-search rank --transform-search-profile wide
+  - [x] Add the first Rust solver-backed transform validation path. Rank/full
+    transform finalists now use the Rust Zenith-native seed solver and Rust
+    transform-candidate batch evaluator by default; set
+    `DECIPHER_ZENITH_NATIVE_ENGINE=python` and
+    `DECIPHER_TRANSFORM_RANK_ENGINE=python` only for reference/regression
+    comparisons against the older Python path. Stage C independent
+    confirmation also runs through the Rust batch path with per-candidate seed
+    offsets. On the Z340 hidden-transform replay fixture,
+    `--transform-search rank --transform-search-profile wide
     --homophonic-budget full` still reaches 96.2% character accuracy and now
     completes in about 23s on the latest local validation run.
   - [ ] Continue the Rust transform-search refactor by moving more of the
@@ -397,6 +481,18 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       `MatrixRotate`, and `TransMatrix` candidates in one provenance-bearing
       stream, and artifacts/tool results now include `candidate_plan`
       metadata.
+    - [x] Add the first shared finalist-menu validation layer.
+      `analysis.transform_evaluation` now attaches plaintext validation,
+      weighted validation adjustments, and shared sorting semantics to both
+      pure-transposition direct-score finalists and Z340-style
+      transform+homophonic solver finalists. This keeps reports and agent
+      finalist review aligned while preserving separate solver-specific probe
+      and confirmation loops for now.
+    - [ ] Move solver-specific probe/confirmation/final bakeoff orchestration
+      behind the same candidate-evaluation interface, so pure-transposition
+      direct scoring, transform+homophonic Rust batch probes, confirmation
+      reruns, and future K3-compatible screens all return one normalized
+      finalist-menu shape.
     - Architecture cleanup target: one Rust-backed evaluation API should
       handle pure-transposition direct scoring, transform+homophonic finalist
       validation, and future K3-style extensions without forking candidate

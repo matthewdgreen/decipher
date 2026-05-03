@@ -45,6 +45,8 @@ src/
                             shared-tableau mutation search
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
+    transform_evaluation.py — Shared transform finalist-menu validation,
+                            scoring adjustment, and sorting helpers
     zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
@@ -451,12 +453,14 @@ Vigenere-family metadata through the automated runner. Current scope:
   replace `rust_shotgun` with `python_screen`: the Python screen is
   reference/diagnostic scaffolding, not an equivalent large-scale search.
 - The Rust fast-kernel module also exposes the first Zenith-native
-  homophonic/transform acceleration path. `DECIPHER_ZENITH_NATIVE_ENGINE=rust`
-  selects the Rust one-seed Zenith solver, and
-  `DECIPHER_TRANSFORM_RANK_ENGINE=rust` selects the Rust transform-candidate
-  batch evaluator for solver-backed rank/full transform validation. Stage C
-  transform confirmation supports per-candidate seed offsets through the same
-  batch API. The Rust module also owns pure-transposition scoring:
+  homophonic/transform acceleration path. Rust is now the default for the
+  one-seed Zenith solver and the transform-candidate batch evaluator used by
+  solver-backed rank/full transform validation. Use
+  `DECIPHER_ZENITH_NATIVE_ENGINE=python` and
+  `DECIPHER_TRANSFORM_RANK_ENGINE=python` only for reference/regression
+  comparisons against the older Python implementation. Stage C transform
+  confirmation supports per-candidate seed offsets through the same batch API.
+  The Rust module also owns pure-transposition scoring:
   `pure_transposition_score_batch` applies provenance-bearing transform
   pipelines and scores the resulting A-Z text directly. The automated
   pure-transposition route now uses `analysis.pure_transposition` to generate
@@ -469,6 +473,14 @@ Vigenere-family metadata through the automated runner. Current scope:
   record its `candidate_plan` metadata. Keep older Python implementations as
   reference/regression paths, not as feature-parity obligations for new
   Rust-scale search work.
+- Transform finalist menus now share a Python-side validation layer in
+  `analysis.transform_evaluation`. Pure-transposition direct-score candidates
+  and transform+homophonic solver finalists both attach the same
+  `validation`, `validation_adjustment`, and weighted score-adjustment fields
+  before downstream selection/reporting. This is the first slice of the
+  reusable candidate-evaluation engine; solver-specific probe/confirmation
+  orchestration is still split between pure-transposition and Z340-style
+  transform+homophonic paths.
 
 Kryptos status:
 - K1/K2/K3 are imported in `../cipher_benchmark` as solved calibration records.

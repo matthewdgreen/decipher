@@ -1027,14 +1027,21 @@ def test_pure_transposition_ladder_suite_loads():
         "synth_en_120ptnb_diagonal_s32",
         "synth_en_120ptnb_split_grid_s33",
         "synth_en_160ptnb_transmatrix_s34",
+        "synth_en_140ptnb_spiral_s35",
+        "synth_en_140ptnb_boustrophedon_s36",
+        "synth_en_140ptnb_rail_fence_s37",
     ]
     assert all(case.synthetic_spec is not None for case in cases)
     assert all(case.synthetic_spec.transposition_only for case in cases if case.synthetic_spec)
     assert all("pure_transposition_ladder" in case.frontier_tags for case in cases)
+    assert all(case.raw["hide_transform_pipeline_from_solver"] is True for case in cases)
     assert cases[0].synthetic_spec.transform_pipeline["steps"][0]["name"] == "MatrixRotate"
     assert cases[1].synthetic_spec.transform_pipeline["steps"][0]["data"]["route"] == "diagonal_down_right"
     assert cases[2].synthetic_spec.transform_pipeline["steps"][0]["name"] == "SplitGridRoute"
     assert cases[3].synthetic_spec.transform_pipeline["steps"][0]["name"] == "TransMatrix"
+    assert cases[4].synthetic_spec.transform_pipeline["steps"][0]["data"]["route"] == "spiral_clockwise"
+    assert cases[5].synthetic_spec.transform_pipeline["steps"][0]["data"]["route"] == "rows_boustrophedon"
+    assert cases[6].synthetic_spec.transform_pipeline["steps"][0]["name"] == "RailFenceRoute"
 
 
 def test_hidden_transform_frontier_case_withholds_pipeline_from_solver(tmp_path):

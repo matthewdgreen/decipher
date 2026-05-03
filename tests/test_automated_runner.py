@@ -315,6 +315,8 @@ def test_automated_transform_search_screen_records_router_artifact(monkeypatch):
 
 def test_automated_transform_search_rank_can_select_candidate(monkeypatch):
     cipher_text = parse_canonical_transcription("S001 S002 S003 S004 S005 S006")
+    monkeypatch.setenv("DECIPHER_ZENITH_NATIVE_ENGINE", "python")
+    monkeypatch.setenv("DECIPHER_TRANSFORM_RANK_ENGINE", "python")
 
     def fake_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
         return (
@@ -1084,6 +1086,14 @@ def test_selected_transform_candidate_gets_full_final_refinement(monkeypatch):
     )
 
 
+def test_transform_rank_and_zenith_fast_engines_default_to_rust(monkeypatch):
+    monkeypatch.delenv("DECIPHER_ZENITH_NATIVE_ENGINE", raising=False)
+    monkeypatch.delenv("DECIPHER_TRANSFORM_RANK_ENGINE", raising=False)
+
+    assert automated_runner._zenith_native_engine() == "rust"
+    assert automated_runner._transform_rank_engine() == "rust"
+
+
 def test_rust_rank_auto_escalates_to_full_when_screen_has_no_robust_candidate(monkeypatch):
     cipher_text = parse_canonical_transcription("A B C")
     full_candidate = {
@@ -1522,6 +1532,7 @@ def test_transform_diagnostic_candidate_prefers_identity_baseline():
 
 
 def test_transform_confirmation_honors_zero_adaptive_budget(monkeypatch):
+    monkeypatch.setenv("DECIPHER_TRANSFORM_RANK_ENGINE", "python")
     ranked = [
         {
             "candidate_id": "000_identity",
@@ -2444,6 +2455,7 @@ def test_maybe_polish_zenith_native_plaintext_repairs_segmented_words(monkeypatc
 
 def test_run_homophonic_zenith_native_can_adopt_polished_plaintext(monkeypatch):
     ct = automated_runner.parse_canonical_transcription("01 02 03 01 02 03")
+    monkeypatch.setenv("DECIPHER_ZENITH_NATIVE_ENGINE", "python")
     monkeypatch.delenv("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS", raising=False)
     monkeypatch.setattr(automated_runner, "_zenith_native_model_path", lambda language: "fake-model.bin")
 

@@ -16,7 +16,11 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass
 from typing import Any
 
-from analysis.finalist_validation import validate_plaintext_finalist, validation_adjustment
+from analysis.transform_evaluation import (
+    FinalistMenuValidationPolicy,
+    sort_finalist_menu,
+    validate_finalist_menu,
+)
 from analysis.transform_fast import score_pure_transposition_candidates_fast_batch
 from analysis.transform_search import TransformCandidate, iter_transform_candidates, plausible_grid_dimensions
 from analysis.transformers import TransformPipeline, TransformStep
@@ -35,6 +39,7 @@ class PureTranspositionSearchConfig:
     max_candidates: int | None = None
     include_matrix_rotate: bool = True
     include_transmatrix: bool = True
+    include_rail_fence: bool = True
     transmatrix_min_width: int = 2
     transmatrix_max_width: int | None = None
     provenance: str = "pure_transposition_screen"
@@ -57,6 +62,7 @@ class PureTranspositionSearchConfig:
             "max_candidates": self.max_candidates,
             "include_matrix_rotate": self.include_matrix_rotate,
             "include_transmatrix": self.include_transmatrix,
+            "include_rail_fence": self.include_rail_fence,
             "transmatrix_min_width": self.transmatrix_min_width,
             "transmatrix_max_width": self.effective_transmatrix_max_width(),
             "provenance": self.provenance,
@@ -72,6 +78,7 @@ def screen_pure_transposition(
     max_candidates: int | None = None,
     include_matrix_rotate: bool = True,
     include_transmatrix: bool = True,
+    include_rail_fence: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     threads: int = 0,
@@ -89,6 +96,7 @@ def screen_pure_transposition(
         max_candidates=max_candidates,
         include_matrix_rotate=include_matrix_rotate,
         include_transmatrix=include_transmatrix,
+        include_rail_fence=include_rail_fence,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -112,6 +120,7 @@ def screen_pure_transposition(
         max_candidates=max_candidates,
         include_matrix_rotate=include_matrix_rotate,
         include_transmatrix=include_transmatrix,
+        include_rail_fence=include_rail_fence,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -130,30 +139,34 @@ def screen_pure_transposition(
         index = int(row["candidate_index"])
         candidate = candidates[index].to_dict()
         plaintext = str(row.get("plaintext", ""))
-        validation = validate_plaintext_finalist(plaintext, language=language)
         try:
             base_selection_score = float(row.get("selection_score"))
         except (TypeError, ValueError):
             base_selection_score = float("-inf")
-        validated_selection_score = base_selection_score + validation_adjustment(validation)
         top.append({
             **candidate,
             "rank": row.get("rank"),
             "rust_rank": int(row.get("rank") or rust_rank),
             "score": row.get("score"),
-            "selection_score": row.get("selection_score"),
-            "validation": validation,
-            "validation_adjustment": validation_adjustment(validation),
-            "validated_selection_score": round(validated_selection_score, 5),
+            "selection_score": base_selection_score,
             "plaintext": plaintext,
             "preview": row.get("preview", ""),
         })
-    top.sort(
-        key=lambda row: (
-            float(row.get("validated_selection_score") or float("-inf")),
-            float(row.get("selection_score") or float("-inf")),
+    validation_summary = validate_finalist_menu(
+        top,
+        policy=FinalistMenuValidationPolicy(
+            language=language,
+            plaintext_fields=("plaintext", "preview"),
+            base_score_field="selection_score",
+            output_score_field="validated_selection_score",
+            adjustment_weight=1.0,
+            score_precision=5,
         ),
-        reverse=True,
+    )
+    sort_finalist_menu(
+        top,
+        primary_score_field="validated_selection_score",
+        secondary_score_fields=("selection_score",),
     )
     for rank, row in enumerate(top, start=1):
         row["rank"] = rank
@@ -171,11 +184,13 @@ def screen_pure_transposition(
         "candidate_count": scored.get("candidate_count", len(candidates)),
         "valid_candidate_count": scored.get("valid_candidate_count"),
         "validation_pool_size": validation_pool_n,
+        "validation": validation_summary,
         "elapsed_seconds": scored.get("elapsed_seconds"),
         "scoring_elapsed_seconds": scored.get("elapsed_seconds"),
         "candidate_plan": config.to_metadata(),
         "include_matrix_rotate": include_matrix_rotate,
         "include_transmatrix": include_transmatrix,
+        "include_rail_fence": include_rail_fence,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": _effective_transmatrix_max_width(
             len(values),
@@ -214,6 +229,7 @@ def generate_pure_transposition_candidates(
     max_candidates: int | None = None,
     include_matrix_rotate: bool = True,
     include_transmatrix: bool = True,
+    include_rail_fence: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     config: PureTranspositionSearchConfig | None = None,
@@ -229,6 +245,7 @@ def generate_pure_transposition_candidates(
             max_candidates=max_candidates,
             include_matrix_rotate=include_matrix_rotate,
             include_transmatrix=include_transmatrix,
+            include_rail_fence=include_rail_fence,
             transmatrix_min_width=transmatrix_min_width,
             transmatrix_max_width=transmatrix_max_width,
         )
@@ -277,6 +294,18 @@ def iter_pure_transposition_candidates(
                 candidate = add(_matrix_rotate_candidate(ordinal, width, direction, config.provenance))
                 if candidate is not None:
                     yield candidate
+
+    if config.include_rail_fence and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _rail_fence_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_rail_fence_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
 
     if config.include_transmatrix and (
         config.max_candidates is None or len(out) < config.max_candidates
@@ -387,6 +416,59 @@ def _transmatrix_candidate(
     )
 
 
+def _rail_fence_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    pipeline = TransformPipeline(
+        steps=(TransformStep("RailFenceRoute", dict(params)),)
+    )
+    rails = params["rails"]
+    offset = params.get("offset", 0)
+    direction = params.get("direction", "down")
+    rail_order = params.get("railOrder", "top_down")
+    return TransformCandidate(
+        candidate_id=f"rf_{ordinal:05d}_{rails}_{offset}_{direction}_{rail_order}",
+        family="rail_fence",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _rail_fence_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count < 6:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    max_rails = min(
+        max(2, token_count // 3),
+        20 if profile_key == "wide" else 12 if profile_key == "medium" else 6,
+    )
+    rail_orders = (
+        ("top_down", "bottom_up", "even_odd", "odd_even")
+        if profile_key == "wide"
+        else ("top_down", "bottom_up")
+        if profile_key == "medium"
+        else ("top_down",)
+    )
+    directions = ("down", "up") if profile_key != "small" else ("down",)
+    out: list[dict[str, Any]] = []
+    for rails in range(2, max_rails + 1):
+        period = max(1, 2 * (rails - 1))
+        offsets = range(period) if profile_key == "wide" else range(min(period, 3))
+        for direction in directions:
+            for rail_order in rail_orders:
+                for offset in offsets:
+                    out.append({
+                        "rails": rails,
+                        "offset": offset,
+                        "direction": direction,
+                        "railOrder": rail_order,
+                    })
+    return out
+
+
 def _effective_transmatrix_max_width(
     token_count: int,
     min_width: int,
@@ -434,6 +516,7 @@ def _screen_cache_key(
     max_candidates: int | None,
     include_transmatrix: bool,
     include_matrix_rotate: bool,
+    include_rail_fence: bool,
     transmatrix_min_width: int,
     transmatrix_max_width: int | None,
 ) -> str:
@@ -446,6 +529,7 @@ def _screen_cache_key(
         "max_candidates": max_candidates,
         "include_matrix_rotate": include_matrix_rotate,
         "include_transmatrix": include_transmatrix,
+        "include_rail_fence": include_rail_fence,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": transmatrix_max_width,
     }
@@ -484,6 +568,8 @@ def _family_bucket(family: str) -> str:
         return "split_grid"
     if family.startswith("grid_permute"):
         return "grid_permute"
+    if family.startswith("rail_fence"):
+        return "rail_fence"
     if family.startswith("wide_route"):
         return "wide_route_repair"
     if family.startswith("transmatrix"):

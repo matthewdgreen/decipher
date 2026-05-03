@@ -6,6 +6,11 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from analysis.finalist_validation import validate_plaintext_finalist, validation_adjustment
+from analysis.transform_evaluation import (
+    FinalistMenuValidationPolicy,
+    sort_finalist_menu,
+    validate_finalist_menu,
+)
 
 
 WORD_LIST = [
@@ -95,3 +100,32 @@ def test_finalist_validation_distinguishes_clean_from_scarred_readable_text():
     assert clean_result["integrity"]["damage_score"] < scarred_result["integrity"]["damage_score"]
     assert clean_result["integrity"]["integrity_label"] == "clean_or_canonical"
     assert scarred_result["integrity"]["integrity_label"] != "clean_or_canonical"
+
+
+def test_transform_finalist_menu_validation_attaches_scores_and_sorts():
+    candidates = [
+        {"candidate_id": "bad", "selection_score": 10.0, "plaintext": "QZXJQZXJQZXJ"},
+        {
+            "candidate_id": "good",
+            "selection_score": 10.0,
+            "plaintext": "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+        },
+    ]
+
+    summary = validate_finalist_menu(
+        candidates,
+        policy=FinalistMenuValidationPolicy(
+            language="en",
+            plaintext_fields=("plaintext",),
+            adjustment_weight=1.0,
+        ),
+    )
+    sort_finalist_menu(candidates, secondary_score_fields=("selection_score",))
+
+    assert summary["validated_candidate_count"] == 2
+    assert candidates[0]["candidate_id"] == "good"
+    assert candidates[0]["validated_selection_score"] > candidates[1]["validated_selection_score"]
+    assert candidates[0]["validation"]["validation_label"] in {
+        "coherent_candidate",
+        "plausible_candidate",
+    }

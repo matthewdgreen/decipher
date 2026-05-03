@@ -206,6 +206,8 @@ def _apply_step(
         return _split_grid_route(tokens, locked, pipeline, data)
     if name == "gridpermute":
         return _grid_permute(tokens, locked, pipeline, data)
+    if name == "railfenceroute":
+        return _rail_fence_route(tokens, locked, data)
     if name == "matrixrotate":
         return _matrix_rotate(tokens, locked, data)
     if name == "transmatrix":
@@ -466,6 +468,47 @@ def _grid_permute(
     new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
     new_locked = [locked[i] for i in order] + list(locked[usable:])
     return new_tokens, new_locked
+
+
+def _rail_fence_route(
+    tokens: list[int],
+    locked: list[bool],
+    data: dict[str, Any],
+) -> tuple[list[int], list[bool]]:
+    rails = int(data.get("rails") or 0)
+    if rails <= 1 or rails >= len(tokens):
+        return list(tokens), list(locked)
+    offset = int(data.get("offset") or 0)
+    direction = str(data.get("direction") or "down").lower()
+    rail_order_raw = str(data.get("railOrder") or data.get("rail_order") or "top_down").lower()
+    invert = direction in {"up", "up_first", "bottom_up"}
+
+    period = 2 * (rails - 1)
+
+    def rail_for(position: int) -> int:
+        phase = (position + offset) % period
+        rail = phase if phase < rails else period - phase
+        return rails - 1 - rail if invert else rail
+
+    rail_order = list(range(rails))
+    if rail_order_raw in {"bottom_up", "reverse", "reversed"}:
+        rail_order.reverse()
+    elif rail_order_raw in {"even_odd", "evens_then_odds"}:
+        rail_order = list(range(0, rails, 2)) + list(range(1, rails, 2))
+    elif rail_order_raw in {"odd_even", "odds_then_evens"}:
+        rail_order = list(range(1, rails, 2)) + list(range(0, rails, 2))
+    elif rail_order_raw not in {"top_down", "normal", "identity"}:
+        raise ValueError(f"unsupported RailFenceRoute rail order: {rail_order_raw}")
+
+    order = [
+        index
+        for rail in rail_order
+        for index in range(len(tokens))
+        if rail_for(index) == rail
+    ]
+    if sorted(order) != list(range(len(tokens))):
+        raise ValueError("RailFenceRoute did not produce a permutation")
+    return [tokens[i] for i in order], [locked[i] for i in order]
 
 
 def _matrix_rotate(

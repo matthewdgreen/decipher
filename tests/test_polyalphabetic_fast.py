@@ -168,6 +168,29 @@ def test_python_matrix_rotate_and_transmatrix_match_fast_semantics():
     assert apply_transform_pipeline(tokens, transmatrix_pipeline).tokens == expected
 
 
+def test_python_and_fast_rail_fence_route_match():
+    tokens = list(range(24))
+    pipeline = TransformPipeline(
+        steps=(TransformStep("RailFenceRoute", {"rails": 4, "offset": 1}),)
+    )
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "rail_fence_4_offset1",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert expected_order == [5, 11, 17, 23, 0, 4, 6, 10, 12, 16, 18, 22, 1, 3, 7, 9, 13, 15, 19, 21, 2, 8, 14, 20]
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order
+
+
 def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     candidates = generate_pure_transposition_candidates(
         token_count=120,
@@ -180,6 +203,7 @@ def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     assert "matrix_rotate_cw" in families
     assert "matrix_rotate_ccw" in families
     assert "transmatrix" in families
+    assert "rail_fence" in families
 
 
 def test_fast_k3_transmatrix_search_recovers_known_k3_plaintext():
@@ -309,6 +333,40 @@ def test_pure_transposition_screen_recovers_matrix_rotate_candidate():
     ]
     assert matrix_hits
     assert result["candidate_plan"]["include_matrix_rotate"] is True
+
+
+def test_pure_transposition_screen_recovers_rail_fence_candidate():
+    base_plaintext = (
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOGANDTHENRUNSACROSSTHE"
+        "FIELDWHILEWATCHINGTHEMOONRISEABOVETHEQUIETRIVERBANK"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    cipher = _inverse_pipeline_cipher(
+        plaintext,
+        TransformPipeline(
+            steps=(TransformStep("RailFenceRoute", {"rails": 4, "offset": 1}),),
+        ),
+    )
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=10,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    rail_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "rail_fence"
+        and candidate["params"]["rails"] == 4
+        and candidate["params"]["offset"] == 1
+        and candidate["plaintext"] == plaintext
+    ]
+    assert rail_hits
 
 
 def test_synthetic_builder_can_generate_pure_transposition_case(tmp_path):

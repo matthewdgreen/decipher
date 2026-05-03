@@ -74,6 +74,7 @@ Prerequisites:
 
 ```bash
 cd /path/to/decipher
+python3.11 -m venv .venv
 source .venv/bin/activate
 scripts/setup_dev.sh
 ```
@@ -204,12 +205,10 @@ Candidate breadth profiles (`--transform-search-profile`):
 | `broad` | Default; good balance of breadth and runtime |
 | `wide` | Expanded structural sweep with more grid dimensions |
 
-The Zenith-native transform rank path has an experimental Rust engine for
+The Zenith-native transform rank path uses the Rust fast-kernel by default for
 large solver-backed finalist checks:
 
 ```bash
-DECIPHER_ZENITH_NATIVE_ENGINE=rust \
-DECIPHER_TRANSFORM_RANK_ENGINE=rust \
 DECIPHER_TRANSFORM_RANK_THREADS=0 \
 decipher crack -f cipher.txt \
   --transform-search rank \
@@ -221,6 +220,10 @@ decipher crack -f cipher.txt \
 Rust enabled, `rank` plus `--homophonic-budget full` may automatically
 escalate unstable screen-budget finalist probes to full-budget ranking; the
 artifact records this under `transform_search.rank_escalation`.
+
+For reference/regression comparisons against the older Python implementation,
+set `DECIPHER_ZENITH_NATIVE_ENGINE=python` and
+`DECIPHER_TRANSFORM_RANK_ENGINE=python` explicitly.
 
 ### Run the historical benchmark
 

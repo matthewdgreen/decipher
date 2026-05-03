@@ -28,6 +28,10 @@ from analysis.segment import (
     segment_text,
 )
 from analysis.solver import simulated_anneal
+from analysis.transform_evaluation import (
+    FinalistMenuValidationPolicy,
+    validate_finalist_menu,
+)
 from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from analysis.transform_search import inspect_transform_suspicion, screen_transform_candidates
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
@@ -1254,7 +1258,7 @@ def _rank_transform_candidates(
                     "reason": f"{type(exc).__name__}: {exc}",
                 })
     # Validation, confirmation, and selection are shared by both rank engines.
-    validation_report = _validate_transform_finalists(ranked)
+    validation_report = _validate_transform_finalists(ranked, language=language)
     _sort_ranked_transform_candidates(ranked, score_key="validated_selection_score")
     confirmation_report = _confirm_transform_finalists(
         cipher_text=cipher_text,
@@ -1419,9 +1423,20 @@ def _rank_transform_candidates_rust_batch(
     return ranked, skipped
 
 
-def _validate_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any]:
+def _validate_transform_finalists(ranked: list[dict[str, Any]], *, language: str) -> dict[str, Any]:
     """Validate solver finalists against identity and mutation base candidates."""
 
+    plaintext_report = validate_finalist_menu(
+        ranked,
+        policy=FinalistMenuValidationPolicy(
+            language=language,
+            plaintext_fields=("decryption", "decryption_preview"),
+            base_score_field="selection_score",
+            output_score_field="plaintext_validated_selection_score",
+            adjustment_weight=0.03,
+            score_precision=6,
+        ),
+    )
     by_id = {str(item.get("candidate_id")): item for item in ranked}
     identity = by_id.get("000_identity")
     identity_selection = _float_or_none(identity.get("selection_score")) if identity else None
@@ -1430,6 +1445,11 @@ def _validate_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any
     identity_penalized = 0
     for item in ranked:
         selection = _float_or_none(item.get("selection_score")) or float("-inf")
+        plaintext_adjusted_selection = (
+            _float_or_none(item.get("plaintext_validated_selection_score"))
+            if item.get("plaintext_validated_selection_score") is not None
+            else selection
+        )
         anneal = _float_or_none(item.get("anneal_score"))
         params = item.get("params") if isinstance(item.get("params"), dict) else {}
         base_id = params.get("base_candidate_id")
@@ -1471,8 +1491,9 @@ def _validate_transform_finalists(ranked: list[dict[str, Any]]) -> dict[str, Any
                 identity_penalized += 1
         item["validation_penalty"] = round(penalty, 6)
         item["validation_reasons"] = reasons
-        item["validated_selection_score"] = round(selection - penalty, 6)
+        item["validated_selection_score"] = round(plaintext_adjusted_selection - penalty, 6)
     return {
+        "plaintext_validation": plaintext_report,
         "identity_candidate_id": "000_identity" if identity else None,
         "identity_selection_score": identity_selection,
         "identity_anneal_score": identity_anneal,
@@ -5029,7 +5050,7 @@ def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
 
 
 def _zenith_native_engine() -> str:
-    raw = os.environ.get("DECIPHER_ZENITH_NATIVE_ENGINE", "python").strip().lower()
+    raw = os.environ.get("DECIPHER_ZENITH_NATIVE_ENGINE", "rust").strip().lower()
     if raw in {"py", "python", "reference"}:
         return "python"
     if raw in {"rs", "rust", "fast"}:
@@ -5040,7 +5061,7 @@ def _zenith_native_engine() -> str:
 
 
 def _transform_rank_engine() -> str:
-    raw = os.environ.get("DECIPHER_TRANSFORM_RANK_ENGINE", "python").strip().lower()
+    raw = os.environ.get("DECIPHER_TRANSFORM_RANK_ENGINE", "rust").strip().lower()
     if raw in {"py", "python", "reference"}:
         return "python"
     if raw in {"rs", "rust", "fast"}:

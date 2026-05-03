@@ -165,7 +165,7 @@ struct ZenithTransformBatchItem {
 static ZENITH_MODEL_CACHE: OnceLock<Mutex<HashMap<String, Arc<ZenithFastModel>>>> = OnceLock::new();
 
 #[pyfunction]
-fn normalized_ngram_score(text: &str, log_probs: &PyDict, n: usize) -> PyResult<f64> {
+fn normalized_ngram_score(text: &str, log_probs: &Bound<'_, PyDict>, n: usize) -> PyResult<f64> {
     let table = table_from_pydict(log_probs)?;
     Ok(normalized_score(text.as_bytes(), &table, n))
 }
@@ -175,7 +175,7 @@ fn normalized_ngram_score(text: &str, log_probs: &PyDict, n: usize) -> PyResult<
 fn keyed_vigenere_alphabet_anneal(
     py: Python<'_>,
     symbol_values: Vec<usize>,
-    log_probs: &PyDict,
+    log_probs: &Bound<'_, PyDict>,
     max_period: usize,
     initial_alphabets: Vec<String>,
     steps: usize,
@@ -287,7 +287,7 @@ fn keyed_vigenere_alphabet_anneal(
 fn quagmire3_shotgun_search(
     py: Python<'_>,
     symbol_values: Vec<usize>,
-    log_probs: &PyDict,
+    log_probs: &Bound<'_, PyDict>,
     keyword_lengths: Vec<usize>,
     cycleword_lengths: Vec<usize>,
     hillclimbs: usize,
@@ -456,7 +456,7 @@ fn quagmire3_shotgun_search(
 fn k3_transmatrix_search(
     py: Python<'_>,
     symbol_values: Vec<usize>,
-    log_probs: &PyDict,
+    log_probs: &Bound<'_, PyDict>,
     min_width: usize,
     max_width: usize,
     top_n: usize,
@@ -540,7 +540,7 @@ fn k3_transmatrix_search(
 fn transform_structural_metrics_batch(
     py: Python<'_>,
     tokens: Vec<usize>,
-    candidates: &PyList,
+    candidates: &Bound<'_, PyList>,
     threads: usize,
 ) -> PyResult<PyObject> {
     let mut parsed = Vec::with_capacity(candidates.len());
@@ -612,8 +612,8 @@ fn transform_structural_metrics_batch(
 fn pure_transposition_score_batch(
     py: Python<'_>,
     tokens: Vec<usize>,
-    candidates: &PyList,
-    log_probs: &PyDict,
+    candidates: &Bound<'_, PyList>,
+    log_probs: &Bound<'_, PyDict>,
     top_n: usize,
     threads: usize,
 ) -> PyResult<PyObject> {
@@ -765,7 +765,7 @@ fn zenith_transform_candidates_batch(
     py: Python<'_>,
     model_path: String,
     tokens: Vec<usize>,
-    candidates: &PyList,
+    candidates: &Bound<'_, PyList>,
     plaintext_ids: Vec<usize>,
     id_to_letter: HashMap<usize, String>,
     epochs: usize,
@@ -887,11 +887,11 @@ fn zenith_transform_candidates_batch(
     Ok(result.into())
 }
 
-fn parse_transform_candidate(raw: &PyDict) -> PyResult<FastTransformCandidate> {
+fn parse_transform_candidate(raw: &Bound<'_, PyDict>) -> PyResult<FastTransformCandidate> {
     let pipeline_obj = raw
         .get_item("pipeline")?
         .ok_or_else(|| PyValueError::new_err("transform candidate missing pipeline"))?;
-    let pipeline = parse_transform_pipeline(pipeline_obj)?;
+    let pipeline = parse_transform_pipeline(&pipeline_obj)?;
     let (grid_columns, grid_rows) = if let Some(grid_obj) = raw.get_item("grid")? {
         if grid_obj.is_none() {
             (None, None)
@@ -912,7 +912,7 @@ fn parse_transform_candidate(raw: &PyDict) -> PyResult<FastTransformCandidate> {
     })
 }
 
-fn parse_transform_pipeline(raw: &PyAny) -> PyResult<FastTransformPipeline> {
+fn parse_transform_pipeline(raw: &Bound<'_, PyAny>) -> PyResult<FastTransformPipeline> {
     if raw.is_none() {
         return Ok(FastTransformPipeline {
             columns: None,
@@ -945,7 +945,7 @@ fn parse_transform_pipeline(raw: &PyAny) -> PyResult<FastTransformPipeline> {
     })
 }
 
-fn parse_transform_steps(raw: &PyList) -> PyResult<Vec<FastTransformStep>> {
+fn parse_transform_steps(raw: &Bound<'_, PyList>) -> PyResult<Vec<FastTransformStep>> {
     let mut out = Vec::with_capacity(raw.len());
     for item in raw.iter() {
         let dict = item.downcast::<PyDict>()?;
@@ -971,7 +971,7 @@ fn parse_transform_steps(raw: &PyList) -> PyResult<Vec<FastTransformStep>> {
                 ) {
                     continue;
                 }
-                if let Some(parsed) = parse_fast_value(value)? {
+                if let Some(parsed) = parse_fast_value(&value)? {
                     data.insert(key_string, parsed);
                 }
             }
@@ -982,18 +982,18 @@ fn parse_transform_steps(raw: &PyList) -> PyResult<Vec<FastTransformStep>> {
     Ok(out)
 }
 
-fn parse_fast_data(raw: &PyDict) -> PyResult<HashMap<String, FastValue>> {
+fn parse_fast_data(raw: &Bound<'_, PyDict>) -> PyResult<HashMap<String, FastValue>> {
     let mut out = HashMap::new();
     for (key, value) in raw.iter() {
         let key_string: String = key.extract()?;
-        if let Some(parsed) = parse_fast_value(value)? {
+        if let Some(parsed) = parse_fast_value(&value)? {
             out.insert(key_string, parsed);
         }
     }
     Ok(out)
 }
 
-fn parse_fast_value(raw: &PyAny) -> PyResult<Option<FastValue>> {
+fn parse_fast_value(raw: &Bound<'_, PyAny>) -> PyResult<Option<FastValue>> {
     if raw.is_none() {
         return Ok(None);
     }
@@ -1013,7 +1013,7 @@ fn parse_fast_value(raw: &PyAny) -> PyResult<Option<FastValue>> {
     Ok(None)
 }
 
-fn py_optional_usize(dict: &PyDict, key: &str) -> PyResult<Option<usize>> {
+fn py_optional_usize(dict: &Bound<'_, PyDict>, key: &str) -> PyResult<Option<usize>> {
     Ok(match dict.get_item(key)? {
         Some(value) if !value.is_none() => Some(value.extract::<usize>()?),
         _ => None,
@@ -1187,6 +1187,7 @@ fn apply_fast_step(
         "routeread" => route_read_fast(tokens, locked, pipeline, &step.data),
         "splitgridroute" => split_grid_route_fast(tokens, locked, pipeline, &step.data),
         "gridpermute" => grid_permute_fast(tokens, locked, pipeline, &step.data),
+        "railfenceroute" => rail_fence_route_fast(tokens, locked, &step.data),
         "matrixrotate" => matrix_rotate_step_fast(tokens, locked, &step.data),
         "transmatrix" => transmatrix_step_fast(tokens, locked, &step.data),
         _ => Err(format!("unsupported ciphertext transformer: {}", step.name)),
@@ -1608,6 +1609,60 @@ fn grid_permute_fast(
     new_tokens.extend_from_slice(&tokens[usable..]);
     let mut new_locked: Vec<bool> = order.iter().map(|idx| locked[*idx]).collect();
     new_locked.extend_from_slice(&locked[usable..]);
+    Ok((new_tokens, new_locked))
+}
+
+fn rail_fence_route_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let rails = fast_int(data, "rails", 0).max(0) as usize;
+    if rails <= 1 || rails >= tokens.len() {
+        return Ok((tokens.to_vec(), locked.to_vec()));
+    }
+    let offset = fast_int(data, "offset", 0).max(0) as usize;
+    let direction = fast_string(data, &["direction"], "down").to_lowercase();
+    let rail_order_raw = fast_string(data, &["railOrder", "rail_order"], "top_down").to_lowercase();
+    let invert = matches!(direction.as_str(), "up" | "up_first" | "bottom_up");
+    let period = 2 * (rails - 1);
+
+    let rail_for = |position: usize| -> usize {
+        let phase = (position + offset) % period;
+        let rail = if phase < rails { phase } else { period - phase };
+        if invert { rails - 1 - rail } else { rail }
+    };
+
+    let mut rail_order: Vec<usize> = (0..rails).collect();
+    match rail_order_raw.as_str() {
+        "top_down" | "normal" | "identity" => {}
+        "bottom_up" | "reverse" | "reversed" => rail_order.reverse(),
+        "even_odd" | "evens_then_odds" => {
+            rail_order = (0..rails).step_by(2).chain((1..rails).step_by(2)).collect();
+        }
+        "odd_even" | "odds_then_evens" => {
+            rail_order = (1..rails).step_by(2).chain((0..rails).step_by(2)).collect();
+        }
+        _ => {
+            return Err(format!(
+                "unsupported RailFenceRoute rail order: {rail_order_raw}"
+            ));
+        }
+    }
+
+    let mut order = Vec::with_capacity(tokens.len());
+    for rail in rail_order {
+        for idx in 0..tokens.len() {
+            if rail_for(idx) == rail {
+                order.push(idx);
+            }
+        }
+    }
+    if !is_permutation(&order, tokens.len()) {
+        return Err("RailFenceRoute did not produce a permutation".to_string());
+    }
+    let new_tokens: Vec<usize> = order.iter().map(|idx| tokens[*idx]).collect();
+    let new_locked: Vec<bool> = order.iter().map(|idx| locked[*idx]).collect();
     Ok((new_tokens, new_locked))
 }
 
@@ -2122,7 +2177,7 @@ fn periodic_profile_i64(values: &[i64], periods: &[usize]) -> (f64, f64) {
     (best, best_period as f64)
 }
 
-fn table_from_pydict(log_probs: &PyDict) -> PyResult<NGramTable> {
+fn table_from_pydict(log_probs: &Bound<'_, PyDict>) -> PyResult<NGramTable> {
     let mut probs = HashMap::new();
     let mut floor = -10.0_f64;
     for (key, value) in log_probs.iter() {
@@ -2137,7 +2192,7 @@ fn table_from_pydict(log_probs: &PyDict) -> PyResult<NGramTable> {
     Ok(NGramTable { probs, floor })
 }
 
-fn dense_table_from_pydict(log_probs: &PyDict, n: usize) -> PyResult<DenseNGramTable> {
+fn dense_table_from_pydict(log_probs: &Bound<'_, PyDict>, n: usize) -> PyResult<DenseNGramTable> {
     if n == 0 {
         return Err(PyValueError::new_err("n must be positive"));
     }
@@ -2502,9 +2557,8 @@ fn anneal_period(
     guided_pool_size: usize,
 ) -> Candidate {
     let mut current_alpha = alphabet;
-    let mut current_values = values.to_vec();
-    let mut current_shifts = initial_keyed_shifts(&current_values, period, &current_alpha);
-    let refined = refine_keyed_shifts(&current_values, &current_shifts, &current_alpha, table);
+    let mut current_shifts = initial_keyed_shifts(values, period, &current_alpha);
+    let refined = refine_keyed_shifts(values, &current_shifts, &current_alpha, table);
     current_shifts = refined.0;
     let mut current_plain = refined.1;
     let mut current_score = refined.2;
@@ -2546,7 +2600,6 @@ fn anneal_period(
             || rng.gen::<f64>() < ((trial_score - current_score) / temp).exp()
         {
             current_alpha = trial_alpha;
-            current_values = trial_values;
             current_shifts = trial_shifts;
             current_plain = trial_plain;
             current_score = trial_score;
@@ -3490,7 +3543,7 @@ fn round5(value: f64) -> f64 {
 }
 
 #[pymodule]
-fn decipher_fast(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
+fn decipher_fast(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalized_ngram_score, m)?)?;
     m.add_function(wrap_pyfunction!(keyed_vigenere_alphabet_anneal, m)?)?;
     m.add_function(wrap_pyfunction!(quagmire3_shotgun_search, m)?)?;
