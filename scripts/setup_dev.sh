@@ -159,7 +159,7 @@ PYTHON="$VENV/bin/python"
 
 step "Installing Python package (editable)"
 "$PYTHON" -m pip install --quiet --upgrade pip
-"$PYTHON" -m pip install -e "$ROOT"
+"$PYTHON" -m pip install -e "$ROOT[dev]"
 
 # ---------------------------------------------------------------------------
 # Step 6 — build Rust extension
