@@ -366,6 +366,7 @@ def _parse_synthetic_spec(data: Any, source: str) -> TestSpec | None:
         approx_length=int(data.get("approx_length", 100)),
         word_boundaries=bool(data.get("word_boundaries", True)),
         homophonic=bool(data.get("homophonic", False)),
+        transposition_only=bool(data.get("transposition_only", False)),
         polyalphabetic_variant=(
             str(data["polyalphabetic_variant"])
             if data.get("polyalphabetic_variant") is not None

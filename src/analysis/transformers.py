@@ -206,6 +206,31 @@ def _apply_step(
         return _split_grid_route(tokens, locked, pipeline, data)
     if name == "gridpermute":
         return _grid_permute(tokens, locked, pipeline, data)
+    if name == "matrixrotate":
+        return _matrix_rotate(tokens, locked, data)
+    if name == "transmatrix":
+        once_tokens, once_locked = _matrix_rotate(
+            tokens,
+            locked,
+            {
+                "width": data.get("w1")
+                or data.get("width1")
+                or data.get("firstWidth"),
+                "direction": data.get("direction") or data.get("dir") or "cw",
+                "clockwise": data.get("clockwise", True),
+            },
+        )
+        return _matrix_rotate(
+            once_tokens,
+            once_locked,
+            {
+                "width": data.get("w2")
+                or data.get("width2")
+                or data.get("secondWidth"),
+                "direction": data.get("direction") or data.get("dir") or "cw",
+                "clockwise": data.get("clockwise", True),
+            },
+        )
     raise ValueError(f"unsupported ciphertext transformer: {step.name}")
 
 
@@ -440,6 +465,41 @@ def _grid_permute(
         raise ValueError("GridPermute did not produce a grid permutation")
     new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
     new_locked = [locked[i] for i in order] + list(locked[usable:])
+    return new_tokens, new_locked
+
+
+def _matrix_rotate(
+    tokens: list[int],
+    locked: list[bool],
+    data: dict[str, Any],
+) -> tuple[list[int], list[bool]]:
+    width = int(data.get("width") or data.get("columns") or data.get("w") or 0)
+    if width <= 1 or width >= len(tokens):
+        return list(tokens), list(locked)
+    direction = str(data.get("direction") or data.get("dir") or "cw").lower()
+    if direction in {"cw", "clockwise", "right"}:
+        clockwise = True
+    elif direction in {"ccw", "counterclockwise", "anticlockwise", "left"}:
+        clockwise = False
+    else:
+        clockwise = bool(data.get("clockwise", True))
+    rows = (len(tokens) + width - 1) // width
+    new_tokens: list[int] = []
+    new_locked: list[bool] = []
+    if clockwise:
+        for col in range(width):
+            for row in range(rows - 1, -1, -1):
+                old_index = row * width + col
+                if old_index < len(tokens):
+                    new_tokens.append(tokens[old_index])
+                    new_locked.append(locked[old_index])
+    else:
+        for col in range(width - 1, -1, -1):
+            for row in range(rows):
+                old_index = row * width + col
+                if old_index < len(tokens):
+                    new_tokens.append(tokens[old_index])
+                    new_locked.append(locked[old_index])
     return new_tokens, new_locked
 
 

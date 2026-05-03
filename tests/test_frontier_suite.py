@@ -169,19 +169,31 @@ def test_real_english_challenge_suite_loads():
     assert cases[2].min_char_accuracy_by_solver["decipher-automated"] == 0.95
 
 
-def test_automated_solver_frontier_suite_loads_shared_hard_cases():
+def test_automated_solver_frontier_suite_loads_current_multifamily_frontier():
     suite = Path(__file__).resolve().parents[1] / "frontier" / "automated_solver_frontier.jsonl"
 
     cases = load_frontier_suite(suite)
     by_test = {case.test.test_id: case for case in cases}
 
+    assert len(cases) == 21
     assert "synth_en_80honb_s2" in by_test
-    assert "synth_en_200honb_s3" in by_test
-    assert "synth_en_200honb_s6" in by_test
+    assert "parity_tool_zenith_zodiac408" in by_test
+    assert "synth_en_120vignb_s21" in by_test
+    assert "kryptos_k2_keyed_vigenere" in by_test
+    assert "kryptos_k3_transmatrix" in by_test
+    assert "synth_en_120thonb_hidden_route_s16" in by_test
+    assert "borg_single_B_borg_0109v" in by_test
+    assert "copiale_single_B_copiale_p068" in by_test
     assert by_test["synth_en_80honb_s2"].frontier_class == "shared_hard"
-    assert by_test["synth_en_200honb_s3"].frontier_class == "shared_hard"
-    assert by_test["synth_en_200honb_s6"].frontier_class == "shared_hard"
+    assert by_test["parity_tool_zenith_zodiac408"].frontier_class == "shared_hard"
+    assert by_test["kryptos_k3_transmatrix"].frontier_class == "known_good"
+    assert by_test["synth_en_120thonb_hidden_route_s16"].frontier_class == "shared_hard"
+    assert by_test["borg_single_B_borg_0109v"].frontier_class == "shared_hard"
     assert "shared_hard" in by_test["synth_en_80honb_s2"].frontier_tags
+    assert "polyalphabetic" in by_test["synth_en_120vignb_s21"].frontier_tags
+    assert "pure_transposition" in by_test["kryptos_k3_transmatrix"].frontier_tags
+    assert by_test["synth_en_120thonb_hidden_route_s16"].raw["hide_transform_pipeline_from_solver"] is True
+    assert by_test["synth_en_120thonb_hidden_route_s16"].raw["decipher_runner_options"]["transform_search"] == "rank"
 
 
 def test_evaluate_frontier_rows_applies_thresholds_and_gap_checks():
@@ -621,6 +633,112 @@ def test_frontier_runner_passes_homophonic_budget(monkeypatch, tmp_path):
     assert seen["homophonic_budget"] == "screen"
 
 
+def test_frontier_runner_allows_case_specific_decipher_options(monkeypatch, tmp_path):
+    suite = tmp_path / "frontier.jsonl"
+    suite.write_text(
+        json.dumps({
+            "test_id": "hidden_transform_demo",
+            "track": "transcription2plaintext",
+            "cipher_system": "transposition_homophonic",
+            "target_records": [],
+            "context_records": [],
+            "description": "synthetic hidden transform demo",
+            "frontier_class": "shared_hard",
+            "expected_solvers": ["decipher-automated"],
+            "hide_transform_pipeline_from_solver": True,
+            "decipher_runner_options": {
+                "transform_search": "rank",
+                "transform_search_profile": "fast",
+                "homophonic_budget": "screen",
+            },
+            "synthetic_spec": {
+                "language": "en",
+                "approx_length": 80,
+                "word_boundaries": False,
+                "homophonic": True,
+                "seed": 1,
+                "topic": "general",
+                "frequency_style": "normal",
+                "transform_pipeline": {
+                    "steps": [{"name": "Reverse", "data": {}}],
+                },
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+
+    benchmark_root = tmp_path / "benchmark"
+    (benchmark_root / "manifest").mkdir(parents=True)
+    (benchmark_root / "manifest" / "records.jsonl").write_text("", encoding="utf-8")
+    cache = PlaintextCache(tmp_path / "cache")
+    cache.put(
+        SyntheticSpec(
+            language="en",
+            approx_length=80,
+            word_boundaries=False,
+            homophonic=True,
+            seed=1,
+            transform_pipeline={"steps": [{"name": "Reverse", "data": {}}]},
+        ),
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG",
+    )
+
+    seen: dict[str, object] = {}
+
+    class FakeRunner:
+        def run_test(self, test_data, language=None):
+            seen["transform_pipeline_visible"] = test_data.transform_pipeline is not None
+            return SimpleNamespace(
+                status="completed",
+                char_accuracy=1.0,
+                word_accuracy=0.0,
+                artifact_path="decipher.json",
+                error_message="",
+            )
+
+    def fake_automated_runner(
+        artifact_dir,
+        homophonic_budget="full",
+        homophonic_refinement="none",
+        homophonic_solver="zenith_native",
+        transform_search="off",
+        transform_search_profile="broad",
+        transform_search_max_generated_candidates=None,
+        transform_promote_artifact=None,
+        transform_promote_candidate_ids=None,
+        transform_promote_top_n=None,
+    ):
+        seen["homophonic_budget"] = homophonic_budget
+        seen["transform_search"] = transform_search
+        seen["transform_search_profile"] = transform_search_profile
+        return FakeRunner()
+
+    monkeypatch.setattr(frontier_runner, "AutomatedBenchmarkRunner", fake_automated_runner)
+    monkeypatch.setattr(frontier_runner, "_load_external_configs", lambda path, oracle: [])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "run_frontier_suite.py",
+            "--suite-file", str(suite),
+            "--solvers", "decipher",
+            "--benchmark-root", str(benchmark_root),
+            "--cache-dir", str(tmp_path / "cache"),
+            "--artifact-dir", str(tmp_path / "artifacts"),
+            "--summary-jsonl", str(tmp_path / "summary.jsonl"),
+            "--summary-csv", str(tmp_path / "summary.csv"),
+        ],
+    )
+
+    frontier_runner.main()
+
+    assert seen["homophonic_budget"] == "screen"
+    assert seen["transform_search"] == "rank"
+    assert seen["transform_search_profile"] == "fast"
+    assert seen["transform_pipeline_visible"] is False
+
+
 def test_frontier_runner_passes_homophonic_refinement(monkeypatch, tmp_path):
     suite = tmp_path / "frontier.jsonl"
     suite.write_text(
@@ -897,6 +1015,26 @@ def test_transposition_homophonic_ladder_suite_loads():
     assert cases[-2].raw["hide_transform_pipeline_from_solver"] is True
     assert cases[-2].synthetic_spec.transform_pipeline["columns"] == 19
     assert cases[-2].synthetic_spec.transform_pipeline["steps"][0]["name"] == "NDownMAcross"
+
+
+def test_pure_transposition_ladder_suite_loads():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "pure_transposition_ladder.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "synth_en_120ptnb_matrix_rotate_s31",
+        "synth_en_120ptnb_diagonal_s32",
+        "synth_en_120ptnb_split_grid_s33",
+        "synth_en_160ptnb_transmatrix_s34",
+    ]
+    assert all(case.synthetic_spec is not None for case in cases)
+    assert all(case.synthetic_spec.transposition_only for case in cases if case.synthetic_spec)
+    assert all("pure_transposition_ladder" in case.frontier_tags for case in cases)
+    assert cases[0].synthetic_spec.transform_pipeline["steps"][0]["name"] == "MatrixRotate"
+    assert cases[1].synthetic_spec.transform_pipeline["steps"][0]["data"]["route"] == "diagonal_down_right"
+    assert cases[2].synthetic_spec.transform_pipeline["steps"][0]["name"] == "SplitGridRoute"
+    assert cases[3].synthetic_spec.transform_pipeline["steps"][0]["name"] == "TransMatrix"
 
 
 def test_hidden_transform_frontier_case_withholds_pipeline_from_solver(tmp_path):

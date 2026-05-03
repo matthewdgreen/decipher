@@ -1,6 +1,6 @@
 # Agent Tool Reference
 
-Complete reference for the 82 tools exposed to the v2 agentic loop
+Complete reference for the 85 tools exposed to the v2 agentic loop
 (`src/agent/tools_v2.py`). Tools are organized by namespace. Each entry gives
 the tool name, what it does, its key parameters, and usage notes.
 
@@ -339,7 +339,8 @@ recommendation.
 | `baseline_status` | string | optional status string from a prior baseline solve |
 | `baseline_score` | number | optional normalized quality score from a prior baseline |
 
-*Use before spending solver budget on `search_transform_homophonic`.*
+*Use before spending solver budget on `search_pure_transposition` or
+`search_transform_homophonic`.*
 
 ---
 
@@ -444,6 +445,55 @@ solver budget.
 
 ---
 
+### `search_pure_transposition`
+Run the Rust-backed pure-transposition screen and rank candidate reading orders
+directly by plaintext quality. This is for transposition-only hypotheses such as
+Kryptos K3-style matrix/route scrambling, not Zodiac/Z340-style
+transposition+homophonic search.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `profile` | string | `small`, `medium`, or `wide` (default) |
+| `top_n` | integer | ranked candidates to return (default 10) |
+| `install_top_n` | integer | top candidates to install as readable branches (default 1) |
+| `new_branch_prefix` | string | branch prefix (default `trans`) |
+| `max_candidates` | integer | optional hard cap |
+| `include_matrix_rotate` | boolean | include direct MatrixRotate candidates (default true) |
+| `include_transmatrix` | boolean | include K3-style TransMatrix candidates (default true) |
+| `transmatrix_min_width` | integer | default 2 |
+| `transmatrix_max_width` | integer | optional maximum width |
+| `threads` | integer | Rust worker count; 0 means auto-size |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
+
+Installed branches carry a transform pipeline plus `decoded_text` metadata, so
+use `workspace_branch_cards` or `decode_show` to read the candidate before
+declaring.
+
+The returned `search_session_id` lets the agent page through finalists, rate
+readability, and install selected ranks later without rerunning the Rust screen.
+Use `search_review_pure_transposition_finalists`,
+`act_rate_transform_finalist`, and `act_install_pure_transposition_finalists`
+when the top candidate is not obviously coherent.
+
+Pure-transposition results include a `validation` block and
+`validated_selection_score`. The validator oversamples the Rust n-gram finalist
+pool, then reranks with stricter evidence: direct n-gram score, DP segmentation
+quality, pseudo-word burden, and continuous dictionary hits of length four or
+more. The validation block also includes `integrity`, a local-damage subscore
+that distinguishes clean/canonical-looking text from readable candidates with
+short pseudo-word scars or larger unexplained fragments. Treat this as
+supporting evidence for coherence and cleanliness; the agent's contextual
+readability judgment remains the primary signal when context is available.
+
+The screen includes grid/route/columnar families, direct `MatrixRotate`, and
+optional K3-style `TransMatrix` candidates. Identical repeated calls are cached
+internally and return `cache.hit=true`; broader follow-up searches still need
+to be run explicitly.
+
+---
+
 ### `search_transform_homophonic`
 Try a bounded set of transform candidates: apply each transform, run a short
 homophonic search, rank by quality, and optionally install the best branch.
@@ -477,6 +527,28 @@ rerunning the search.
 | `count` | integer | how many to show (default 5) |
 | `review_chars` | integer | max preview chars per finalist (default 600) |
 | `good_score_gap` | number | finalists within this gap are "good" (default 0.25) |
+
+---
+
+### `search_review_pure_transposition_finalists`
+Page through finalists from a prior `search_pure_transposition` session without
+rerunning the Rust screen. This is the pure order-only counterpart to
+`search_review_transform_finalists`: it returns plaintext previews, direct
+language scores, candidate family/parameters, validator evidence, and an
+explicit agent-readability slot.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** — from a prior `search_pure_transposition` call |
+| `start_rank` | integer | first rank to show (default 1) |
+| `count` | integer | how many to show (default 5) |
+| `review_chars` | integer | max preview chars per finalist (default 600) |
+| `good_score_gap` | number | finalists within this score gap are "good" (default 0.25) |
+
+Use this before installing branches when the best pure-transposition candidate
+is not obviously coherent. If the previews are only word islands and the source
+alphabet suggests a separate keying layer, switch to
+`search_transform_homophonic` rather than doing local word repair.
 
 ---
 
@@ -1065,11 +1137,30 @@ workspace branches, by 1-based rank, without rerunning the search.
 
 ---
 
+### `act_install_pure_transposition_finalists`
+Install selected finalists from a prior `search_pure_transposition` session as
+readable transform branches, by 1-based rank, without rerunning the Rust screen.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** |
+| `ranks` | array of int | **required** — 1-based finalist ranks to install |
+| `branch_prefix` | string | optional prefix; defaults to `<source_branch>_pure_rank` |
+| `override_context_cipher_family` | boolean | deliberate context-family override only |
+| `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
+
+Installed branches receive `pure_transposition_finalist` metadata, preserve the
+transform pipeline, and carry `decoded_text` so branch cards and decode views can
+read the candidate directly.
+
+---
+
 ### `act_rate_transform_finalist`
 Record the agent's contextual readability judgment for one transform-search
 finalist (0 = garbage, 1 = word islands, 2 = islands with structure, 3 = partial
 coherent clause, 4 = coherent plaintext). This is the primary ranking signal for
-transform finalists.
+transform finalists. It works for both `search_transform_homophonic` and
+`search_pure_transposition` sessions.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|

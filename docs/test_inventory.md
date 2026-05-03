@@ -102,7 +102,12 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 ```
 
 Use this for no-LLM automated solver regressions and comparisons against
-external baselines.
+external baselines. The main packet is now deliberately multi-family: simple
+substitution, multilingual substitution, English homophonic, periodic
+polyalphabetic, Kryptos keyed replay, Kryptos K3 pure transposition,
+transposition+homophonic replay/search, Borg, and Copiale. Some rows include
+`decipher_runner_options` so the suite can exercise row-specific search modes
+such as hidden-transform ranking without applying that cost to every case.
 
 ### English Model Comparison Packets
 
@@ -263,10 +268,37 @@ The Rust fast-kernel pytest coverage is:
 ```
 
 It checks score parity for the existing keyed-Vigenere fast path, a seeded
-Quagmire III recovery, and the agent-facing `rust_shotgun` tool installation
-path. The Zenith tests also cover the Rust one-seed homophonic result
-contract and the Rust transform-candidate batch API, including per-candidate
-seed offsets used by transform confirmation.
+Quagmire III recovery, the agent-facing `rust_shotgun` tool installation
+path, K3 TransMatrix recovery, synthetic non-K3 route and MatrixRotate
+transposition recovery through the broad pure-transposition screen, the
+`transposition_only` synthetic generator mode, and the agent-facing
+`search_pure_transposition` branch-install path. The Zenith tests also cover
+the Rust one-seed homophonic result contract and the Rust
+transform-candidate batch API, including per-candidate seed offsets used by
+transform confirmation.
+
+Finalist validation/reranking tests:
+
+```bash
+.venv/bin/python -m pytest tests/test_finalist_validation.py -q
+```
+
+These check that continuous plaintext receives positive validation evidence,
+while word-island basins with real dictionary fragments plus junk are not
+mislabelled as coherent candidates. They also check the `integrity`
+subscore, which separates clean/canonical-looking continuous plaintext from
+readable candidates with local pseudo-word scars.
+
+Report-script coverage:
+
+```bash
+.venv/bin/python -m pytest tests/test_finalist_validation_report.py -q
+```
+
+This checks `scripts/report_finalist_validation.py`, the markdown summary used
+to inspect whether finalist validation changed selected/ranked candidates in
+longer pure-transposition and transform-search runs, including integrity and
+damage-score columns when artifacts contain them.
 
 User-facing availability check:
 

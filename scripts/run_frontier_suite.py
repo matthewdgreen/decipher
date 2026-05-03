@@ -157,19 +157,8 @@ def main() -> None:
 
     benchmark_loader = BenchmarkLoader(args.benchmark_root)
     cache = PlaintextCache(args.cache_dir)
-    decipher_runner = AutomatedBenchmarkRunner(
-        artifact_dir=artifact_dir / "decipher",
-        homophonic_budget=args.homophonic_budget,
-        homophonic_refinement=args.homophonic_refinement,
-        homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
-        transform_search=args.transform_search,
-        transform_search_profile=args.transform_search_profile,
-        transform_search_max_generated_candidates=args.transform_search_max_generated_candidates,
-        transform_promote_artifact=args.transform_promote_artifact,
-        transform_promote_candidate_ids=args.transform_promote_candidate_id,
-        transform_promote_top_n=args.transform_promote_top_n,
-    )
     external_configs = _load_external_configs(args.external_config, args.oracle_select) if "external" in args.solvers else []
+    decipher_runners: dict[tuple[Any, ...], AutomatedBenchmarkRunner] = {}
 
     rows: list[dict[str, Any]] = []
     try:
@@ -187,6 +176,12 @@ def main() -> None:
                 print("  [decipher-automated] running...")
                 t0 = time.time()
                 try:
+                    decipher_runner = _decipher_runner_for_case(
+                        args,
+                        case,
+                        artifact_dir=artifact_dir / "decipher",
+                        cache=decipher_runners,
+                    )
                     result = decipher_runner.run_test(
                         test_data,
                         language=case.synthetic_spec.language if case.synthetic_spec else test_data.plaintext_language or None,
@@ -247,6 +242,73 @@ def main() -> None:
 def _should_run_solver(case: FrontierCase, solver: str) -> bool:
     solver_key = canonical_solver_name(solver)
     return not case.expected_solvers or solver_key in case.expected_solvers
+
+
+def _decipher_runner_for_case(
+    args: argparse.Namespace,
+    case: FrontierCase,
+    *,
+    artifact_dir: Path,
+    cache: dict[tuple[Any, ...], AutomatedBenchmarkRunner],
+) -> AutomatedBenchmarkRunner:
+    options = _decipher_runner_options(args, case)
+    key = (
+        str(artifact_dir),
+        options["homophonic_budget"],
+        options["homophonic_refinement"],
+        options["homophonic_solver"],
+        options["transform_search"],
+        options["transform_search_profile"],
+        options["transform_search_max_generated_candidates"],
+        options["transform_promote_artifact"],
+        tuple(options["transform_promote_candidate_ids"]),
+        options["transform_promote_top_n"],
+    )
+    if key not in cache:
+        cache[key] = AutomatedBenchmarkRunner(
+            artifact_dir=artifact_dir,
+            homophonic_budget=options["homophonic_budget"],
+            homophonic_refinement=options["homophonic_refinement"],
+            homophonic_solver=options["homophonic_solver"],
+            transform_search=options["transform_search"],
+            transform_search_profile=options["transform_search_profile"],
+            transform_search_max_generated_candidates=options["transform_search_max_generated_candidates"],
+            transform_promote_artifact=options["transform_promote_artifact"],
+            transform_promote_candidate_ids=options["transform_promote_candidate_ids"],
+            transform_promote_top_n=options["transform_promote_top_n"],
+        )
+    return cache[key]
+
+
+def _decipher_runner_options(args: argparse.Namespace, case: FrontierCase) -> dict[str, Any]:
+    options: dict[str, Any] = {
+        "homophonic_budget": args.homophonic_budget,
+        "homophonic_refinement": args.homophonic_refinement,
+        "homophonic_solver": "legacy" if args.legacy_homophonic else "zenith_native",
+        "transform_search": args.transform_search,
+        "transform_search_profile": args.transform_search_profile,
+        "transform_search_max_generated_candidates": args.transform_search_max_generated_candidates,
+        "transform_promote_artifact": args.transform_promote_artifact,
+        "transform_promote_candidate_ids": list(args.transform_promote_candidate_id),
+        "transform_promote_top_n": args.transform_promote_top_n,
+    }
+    override = case.raw.get("decipher_runner_options") or case.raw.get("runner_options")
+    if not override:
+        return options
+    if not isinstance(override, dict):
+        raise ValueError(f"{case.test.test_id}: decipher_runner_options must be an object")
+    unknown = sorted(set(override) - set(options))
+    if unknown:
+        raise ValueError(
+            f"{case.test.test_id}: unsupported decipher_runner_options fields: "
+            f"{', '.join(unknown)}"
+        )
+    options.update(override)
+    if options["transform_promote_candidate_ids"] is None:
+        options["transform_promote_candidate_ids"] = []
+    if isinstance(options["transform_promote_candidate_ids"], str):
+        options["transform_promote_candidate_ids"] = [options["transform_promote_candidate_ids"]]
+    return options
 
 
 def _load_external_configs(path: str | None, oracle_select: bool) -> list[ExternalBaselineConfig]:

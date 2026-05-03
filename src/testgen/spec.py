@@ -32,6 +32,7 @@ class TestSpec:
     seed: int | None = None
     frequency_style: Literal["normal", "unusual"] = "normal"
     homophonic: bool = False
+    transposition_only: bool = False
     polyalphabetic_variant: str | None = None
     polyalphabetic_key: str | None = None
     polyalphabetic_period: int | None = None
@@ -49,11 +50,18 @@ class TestSpec:
                 )
             if self.homophonic:
                 raise ValueError("Synthetic specs cannot be both homophonic and polyalphabetic")
+            if self.transposition_only:
+                raise ValueError("Synthetic specs cannot be both pure-transposition and polyalphabetic")
             if self.transform_pipeline:
                 raise ValueError(
                     "Synthetic polyalphabetic specs do not yet support transform_pipeline; "
                     "keep transposition+homophonic ladder cases separate for now"
                 )
+        if self.transposition_only:
+            if self.homophonic:
+                raise ValueError("Synthetic specs cannot be both pure-transposition and homophonic")
+            if not self.transform_pipeline:
+                raise ValueError("pure-transposition synthetic specs require transform_pipeline")
         if self.polyalphabetic_period is not None and self.polyalphabetic_period < 1:
             raise ValueError("polyalphabetic_period must be >= 1")
 

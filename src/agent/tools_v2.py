@@ -26,6 +26,8 @@ from pathlib import Path
 from typing import Any
 
 from analysis import cipher_id, dictionary, frequency, homophonic, ic, ngram, pattern, polyalphabetic
+from analysis.finalist_validation import validate_plaintext_finalist
+from analysis.pure_transposition import screen_pure_transposition
 from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
@@ -503,7 +505,8 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "trying on a cipher with unknown or incomplete type metadata. It "
             "reports plausible grid dimensions, homophonic/order-scramble "
             "signals, and a conservative recommendation. Use this before "
-            "spending solver budget on search_transform_homophonic."
+            "spending solver budget on search_pure_transposition or "
+            "search_transform_homophonic."
         ),
         "input_schema": {
             "type": "object",
@@ -554,6 +557,82 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "include_program_search": {"type": "boolean", "default": False},
                 "program_max_depth": {"type": "integer", "default": 5},
                 "program_beam_width": {"type": "integer", "default": 48},
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
+            },
+        },
+    },
+    {
+        "name": "search_pure_transposition",
+        "description": (
+            "Run the broad Rust-backed pure-transposition screen and rank "
+            "candidate reading orders directly by plaintext quality. Use this "
+            "when the working hypothesis is transposition-only, e.g. Kryptos "
+            "K3-style or route/order scrambling with no homophonic alphabet. "
+            "Do not use this for Zodiac/Z340-style transposition+homophonic "
+            "cases; use search_transform_homophonic for those."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "profile": {
+                    "type": "string",
+                    "enum": ["small", "medium", "wide"],
+                    "default": "wide",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "default": 10,
+                    "description": "How many ranked candidates to return.",
+                },
+                "install_top_n": {
+                    "type": "integer",
+                    "default": 1,
+                    "description": "How many top candidates to install as readable workspace branches.",
+                },
+                "new_branch_prefix": {
+                    "type": "string",
+                    "default": "trans",
+                    "description": "Prefix for installed branch names.",
+                },
+                "max_candidates": {
+                    "type": "integer",
+                    "description": "Optional hard cap on generated candidates.",
+                },
+                "include_transmatrix": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include K3-style TransMatrix candidates.",
+                },
+                "include_matrix_rotate": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Include direct MatrixRotate candidates.",
+                },
+                "transmatrix_min_width": {"type": "integer", "default": 2},
+                "transmatrix_max_width": {
+                    "type": "integer",
+                    "description": "Optional maximum TransMatrix width.",
+                },
+                "threads": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Rust worker count; 0 means auto-size.",
+                },
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
@@ -1722,6 +1801,68 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_review_pure_transposition_finalists",
+        "description": (
+            "Page through finalists from a previous search_pure_transposition "
+            "session without rerunning the Rust screen. Returns compact "
+            "plaintext previews, scores, a required agent readability-judgment "
+            "slot, and install guidance."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "start_rank": {"type": "integer", "default": 1},
+                "count": {"type": "integer", "default": 5},
+                "review_chars": {"type": "integer", "default": 600},
+                "good_score_gap": {"type": "number", "default": 0.25},
+            },
+            "required": ["search_session_id"],
+        },
+    },
+    {
+        "name": "act_install_pure_transposition_finalists",
+        "description": (
+            "Install selected finalists from a previous search_pure_transposition "
+            "session as readable transform branches by rank, without rerunning "
+            "the Rust screen."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "ranks": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "1-based finalist ranks to install as branches.",
+                },
+                "branch_prefix": {
+                    "type": "string",
+                    "description": (
+                        "Optional branch prefix. Defaults to "
+                        "<source_branch>_pure_rank."
+                    ),
+                },
+                "override_context_cipher_family": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": (
+                        "Only set true when deliberately leaving an exposed "
+                        "benchmark-context cipher family."
+                    ),
+                },
+                "context_override_rationale": {
+                    "type": "string",
+                    "description": (
+                        "Required when override_context_cipher_family=true; "
+                        "explain why benchmark context may be wrong or exhausted."
+                    ),
+                },
+            },
+            "required": ["search_session_id", "ranks"],
+        },
+    },
+    {
         "name": "decode_letter_stats",
         "description": (
             "Show the letter-frequency distribution of a branch's decoded text "
@@ -2391,6 +2532,8 @@ class WorkspaceToolExecutor:
         # expensive transform+homophonic screen in the same run.
         self._transform_search_sessions: dict[str, dict[str, Any]] = {}
         self._next_transform_search_session_id: int = 1
+        self._pure_transposition_sessions: dict[str, dict[str, Any]] = {}
+        self._next_pure_transposition_session_id: int = 1
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -2629,7 +2772,7 @@ class WorkspaceToolExecutor:
             "monoalphabetic_substitution": "search_anneal",
             "simple_substitution": "search_anneal",
             "homophonic_substitution": "search_homophonic_anneal",
-            "transposition": "observe_transform_suspicion",
+            "transposition": "search_pure_transposition",
             "transposition_homophonic": "search_transform_candidates",
             "polyalphabetic_vigenere": "observe_periodic_ic",
             "periodic_polyalphabetic": "search_periodic_polyalphabetic",
@@ -2650,9 +2793,13 @@ class WorkspaceToolExecutor:
         "search_automated_solver": "generic automated routing",
         "search_homophonic_anneal": "homophonic substitution",
         "search_transform_candidates": "ciphertext-order transform screening",
+        "search_pure_transposition": "pure-transposition search",
+        "search_review_pure_transposition_finalists": "pure-transposition finalist review",
         "search_transform_homophonic": "transposition+homophonic search",
         "act_apply_transform_pipeline": "manual ciphertext-order transform",
+        "act_rate_transform_finalist": "transform finalist rating",
         "act_install_transform_finalists": "transform finalist promotion",
+        "act_install_pure_transposition_finalists": "pure-transposition finalist promotion",
     }
 
     def _context_cipher_family_assumptions(self) -> list[dict[str, Any]]:
@@ -2892,14 +3039,21 @@ class WorkspaceToolExecutor:
             ],
             "transposition_homophonic": [
                 {"tool": "observe_transform_suspicion", "purpose": "Check whether token order is suspicious."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Record why this is order plus homophonic/keying, not pure transposition."},
                 {"tool": "search_transform_candidates", "purpose": "Run structural transform screening."},
                 {"tool": "search_transform_homophonic", "purpose": "Promote candidates with homophonic solving."},
                 {"tool": "search_review_transform_finalists", "purpose": "Page through multiple finalist readings."},
                 {"tool": "act_rate_transform_finalist", "purpose": "Record contextual readability before choosing branches."},
+                {"tool": "act_install_transform_finalists", "purpose": "Install selected finalists after review without rerunning search."},
             ],
             "transposition": [
                 {"tool": "observe_transform_suspicion", "purpose": "Check whether token order is suspicious."},
-                {"tool": "search_transform_candidates", "purpose": "Run structural transform screening."},
+                {"tool": "workspace_update_hypothesis", "purpose": "Record why this is wrong order only, with no substitution/homophonic key layer."},
+                {"tool": "search_pure_transposition", "purpose": "Run the direct language-scored pure-transposition screen."},
+                {"tool": "search_review_pure_transposition_finalists", "purpose": "Page through multiple pure-order finalist readings."},
+                {"tool": "act_rate_transform_finalist", "purpose": "Record contextual readability before choosing branches."},
+                {"tool": "act_install_pure_transposition_finalists", "purpose": "Install selected pure-order finalists without rerunning search."},
+                {"tool": "search_transform_candidates", "purpose": "Use structural-only screening only if language-scored search is inconclusive."},
                 {"tool": "act_apply_transform_pipeline", "purpose": "Apply a known or selected transform pipeline."},
                 {"tool": "workspace_update_hypothesis", "purpose": "Record whether order correction helped."},
             ],
@@ -3137,6 +3291,10 @@ class WorkspaceToolExecutor:
             "transposition": {
                 "foreground_tools": [
                     "observe_transform_suspicion",
+                    "search_pure_transposition",
+                    "search_review_pure_transposition_finalists",
+                    "act_rate_transform_finalist",
+                    "act_install_pure_transposition_finalists",
                     "search_transform_candidates",
                     "act_apply_transform_pipeline",
                     "workspace_branch_cards",
@@ -3244,9 +3402,14 @@ class WorkspaceToolExecutor:
             return [
                 "workspace_hypothesis_next_steps",
                 "observe_transform_suspicion",
+                "search_pure_transposition",
+                "search_review_pure_transposition_finalists",
+                "act_rate_transform_finalist",
+                "act_install_pure_transposition_finalists",
                 "search_transform_candidates",
                 "search_transform_homophonic",
                 "search_review_transform_finalists",
+                "act_install_transform_finalists",
                 "workspace_branch_cards",
             ]
         if mode in {"monoalphabetic_substitution", "simple_substitution", "homophonic_substitution"}:
@@ -3584,6 +3747,7 @@ class WorkspaceToolExecutor:
         elif mode in {"transposition", "transposition_homophonic"}:
             next_tools = [
                 "observe_transform_suspicion",
+                "search_pure_transposition",
                 "search_transform_candidates",
                 "search_transform_homophonic",
                 "act_apply_transform_pipeline",
@@ -4121,6 +4285,17 @@ class WorkspaceToolExecutor:
                     return True
                 if bool(args.get("include_program_search")):
                     return True
+            if call.tool_name == "search_pure_transposition":
+                profile = str(args.get("profile") or "wide").lower()
+                if profile in {"medium", "wide"}:
+                    return True
+                max_candidates = args.get("max_candidates")
+                if max_candidates is not None:
+                    try:
+                        if int(max_candidates) >= 10000:
+                            return True
+                    except (TypeError, ValueError):
+                        pass
         return False
 
     def _repair_policy_blocks_word_repair(self, basin: dict[str, Any]) -> bool:
@@ -4661,6 +4836,7 @@ class WorkspaceToolExecutor:
             "observe_transform_pipeline",
             "observe_transform_suspicion",
             "search_transform_candidates",
+            "search_pure_transposition",
             "act_apply_transform_pipeline",
             "search_transform_homophonic",
         })
@@ -5694,6 +5870,114 @@ class WorkspaceToolExecutor:
                 "This is structural-only. It performs no language-model "
                 "annealing and should be used to decide which small set of "
                 "candidates deserves solver-backed promotion."
+            ),
+        }
+
+    def _tool_search_pure_transposition(self, args: dict) -> Any:
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        effective = self.workspace.effective_cipher_text(branch_name)
+        profile = str(args.get("profile") or "wide").strip().lower()
+        if profile not in {"small", "medium", "wide"}:
+            return {"error": "profile must be one of: small, medium, wide"}
+        top_n = max(1, min(int(args.get("top_n", 10)), 100))
+        install_top_n = max(0, min(int(args.get("install_top_n", 1)), min(top_n, 20)))
+        max_candidates_arg = args.get("max_candidates")
+        max_candidates = (
+            int(max_candidates_arg)
+            if max_candidates_arg is not None
+            else 5000 if profile == "small" else 25000 if profile == "medium" else None
+        )
+        transmatrix_max_arg = args.get("transmatrix_max_width")
+        result = screen_pure_transposition(
+            effective,
+            language=self.language,
+            profile=profile,
+            top_n=top_n,
+            max_candidates=max_candidates,
+            include_matrix_rotate=bool(args.get("include_matrix_rotate", True)),
+            include_transmatrix=bool(args.get("include_transmatrix", True)),
+            transmatrix_min_width=max(2, int(args.get("transmatrix_min_width", 2))),
+            transmatrix_max_width=(
+                int(transmatrix_max_arg)
+                if transmatrix_max_arg is not None
+                else None
+            ),
+            threads=max(0, min(int(args.get("threads", 0)), 256)),
+        )
+        search_session_id = self._new_pure_transposition_session(
+            source_branch=branch_name,
+            profile=profile,
+            result=result,
+        )
+        session = self._pure_transposition_session(search_session_id)
+        assert session is not None
+
+        installed: list[dict[str, Any]] = []
+        prefix = str(args.get("new_branch_prefix") or "trans").strip() or "trans"
+        if result.get("status") == "completed" and install_top_n > 0:
+            for rank, candidate in enumerate(result.get("top_candidates", [])[:install_top_n], 1):
+                family = str(candidate.get("family") or "candidate")
+                candidate_id = str(candidate.get("candidate_id") or f"rank{rank}")
+                branch_out = self._unique_branch_name(f"{prefix}_{family}_{candidate_id}_{rank}")
+                installed.append(self._install_pure_transposition_finalist_branch(
+                    session=session,
+                    rank=rank,
+                    branch_name=branch_out,
+                ))
+
+        top_candidates = []
+        for candidate in result.get("top_candidates", [])[:top_n]:
+            row = dict(candidate)
+            plaintext = str(row.pop("plaintext", "") or "")
+            row["preview"] = _truncate_text(plaintext or str(row.get("preview") or ""), 600)
+            top_candidates.append(row)
+        review = self._pure_transposition_finalist_review(
+            session_id=search_session_id,
+            start_rank=1,
+            count=top_n,
+            review_chars=int(args.get("review_chars", 600)),
+        )
+
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "status": result.get("status"),
+            "search_session_id": search_session_id,
+            "solver": result.get("solver"),
+            "engine": result.get("engine"),
+            "language": result.get("language"),
+            "profile": profile,
+            "threads": result.get("threads"),
+            "candidate_count": result.get("candidate_count"),
+            "valid_candidate_count": result.get("valid_candidate_count"),
+            "elapsed_seconds": result.get("elapsed_seconds"),
+            "cache": result.get("cache"),
+            "candidate_plan": result.get("candidate_plan"),
+            "family_counts": result.get("family_counts", {}),
+            "top_family_counts": result.get("top_family_counts", {}),
+            "best_candidate": top_candidates[0] if top_candidates else None,
+            "top_candidates": top_candidates,
+            "installed_branches": installed,
+            **review,
+            "scope_note": (
+                "This is a pure-transposition screen. It assumes the symbols "
+                "already are plaintext letters in the wrong order. For "
+                "Zodiac/Z340-style transformed homophonic ciphers, use "
+                "search_transform_homophonic instead."
+            ),
+            "recommended_next_tools": [
+                "search_review_pure_transposition_finalists",
+                "act_rate_transform_finalist",
+                "act_install_pure_transposition_finalists",
+                "workspace_branch_cards",
+                "decode_show",
+                "workspace_update_hypothesis",
+                "search_transform_homophonic",
+            ],
+            "note": (
+                "Installed branches carry both a transform pipeline and "
+                "mode-specific decoded_text metadata, so read them directly "
+                "with workspace_branch_cards or decode_show before declaring."
             ),
         }
 
@@ -8875,6 +9159,95 @@ class WorkspaceToolExecutor:
     def _transform_session(self, session_id: str) -> dict[str, Any] | None:
         return self._transform_search_sessions.get(str(session_id))
 
+    def _new_pure_transposition_session(
+        self,
+        *,
+        source_branch: str,
+        profile: str,
+        result: dict[str, Any],
+    ) -> str:
+        session_id = f"pure_transposition_{self._next_pure_transposition_session_id}"
+        self._next_pure_transposition_session_id += 1
+        self._pure_transposition_sessions[session_id] = {
+            "source_branch": source_branch,
+            "profile": profile,
+            "ranked": list(result.get("top_candidates") or []),
+            "candidate_count": result.get("candidate_count"),
+            "valid_candidate_count": result.get("valid_candidate_count"),
+            "family_counts": result.get("family_counts", {}),
+            "top_family_counts": result.get("top_family_counts", {}),
+            "candidate_plan": result.get("candidate_plan"),
+            "cache": result.get("cache"),
+        }
+        return session_id
+
+    def _pure_transposition_session(self, session_id: str) -> dict[str, Any] | None:
+        return self._pure_transposition_sessions.get(str(session_id))
+
+    def _pure_transposition_ranking_score(
+        self,
+        *,
+        candidate: dict[str, Any],
+        score_gap_from_best: float | None,
+    ) -> dict[str, Any]:
+        rating = self._transform_candidate_rating(candidate)
+        return {
+            "primary": {
+                "name": "agent_contextual_readability",
+                "value": rating.get("readability_score") if rating else None,
+                "label": rating.get("label") if rating else None,
+                "rationale": rating.get("rationale") if rating else None,
+                "coherent_clause": rating.get("coherent_clause") if rating else None,
+                "must_be_supplied_by_agent": rating is None,
+                "scale": "0..4",
+                "note": (
+                    "This is intentionally not computed by the tool. The "
+                    "agent must judge whether the plaintext preview reads "
+                    "coherently in context."
+                ),
+            },
+            "supporting": {
+                "score": candidate.get("score"),
+                "selection_score": candidate.get("selection_score"),
+                "validated_selection_score": candidate.get("validated_selection_score"),
+                "validation": candidate.get("validation"),
+                "score_gap_from_best": score_gap_from_best,
+            },
+            "ranking_rule": (
+                "For pure transposition, rank finalists by contextual "
+                "readability first. Use finalist validation and direct "
+                "language score as supporting evidence or tie-breakers."
+            ),
+        }
+
+    def _mirror_pure_rating_to_branches(
+        self,
+        *,
+        session_id: str,
+        rank: int,
+        rating: dict[str, Any],
+    ) -> list[str]:
+        updated: list[str] = []
+        for branch_name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(branch_name)
+            metadata = branch.metadata.get("pure_transposition_finalist")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("search_session_id") != session_id:
+                continue
+            if int(metadata.get("rank") or -1) != rank:
+                continue
+            metadata["agent_readability_score"] = rating["readability_score"]
+            metadata["agent_readability_label"] = rating["label"]
+            metadata["agent_readability_rationale"] = rating["rationale"]
+            metadata["agent_coherent_clause"] = rating.get("coherent_clause", "")
+            metadata["agent_readability_iteration"] = rating.get("iteration")
+            branch.metadata["agent_readability_score"] = rating["readability_score"]
+            branch.metadata["agent_readability_label"] = rating["label"]
+            branch.metadata["agent_readability_rationale"] = rating["rationale"]
+            updated.append(branch_name)
+        return updated
+
     def _transform_score_value(self, candidate: dict[str, Any]) -> float | None:
         raw = candidate.get("anneal_score")
         try:
@@ -8948,12 +9321,13 @@ class WorkspaceToolExecutor:
             "supporting": {
                 "anneal_score": candidate.get("anneal_score"),
                 "score_gap_from_best": score_gap_from_best,
+                "validation": candidate.get("validation"),
                 "quick_scores": quick_scores,
             },
             "ranking_rule": (
                 "Rank finalists by agent_contextual_readability first. Use "
-                "anneal_score, quick_scores, and basin status only as "
-                "supporting evidence or tie-breakers."
+                "finalist validation, anneal_score, quick_scores, and basin "
+                "status only as supporting evidence or tie-breakers."
             ),
         }
 
@@ -9030,6 +9404,7 @@ class WorkspaceToolExecutor:
             "anneal_score": candidate.get("anneal_score"),
             "status": candidate.get("status"),
             "elapsed_seconds": candidate.get("elapsed_seconds"),
+            "validation": candidate.get("validation"),
             "score_gap_from_best": (
                 round(
                     (self._transform_score_value((session.get("ranked") or [candidate])[0]) or 0.0)
@@ -9073,6 +9448,249 @@ class WorkspaceToolExecutor:
             ),
             "basin": self._branch_basin_status(branch_name),
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+        }
+
+    def _install_pure_transposition_finalist_branch(
+        self,
+        *,
+        session: dict[str, Any],
+        rank: int,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        ranked = session.get("ranked") or []
+        if rank < 1 or rank > len(ranked):
+            raise WorkspaceError(f"rank {rank} out of range (1..{len(ranked)})")
+        candidate = ranked[rank - 1]
+        pipeline = candidate.get("pipeline")
+        if not pipeline:
+            raise WorkspaceError(f"rank {rank} has no transform pipeline")
+        source_branch = str(session["source_branch"])
+        if not self.workspace.has_branch(branch_name):
+            self.workspace.fork(branch_name, from_branch=source_branch)
+        branch = self.workspace.get_branch(branch_name)
+        branch.key.clear()
+        transform_result = self.workspace.apply_transform_pipeline(branch_name, pipeline)
+        plaintext = str(candidate.get("plaintext") or "")
+        candidate["branch"] = branch_name
+        family = str(candidate.get("family") or "candidate")
+        session_id = next(
+            (
+                sid for sid, stored in self._pure_transposition_sessions.items()
+                if stored is session
+            ),
+            None,
+        )
+        for tag in (
+            "pure_transposition_finalist",
+            f"pure_rank_{rank}",
+            f"pure_profile_{session.get('profile')}",
+            "mode:transposition",
+            "transform",
+        ):
+            if tag not in branch.tags:
+                branch.tags.append(tag)
+        rating = self._transform_candidate_rating(candidate) or {}
+        branch.metadata.update({
+            "cipher_mode": "transposition",
+            "mode_status": "active",
+            "mode_confidence": "medium",
+            "mode_evidence": (
+                "Installed by search_pure_transposition from direct "
+                f"language-scored candidate rank {rank}."
+            ),
+            "mode_counter_evidence": (
+                "This branch assumes order-only transposition. If the text "
+                "is still word islands or letter-substitution-like, switch "
+                "to a mixed transposition+homophonic hypothesis instead of "
+                "doing local word repair."
+            ),
+            "key_type": "TransformPipelineKey",
+            "transform_family": family,
+            "transform_candidate_id": candidate.get("candidate_id"),
+            "transform_rank": rank,
+            "transform_score": candidate.get("score"),
+            "transform_selection_score": candidate.get("selection_score"),
+            "transform_pipeline": pipeline,
+            "decoded_text": plaintext,
+            "decoded_text_source": "search_pure_transposition",
+            "pure_transposition_finalist": {
+                "search_session_id": session_id,
+                "source_branch": source_branch,
+                "rank": rank,
+                "candidate_id": candidate.get("candidate_id"),
+                "family": family,
+                "score": candidate.get("score"),
+                "selection_score": candidate.get("selection_score"),
+                "validated_selection_score": candidate.get("validated_selection_score"),
+                "validation": candidate.get("validation"),
+                "primary_ranking_signal": "agent_contextual_readability",
+                "agent_readability_score": rating.get("readability_score"),
+                "agent_readability_label": rating.get("label"),
+                "agent_readability_rationale": rating.get("rationale"),
+                "agent_coherent_clause": rating.get("coherent_clause"),
+                "numeric_scores_role": "supporting_evidence",
+            },
+            "search_metadata": {
+                "solver": "pure_transposition_screen_rust",
+                "profile": session.get("profile"),
+                "candidate_count": session.get("candidate_count"),
+                "valid_candidate_count": session.get("valid_candidate_count"),
+                "candidate_plan": session.get("candidate_plan"),
+                "cache": session.get("cache"),
+                "source_branch": source_branch,
+            },
+        })
+        score = candidate.get("score")
+        best = (session.get("ranked") or [candidate])[0]
+        try:
+            score_gap = round(float(best.get("score")) - float(score), 4)
+        except (TypeError, ValueError):
+            score_gap = None
+        return {
+            "rank": rank,
+            "branch": branch_name,
+            "candidate_id": candidate.get("candidate_id"),
+            "family": family,
+            "score": candidate.get("score"),
+            "selection_score": candidate.get("selection_score"),
+            "validated_selection_score": candidate.get("validated_selection_score"),
+            "validation": candidate.get("validation"),
+            "score_gap_from_best": score_gap,
+            "quick_scores": self._compute_quick_scores(branch_name),
+            "ranking_score": self._pure_transposition_ranking_score(
+                candidate=candidate,
+                score_gap_from_best=score_gap,
+            ),
+            "basin": self._branch_basin_status(branch_name),
+            "decoded_preview": _truncate_text(plaintext, 600),
+            "transform_result": transform_result,
+        }
+
+    def _pure_transposition_finalist_review(
+        self,
+        *,
+        session_id: str,
+        start_rank: int = 1,
+        count: int = 5,
+        review_chars: int = 600,
+        good_score_gap: float = 0.25,
+    ) -> dict[str, Any]:
+        session = self._pure_transposition_session(session_id)
+        if session is None:
+            return {"error": f"Unknown pure transposition search session: {session_id}"}
+        ranked = list(session.get("ranked") or [])
+        if not ranked:
+            return {
+                "search_session_id": session_id,
+                "finalist_review": [],
+                "finalist_review_count": 0,
+                "total_finalist_count": 0,
+            }
+        start_rank = max(1, int(start_rank))
+        count = max(1, min(int(count), 50))
+        review_chars = max(120, min(int(review_chars), 1600))
+        good_score_gap = max(0.0, float(good_score_gap))
+        try:
+            best_score = float(ranked[0].get("score"))
+        except (TypeError, ValueError):
+            best_score = None
+        good_threshold = best_score - good_score_gap if best_score is not None else None
+        good_ranked_finalists = [
+            (rank, candidate)
+            for rank, candidate in enumerate(ranked, start=1)
+            if good_threshold is not None
+            and candidate.get("score") is not None
+            and float(candidate.get("score")) >= good_threshold
+        ]
+        page_start = start_rank - 1
+        page = ranked[page_start:page_start + count]
+        finalist_review: list[dict[str, Any]] = []
+        for offset, candidate in enumerate(page):
+            rank = start_rank + offset
+            branch_for_candidate = candidate.get("branch")
+            quick_scores = None
+            basin = None
+            if branch_for_candidate and self.workspace.has_branch(branch_for_candidate):
+                quick_scores = self._compute_quick_scores(branch_for_candidate)
+                basin = self._branch_basin_status(branch_for_candidate)
+            try:
+                score_gap = round(best_score - float(candidate.get("score")), 4) if best_score is not None else None
+            except (TypeError, ValueError):
+                score_gap = None
+            if branch_for_candidate:
+                recommended_next = "inspect_branch_or_compare_branch_cards"
+            else:
+                recommended_next = "install_if_preview_promising_or_review_next_page"
+            finalist_review.append({
+                "rank": rank,
+                "branch": branch_for_candidate,
+                "candidate_id": candidate.get("candidate_id"),
+                "family": candidate.get("family"),
+                "params": candidate.get("params"),
+                "score": candidate.get("score"),
+                "selection_score": candidate.get("selection_score"),
+                "validated_selection_score": candidate.get("validated_selection_score"),
+                "score_gap_from_best": score_gap,
+                "quick_scores": quick_scores,
+                "basin": basin,
+                "ranking_score": self._pure_transposition_ranking_score(
+                    candidate=candidate,
+                    score_gap_from_best=score_gap,
+                ),
+                "pipeline_step_count": len((candidate.get("pipeline") or {}).get("steps", [])),
+                "pipeline_columns": (candidate.get("pipeline") or {}).get("columns"),
+                "pipeline_rows": (candidate.get("pipeline") or {}).get("rows"),
+                "decoded_preview": str(candidate.get("plaintext") or candidate.get("preview") or "")[:review_chars],
+                "validation": candidate.get("validation"),
+                "readability_judgment": self._transform_readability_judgment(),
+                "agent_readability_judgment": self._transform_candidate_rating(candidate),
+                "recommended_next": recommended_next,
+            })
+        reviewed_ranks = set(range(start_rank, start_rank + len(page)))
+        more_good_after_page = [
+            rank for rank, _candidate in good_ranked_finalists
+            if rank not in reviewed_ranks and rank > start_rank + len(page) - 1
+        ]
+        return {
+            "search_session_id": session_id,
+            "source_branch": session.get("source_branch"),
+            "profile": session.get("profile"),
+            "candidate_count": session.get("candidate_count"),
+            "valid_candidate_count": session.get("valid_candidate_count"),
+            "family_counts": session.get("family_counts", {}),
+            "top_family_counts": session.get("top_family_counts", {}),
+            "candidate_plan": session.get("candidate_plan"),
+            "start_rank": start_rank,
+            "count": count,
+            "finalist_review": finalist_review,
+            "finalist_review_count": len(finalist_review),
+            "total_finalist_count": len(ranked),
+            "has_more_finalists": start_rank + len(page) <= len(ranked),
+            "next_start_rank": (
+                start_rank + len(page)
+                if start_rank + len(page) <= len(ranked) else None
+            ),
+            "good_score_gap": good_score_gap,
+            "good_score_threshold": round(good_threshold, 4) if good_threshold is not None else None,
+            "good_score_finalist_count": len(good_ranked_finalists),
+            "more_good_score_finalists": bool(more_good_after_page),
+            "more_good_score_finalist_count": len(more_good_after_page),
+            "next_good_score_ranks": more_good_after_page[:12],
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+            "rated_finalist_count": sum(
+                1 for candidate in ranked
+                if self._transform_candidate_rating(candidate) is not None
+            ),
+            "review_instruction": (
+                "Review these order-only plaintext previews first. If a "
+                "preview is coherent, rate it with act_rate_transform_finalist "
+                "and install selected ranks with "
+                "act_install_pure_transposition_finalists. If all previews are "
+                "word islands and the source alphabet suggests homophonic "
+                "keying, switch to search_transform_homophonic instead of "
+                "local word repair."
+            ),
         }
 
     def _transform_finalist_review(
@@ -9159,6 +9777,7 @@ class WorkspaceToolExecutor:
                 "pipeline_columns": pipeline.get("columns"),
                 "pipeline_rows": pipeline.get("rows"),
                 "decoded_preview": str(candidate.get("decoded_preview") or "")[:review_chars],
+                "validation": candidate.get("validation"),
                 "readability_judgment": readability_judgment,
                 "agent_readability_judgment": self._transform_candidate_rating(candidate),
                 "recommended_next": recommended_next,
@@ -9232,7 +9851,71 @@ class WorkspaceToolExecutor:
         session_id = str(args["search_session_id"])
         session = self._transform_session(session_id)
         if session is None:
-            return {"error": f"Unknown transform search session: {session_id}"}
+            pure_session = self._pure_transposition_session(session_id)
+            if pure_session is None:
+                return {"error": f"Unknown transform search session: {session_id}"}
+            ranked = pure_session.get("ranked") or []
+            rank = int(args["rank"])
+            if rank < 1 or rank > len(ranked):
+                return {
+                    "error": f"rank {rank} out of range (1..{len(ranked)})",
+                    "search_session_id": session_id,
+                }
+            score = float(args["readability_score"])
+            if score < 0 or score > 4:
+                return {"error": "readability_score must be between 0 and 4"}
+            allowed_labels = {
+                "coherent_plaintext",
+                "partial_clause",
+                "word_islands_with_some_structure",
+                "word_islands_only",
+                "garbage",
+            }
+            label = str(args.get("label") or self._default_transform_label_for_score(score))
+            if label not in allowed_labels:
+                return {
+                    "error": f"label must be one of {sorted(allowed_labels)}",
+                    "search_session_id": session_id,
+                }
+            rationale = str(args.get("rationale") or "").strip()
+            if not rationale:
+                return {"error": "rationale is required"}
+            coherent_clause = str(args.get("coherent_clause") or "").strip()
+            candidate = ranked[rank - 1]
+            rating = {
+                "readability_score": round(score, 2),
+                "label": label,
+                "rationale": rationale,
+                "coherent_clause": coherent_clause,
+                "iteration": self._current_iteration,
+                "primary_ranking_signal": "agent_contextual_readability",
+            }
+            candidate["agent_readability_judgment"] = rating
+            updated_branches = self._mirror_pure_rating_to_branches(
+                session_id=session_id,
+                rank=rank,
+                rating=rating,
+            )
+            review = self._pure_transposition_finalist_review(
+                session_id=session_id,
+                start_rank=rank,
+                count=1,
+            )
+            return {
+                "status": "ok",
+                "search_session_id": session_id,
+                "session_type": "pure_transposition",
+                "rank": rank,
+                "rating": rating,
+                "updated_branches": updated_branches,
+                "finalist": (review.get("finalist_review") or [None])[0],
+                "note": (
+                    "Recorded the agent's contextual readability judgment. "
+                    "For pure transposition this judgment is the primary "
+                    "ranking signal; numeric direct-language scores remain "
+                    "supporting evidence."
+                ),
+            }
         ranked = session.get("ranked") or []
         rank = int(args["rank"])
         if rank < 1 or rank > len(ranked):
@@ -9342,6 +10025,57 @@ class WorkspaceToolExecutor:
             good_score_gap=float(args.get("good_score_gap", 0.25)),
         )
 
+    def _tool_search_review_pure_transposition_finalists(self, args: dict) -> Any:
+        return self._pure_transposition_finalist_review(
+            session_id=str(args["search_session_id"]),
+            start_rank=int(args.get("start_rank", 1)),
+            count=int(args.get("count", 5)),
+            review_chars=int(args.get("review_chars", 600)),
+            good_score_gap=float(args.get("good_score_gap", 0.25)),
+        )
+
+    def _tool_act_install_pure_transposition_finalists(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._pure_transposition_session(session_id)
+        if session is None:
+            return {"error": f"Unknown pure transposition search session: {session_id}"}
+        ranks = args.get("ranks") or []
+        if not isinstance(ranks, list) or not ranks:
+            return {"error": "ranks must be a non-empty list of 1-based finalist ranks"}
+        source_branch = str(session["source_branch"])
+        prefix = str(args.get("branch_prefix") or f"{source_branch}_pure_rank")
+        installed: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for raw_rank in ranks:
+            try:
+                rank = int(raw_rank)
+                branch_name = f"{prefix}{rank}"
+                if self.workspace.has_branch(branch_name):
+                    branch_name = self._unique_branch_name(branch_name)
+                installed.append(self._install_pure_transposition_finalist_branch(
+                    session=session,
+                    rank=rank,
+                    branch_name=branch_name,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "rank": raw_rank,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "status": "ok" if installed else "error",
+            "search_session_id": session_id,
+            "installed_count": len(installed),
+            "installed": installed,
+            "errors": errors,
+            "note": (
+                "Installed selected pure-transposition finalists as readable "
+                "transform branches without rerunning the Rust screen. Rate "
+                "the previews with act_rate_transform_finalist first when the "
+                "menu is ambiguous."
+            ),
+        }
+
     def _tool_search_transform_homophonic(self, args: dict) -> Any:
         branch_name = args["branch"]
         if not self.workspace.has_branch(branch_name):
@@ -9450,6 +10184,7 @@ class WorkspaceToolExecutor:
                 (step for step in artifact.get("steps", []) if step.get("name") != "route_automated_solver"),
                 {},
             )
+            decoded_preview = result.final_decryption[:800]
             ranked.append({
                 "candidate_index": index,
                 "candidate": candidate,
@@ -9458,7 +10193,13 @@ class WorkspaceToolExecutor:
                 "solver": result.solver,
                 "anneal_score": primary_step.get("anneal_score"),
                 "elapsed_seconds": round(result.elapsed_seconds, 3),
-                "decoded_preview": result.final_decryption[:800],
+                "decoded_preview": decoded_preview,
+                "validation": validate_plaintext_finalist(
+                    decoded_preview,
+                    language=self.language,
+                    word_set=self.word_set,
+                    word_list=self.word_list,
+                ),
                 "key": artifact.get("key") or {},
             })
         ranked.sort(
@@ -10047,13 +10788,17 @@ class WorkspaceToolExecutor:
                     "Your declaration says further iterations should try a "
                     "transposition/period/poly-alphabetic style hypothesis, "
                     "but this run has not used the available transform tools. "
-                    "Before declaring, inspect transform state and run a bounded "
-                    "transform+homophonic screen. If that screen is not useful, "
+                    "Before declaring, inspect transform state and run the "
+                    "mode-appropriate transform screen: "
+                    "search_pure_transposition for transposition-only, or "
+                    "search_transform_homophonic for Zodiac/Z340-style "
+                    "transposition+homophonic. If that screen is not useful, "
                     "declare again with that negative result in the rationale."
                 ),
                 "suggested_next_tools": [
                     "observe_transform_pipeline",
                     "observe_transform_suspicion",
+                    "search_pure_transposition",
                     "search_transform_homophonic",
                     "workspace_branch_cards",
                     "meta_declare_solution",

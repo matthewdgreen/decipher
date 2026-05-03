@@ -563,6 +563,14 @@ def run_automated(
                 ground_truth=ground_truth,
             )
             steps.append(step)
+        elif routing["route"] == "pure_transposition":
+            solver, key, decryption, step = _run_pure_transposition(
+                cipher_text,
+                language,
+                cipher_system=cipher_system,
+                solver_hints=solver_hints,
+            )
+            steps.append(step)
         elif routing["route"] == "periodic_polyalphabetic":
             solver, key, decryption, step = _run_periodic_polyalphabetic(
                 cipher_text,
@@ -2833,10 +2841,24 @@ def _select_solver_path(
         any(token in cipher_name for token in ("transposition", "z340", "zodiac340"))
         and any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
     )
+    is_pure_transposition = (
+        any(token in cipher_name for token in ("transmatrix", "kryptos3", "kryptos k3", "k3_transposition"))
+        or (
+            "transposition" in cipher_name
+            and not any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
+        )
+    )
     if any(token in cipher_name for token in ("vigenere", "vigenère", "beaufort", "gronsfeld", "polyalphabetic", "quagmire", "quag")):
         return {
             "route": "periodic_polyalphabetic",
             "solver": "periodic_polyalphabetic_screen",
+            "reason": f"cipher_system={cipher_system or 'unknown'}",
+        }
+
+    if is_pure_transposition:
+        return {
+            "route": "pure_transposition",
+            "solver": "k3_transmatrix_rust",
             "reason": f"cipher_system={cipher_system or 'unknown'}",
         }
 
@@ -2879,6 +2901,95 @@ def _select_solver_path(
         "solver": "native_substitution_continuous_anneal" if language == "en" else "native_substitution_anneal",
         "reason": "default substitution path",
     }
+
+
+def _run_pure_transposition(
+    cipher_text: CipherText,
+    language: str,
+    cipher_system: str = "",
+    solver_hints: dict[str, Any] | None = None,
+) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    """Run Rust-owned broad pure transposition screening."""
+
+    from analysis.pure_transposition import (
+        pure_transposition_profile_from_env,
+        pure_transposition_threads_from_env,
+        screen_pure_transposition,
+    )
+
+    solver_hints = solver_hints or {}
+    known_params = solver_hints.get("known_cipher_parameters") if "known_cipher_parameters" in solver_hints else solver_hints
+    profile = os.environ.get(
+        "DECIPHER_PURE_TRANSPOSITION_PROFILE",
+        pure_transposition_profile_from_env(),
+    )
+    max_candidates_raw = os.environ.get("DECIPHER_PURE_TRANSPOSITION_MAX_CANDIDATES", "").strip()
+    max_candidates = int(max_candidates_raw) if max_candidates_raw else None
+    transmatrix_min_width = int(
+        os.environ.get(
+            "DECIPHER_K3_TRANSMATRIX_MIN_WIDTH",
+            str((known_params or {}).get("min_width", 2) if isinstance(known_params, dict) else 2),
+        )
+    )
+    transmatrix_max_width_raw = os.environ.get("DECIPHER_K3_TRANSMATRIX_MAX_WIDTH", "").strip()
+    transmatrix_max_width = int(transmatrix_max_width_raw) if transmatrix_max_width_raw else None
+    include_matrix_rotate = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_MATRIX_ROTATE", default=True)
+    include_transmatrix = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_TRANSMATRIX", default=True)
+    top_n = int(os.environ.get("DECIPHER_PURE_TRANSPOSITION_TOP_N", os.environ.get("DECIPHER_K3_TRANSMATRIX_TOP_N", "25")))
+    threads = pure_transposition_threads_from_env()
+    result = screen_pure_transposition(
+        cipher_text,
+        language=language,
+        profile=profile,
+        top_n=top_n,
+        max_candidates=max_candidates,
+        include_matrix_rotate=include_matrix_rotate,
+        include_transmatrix=include_transmatrix,
+        transmatrix_min_width=transmatrix_min_width,
+        transmatrix_max_width=transmatrix_max_width,
+        threads=threads,
+    )
+    best = result.get("best_candidate")
+    if not best:
+        raise ValueError("pure transposition screen produced no candidate")
+    step = {
+        "name": "screen_pure_transposition",
+        "solver": result.get("solver", "k3_transmatrix_rust"),
+        "status": result.get("status"),
+        "cipher_system": cipher_system,
+        "profile": result.get("profile"),
+        "candidate_count": result.get("candidate_count"),
+        "valid_candidate_count": result.get("valid_candidate_count"),
+        "threads": result.get("threads"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "cache": result.get("cache"),
+        "candidate_plan": result.get("candidate_plan"),
+        "validation_pool_size": result.get("validation_pool_size"),
+        "family_counts": result.get("family_counts"),
+        "top_family_counts": result.get("top_family_counts"),
+        "transmatrix_min_width": result.get("transmatrix_min_width"),
+        "transmatrix_max_width": result.get("transmatrix_max_width"),
+        "selected": {
+            "rank": best.get("rank"),
+            "candidate_id": best.get("candidate_id"),
+            "family": best.get("family"),
+            "params": best.get("params"),
+            "score": best.get("score"),
+            "selection_score": best.get("selection_score"),
+            "validated_selection_score": best.get("validated_selection_score"),
+            "validation": best.get("validation"),
+            "pipeline": best.get("pipeline"),
+            "preview": best.get("preview"),
+        },
+        "top_candidates": result.get("top_candidates"),
+        "note": (
+            "Broad Rust-scored pure-transposition screen. It includes K3-style "
+            "TransMatrix candidates plus grid/route/columnar families, and "
+            "scores transformed text directly. It is separate from the "
+            "transform+homophonic Z340 path."
+        ),
+    }
+    return str(result.get("solver") or "pure_transposition_screen_rust"), {}, str(best.get("plaintext") or ""), step
 
 
 def _run_periodic_polyalphabetic(

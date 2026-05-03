@@ -452,6 +452,91 @@ fn quagmire3_shotgun_search(
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn k3_transmatrix_search(
+    py: Python<'_>,
+    symbol_values: Vec<usize>,
+    log_probs: &PyDict,
+    min_width: usize,
+    max_width: usize,
+    top_n: usize,
+    threads: usize,
+) -> PyResult<PyObject> {
+    if symbol_values.len() < 12 {
+        return Err(PyValueError::new_err(
+            "symbol_values must contain at least 12 A-Z values",
+        ));
+    }
+    if symbol_values.iter().any(|v| *v >= 26) {
+        return Err(PyValueError::new_err(
+            "symbol_values must be A-Z values in 0..25",
+        ));
+    }
+    let table = dense_table_from_pydict(log_probs, 4)?;
+    let len = symbol_values.len();
+    let lo = min_width.max(2).min(len.saturating_sub(1).max(2));
+    let hi = max_width.max(lo).min(len.saturating_sub(1).max(lo));
+    let top_n = top_n.max(1);
+    let worker_count = if threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        threads.max(1)
+    };
+
+    let mut jobs = Vec::new();
+    for w1 in lo..=hi {
+        for w2 in lo..=hi {
+            jobs.push((w1, w2, true));
+            jobs.push((w1, w2, false));
+        }
+    }
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("failed to build rayon pool: {e}")))?;
+    let mut candidates: Vec<_> = pool.install(|| {
+        jobs.par_iter()
+            .map(|(w1, w2, clockwise)| {
+                let transformed = transmatrix_values(&symbol_values, *w1, *w2, *clockwise);
+                let score = dense_score_indices(&transformed, &table);
+                let plaintext = indices_to_string(&transformed);
+                (*w1, *w2, *clockwise, score, plaintext)
+            })
+            .collect()
+    });
+    candidates.sort_by(|a, b| b.3.total_cmp(&a.3));
+
+    let out = PyList::empty_bound(py);
+    for (rank, (w1, w2, clockwise, score, plaintext)) in candidates.iter().take(top_n).enumerate() {
+        let direction = if *clockwise { "cw" } else { "ccw" };
+        let d = PyDict::new_bound(py);
+        d.set_item("rank", rank + 1)?;
+        d.set_item("variant", "k3_transmatrix")?;
+        d.set_item("w1", *w1)?;
+        d.set_item("w2", *w2)?;
+        d.set_item("direction", direction)?;
+        d.set_item("score", round5(*score))?;
+        d.set_item("selection_score", round5(*score))?;
+        d.set_item("plaintext", plaintext)?;
+        d.set_item("preview", plaintext.chars().take(240).collect::<String>())?;
+        d.set_item("pipeline", transmatrix_pipeline_dict(py, *w1, *w2, direction)?)?;
+        out.append(d)?;
+    }
+
+    let result = PyDict::new_bound(py);
+    result.set_item("status", "completed")?;
+    result.set_item("solver", "k3_transmatrix_rust")?;
+    result.set_item("threads", worker_count)?;
+    result.set_item("candidate_count", candidates.len())?;
+    result.set_item("min_width", lo)?;
+    result.set_item("max_width", hi)?;
+    result.set_item("top_candidates", out)?;
+    Ok(result.into())
+}
+
+#[pyfunction]
 fn transform_structural_metrics_batch(
     py: Python<'_>,
     tokens: Vec<usize>,
@@ -520,6 +605,87 @@ fn transform_structural_metrics_batch(
         out.append(d)?;
     }
     Ok(out.into())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn pure_transposition_score_batch(
+    py: Python<'_>,
+    tokens: Vec<usize>,
+    candidates: &PyList,
+    log_probs: &PyDict,
+    top_n: usize,
+    threads: usize,
+) -> PyResult<PyObject> {
+    if tokens.len() < 5 {
+        return Err(PyValueError::new_err(
+            "tokens must contain at least 5 A-Z values",
+        ));
+    }
+    if tokens.iter().any(|v| *v >= 26) {
+        return Err(PyValueError::new_err("tokens must be A-Z values in 0..25"));
+    }
+    let mut parsed = Vec::with_capacity(candidates.len());
+    for item in candidates.iter() {
+        let dict = item.downcast::<PyDict>()?;
+        parsed.push(parse_transform_candidate(dict)?);
+    }
+    let table = dense_table_from_pydict(log_probs, 4)?;
+    let top_n = top_n.max(1);
+    let worker_count = if threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        threads.max(1)
+    };
+    let started = Instant::now();
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("failed to build rayon pool: {e}")))?;
+    let mut scored: Vec<_> = pool.install(|| {
+        parsed
+            .par_iter()
+            .enumerate()
+            .map(|(index, candidate)| match apply_fast_pipeline(&tokens, &candidate.pipeline) {
+                Ok(transformed) => {
+                    let score = dense_score_indices(&transformed, &table);
+                    let plaintext = indices_to_string(&transformed);
+                    (index, true, String::new(), score, plaintext)
+                }
+                Err(reason) => (index, false, reason, f64::NEG_INFINITY, String::new()),
+            })
+            .collect()
+    });
+    let valid_count = scored.iter().filter(|item| item.1).count();
+    scored.sort_by(|a, b| b.3.total_cmp(&a.3));
+
+    let out = PyList::empty_bound(py);
+    for (rank, (candidate_index, valid, reason, score, plaintext)) in
+        scored.iter().filter(|item| item.1).take(top_n).enumerate()
+    {
+        let d = PyDict::new_bound(py);
+        d.set_item("rank", rank + 1)?;
+        d.set_item("candidate_index", *candidate_index)?;
+        d.set_item("valid", *valid)?;
+        d.set_item("reason", reason)?;
+        d.set_item("score", round5(*score))?;
+        d.set_item("selection_score", round5(*score))?;
+        d.set_item("plaintext", plaintext)?;
+        d.set_item("preview", plaintext.chars().take(240).collect::<String>())?;
+        out.append(d)?;
+    }
+
+    let result = PyDict::new_bound(py);
+    result.set_item("status", if valid_count > 0 { "completed" } else { "no_valid_candidates" })?;
+    result.set_item("solver", "pure_transposition_score_batch_rust")?;
+    result.set_item("threads", worker_count)?;
+    result.set_item("candidate_count", parsed.len())?;
+    result.set_item("valid_candidate_count", valid_count)?;
+    result.set_item("elapsed_seconds", started.elapsed().as_secs_f64())?;
+    result.set_item("top_candidates", out)?;
+    Ok(result.into())
 }
 
 #[pyfunction]
@@ -862,6 +1028,27 @@ fn fast_int(data: &HashMap<String, FastValue>, key: &str, default: i64) -> i64 {
     }
 }
 
+fn fast_int_any(data: &HashMap<String, FastValue>, keys: &[&str], default: i64) -> i64 {
+    for key in keys {
+        if data.contains_key(*key) {
+            return fast_int(data, key, default);
+        }
+    }
+    default
+}
+
+fn fast_bool(data: &HashMap<String, FastValue>, key: &str, default: bool) -> bool {
+    match data.get(key) {
+        Some(FastValue::Int(value)) => *value != 0,
+        Some(FastValue::Str(value)) => match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "cw" | "clockwise" => true,
+            "0" | "false" | "no" | "ccw" | "counterclockwise" | "anticlockwise" => false,
+            _ => default,
+        },
+        _ => default,
+    }
+}
+
 fn fast_string(data: &HashMap<String, FastValue>, keys: &[&str], default: &str) -> String {
     for key in keys {
         if let Some(FastValue::Str(value)) = data.get(*key) {
@@ -1000,6 +1187,8 @@ fn apply_fast_step(
         "routeread" => route_read_fast(tokens, locked, pipeline, &step.data),
         "splitgridroute" => split_grid_route_fast(tokens, locked, pipeline, &step.data),
         "gridpermute" => grid_permute_fast(tokens, locked, pipeline, &step.data),
+        "matrixrotate" => matrix_rotate_step_fast(tokens, locked, &step.data),
+        "transmatrix" => transmatrix_step_fast(tokens, locked, &step.data),
         _ => Err(format!("unsupported ciphertext transformer: {}", step.name)),
     }
 }
@@ -1282,6 +1471,103 @@ fn split_grid_route_fast(
     let mut new_locked: Vec<bool> = order.iter().map(|idx| locked[*idx]).collect();
     new_locked.extend_from_slice(&locked[usable..]);
     Ok((new_tokens, new_locked))
+}
+
+fn matrix_rotate_step_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let width = fast_int_any(data, &["width", "columns", "w"], 0).max(0) as usize;
+    let direction = fast_string(data, &["direction", "dir"], "cw").to_lowercase();
+    let clockwise = match direction.as_str() {
+        "cw" | "clockwise" | "right" => true,
+        "ccw" | "counterclockwise" | "anticlockwise" | "left" => false,
+        _ => fast_bool(data, "clockwise", true),
+    };
+    matrix_rotate_fast(tokens, locked, width, clockwise)
+}
+
+fn transmatrix_step_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let w1 = fast_int_any(data, &["w1", "width1", "firstWidth"], 0).max(0) as usize;
+    let w2 = fast_int_any(data, &["w2", "width2", "secondWidth"], 0).max(0) as usize;
+    let direction = fast_string(data, &["direction", "dir"], "cw").to_lowercase();
+    let clockwise = match direction.as_str() {
+        "cw" | "clockwise" | "right" => true,
+        "ccw" | "counterclockwise" | "anticlockwise" | "left" => false,
+        _ => fast_bool(data, "clockwise", true),
+    };
+    let (once_tokens, once_locked) = matrix_rotate_fast(tokens, locked, w1, clockwise)?;
+    matrix_rotate_fast(&once_tokens, &once_locked, w2, clockwise)
+}
+
+fn matrix_rotate_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    width: usize,
+    clockwise: bool,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    if width <= 1 || width >= tokens.len() {
+        return Ok((tokens.to_vec(), locked.to_vec()));
+    }
+    let rows = tokens.len().div_ceil(width);
+    let mut new_tokens = Vec::with_capacity(tokens.len());
+    let mut new_locked = Vec::with_capacity(locked.len());
+    if clockwise {
+        for c in 0..width {
+            for r in (0..rows).rev() {
+                let old_idx = r * width + c;
+                if old_idx < tokens.len() {
+                    new_tokens.push(tokens[old_idx]);
+                    new_locked.push(locked[old_idx]);
+                }
+            }
+        }
+    } else {
+        for c in (0..width).rev() {
+            for r in 0..rows {
+                let old_idx = r * width + c;
+                if old_idx < tokens.len() {
+                    new_tokens.push(tokens[old_idx]);
+                    new_locked.push(locked[old_idx]);
+                }
+            }
+        }
+    }
+    Ok((new_tokens, new_locked))
+}
+
+fn transmatrix_values(values: &[usize], w1: usize, w2: usize, clockwise: bool) -> Vec<usize> {
+    let locked = vec![false; values.len()];
+    let (once, once_locked) = matrix_rotate_fast(values, &locked, w1, clockwise)
+        .unwrap_or_else(|_| (values.to_vec(), locked.clone()));
+    matrix_rotate_fast(&once, &once_locked, w2, clockwise)
+        .map(|(tokens, _)| tokens)
+        .unwrap_or(once)
+}
+
+fn transmatrix_pipeline_dict<'py>(
+    py: Python<'py>,
+    w1: usize,
+    w2: usize,
+    direction: &str,
+) -> PyResult<Bound<'py, PyDict>> {
+    let pipeline = PyDict::new_bound(py);
+    let steps = PyList::empty_bound(py);
+    let step = PyDict::new_bound(py);
+    let data = PyDict::new_bound(py);
+    data.set_item("w1", w1)?;
+    data.set_item("w2", w2)?;
+    data.set_item("direction", direction)?;
+    step.set_item("name", "TransMatrix")?;
+    step.set_item("data", data)?;
+    steps.append(step)?;
+    pipeline.set_item("steps", steps)?;
+    Ok(pipeline)
 }
 
 fn grid_permute_fast(
@@ -3208,7 +3494,9 @@ fn decipher_fast(_py: Python<'_>, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(normalized_ngram_score, m)?)?;
     m.add_function(wrap_pyfunction!(keyed_vigenere_alphabet_anneal, m)?)?;
     m.add_function(wrap_pyfunction!(quagmire3_shotgun_search, m)?)?;
+    m.add_function(wrap_pyfunction!(k3_transmatrix_search, m)?)?;
     m.add_function(wrap_pyfunction!(transform_structural_metrics_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(pure_transposition_score_batch, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_solve_seed, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_transform_candidates_batch, m)?)?;
     Ok(())

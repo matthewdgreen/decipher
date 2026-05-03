@@ -49,7 +49,7 @@ src/
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 82 tools across 11 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 85 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -241,10 +241,16 @@ path like `/path/to/cipher_benchmark/benchmark/`.
 - Benchmark curation lives in `../cipher_benchmark`; Decipher solver/harness code lives here.
 - Keep parity tests distinct from agentic-advantage tests. Parity asks whether the agent can match non-agentic solvers; advantage asks whether agentic context, OCR, diagnosis, or hypothesis management improves beyond them.
 - Decipher also keeps a local frontier automated suite in `frontier/automated_solver_frontier.jsonl`. This is intentionally separate from benchmark parity splits: it is a compact regression/frontier pack for automated-only runs, with explicit classes (`known_good`, `shared_hard`, `bad_result`, `slow_result`) and optional synthetic case definitions.
-- The frontier suite now also includes a `shared_hard` class for synthetic
-  cases that are meaningfully challenging for both Decipher and Zenith without
-  being collapse cases. Current anchors are `synth_en_80honb_s2`,
-  `synth_en_200honb_s3`, and `synth_en_200honb_s6`.
+- As of May 2026, the main frontier suite has been rebalanced into a
+  multi-family automated frontier packet. It now includes regression anchors
+  for simple substitution, English homophonic, periodic polyalphabetic,
+  Kryptos K1/K2 known replay, Kryptos K3 pure transposition, and known
+  transposition+homophonic replay; `shared_hard` anchors such as Zodiac 408,
+  short homophonic, Z340-lite replay, hidden-route transform search, and Borg
+  0171v/0109v; and explicit `bad_result` rows for current gaps such as Italian
+  simple substitution and Copiale p068. Some rows may carry
+  `decipher_runner_options` to enable per-case search settings such as hidden
+  transform ranking without requiring a global CLI flag.
 - There is now also a small English model evaluation packet in
   `frontier/english_model_eval.jsonl`. Use this when comparing
   `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native` across different English
@@ -315,7 +321,7 @@ make that asymmetry explicit in reporting.
 ### ✅ **V2 Agentic Framework Completed**
 Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 - **Branching workspace** with fork/merge/compare operations (src/workspace/)
-- **82 specialized tools** across 11 namespaces (src/agent/tools_v2.py)
+- **85 specialized tools** across 11 namespaces (src/agent/tools_v2.py)
 - **Multi-signal scoring** with 6 different metrics (src/analysis/signals.py)
 - **Agent-driven termination** via meta_declare_solution (no rigid phases)
 - **Full observability** via comprehensive run artifacts (src/artifact/schema.py)
@@ -450,13 +456,47 @@ Vigenere-family metadata through the automated runner. Current scope:
   `DECIPHER_TRANSFORM_RANK_ENGINE=rust` selects the Rust transform-candidate
   batch evaluator for solver-backed rank/full transform validation. Stage C
   transform confirmation supports per-candidate seed offsets through the same
-  batch API. Keep the Python implementation as the reference path while
-  adding parity/contract tests before making new Rust paths default.
+  batch API. The Rust module also owns pure-transposition scoring:
+  `pure_transposition_score_batch` applies provenance-bearing transform
+  pipelines and scores the resulting A-Z text directly. The automated
+  pure-transposition route now uses `analysis.pure_transposition` to generate
+  a broad screen of grid/route/columnar families, direct `MatrixRotate`
+  candidates, and K3-style `TransMatrix` candidates. Python handles candidate
+  generation/orchestration/artifacts for this path, including branch-side
+  `MatrixRotate`/`TransMatrix` application and a small identical-call
+  pure-transposition screen cache. `PureTranspositionSearchConfig` is the
+  shared candidate-plan object for this path, and artifacts/tool results
+  record its `candidate_plan` metadata. Keep older Python implementations as
+  reference/regression paths, not as feature-parity obligations for new
+  Rust-scale search work.
 
 Kryptos status:
-- K1/K2 are imported in `../cipher_benchmark` as solved calibration records.
+- K1/K2/K3 are imported in `../cipher_benchmark` as solved calibration records.
 - K2 can recover `ABSCISSA` and plaintext when `KRYPTOS` is supplied as a
   candidate tableau keyword.
+- K3 is now a solved pure-transposition fixture
+  (`kryptos_k3_transmatrix`). The automated-only Decipher route detects
+  pure transposition/TransMatrix metadata and runs the broad Rust-scored
+  pure-transposition screen. Latest validation searched 165,291 candidates
+  (grid/route/columnar plus TransMatrix), selected a TransMatrix equivalent
+  (`w1=4`, `w2=48`, `cw`), and recovered the local K3 fixture at 100%
+  char/word accuracy in the normal benchmark harness.
+- A synthetic pure-transposition ladder now lives at
+  `frontier/pure_transposition_ladder.jsonl`. It uses the `transposition_only`
+  testgen mode to create no-substitution route/order cases for MatrixRotate,
+  diagonal route reads, split-grid routes, and non-Kryptos TransMatrix.
+- Agentic runs can invoke that same screen through
+  `search_pure_transposition`. Pure-transposition searches now create
+  `search_session_id` menus analogous to transform+homophonic searches:
+  `search_review_pure_transposition_finalists` pages through previews,
+  `act_rate_transform_finalist` records the agent's contextual readability
+  score, and `act_install_pure_transposition_finalists` installs selected
+  ranks as readable transform branches with decoded-text metadata. Pure
+  finalist menus now include `analysis.finalist_validation` evidence:
+  strict continuous word hits, segmentation cost/rate, pseudo-word burden,
+  n-gram scores, and a `validated_selection_score` rerank. Mixed
+  transform+homophonic finalist previews carry the same validation block as
+  supporting evidence.
 - K1/K2 can now be represented explicitly as Quagmire III cases for
   known-parameter replay; unknown Quagmire search is still pending.
 - The first Quagmire search scaffold can recover K2's `ABSCISSA` cycleword

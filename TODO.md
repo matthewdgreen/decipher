@@ -13,6 +13,27 @@ Current planning split:
 - New Copiale/generalization work is tracked in
   `docs/copiale_generalization_plan.md`.
 
+## Agent Runtime / Cost Optimization
+
+- [ ] Add a dedicated token/cost optimization pass for agentic benchmark runs.
+  Recent GPT-5.4/Sonnet runs can consume hundreds of thousands of tokens per
+  test, which may be justified for hard unknown-cipher work but makes broad
+  regression sweeps expensive. Track this as an engineering goal separate from
+  solver quality.
+  - Measure per-run token/cost drivers by category: opening context, tool
+    schemas, tool results, branch cards, repeated decode text, search finalist
+    pages, and final summaries.
+  - Add artifact/report summaries that make token usage easy to compare across
+    models, context tiers, and display modes.
+  - Investigate compact tool-result modes for repeated calls: shorter branch
+    cards, diff-only decode updates, paged finalist views, and summaries that
+    omit unchanged metadata.
+  - Consider prompt/context caching where provider APIs support it, while
+    keeping provider-neutral behavior as the default abstraction.
+  - Define "cheap smoke" agent runs with small context/tool budgets and
+    "headline" runs with full context and broader search, so we do not mix cost
+    profiles accidentally.
+
 ## Long-Horizon Cipher Capability Roadmap
 
 These are major future projects, not active implementation threads. Keep them
@@ -284,14 +305,66 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     split-grid transforms, and region-wise routes.
   - Keep route candidates provenance-rich and inspectable, since these searches
     can explode combinatorially.
-  - Add Kryptos K3 as the next pure-transposition milestone. Import K3 into
-    `cipher_benchmark` as a solved transposition fixture, then add a
-    K3-style `MatrixRotate` transformer and `TransMatrix` double-rotation
-    pipeline step matching the Blake solver semantics (`w1`, `w2`, `cw|ccw`,
-    ragged final row support). Known-pipeline replay should be straightforward;
-    blind K3 recovery should use a new pure-transposition route-search path
-    that scores transformed English directly instead of running the
-    transform+homophonic harness.
+  - [x] Add Kryptos K3 as the next pure-transposition milestone.
+    `../cipher_benchmark` now includes `kryptos_k3` plus the
+    `kryptos_k3_transmatrix` split row. Decipher's Rust fast module implements
+    Blake-compatible `MatrixRotate` and `TransMatrix` semantics (`w1`, `w2`,
+    `cw|ccw`, ragged final row support), exposes `k3_transmatrix_search`, and
+    also exposes `pure_transposition_score_batch` for broad direct-scoring
+    screens. The automated pure-transposition route now generates grid/route,
+    columnar/unwrap, split/grid-permute, local repair, and TransMatrix
+    candidates, then scores transformed English directly in Rust. Validation:
+    the normal `decipher benchmark ../cipher_benchmark/benchmark --split
+    kryptos_tests.jsonl --test-id kryptos_k3_transmatrix --automated-only`
+    path searches 165,291 candidates and reaches 100% char/word accuracy.
+    `tests/test_polyalphabetic_fast.py` also includes a synthetic non-K3
+    `RouteRead(columns_down)` recovery case.
+  - [ ] Generalize pure-transposition work beyond K3: add route/grille
+    candidate families and richer no-boundary word segmentation for
+    transposition outputs.
+    - [x] Add first broader pure-transposition breadth beyond K3:
+      direct-scored `MatrixRotate` candidates now join the existing route,
+      split/grid-permute, columnar/unwrap, local-repair, and `TransMatrix`
+      families. Python can also apply `MatrixRotate`/`TransMatrix` pipelines
+      now, so agent-installed finalists have real branch token order instead
+      of only decoded-text metadata.
+    - [x] Expose the broad direct-scoring screen to the agent as
+      `search_pure_transposition`. It ranks pure-transposition finalists
+      without invoking the homophonic harness and can install top candidates
+      as readable transform branches with decoded-text metadata.
+    - [x] Add first synthetic pure-transposition ladder cases that are not
+      K3-shaped. `frontier/pure_transposition_ladder.jsonl` now covers direct
+      `MatrixRotate`, diagonal route reads, split-grid region routes, and a
+      non-Kryptos `TransMatrix` pair using `transposition_only` synthetic
+      specs. The split-grid row is deliberately marked `shared_hard` pending
+      calibration.
+    - [ ] Expand the pure-transposition ladder further with spirals with
+      offsets, route+rotation composites, grille/mask-like examples, and
+      short/medium/long no-boundary examples with calibrated watch/pass
+      thresholds.
+    - [x] Add a better pure-transposition finalist validator/reranker that
+      distinguishes true coherent plaintext from high-scoring word islands:
+      direct n-gram score, strict word-hit score, edit-aware segmentation,
+      optional medium-cost reader scoring, and explicit "needs another
+      transform family" flags. First implementation:
+      `analysis.finalist_validation.validate_plaintext_finalist` computes
+      quad/bigram score, DP segmentation cost/rate, pseudo-word burden, and
+      strict continuous word-hit evidence. `search_pure_transposition`
+      oversamples the Rust n-gram heap, reranks the finalist menu with this
+      validator, records `validation` and `validated_selection_score`, and
+      exposes those fields in automated artifacts and agent finalist reviews.
+      `search_transform_homophonic` finalist previews now also carry the same
+      validation block as supporting evidence. Still future: optional
+      medium-cost reader/ML scoring for the top few candidates.
+    - [x] Add a first local-damage/integrity subscore to separate exact or
+      near-canonical readable transforms from readable but scarred
+      near-neighbors. `validation.integrity` now reports
+      `integrity_label`, `damage_score`, pseudo-character fraction,
+      uncovered-character fraction, suspicious short pseudo-word counts, and
+      larger pseudo-word fragments. This lets reports/agents distinguish
+      `clean_or_canonical`, `minor_local_damage`,
+      `readable_with_local_scars`, and wrong-family-like basins among
+      candidates that are all nominally readable.
   - Scale the new wide structural transform-search layer from the current
     cap-aware 600k-candidate generator toward practical historical Z340-scale
     sweeps: stream/report hundreds of thousands of candidates, avoid
@@ -318,6 +391,16 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     Python path as the reference implementation until parity tests cover
     every selection gate; and keep K3/pure-transposition compatibility in the
     candidate representation.
+    - [x] Add the first shared K3-compatible candidate-plan abstraction for
+      pure-transposition screens. `PureTranspositionSearchConfig` and
+      `iter_pure_transposition_candidates` keep direct route/columnar,
+      `MatrixRotate`, and `TransMatrix` candidates in one provenance-bearing
+      stream, and artifacts/tool results now include `candidate_plan`
+      metadata.
+    - Architecture cleanup target: one Rust-backed evaluation API should
+      handle pure-transposition direct scoring, transform+homophonic finalist
+      validation, and future K3-style extensions without forking candidate
+      provenance or artifact schemas.
   - [x] Tighten solver-backed promotion ranking when several near-neighbor
     transform programs are promoted together. Full-budget promotion now runs a
     small final bakeoff over the screen-selected transform plus
@@ -336,6 +419,15 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     `search_session_id` / `continue_transform_search` tool so the agent can
     escalate from small -> medium/wide -> finalist promotion without wasting
     solver budget.
+    - [x] Add a first safe cache for the pure-transposition direct-scoring
+      screen. Identical calls are cached by ciphertext hash, language, search
+      profile, candidate cap, top-N, and TransMatrix settings; artifacts/tool
+      results report cache hit/miss metadata. This does not yet reuse work
+      across small -> medium/wide escalation or across homophonic finalist
+      promotion.
+    - [ ] Extend cache state to progressive transform+homophonic searches:
+      reuse structural screens, candidate token-order hashes, Rust
+      solver-backed finalist scores, and final bakeoff results.
   - [x] Add initial agent-driven word-boundary recovery support as a
     first-class post-solve task for Zodiac-class no-boundary ciphers.
     `act_resegment_by_reading` / `act_resegment_from_reading_repair` can now
@@ -368,6 +460,27 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     shape: automated/homophonic baseline -> transform suspicion -> medium
     screen -> declaration blocked as word-islands/needs-more-work -> wide
     transform+homophonic search -> coherent stream declaration.
+  - [ ] Run a full multi-family frontier calibration on an idle machine after
+    the latest pure-transposition and Rust transform changes. Update
+    thresholds for the rebased `frontier/automated_solver_frontier.jsonl`
+    only after comparing pass/watch behavior across homophonic,
+    transposition, polyalphabetic, Borg, and Copiale rows.
+  - [x] Tighten the agent-facing transform workflow now that both
+    `search_transform_homophonic` and `search_pure_transposition` exist:
+    prompt/tool guidance should ask whether the problem is wrong order only
+    or wrong order plus substitution/homophonic keying, inspect multiple
+    finalists efficiently, and avoid local word repair on a bad transform
+    basin.
+    `search_pure_transposition` now returns a session menu, pure-order
+    finalists can be paged with `search_review_pure_transposition_finalists`,
+    rated with `act_rate_transform_finalist`, and installed selectively with
+    `act_install_pure_transposition_finalists`. The prompt now explicitly
+    tells the agent to choose pure transposition vs.
+    transposition+homophonic before repairing local words.
+  - [ ] Curate additional real transposition and transposition+homophonic
+    cases. Keep clean real fixtures distinct from hypothesis/synthetic
+    composites, and record symbol normalization, provenance, and whether the
+    case is solved, disputed, or qualitative-only.
   - [x] Add initial reversible repair mechanics for near-solved no-boundary
     branches. `act_set_mapping` and `act_apply_word_repair` support
     `dry_run=true`, returning changed-word previews and undo information
@@ -723,7 +836,20 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - Current April 2026 state:
     - [x] Add a `shared_hard` class so the suite tracks cases that are meaningfully challenging for both Decipher and Zenith, not just regressions and one Zodiac row.
     - [x] Make external frontier runs default to Zenith-only via `external_baselines/zenith_only.json`.
-    - [ ] Revisit thresholds for a few rows now that `zenith_native` is the default automated homophonic path (`synth_en_80nb_s1` timing, multilingual simple-substitution expectations, etc.).
+    - [x] Rebalance the main packet after the polyalphabetic, pure
+      transposition, and transposition+homophonic work. The suite now covers
+      simple substitution, multilingual substitution, English homophonic,
+      periodic polyalphabetic, Kryptos K1/K2 known replay, Kryptos K3 pure
+      transposition, known/hidden transposition+homophonic rows, Borg, and
+      Copiale. Italian simple substitution is now correctly marked as a
+      `bad_result` gap instead of a stale `known_good` row.
+    - [x] Add per-case Decipher runner overrides in
+      `scripts/run_frontier_suite.py` so individual frontier rows can request
+      transform ranking/search profiles without requiring every row in the
+      run to inherit the same expensive CLI flags.
+    - [ ] Revisit the thresholds again after the next full run on an idle
+      machine, especially stochastic rows (`synth_en_80honb_s2`, Zodiac 408,
+      Borg 0171v, and hidden-route transform search).
 
 ### Priority 4: Full-Agent Parity
 

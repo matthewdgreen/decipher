@@ -80,6 +80,13 @@ def build_test_case(
         else:
             canonical = _format_canonical_tokens(cipher_token_words, spec.word_boundaries)
             cipher_system = "homophonic_substitution"
+    elif spec.transposition_only:
+        if transform_pipeline is None or transform_pipeline.is_empty():
+            raise ValueError("pure-transposition synthetic cases require transform_pipeline")
+        flat_chars = [ch for word in words for ch in word]
+        scrambled_chars = make_inverse_input_for_pipeline(flat_chars, transform_pipeline)
+        canonical = " ".join(scrambled_chars)
+        cipher_system = "pure_transposition"
     else:
         key = _make_key(rng)
         cipher_words = _apply_key(words, key)
@@ -108,6 +115,8 @@ def build_test_case(
             cipher_flag = _poly_flag(spec.polyalphabetic_variant, spec.word_boundaries)
         elif spec.homophonic:
             cipher_flag = "thonb" if transform_pipeline is not None and not transform_pipeline.is_empty() else "honb"
+        elif spec.transposition_only:
+            cipher_flag = "ptnb"
         else:
             if transform_pipeline is not None and not transform_pipeline.is_empty():
                 cipher_flag = "tnb"
@@ -124,6 +133,8 @@ def build_test_case(
     descriptor_parts = [boundary_label]
     if spec.homophonic:
         descriptor_parts.append("homophonic")
+    if spec.transposition_only:
+        descriptor_parts.append("pure transposition")
     if spec.polyalphabetic_variant:
         descriptor_parts.append(spec.polyalphabetic_variant)
     if transform_pipeline is not None and not transform_pipeline.is_empty():

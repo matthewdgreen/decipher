@@ -1133,6 +1133,18 @@ def test_system_prompt_includes_unknown_cipher_mode_workflow():
     assert "Local spelling and boundary repairs are for near-solves" in system
 
 
+def test_system_prompt_distinguishes_pure_and_mixed_transposition_workflows():
+    system = get_system_prompt("en")
+
+    assert "Make the pure-vs-mixed transposition decision explicit" in system
+    assert "`search_pure_transposition`" in system
+    assert "`search_review_pure_transposition_finalists`" in system
+    assert "`act_install_pure_transposition_finalists`" in system
+    assert "`search_transform_homophonic`" in system
+    assert "word islands" in system
+    assert "switch the cipher-mode hypothesis" in system
+
+
 def test_system_prompt_mentions_scoped_benchmark_context_tools():
     system = get_system_prompt("en")
 

@@ -116,6 +116,19 @@ readability score explicitly with `act_rate_transform_finalist` before \
 choosing which finalist to repair or declare. This directly \
 tests whether the reading order itself is wrong without blindly launching \
 expensive language-model searches. \
+Make the pure-vs-mixed transposition decision explicit. If the symbols already \
+look like plaintext alphabet letters and the main problem appears to be order, \
+create/update a `transposition` hypothesis and use \
+`search_pure_transposition`; then page finalists with \
+`search_review_pure_transposition_finalists`, rate promising previews with \
+`act_rate_transform_finalist`, and install selected ranks with \
+`act_install_pure_transposition_finalists`. If the cipher has a larger or \
+non-plaintext alphabet, obvious homophones, or a transformed candidate still \
+needs a symbol key, create/update `transposition_homophonic` and use \
+`search_transform_homophonic` instead. Do not use spelling, word-boundary, or \
+local mapping repair to rescue a branch whose preview is only word islands; \
+that is evidence to review more finalists, broaden search, or switch the \
+cipher-mode hypothesis. \
 For keyed-tableau / Quagmire-style polyalphabetic hypotheses, do not use the \
 default tiny search as meaningful evidence. Call \
 `workspace_hypothesis_next_steps` and then \
