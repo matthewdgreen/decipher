@@ -21,42 +21,6 @@ from the Zenith solving tool. For licensing reasons we do not redistribute
 Zenith's ngram models, and instead provide our own (as well as tooling to
 generate additional models).
 
-## License
-
-Decipher is licensed under the GNU General Public License, version 3. See
-`LICENSE`.
-
-## Attribution
-
-The `zenith_native` homophonic solver in `src/analysis/zenith_solver.py` is
-derived from the Zenith project by beldenge:
-
-- [Zenith](https://github.com/beldenge/Zenith)
-
-That solver path was adopted because it materially outperformed the earlier
-native homophonic search. Decipher was therefore relicensed under GPLv3 so
-this derived solver can be redistributed with explicit attribution and license
-compatibility.
-
-The original Zenith English binary model is not redistributed here. Decipher
-includes tooling to build replacement language models from open and licensed
-corpora.
-
-Current provenance understanding:
-
-- The `zenith_native` solver code path is redistributable under GPLv3 with
-  attribution.
-- The Zenith English binary model is still treated as **legally unresolved**
-  for redistribution in Decipher.
-- Earlier concern that **BNC** alone blocked redistribution turned out to be
-  too pessimistic; BNC-derived products appear to be allowed.
-- The main remaining uncertainty is the **Blog Authorship Corpus**, which
-  Zenith documents as part of its training mix and which appears to be limited
-  to **non-commercial research use**.
-
-So for now, Decipher does **not** bundle the original Zenith model and instead
-ships Decipher-built replacement models.
-
 ## Setup
 
 Prerequisites:
@@ -74,9 +38,17 @@ Prerequisites:
 
 ```bash
 cd /path/to/decipher
-python3.11 -m venv .venv
-source .venv/bin/activate
 scripts/setup_dev.sh
+```
+
+The script finds a Python 3.11+ interpreter, creates `.venv`, installs the
+package in editable mode, and builds the Rust extension. If any prerequisite
+is missing it prints platform-specific install instructions and exits.
+
+To activate the venv in your current shell after setup:
+
+```bash
+source .venv/bin/activate
 ```
 
 No API key is required for the default automated workflows.
@@ -105,18 +77,6 @@ cd /path/to/decipher
 scripts/build_rust_fast.sh
 ```
 
-Minimal manual setup equivalent:
-
-```bash
-cd /path/to/decipher
-source .venv/bin/activate
-pip install -e .
-.venv/bin/python -m pip install maturin
-cd rust/decipher_fast
-../../.venv/bin/python -m maturin develop --release
-cd ../..
-```
-
 Check whether the module is available:
 
 ```bash
@@ -127,6 +87,12 @@ If `decipher_fast` is missing, benchmark/crack/testgen runs abort immediately
 with build instructions. The remaining Python Quagmire path is reference and
 diagnostic scaffolding only; do not treat it as a runtime fallback for
 large-scale searches.
+
+## Unit Tests
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
+```
 
 ## Automated Solving
 
@@ -677,8 +643,38 @@ tables and usage notes.
 | `run_python` | (one tool) | Escape hatch with required justification |
 | `meta_*` | request_tool, declare_solution | Run control |
 
-## Unit Tests
+## License
 
-```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
-```
+Decipher is licensed under the GNU General Public License, version 3. See
+`LICENSE`.
+
+## Attribution
+
+The `zenith_native` homophonic solver in `src/analysis/zenith_solver.py` is
+derived from the Zenith project by beldenge:
+
+- [Zenith](https://github.com/beldenge/Zenith)
+
+That solver path was adopted because it materially outperformed the earlier
+native homophonic search. Decipher was therefore relicensed under GPLv3 so
+this derived solver can be redistributed with explicit attribution and license
+compatibility.
+
+The original Zenith English binary model is not redistributed here. Decipher
+includes tooling to build replacement language models from open and licensed
+corpora.
+
+Current provenance understanding:
+
+- The `zenith_native` solver code path is redistributable under GPLv3 with
+  attribution.
+- The Zenith English binary model is still treated as **legally unresolved**
+  for redistribution in Decipher.
+- Earlier concern that **BNC** alone blocked redistribution turned out to be
+  too pessimistic; BNC-derived products appear to be allowed.
+- The main remaining uncertainty is the **Blog Authorship Corpus**, which
+  Zenith documents as part of its training mix and which appears to be limited
+  to **non-commercial research use**.
+
+So for now, Decipher does **not** bundle the original Zenith model and instead
+ships Decipher-built replacement models.
