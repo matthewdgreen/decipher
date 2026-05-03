@@ -267,10 +267,10 @@ def infer_provider_from_model(model: str | None, provider: str | None = None) ->
 def default_model_for_provider(provider: str) -> str:
     provider = canonical_provider(provider)
     if provider == "openai":
-        return "gpt-5.4-mini"
+        return "gpt-5.4"
     if provider == "gemini":
         return "gemini-3-flash-preview"
-    return "claude-opus-4-7"
+    return "claude-sonnet-4-6"
 
 
 def make_model_provider(

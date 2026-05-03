@@ -615,8 +615,8 @@ you intend to use.
 
 | Provider | `--provider` value | Environment variable(s) | Default model |
 |----------|--------------------|------------------------|---------------|
-| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-opus-4-7` |
-| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4-mini` |
+| Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
 
 The provider is inferred automatically from a recognized model name prefix
