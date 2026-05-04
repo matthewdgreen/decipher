@@ -301,11 +301,12 @@ tool calls varies widely by model.** Tested as of May 2026:
 
 | Model | Tool calling | Notes |
 |---|---|---|
-| `meta-llama/llama-3.3-70b-instruct` | ⚠️ Poor | Tool calls fire but reasoning quality is very low; see note |
+| `tencent/hy3-preview:free` | ✅ Good tool use | Handles tool calls well; free tier; doesn't always solve but reliable loop |
 | `meta-llama/llama-4-maverick` | ✅ Untested | Likely better than 3.3-70b; worth trying |
 | `deepseek/deepseek-chat` (`deepseek-v3`) | ⚠️ Partial | Tool calls fire; gives up too early; see note |
 | `qwen/qwen3-30b-a3b` | ✅ Untested | MoE; cheap at $0.09/$0.45 per M |
 | `mistralai/mistral-small-3.2-24b-instruct` | ✅ Untested | $0.075/$0.20 per M |
+| `meta-llama/llama-3.3-70b-instruct` | ⚠️ Poor | Tool calls fire but reasoning quality is very low; see note |
 | `deepseek/deepseek-r1` | ❌ **Broken** | See note below |
 | `deepseek/deepseek-r1-0528` | ❌ **Broken** | Same issue |
 

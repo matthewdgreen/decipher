@@ -618,6 +618,8 @@ models offer cost savings (5–40× cheaper per token) at some quality trade-off
 > - `qwen/qwen3-30b-a3b`, `mistralai/mistral-small-3.2-24b-instruct` — untested
 > - `deepseek/deepseek-chat` (V3) — tool calls fire but gives up after
 >   diagnostic-budget searches and ignores harness feedback asking for more
+> - `tencent/hy3-preview:free` — good tool-call discipline; free tier;
+>   doesn't always solve but runs the loop correctly
 > - `meta-llama/llama-3.3-70b-instruct` — tool calls fire but reasoning
 >   quality is very poor; loops on failing calls, ignores required tools
 > - `deepseek/deepseek-r1` / `deepseek-r1-0528` — **broken**: embeds tool
