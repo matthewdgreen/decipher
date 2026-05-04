@@ -611,13 +611,21 @@ Recommended for historical manuscript analysis: `claude-sonnet-4-6`. OpenRouter
 models offer cost savings (5–40× cheaper per token) at some quality trade-off.
 
 > **OpenRouter tool-calling note:** Not all OpenRouter models reliably emit
-> structured tool calls. Models confirmed working: `meta-llama/llama-3.3-70b-instruct`,
-> `meta-llama/llama-4-maverick`, `deepseek/deepseek-chat`,
-> `qwen/qwen3-30b-a3b`, `mistralai/mistral-small-3.2-24b-instruct`.
-> **Do not use `deepseek/deepseek-r1` or `deepseek/deepseek-r1-0528`**: R1
-> embeds tool calls as Markdown text blocks instead of structured response
-> fields, causing the agent loop to exit after one iteration with zero tool
-> calls. Use `deepseek/deepseek-chat` (V3) instead.
+> structured tool calls or reason well enough for agentic cipher-cracking.
+> Tested as of May 2026:
+>
+> - `meta-llama/llama-4-maverick` — untested but likely best Llama option
+> - `qwen/qwen3-30b-a3b`, `mistralai/mistral-small-3.2-24b-instruct` — untested
+> - `deepseek/deepseek-chat` (V3) — tool calls fire but gives up after
+>   diagnostic-budget searches and ignores harness feedback asking for more
+> - `meta-llama/llama-3.3-70b-instruct` — tool calls fire but reasoning
+>   quality is very poor; loops on failing calls, ignores required tools
+> - `deepseek/deepseek-r1` / `deepseek-r1-0528` — **broken**: embeds tool
+>   calls as Markdown text, agent loop exits after one iteration with zero tool
+>   calls; use `deepseek/deepseek-chat` instead
+>
+> For production use, `claude-sonnet-4-6` via Anthropic remains the most
+> reliable choice.
 
 > **Ollama note:** The agentic solver relies heavily on structured tool
 > calling. You must use a model with documented tool-use support (e.g.

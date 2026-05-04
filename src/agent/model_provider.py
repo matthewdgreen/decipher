@@ -543,6 +543,9 @@ _PRICING: dict[str, dict[str, tuple[float, float, float]]] = {
 
 # In-memory cache: populated once per process from disk or network.
 _OPENROUTER_PRICING_LIVE: dict[str, tuple[float, float, float]] | None = None
+# Full set of all known OpenRouter model IDs (including free/unpriced ones).
+# Populated alongside _OPENROUTER_PRICING_LIVE whenever we touch the models API.
+_OPENROUTER_ALL_MODEL_IDS: set[str] | None = None
 # Guard so we attempt the network fetch at most once per process.
 _OPENROUTER_FETCH_ATTEMPTED: bool = False
 # Disk cache is considered stale after this many hours.
@@ -581,7 +584,12 @@ def _parse_openrouter_models_response(
 def _load_openrouter_disk_cache(
     cache_path: Path | None = None,
 ) -> dict[str, tuple[float, float, float]] | None:
-    """Return disk-cached pricing if the file exists and is within TTL."""
+    """Return disk-cached pricing if the file exists and is within TTL.
+
+    As a side-effect, populates ``_OPENROUTER_ALL_MODEL_IDS`` from the
+    ``all_model_ids`` field written by recent cache versions.
+    """
+    global _OPENROUTER_ALL_MODEL_IDS
     import time
 
     path = cache_path or _default_openrouter_cache_path()
@@ -596,6 +604,9 @@ def _load_openrouter_disk_cache(
         for model_id, rates in (raw.get("models") or {}).items():
             if isinstance(rates, (list, tuple)) and len(rates) >= 3:
                 pricing[model_id] = (float(rates[0]), float(rates[1]), float(rates[2]))
+        # Populate all-IDs set from cache if available (written by recent versions).
+        if _OPENROUTER_ALL_MODEL_IDS is None and raw.get("all_model_ids"):
+            _OPENROUTER_ALL_MODEL_IDS = set(raw["all_model_ids"])
         return pricing or None
     except Exception:  # noqa: BLE001
         return None
@@ -632,6 +643,15 @@ def fetch_openrouter_pricing(
     if not pricing:
         raise ValueError("OpenRouter /api/v1/models returned no priced models")
 
+    # Collect all model IDs (including free/unpriced) for validation use.
+    all_ids: set[str] = {
+        str(m.get("id", "")).strip()
+        for m in (data.get("data") or [])
+        if m.get("id")
+    }
+    global _OPENROUTER_ALL_MODEL_IDS
+    _OPENROUTER_ALL_MODEL_IDS = all_ids
+
     if write_cache:
         path = cache_path or _default_openrouter_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -639,6 +659,8 @@ def fetch_openrouter_pricing(
             "fetched_at": time.time(),
             "model_count": len(pricing),
             "models": {k: list(v) for k, v in pricing.items()},
+            # Store all IDs (not just priced) so validation can use the cache.
+            "all_model_ids": sorted(all_ids),
         }
         path.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
 
@@ -658,7 +680,7 @@ def _get_openrouter_live_pricing(
 
     Returns an empty dict if no live data is available.
     """
-    global _OPENROUTER_PRICING_LIVE, _OPENROUTER_FETCH_ATTEMPTED
+    global _OPENROUTER_PRICING_LIVE, _OPENROUTER_FETCH_ATTEMPTED, _OPENROUTER_ALL_MODEL_IDS
 
     if _OPENROUTER_PRICING_LIVE is not None:
         return _OPENROUTER_PRICING_LIVE
@@ -682,6 +704,79 @@ def _get_openrouter_live_pricing(
             pass  # fall through to hardcoded table
 
     return {}
+
+
+def validate_model(
+    provider: str,
+    model: str,
+    *,
+    cache_path: Path | None = None,
+    timeout: float = 5.0,
+) -> tuple[bool, str]:
+    """Check whether a model is likely valid for the given provider.
+
+    Returns ``(True, "")`` when the model appears valid or cannot be verified
+    (e.g. the network is unreachable).  Returns ``(False, human_readable_hint)``
+    when the model is definitively not recognised.
+
+    For OpenRouter the check is authoritative: we fetch (or use the cached)
+    ``/api/v1/models`` list which covers all 300+ models.  For other providers
+    the check is best-effort only (prefix heuristics; never blocks on failure).
+    """
+    provider = canonical_provider(provider)
+
+    if provider == "openrouter":
+        # Ensure the all-IDs set is populated.  _get_openrouter_live_pricing()
+        # triggers the disk-cache load and lazy network fetch as a side-effect.
+        _get_openrouter_live_pricing(cache_path=cache_path)
+
+        if _OPENROUTER_ALL_MODEL_IDS is None:
+            # Disk cache exists but predates the all_model_ids field (old format),
+            # or no cache exists yet.  Do a direct fetch to populate IDs; this
+            # also rewrites the cache in the new format.
+            try:
+                fetch_openrouter_pricing(timeout=timeout, cache_path=cache_path)
+            except Exception:  # noqa: BLE001
+                return True, ""  # Cannot reach OpenRouter — don't block the run.
+
+        if _OPENROUTER_ALL_MODEL_IDS is not None:
+            if model in _OPENROUTER_ALL_MODEL_IDS:
+                return True, ""
+            # Build a helpful suggestion list: models whose ID contains any
+            # component of the supplied name (split on "/").
+            parts = [p.lower() for p in model.replace(":", "/").split("/") if p]
+            suggestions = sorted(
+                mid for mid in _OPENROUTER_ALL_MODEL_IDS
+                if any(p in mid.lower() for p in parts)
+            )[:5]
+            hint = f"Model '{model}' was not found on OpenRouter."
+            if suggestions:
+                hint += "\nDid you mean one of these?\n" + "\n".join(
+                    f"  {s}" for s in suggestions
+                )
+            hint += (
+                "\nRun 'decipher doctor' to see known models, "
+                "or browse https://openrouter.ai/models"
+            )
+            return False, hint
+
+        # Could not reach OpenRouter at all — don't block.
+        return True, ""
+
+    # For other providers: lightweight prefix check.  We never hard-fail here
+    # because our known-model lists are incomplete.
+    if provider == "ollama":
+        return True, ""  # Ollama validates at connection time; no API for lookup.
+
+    known_prefixes = list(_PRICING.get(provider, {}).keys())
+    if known_prefixes and not any(model.startswith(p) for p in known_prefixes):
+        # Model name doesn't match any known prefix for this provider — warn
+        # but still allow (user may be using a newer model not in our table).
+        return True, (
+            f"Warning: '{model}' is not in the known model list for {provider}. "
+            "The run will proceed; if the model name is wrong the API will error."
+        )
+    return True, ""
 
 
 def estimate_provider_cost(

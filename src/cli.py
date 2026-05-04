@@ -214,6 +214,25 @@ def _make_agent_provider(args: argparse.Namespace):
     )
 
 
+def _preflight_model_check(args: argparse.Namespace) -> None:
+    """Validate provider+model before the renderer starts.
+
+    Exits with a clear error message if the model is definitively not found.
+    Prints a warning (but continues) for soft mismatches on non-OpenRouter
+    providers.  Silent no-op when the check cannot be completed (e.g. no
+    network).
+    """
+    from agent.model_provider import validate_model
+
+    provider, model = _resolve_provider_and_model(args)
+    ok, hint = validate_model(provider, model)
+    if not ok:
+        print(f"Error: {hint}", file=sys.stderr)
+        sys.exit(2)
+    if hint:  # non-empty hint on a True result is a warning
+        print(hint, file=sys.stderr)
+
+
 def _read_external_context(args: argparse.Namespace) -> str | None:
     """Return the external context string, loading from file if --context-file given."""
     ctx = getattr(args, "context", None)
@@ -458,6 +477,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     else:
         from benchmark.runner_v2 import BenchmarkRunnerV2
 
+        _preflight_model_check(args)
         provider, model = _resolve_provider_and_model(args)
         api = _make_agent_provider(args)
         runner = BenchmarkRunnerV2(
@@ -581,6 +601,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
     from agent.loop_v2 import run_v2
     from agent.display import make_agent_renderer
 
+    _preflight_model_check(args)
     provider, model = _resolve_provider_and_model(args)
     api = _make_agent_provider(args)
     display_mode = _resolve_agent_display(args)

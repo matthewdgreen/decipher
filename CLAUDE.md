@@ -301,11 +301,11 @@ tool calls varies widely by model.** Tested as of May 2026:
 
 | Model | Tool calling | Notes |
 |---|---|---|
-| `meta-llama/llama-3.3-70b-instruct` | ✅ Reliable | Good default; $0.10/$0.32 per M |
-| `meta-llama/llama-4-maverick` | ✅ Reliable | $0.15/$0.60 per M |
-| `deepseek/deepseek-v3-0324` / `deepseek-chat` | ✅ Reliable | V3 chat model; ~$0.20-0.28 in / ~$0.77-0.89 out per M |
-| `qwen/qwen3-30b-a3b` | ✅ Reliable | MoE; cheap at $0.09/$0.45 per M |
-| `mistralai/mistral-small-3.2-24b-instruct` | ✅ Reliable | $0.075/$0.20 per M |
+| `meta-llama/llama-3.3-70b-instruct` | ⚠️ Poor | Tool calls fire but reasoning quality is very low; see note |
+| `meta-llama/llama-4-maverick` | ✅ Untested | Likely better than 3.3-70b; worth trying |
+| `deepseek/deepseek-chat` (`deepseek-v3`) | ⚠️ Partial | Tool calls fire; gives up too early; see note |
+| `qwen/qwen3-30b-a3b` | ✅ Untested | MoE; cheap at $0.09/$0.45 per M |
+| `mistralai/mistral-small-3.2-24b-instruct` | ✅ Untested | $0.075/$0.20 per M |
 | `deepseek/deepseek-r1` | ❌ **Broken** | See note below |
 | `deepseek/deepseek-r1-0528` | ❌ **Broken** | Same issue |
 
@@ -316,7 +316,23 @@ block inside text rather than in the structured `tool_calls` response field. The
 finds zero `tool_use` blocks, fires `no_tool_calls` on iteration 1, and exits immediately.
 The model's *reasoning* is correct (it names the right tool and right arguments), but the
 output format is wrong. There is also visible thinking-token bleed into the output text.
-This is not fixable by prompt engineering — use DeepSeek-V3 (`deepseek/deepseek-chat`) instead.
+This is not fixable by prompt engineering — use DeepSeek-V3 instead.
+
+**DeepSeek-V3 (`deepseek/deepseek-chat`) partial failure** (confirmed May 2026, artifact `bd7ca7931996`):
+Tool calls fire correctly. Called `search_quagmire3_keyword_alphabet` at diagnostic budget
+(4,000 proposals), decided the family was wrong after that minimal pass, then ignored the
+explicit harness block requesting a moderate-budget search, and stopped calling tools in
+the final iteration. The correct tool was identified; the failure is insufficient budget
+escalation and non-compliance with harness feedback.
+
+**Llama-3.3-70b-instruct failure** (confirmed May 2026, artifact `a7cba7261bac`):
+Tool calls fire, but reasoning quality is very poor. Spent all 20 iterations fixating on
+the keyless `automated_preflight` branch, repeating 7 identical failing `act_swap_decoded`
+calls and 5 blocked `meta_declare_solution` attempts. Never called `search_quagmire3_keyword_alphabet`
+or `workspace_branch_cards` despite both being explicitly required. One `search_anneal`
+call crashed with `ZeroDivisionError` from a hallucinated `t_end=0` argument. Passed a
+literal instruction string as the `proposed_text` argument to `act_resegment_by_reading`.
+Strictly worse than DeepSeek-V3 in reasoning quality.
 
 ### Pricing
 Cost estimation is live for OpenRouter: `estimate_provider_cost()` fetches
