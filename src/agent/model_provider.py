@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -262,6 +263,85 @@ class OllamaModelProvider:
         return _openai_chat_response_to_model_response(response)
 
 
+class OpenRouterModelProvider:
+    """Adapter for OpenRouter's OpenAI-compatible gateway.
+
+    OpenRouter proxies 200+ open-weight and frontier models through a single
+    OpenAI-compatible endpoint.  Model IDs use the 'provider/name' format,
+    e.g. 'meta-llama/llama-3.3-70b-instruct' or 'deepseek/deepseek-v4-pro'.
+
+    API key
+    -------
+    Set OPENROUTER_API_KEY, put it in .env, put it in
+    .decipher_keys/openrouter_api_key, or store it in the macOS Keychain
+    under service='decipher', account='openrouter_api_key'.
+
+    Environment variables
+    ---------------------
+    OPENROUTER_TIMEOUT   Per-request timeout in seconds (default: 180).
+                         Open-weight models behind OpenRouter can be slower
+                         than frontier APIs; 180 s is a conservative safe
+                         default for long tool-heavy agent turns.
+    OPENROUTER_SITE_URL  HTTP-Referer header sent with every request.
+                         Appears in your OpenRouter dashboard and helps with
+                         rate-limit allowances.  Defaults to the project URL.
+    OPENROUTER_APP_NAME  X-Title header for dashboard identification.
+    """
+
+    provider_name = "openrouter"
+    BASE_URL = "https://openrouter.ai/api/v1"
+    DEFAULT_TIMEOUT = 180.0
+
+    def __init__(self, api_key: str, model: str) -> None:
+        import os
+
+        try:
+            from openai import OpenAI
+        except ImportError as exc:  # pragma: no cover
+            raise ModelProviderError(
+                "OpenRouter provider requires the `openai` package. "
+                "Install with: pip install -e '.[providers]'"
+            ) from exc
+        try:
+            timeout = float(os.environ.get("OPENROUTER_TIMEOUT", self.DEFAULT_TIMEOUT))
+        except ValueError:
+            timeout = self.DEFAULT_TIMEOUT
+        site_url = os.environ.get(
+            "OPENROUTER_SITE_URL",
+            "https://github.com/decipher-research/decipher",
+        )
+        app_name = os.environ.get("OPENROUTER_APP_NAME", "decipher")
+        self.model = model
+        self.client = OpenAI(
+            base_url=self.BASE_URL,
+            api_key=api_key,
+            timeout=timeout,
+            default_headers={
+                "HTTP-Referer": site_url,
+                "X-Title": app_name,
+            },
+        )
+
+    def send(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        system: str = "",
+        max_tokens: int = 4096,
+    ) -> ModelResponse:
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=_messages_to_openai_chat(messages, system=system),
+                tools=_tools_to_openai_chat(tools),
+                max_tokens=max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ModelProviderError(str(exc)) from exc
+        return _openai_chat_response_to_model_response(response)
+
+
 class GeminiModelProvider:
     """Adapter for Google Gemini models with function declarations."""
 
@@ -318,6 +398,8 @@ def canonical_provider(provider: str | None) -> str:
         "google": "gemini",
         "gemini": "gemini",
         "ollama": "ollama",
+        "openrouter": "openrouter",
+        "or": "openrouter",
     }
     if value not in aliases:
         raise ValueError(f"Unsupported provider: {provider}")
@@ -336,6 +418,9 @@ def infer_provider_from_model(model: str | None, provider: str | None = None) ->
         return "openai"
     if name.startswith("gemini-"):
         return "gemini"
+    # OpenRouter model IDs use "provider/model-name" format.
+    if "/" in name:
+        return "openrouter"
     return "anthropic"
 
 
@@ -347,6 +432,8 @@ def default_model_for_provider(provider: str) -> str:
         return "gemini-3-flash-preview"
     if provider == "ollama":
         return "qwen3:14b"
+    if provider == "openrouter":
+        return "meta-llama/llama-3.3-70b-instruct"
     return "claude-sonnet-4-6"
 
 
@@ -367,6 +454,8 @@ def make_model_provider(
         return GeminiModelProvider(api_key=api_key, model=model)
     if provider == "ollama":
         return OllamaModelProvider(model=model)
+    if provider == "openrouter":
+        return OpenRouterModelProvider(api_key=api_key, model=model)
     raise ValueError(f"Unsupported provider: {provider}")
 
 
@@ -416,7 +505,183 @@ _PRICING: dict[str, dict[str, tuple[float, float, float]]] = {
         "gemini-3.1-flash": (0.50, 2.00, 0.05),
         "gemini-3.1-pro": (2.00, 12.00, 0.20),
     },
+    # OpenRouter: prices are approximate (USD/M tokens) and may vary by route.
+    # Prefix-matching is longest-first, so more specific entries win.
+    "openrouter": {
+        # Meta Llama 3.x / 4.x
+        "meta-llama/llama-4-maverick": (0.20, 0.80, 0.020),
+        "meta-llama/llama-4-scout": (0.10, 0.35, 0.010),
+        "meta-llama/llama-3.3-70b-instruct": (0.28, 0.56, 0.028),
+        "meta-llama/llama-3.1-8b-instruct": (0.04, 0.04, 0.004),
+        # DeepSeek
+        "deepseek/deepseek-r1-0528": (0.55, 2.19, 0.055),
+        "deepseek/deepseek-r1": (0.55, 2.19, 0.055),
+        "deepseek/deepseek-v3-0324": (0.28, 0.89, 0.028),
+        "deepseek/deepseek-v3": (0.28, 0.89, 0.028),
+        # Mistral / Mixtral
+        "mistralai/mistral-small-3.2-24b-instruct": (0.10, 0.30, 0.010),
+        "mistralai/mistral-small-3.1-24b-instruct": (0.10, 0.30, 0.010),
+        "mistralai/mistral-nemo": (0.065, 0.065, 0.007),
+        # Qwen (Alibaba)
+        "qwen/qwen3-30b-a3b": (0.10, 0.30, 0.010),
+        "qwen/qwen3-14b": (0.10, 0.30, 0.010),
+        "qwen/qwen3-8b": (0.04, 0.04, 0.004),
+        # Google via OpenRouter
+        "google/gemini-2.5-flash-preview": (0.15, 0.60, 0.015),
+        "google/gemini-2.0-flash-001": (0.10, 0.40, 0.010),
+        # xAI Grok
+        "x-ai/grok-3-mini-beta": (0.30, 0.50, 0.030),
+        # Nous Hermes
+        "nousresearch/hermes-3-llama-3.1-70b": (0.40, 0.40, 0.040),
+    },
 }
+
+
+# ---------------------------------------------------------------------------
+# OpenRouter live pricing
+# ---------------------------------------------------------------------------
+
+# In-memory cache: populated once per process from disk or network.
+_OPENROUTER_PRICING_LIVE: dict[str, tuple[float, float, float]] | None = None
+# Guard so we attempt the network fetch at most once per process.
+_OPENROUTER_FETCH_ATTEMPTED: bool = False
+# Disk cache is considered stale after this many hours.
+_OPENROUTER_CACHE_TTL_HOURS: int = 24
+
+
+def _default_openrouter_cache_path() -> Path:
+    return Path.home() / ".config" / "decipher" / "openrouter_pricing.json"
+
+
+def _parse_openrouter_models_response(
+    data: dict[str, Any],
+) -> dict[str, tuple[float, float, float]]:
+    """Convert a raw /api/v1/models response into our ($/M-in, $/M-out, $/M-cache) format."""
+    result: dict[str, tuple[float, float, float]] = {}
+    for model in data.get("data", []) or []:
+        model_id = str(model.get("id") or "").strip()
+        if not model_id:
+            continue
+        pricing = model.get("pricing") or {}
+        try:
+            # OpenRouter exposes per-token prices as decimal strings.
+            input_rate = float(pricing.get("prompt") or 0) * 1_000_000
+            output_rate = float(pricing.get("completion") or 0) * 1_000_000
+        except (ValueError, TypeError):
+            continue
+        if input_rate <= 0.0 and output_rate <= 0.0:
+            continue  # skip free, unpriced, and routing-utility models
+        # OpenRouter doesn't expose a separate cache-read rate; approximate at
+        # 10 % of input (consistent with provider cache-read pricing norms).
+        cache_rate = round(input_rate * 0.10, 6)
+        result[model_id] = (round(input_rate, 6), round(output_rate, 6), cache_rate)
+    return result
+
+
+def _load_openrouter_disk_cache(
+    cache_path: Path | None = None,
+) -> dict[str, tuple[float, float, float]] | None:
+    """Return disk-cached pricing if the file exists and is within TTL."""
+    import time
+
+    path = cache_path or _default_openrouter_cache_path()
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        age_hours = (time.time() - float(raw.get("fetched_at", 0))) / 3600
+        if age_hours > _OPENROUTER_CACHE_TTL_HOURS:
+            return None
+        pricing: dict[str, tuple[float, float, float]] = {}
+        for model_id, rates in (raw.get("models") or {}).items():
+            if isinstance(rates, (list, tuple)) and len(rates) >= 3:
+                pricing[model_id] = (float(rates[0]), float(rates[1]), float(rates[2]))
+        return pricing or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def fetch_openrouter_pricing(
+    *,
+    timeout: float = 10.0,
+    cache_path: Path | None = None,
+    write_cache: bool = True,
+) -> dict[str, tuple[float, float, float]]:
+    """Fetch current OpenRouter model pricing from their public models API.
+
+    No authentication is required.  Writes a timestamped JSON disk cache so
+    subsequent process starts don't need a network round-trip.
+
+    Returns
+    -------
+    dict mapping model_id → (input_$/M, output_$/M, cache_read_$/M).
+
+    Raises
+    ------
+    OSError / urllib.error.URLError on network failure.
+    ValueError on unexpected response format.
+    """
+    import time
+    import urllib.request
+
+    url = "https://openrouter.ai/api/v1/models"
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310
+        data = json.loads(resp.read())
+
+    pricing = _parse_openrouter_models_response(data)
+    if not pricing:
+        raise ValueError("OpenRouter /api/v1/models returned no priced models")
+
+    if write_cache:
+        path = cache_path or _default_openrouter_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        cache_data: dict[str, Any] = {
+            "fetched_at": time.time(),
+            "model_count": len(pricing),
+            "models": {k: list(v) for k, v in pricing.items()},
+        }
+        path.write_text(json.dumps(cache_data, indent=2), encoding="utf-8")
+
+    return pricing
+
+
+def _get_openrouter_live_pricing(
+    cache_path: Path | None = None,
+) -> dict[str, tuple[float, float, float]]:
+    """Return live OpenRouter pricing, using the fastest available source.
+
+    Priority order:
+    1. In-memory cache (populated by a prior call this process).
+    2. Disk cache (if the file is < ``_OPENROUTER_CACHE_TTL_HOURS`` hours old).
+    3. Network fetch (attempted at most once per process; silently skipped on
+       failure so cost estimation degrades gracefully to the hardcoded table).
+
+    Returns an empty dict if no live data is available.
+    """
+    global _OPENROUTER_PRICING_LIVE, _OPENROUTER_FETCH_ATTEMPTED
+
+    if _OPENROUTER_PRICING_LIVE is not None:
+        return _OPENROUTER_PRICING_LIVE
+
+    disk = _load_openrouter_disk_cache(cache_path)
+    if disk:
+        _OPENROUTER_PRICING_LIVE = disk
+        return disk
+
+    if not _OPENROUTER_FETCH_ATTEMPTED:
+        _OPENROUTER_FETCH_ATTEMPTED = True
+        try:
+            pricing = fetch_openrouter_pricing(
+                timeout=5.0,  # short timeout — don't slow runs if OR is down
+                cache_path=cache_path,
+                write_cache=True,
+            )
+            _OPENROUTER_PRICING_LIVE = pricing
+            return pricing
+        except Exception:  # noqa: BLE001
+            pass  # fall through to hardcoded table
+
+    return {}
 
 
 def estimate_provider_cost(
@@ -429,7 +694,15 @@ def estimate_provider_cost(
     """Return approximate USD cost for normalized usage counters."""
 
     provider = canonical_provider(provider)
-    pricing = _PRICING.get(provider, {})
+    if provider == "openrouter":
+        # Merge: live data overrides the hardcoded table when available; the
+        # hardcoded table fills gaps for models the live fetch doesn't cover.
+        pricing: dict[str, tuple[float, float, float]] = {
+            **_PRICING.get("openrouter", {}),
+            **_get_openrouter_live_pricing(),
+        }
+    else:
+        pricing = _PRICING.get(provider, {})
     prefix = ""
     for candidate in sorted(pricing, key=len, reverse=True):
         if model.startswith(candidate):

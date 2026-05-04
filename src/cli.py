@@ -25,6 +25,7 @@ _PROVIDER_ENV_KEYS = {
     "anthropic": ["ANTHROPIC_API_KEY"],
     "openai": ["OPENAI_API_KEY"],
     "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    "openrouter": ["OPENROUTER_API_KEY"],
     # Ollama is local — no API key required.
 }
 
@@ -32,6 +33,7 @@ _PROVIDER_KEYRING_ACCOUNTS = {
     "anthropic": "anthropic_api_key",
     "openai": "openai_api_key",
     "gemini": "gemini_api_key",
+    "openrouter": "openrouter_api_key",
 }
 
 # Providers that run locally and never need an API key.
@@ -157,11 +159,11 @@ def _probe_api_key(provider: str) -> str:
 def _auto_detect_provider() -> str:
     """Return the first available provider in preference order.
 
-    Preference: anthropic → openai → gemini → ollama (only if server is
-    reachable).  Falls back to "anthropic" so that the normal get_api_key()
-    error message fires if nothing is configured.
+    Preference: anthropic → openai → gemini → openrouter → ollama (only if
+    server is reachable).  Falls back to "anthropic" so that the normal
+    get_api_key() error message fires if nothing is configured.
     """
-    for provider in ("anthropic", "openai", "gemini"):
+    for provider in ("anthropic", "openai", "gemini", "openrouter"):
         if _probe_api_key(provider):
             return provider
     # Ollama is local and needs no key, but only treat it as available if the
@@ -280,13 +282,56 @@ def _ollama_status() -> dict:
 
 def cmd_doctor(args: argparse.Namespace) -> None:
     from analysis.polyalphabetic_fast import fast_kernel_status
-    from agent.model_provider import default_model_for_provider, _PRICING
+    from agent.model_provider import (
+        _PRICING,
+        _default_openrouter_cache_path,
+        _load_openrouter_disk_cache,
+        default_model_for_provider,
+        fetch_openrouter_pricing,
+    )
+
+    # --refresh-pricing: fetch OpenRouter live pricing and show a diff.
+    if getattr(args, "refresh_pricing", False):
+        cache_path = _default_openrouter_cache_path()
+        old_pricing = _load_openrouter_disk_cache(cache_path) or {}
+        print("Fetching OpenRouter model pricing…", flush=True)
+        try:
+            new_pricing = fetch_openrouter_pricing(cache_path=cache_path)
+        except Exception as exc:  # noqa: BLE001
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Fetched {len(new_pricing)} models → {cache_path}")
+        # Show diff against previous cache for models we care about.
+        all_ids = sorted(set(old_pricing) | set(new_pricing))
+        changes = []
+        for mid in all_ids:
+            old = old_pricing.get(mid)
+            new = new_pricing.get(mid)
+            if old == new:
+                continue
+            if old is None:
+                changes.append(f"  + {mid}: in=${new[0]:.3f}/M  out=${new[1]:.3f}/M")
+            elif new is None:
+                changes.append(f"  - {mid}: removed")
+            else:
+                changes.append(
+                    f"  ~ {mid}: "
+                    f"in ${old[0]:.3f}→${new[0]:.3f}/M  "
+                    f"out ${old[1]:.3f}→${new[1]:.3f}/M"
+                )
+        if changes:
+            print(f"\n{len(changes)} change(s) vs previous cache:")
+            for line in changes:
+                print(line)
+        else:
+            print("No changes vs previous cache.")
+        return
 
     rust_status = fast_kernel_status()
 
     # Build provider info: key status + model list
     providers_info = {}
-    for provider in ("anthropic", "openai", "gemini"):
+    for provider in ("anthropic", "openai", "gemini", "openrouter"):
         key_status = _provider_key_status(provider)
         models = sorted(_PRICING.get(provider, {}).keys())
         providers_info[provider] = {
@@ -341,7 +386,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     # --- Cloud providers / API keys ---
     print("LLM providers:")
-    for provider in ("anthropic", "openai", "gemini"):
+    for provider in ("anthropic", "openai", "gemini", "openrouter"):
         info = providers_info[provider]
         key = info["key"]
         key_line = f"key: {key['source']}" if key["found"] else "key: not found"
@@ -349,8 +394,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         print(f"    default model : {info['default_model']}")
         print(f"    known models  : {', '.join(info['models']) or '(none)'}")
     print()
-    print("  To add a key: export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY,")
-    print("  or write it to .decipher_keys/<provider>_api_key.")
+    print("  To add a key: export ANTHROPIC_API_KEY / OPENAI_API_KEY / GEMINI_API_KEY /")
+    print("  OPENROUTER_API_KEY, or write it to .decipher_keys/<provider>_api_key.")
     print()
 
     # --- Ollama ---
@@ -993,6 +1038,17 @@ def main() -> None:
         action="store_true",
         help="Emit machine-readable status as JSON.",
     )
+    doctor.add_argument(
+        "--refresh-pricing",
+        action="store_true",
+        dest="refresh_pricing",
+        help=(
+            "Fetch the latest model pricing from OpenRouter and update the local "
+            "disk cache (~/.config/decipher/openrouter_pricing.json). "
+            "Pricing for Anthropic/OpenAI/Gemini is hardcoded and updated with "
+            "code releases."
+        ),
+    )
 
     # benchmark
     bench = subparsers.add_parser("benchmark", help="Run benchmark tests against historical datasets")
@@ -1005,7 +1061,7 @@ def main() -> None:
     bench.add_argument("--max-iterations", "-i", type=int, default=25)
     bench.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama", "openrouter", "or"],
         help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
     )
     bench.add_argument(
@@ -1148,7 +1204,7 @@ def main() -> None:
     crack.add_argument("--max-iterations", "-i", type=int, default=25)
     crack.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama", "openrouter", "or"],
         help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
     )
     crack.add_argument("--model", "-m", help="LLM model name. Defaults by provider.")
@@ -1272,7 +1328,7 @@ def main() -> None:
     )
     resume.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama", "openrouter", "or"],
         help="LLM provider for the continuation. Default is inferred from --model.",
     )
     resume.add_argument("--model", "-m", help="LLM model name (default: prior artifact model)")
@@ -1348,7 +1404,7 @@ def main() -> None:
     tg.add_argument("--max-iterations", "-i", type=int, default=25)
     tg.add_argument(
         "--provider",
-        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama"],
+        choices=["anthropic", "claude", "openai", "gemini", "google", "ollama", "openrouter", "or"],
         help="LLM provider for generation/agentic runs. Default is inferred from --model, else anthropic.",
     )
     tg.add_argument("--model", "-m")
