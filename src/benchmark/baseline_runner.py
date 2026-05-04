@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from benchmark.loader import TestData
-from benchmark.scorer import has_word_boundaries, score_decryption
+from benchmark.scorer import score_decryption
 from services.claude_api import ClaudeAPI, ClaudeAPIError
 
 
@@ -114,7 +114,10 @@ def run_baseline(
 ) -> BaselineResult:
     """Run the one-shot + code baseline on a single test case."""
     ground_truth = test_data.plaintext
-    word_boundaries = has_word_boundaries(ground_truth)
+    # Detect word boundaries from the cipher structure, not from the plaintext.
+    # The canonical transcription uses " | " as word separator when words are
+    # delimited; this is observable from the ciphertext alone.
+    word_boundaries = " | " in test_data.canonical_transcription
     format_note = _FORMAT_WORD_BOUNDARY if word_boundaries else _FORMAT_NO_BOUNDARY
 
     system = _SYSTEM_TMPL.format(language=language, format_note=format_note)

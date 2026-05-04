@@ -34,6 +34,10 @@ from analysis.transform_evaluation import (
     evaluate_finalist_menu,
     validate_finalist_menu,
 )
+from analysis.transform_homophonic_batch import (
+    build_confirmation_batch_payload,
+    dedupe_transform_batch_candidates,
+)
 from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from analysis.transform_search import inspect_transform_suspicion, screen_transform_candidates
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
@@ -1346,19 +1350,8 @@ def _rank_transform_candidates_rust_batch(
         len(cipher_text.tokens) < 600,
         search_profile=_homophonic_search_profile(),
     )
-    seen_pipeline: set[str] = set()
-    payload_candidates: list[dict[str, Any]] = []
-    metadata_by_id: dict[str, dict[str, Any]] = {}
     skipped: list[dict[str, Any]] = []
-    for candidate in raw_candidates:
-        pipeline_raw = candidate.get("pipeline")
-        pipeline_key = json.dumps(pipeline_raw, sort_keys=True)
-        if pipeline_key in seen_pipeline:
-            continue
-        seen_pipeline.add(pipeline_key)
-        candidate_id = str(candidate.get("candidate_id"))
-        payload_candidates.append(candidate)
-        metadata_by_id[candidate_id] = candidate
+    payload_candidates, metadata_by_id = dedupe_transform_batch_candidates(raw_candidates)
 
     threads = _transform_rank_threads()
     started = time.time()
@@ -1779,41 +1772,33 @@ def _confirm_transform_finalists_rust_batch(
         reason: str,
         start_index: int,
     ) -> None:
-        payload_candidates: list[dict[str, Any]] = []
-        metadata: dict[str, tuple[dict[str, Any], str, int, str]] = {}
-        for offset, item in enumerate(items):
-            seed_offset = 10_000 + (start_index + offset) * 1_000
-            original_id = str(item.get("candidate_id"))
-            batch_id = f"{original_id}__confirm_{seed_offset}"
-            pipeline = item.get("pipeline")
-            if not pipeline:
-                item["confirmation"] = {
-                    "status": "error",
-                    "seed_offset": seed_offset,
-                    "error": "missing transform pipeline",
-                }
-                item["confirmed_selection_score"] = (
-                    _float_or_none(item.get("validated_selection_score"))
-                    or _float_or_none(item.get("selection_score"))
-                    or float("-inf")
-                ) - 0.12
-                confirmed_ids.add(original_id)
-                skipped.append({
-                    "candidate_id": item.get("candidate_id"),
-                    "family": item.get("family"),
-                    "seed_offset": seed_offset,
-                    "confirmation_reason": reason,
-                    "reason": "missing transform pipeline",
-                })
-                continue
-            payload_candidates.append({
-                "candidate_id": batch_id,
-                "family": item.get("family"),
-                "pipeline": pipeline,
-                "grid": item.get("grid"),
+        payload_candidates, metadata, missing_pipeline = build_confirmation_batch_payload(
+            items,
+            reason=reason,
+            start_index=start_index,
+        )
+        for missing in missing_pipeline:
+            item = missing["item"]
+            original_id = str(missing["original_id"])
+            seed_offset = int(missing["seed_offset"])
+            item["confirmation"] = {
+                "status": "error",
                 "seed_offset": seed_offset,
+                "error": missing["error"],
+            }
+            item["confirmed_selection_score"] = (
+                _float_or_none(item.get("validated_selection_score"))
+                or _float_or_none(item.get("selection_score"))
+                or float("-inf")
+            ) - 0.12
+            confirmed_ids.add(original_id)
+            skipped.append({
+                "candidate_id": item.get("candidate_id"),
+                "family": item.get("family"),
+                "seed_offset": seed_offset,
+                "confirmation_reason": reason,
+                "reason": item["confirmation"]["error"],
             })
-            metadata[batch_id] = (item, original_id, seed_offset, reason)
 
         if not payload_candidates:
             return
@@ -1831,7 +1816,11 @@ def _confirm_transform_finalists_rust_batch(
         )
         for row in batch.get("results", []):
             batch_id = str(row.get("candidate_id"))
-            item, original_id, seed_offset, confirmation_reason = metadata[batch_id]
+            meta = metadata[batch_id]
+            item = meta.item
+            original_id = meta.original_id
+            seed_offset = meta.seed_offset
+            confirmation_reason = meta.reason
             if row.get("status") != "completed":
                 item["confirmation"] = {
                     "status": "error",
@@ -3582,17 +3571,6 @@ def _run_homophonic(
                 "key": seed_candidate.key,
                 "plaintext": seed_candidate.plaintext,
             }
-            if ground_truth is not None:
-                candidate_record["debug_char_accuracy"] = round(
-                    score_decryption(
-                        test_id="candidate_debug",
-                        decrypted=seed_candidate.plaintext,
-                        ground_truth=ground_truth,
-                        agent_score=0.0,
-                        status="completed",
-                    ).char_accuracy,
-                    4,
-                )
             candidate_records.append(candidate_record)
             aggregated_candidates.append(candidate_record)
         attempts.append({
@@ -3679,11 +3657,6 @@ def _run_homophonic(
                         "selection_score": item["selection_score"],
                         "preview": item["preview"][:160],
                         "diagnostics": item["diagnostics"],
-                        **(
-                            {"debug_char_accuracy": item["debug_char_accuracy"]}
-                            if "debug_char_accuracy" in item
-                            else {}
-                        ),
                     }
                     for i, item in enumerate(reranked_pool[:10])
                 ],
