@@ -12,6 +12,11 @@ Current planning split:
   coverage.
 - New Copiale/generalization work is tracked in
   `docs/copiale_generalization_plan.md`.
+- After the Copiale track, the next major capability priority should be
+  better statistical diagnostics for unknown cipher families, aiming for
+  parity with strong identifier/diagnostic tools such as dCode and Boxentriq.
+  This should become the front door for deciding which solver families and
+  agent tool menus to activate.
 
 ## Evaluation Integrity
 
@@ -34,6 +39,16 @@ Current planning split:
   `scripts/generate_transform_stress_suite.py`; after several clean overnight
   runs, tighten per-family thresholds and split any consistently hopeless rows
   into explicit beyond-frontier labels.
+  - First completed run: 180/180 completed, with 168 meeting expectations.
+    Summary: `known_good` 34/36 pass at 96.9% average char, `shared_hard`
+    134/144 pass at 83.4% average char. Failures clustered in
+    `route_columns_down`, `matrix_rotate`, `route_composite`, plus isolated
+    `block_route`, `rail_fence`, and `route_columns_up` rows. This is a useful
+    calibration signal rather than a broad runtime stressor.
+  - The current 180-row packet ran much faster than expected. Add a larger
+    generated tier, roughly 5-6x longer (about 900-1,200 rows), for true
+    overnight stochastic coverage once the 180-row family thresholds are
+    calibrated.
 
 ## Agent Runtime / Cost Optimization
 
@@ -79,6 +94,8 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     every classical family in this inventory or clearly mark why it is
     deferred, unsupported, or intended as a plugin.
 - [ ] Build dCode/Boxentriq-quality unknown-cipher diagnosis.
+  - Treat this as the next major implementation track after Copiale/German
+    null/nomenclator work reaches a stable checkpoint.
   - Produce a first-pass ranked diagnosis report for unknown inputs, not just
     scattered observations. The report should include confidence, evidence,
     counterevidence, recommended next tools, and families not yet tested.
@@ -1447,8 +1464,8 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     - [x] Add a first ciphertext-only diagnostic report:
       `scripts/report_copiale_evidence.py`. It measures symbol inventory,
       distribution flatness, rare-symbol pressure, and coarse/missing
-      word-boundary structure; it can attach post-hoc run summaries without
-      using plaintext for diagnosis.
+      word-boundary structure; it can attach post-hoc run summaries and
+      solver-basin diagnostics without using plaintext for diagnosis.
     - Add stronger declaration discipline for Copiale-like no-boundary
       homophonic/nomenclator ciphers: require coherent sentence-level German,
       not just common short words.
@@ -1457,10 +1474,29 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       same-cipher neighboring pages.
     - Improve German continuous n-gram/model support and consider a
       Copiale-specific or 18th-century German model.
-    - Deepen the diagnostic report to investigate nomenclator/codeword behavior
-      and whether some symbols or
-      clusters should be treated as nulls, abbreviations, or multi-letter
-      tokens rather than simple letter homophones.
+    - [x] Deepen the diagnostic report to investigate first-pass
+      nomenclator/codeword behavior: solver homophone families, repeated
+      symbol n-grams, and null/codeword candidates derived from rare,
+      localized, context-specific symbols and collapsed solver mappings.
+    - [x] Add an offline calibration pass to compare those candidates against
+      ground truth after solving, so heuristic tuning stays separate from
+      runtime solver behavior. First p052 calibration shows that insertion
+      burden is not only on rare symbols; frequent symbols in collapsed
+      homophone families can be overused and may need null/reweighting
+      treatment.
+      - First p052 pair-mask probe improved post-hoc char from `64.4%` to
+        `70.6%` with mask `S005,S014`; the same mask ranked second by solver
+        selection score without ground truth. This is promising but still
+        calibration-only.
+    - Build a null-aware homophonic search profile and then evaluate whether
+      some symbols or clusters should be treated as nulls, abbreviations, or
+      multi-letter tokens rather than simple letter homophones.
+    - [x] Add a prototype null-mask search script:
+      `scripts/probe_copiale_null_masks.py`. It generates null masks without
+      plaintext, reruns `zenith_native` on filtered token streams, and reports
+      post-hoc scores for calibration. Do not treat this as a production
+      solver route until candidate selection is good enough without
+      ground-truth feedback.
     - Run the Copiale packet in clean no-extra-context and context-aware modes
       and compare artifacts before adding any stable thresholds to the main
       frontier suite.

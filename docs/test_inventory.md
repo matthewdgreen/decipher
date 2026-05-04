@@ -158,10 +158,41 @@ PYTHONPATH=src .venv/bin/python scripts/report_copiale_evidence.py \
   --summary-jsonl artifacts/copiale_evidence_packet/automated/summary.jsonl
 ```
 
+Offline calibration mode, for post-hoc heuristic tuning only:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_evidence.py \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --summary-jsonl artifacts/copiale_evidence_packet/automated/summary.jsonl \
+  --ground-truth-calibration
+```
+
 This report intentionally avoids plaintext. It summarizes symbol inventory,
 distribution flatness, coarse/missing word-boundary pressure, repeated cipher
-words, and rare-symbol pressure before we add Copiale-specific null/codeword
-or nomenclator hypotheses.
+words, repeated symbol n-grams, rare-symbol pressure, solver-basin homophone
+families, and first-pass null/codeword candidates. When a summary JSONL points
+to a completed artifact, the extra basin diagnostics use the solver-produced
+key/decrypt rather than the benchmark solution. The
+`--ground-truth-calibration` mode is the exception: it is explicitly post-hoc,
+labels itself as such, and should be used only to tune future diagnostics after
+candidate generation has already completed.
+
+Prototype Copiale null-mask search:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
+  --test-id copiale_single_B_copiale_p052 \
+  --artifact artifacts/copiale_evidence_packet/automated/decipher/automated_only/copiale_single_B_copiale_p052/35f79bd36886.json \
+  --candidate-limit 14 \
+  --max-mask-size 1 \
+  --seeds 0,1,2 \
+  --epochs 4 \
+  --sampler-iterations 1200
+```
+
+This probe generates null-mask candidates without plaintext, reruns the native
+homophonic solver on each filtered stream, and then reports post-hoc scores for
+calibration. It is not yet a production automated route.
 
 ### English Model Comparison Packets
 
@@ -276,6 +307,13 @@ for overnight sweeps, candidate-family calibration, and stochastic regression
 evidence; do not make it a default commit-time test. The first run may need
 `--allow-generate` to populate `testgen_cache`; later runs can omit that flag
 and stay fully local/no-LLM.
+
+First completed calibration run: 180/180 rows completed, 168/180 met current
+expectations. The misses clustered in route-column, matrix-rotate, and
+composite-route families, so the next useful refinement is per-family
+thresholding and candidate-family tuning. Runtime was short enough that a
+future true overnight tier can be 5-6x larger once the 180-row packet is
+stable.
 
 ### Periodic Polyalphabetic Ladder
 

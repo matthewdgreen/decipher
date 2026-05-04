@@ -84,8 +84,30 @@ benchmark issue.
   `scripts/report_copiale_evidence.py`.
 - [x] Measure first-pass symbol inventory, flatness, rare-symbol pressure, and
   coarse/missing word-boundary structure per evidence-packet page.
-- [ ] Deepen the report with homophone-family behavior, null candidates,
-  repeated-symbol structure, and likely codeword/nomenclator spans per page.
+- [x] Deepen the report with solver-basin homophone-family behavior,
+  null/codeword candidates, and repeated-symbol n-grams. These diagnostics use
+  the solver-produced key/decrypt when an artifact is supplied, not the
+  ground-truth plaintext.
+- [x] Add a separate offline calibration report that can compare null/codeword
+  candidates against ground truth after the solve, so we can tune heuristics
+  without leaking solution data into runtime tools. Invoke it with
+  `scripts/report_copiale_evidence.py --ground-truth-calibration`.
+- [ ] Tune the null/codeword heuristic against the offline calibration. First
+  p052 read: insertion-heavy symbols are not merely rare/localized; several
+  frequent symbols inside collapsed homophone families are overused by the
+  solver, so a null-aware profile should consider family overuse and insertion
+  pressure, not just low-frequency glyphs.
+  - First p052 pair-mask probe: baseline was `64.4%`; best post-hoc mask was
+    `S005,S014` at `70.6%`, and the solver's own no-ground-truth selection
+    ranked it second. The top selection mask `S020,S050` reached `66.1%`.
+    This is enough signal to continue probing, but not yet enough to promote
+    null masks into the default automated route.
+- [x] Add a prototype null-mask search script:
+  `scripts/probe_copiale_null_masks.py`. It generates candidate null masks
+  without plaintext, reruns the homophonic solver on filtered token streams,
+  and reports ground-truth accuracy only after each candidate is produced.
+  Keep it as a calibration tool until the selection signal is strong enough to
+  promote into `AutomatedBenchmarkRunner`.
 - [ ] Decide whether the automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling
