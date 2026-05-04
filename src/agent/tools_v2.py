@@ -7021,11 +7021,25 @@ class WorkspaceToolExecutor:
     def _tool_score_panel(self, args: dict) -> Any:
         branch = args["branch"]
         ws = self.workspace
-        decrypted = ws.apply_key(branch)
+        branch_state = ws.get_branch(branch)
+
+        # Periodic/keyed-tableau branches (quagmire, transposition, etc.) store
+        # their decoded text in metadata rather than via a substitution key dict.
+        # Using apply_key() on these branches returns all-'?' characters and
+        # yields completely meaningless scores (-Inf quadgram, 0.0 dict_rate).
+        # Use the metadata decoded_text when the branch has no substitution key.
+        metadata_decoded = branch_state.metadata.get("decoded_text", "")
+        is_periodic_branch = (
+            isinstance(metadata_decoded, str)
+            and metadata_decoded.strip()
+            and not branch_state.key
+        )
+        decrypted = metadata_decoded if is_periodic_branch else ws.apply_key(branch)
+
         panel = sig.compute_panel(
             decrypted=decrypted,
             cipher_words=ws.effective_words(branch),
-            key=ws.get_branch(branch).key,
+            key=branch_state.key,
             used_ct_ids=self._used_ct_ids(),
             language=self.language,
             word_set=self.word_set,
@@ -7039,6 +7053,16 @@ class WorkspaceToolExecutor:
             signals.get("quadgram_loglik_per_gram"),
         )
         result: dict[str, Any] = {"branch": branch, "signals": signals}
+        if is_periodic_branch:
+            result["note"] = (
+                "This branch uses a periodic or keyed-tableau cipher (quagmire, "
+                "transposition, etc.) whose decoded text is stored in branch metadata, "
+                "not a substitution key dict. Language-quality signals (dictionary_rate, "
+                "quadgram, bigram) reflect the actual decoded text from the last search. "
+                "Key-structure signals (mapped_count=0, unmapped_count, "
+                "constraint_satisfaction) are not meaningful for this branch type "
+                "and should be ignored."
+            )
         if warnings:
             result["warnings"] = warnings
             result["interpretation"] = (
@@ -7051,7 +7075,7 @@ class WorkspaceToolExecutor:
 
     def _tool_score_quadgram(self, args: dict) -> Any:
         branch = args["branch"]
-        decrypted = self.workspace.apply_key(branch)
+        decrypted = self._branch_decoded_text(branch)
         normalized = sig.normalize_for_scoring(decrypted)
         lp = ngram.NGRAM_CACHE.get(self.language, 4)
         score = ngram.normalized_ngram_score(normalized, lp, n=4)
