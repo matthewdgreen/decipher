@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import importlib.util
+import io
 import os
 import sys
 from pathlib import Path
@@ -247,6 +250,81 @@ def _read_external_context(args: argparse.Namespace) -> str | None:
     return ctx or None
 
 
+def _add_artifact_analysis_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--analyze",
+        action="store_true",
+        help=(
+            "After writing each agentic artifact, run scripts/inspect_artifact.py "
+            "--analyze and save a sibling .analyzed.md report."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-mode",
+        choices=["standard", "deep"],
+        default="standard",
+        help="Depth of automatic artifact LLM analysis when --analyze is set.",
+    )
+    parser.add_argument(
+        "--analysis-max-tokens",
+        type=int,
+        default=900,
+        help="Maximum output tokens for automatic artifact LLM analysis.",
+    )
+
+
+def _analysis_output_path(artifact_path: str | Path) -> Path:
+    return Path(artifact_path).with_suffix(".analyzed.md")
+
+
+def _load_inspect_artifact_module():
+    script = Path(__file__).resolve().parent.parent / "scripts" / "inspect_artifact.py"
+    spec = importlib.util.spec_from_file_location("inspect_artifact_cli", script)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load artifact inspector: {script}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _maybe_write_artifact_analysis(artifact_path: str | Path, args: argparse.Namespace) -> Path | None:
+    if not getattr(args, "analyze", False):
+        return None
+    path = Path(artifact_path)
+    if not path.exists():
+        print(f"Warning: cannot analyze missing artifact: {path}", file=sys.stderr)
+        return None
+    output_path = _analysis_output_path(path)
+    print(
+        f"Performing LLM artifact analysis for {path} -> {output_path}...",
+        file=sys.stderr,
+        flush=True,
+    )
+    try:
+        inspector = _load_inspect_artifact_module()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            print(f"# Artifact Analysis: {path.name}")
+            print()
+            print(f"Source artifact: `{path}`")
+            print()
+            inspector.inspect_one(
+                path,
+                analyze=True,
+                provider=getattr(args, "provider", None),
+                llm_model=getattr(args, "model", None),
+                max_tokens=getattr(args, "analysis_max_tokens", 900),
+                analysis_mode=getattr(args, "analysis_mode", "standard"),
+            )
+        output_path.write_text(buffer.getvalue(), encoding="utf-8")
+        print(f"Artifact analysis saved: {output_path}", file=sys.stderr)
+        return output_path
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: failed to analyze artifact {path}: {exc}", file=sys.stderr)
+        return None
+
+
 def _require_rust_fast_kernel() -> None:
     from analysis.polyalphabetic_fast import FAST_AVAILABLE, fast_kernel_unavailable_message
 
@@ -440,6 +518,8 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
 
     agentic = _use_agentic_mode(args)
+    if getattr(args, "analyze", False) and not agentic:
+        print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
     display_mode = _resolve_agent_display(args) if agentic else "off"
     quiet_structured_display = agentic and display_mode in {"pretty", "jsonl"}
 
@@ -521,6 +601,8 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             if args.verbose and result.final_decryption:
                 print(f"  Decryption: {result.final_decryption[:200]}")
             print()
+        if agentic:
+            _maybe_write_artifact_analysis(result.artifact_path, args)
         results.append(result)
 
     if results and not quiet_structured_display:
@@ -561,6 +643,8 @@ def cmd_crack(args: argparse.Namespace) -> None:
         ct = CipherText(raw=clean, alphabet=alphabet, source="cli", separator=" ")
 
     print(f"Alphabet: {ct.alphabet.size} symbols, {len(ct.tokens)} tokens, {len(ct.words)} words")
+    if getattr(args, "analyze", False) and not _use_agentic_mode(args):
+        print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
 
     from pathlib import Path
 
@@ -736,6 +820,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             final_summary=final_summary,
         ))
     print(f"\nFinal decryption ({final_branch}):\n{final_dec}")
+    _maybe_write_artifact_analysis(path, args)
 
 
 def cmd_resume_artifact(args: argparse.Namespace) -> None:
@@ -898,6 +983,7 @@ def cmd_resume_artifact(args: argparse.Namespace) -> None:
             print(f"Error: {artifact.error_message}")
         print(f"\nFinal summary:\n{final_summary}")
         print(f"\nFinal decryption ({final_branch}):\n{final_decryption}")
+    _maybe_write_artifact_analysis(path, args)
 
 
 def cmd_testgen(args: argparse.Namespace) -> None:
@@ -990,6 +1076,8 @@ def cmd_testgen(args: argparse.Namespace) -> None:
 
     pt_preview = test_data.plaintext[:120] + ("..." if len(test_data.plaintext) > 120 else "")
     ct_preview = test_data.canonical_transcription[:120] + "..."
+    if getattr(args, "analyze", False) and not _use_agentic_mode(args):
+        print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
     print(f"Test ID:   {test_data.test.test_id}")
     print(f"Plaintext: {pt_preview}")
     print(f"Cipher:    {ct_preview}")
@@ -1049,6 +1137,8 @@ def cmd_testgen(args: argparse.Namespace) -> None:
     print(f"Artifact:   {result.artifact_path}")
     if result.error_message:
         print(f"Error:      {result.error_message}")
+    if _use_agentic_mode(args):
+        _maybe_write_artifact_analysis(result.artifact_path, args)
 
 
 def main() -> None:
@@ -1149,6 +1239,7 @@ def main() -> None:
             "interactive terminal, raw when piped, and the legacy verbose stream with -v."
         ),
     )
+    _add_artifact_analysis_args(bench)
     bench.add_argument(
         "--agentic",
         action="store_true",
@@ -1268,6 +1359,7 @@ def main() -> None:
         default="pretty",
         help="Agentic terminal display mode (default: pretty).",
     )
+    _add_artifact_analysis_args(crack)
     crack.add_argument(
         "--agentic",
         action="store_true",
@@ -1371,6 +1463,7 @@ def main() -> None:
         default="pretty",
         help="Agentic terminal display mode (default: pretty).",
     )
+    _add_artifact_analysis_args(resume)
 
     # testgen
     tg = subparsers.add_parser("testgen", help="Generate a synthetic test case and run the agent")
@@ -1446,6 +1539,7 @@ def main() -> None:
         default="pretty",
         help="Agentic terminal display mode (default: pretty).",
     )
+    _add_artifact_analysis_args(tg)
     tg.add_argument(
         "--agentic",
         action="store_true",
