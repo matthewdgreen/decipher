@@ -107,11 +107,14 @@ benchmark issue.
     `p084` 63.0%). Best post-hoc masks were higher on four of five pages
     (`p035` 68.7%, `p052` 70.6%, `p068` 55.3%, `p084` 63.4%), so generation
     is clearly useful while selection still needs calibration.
-  - The probe now reports a third no-ground-truth `validation_score` in
-    addition to raw solver selection and post-hoc character accuracy. This
-    score keeps transparent components for dictionary rate, German fragment
-    hits, letter diversity, segmentation cost, top-letter collapse, length
-    plausibility, and mask size.
+  - The probe now reports no-ground-truth validation scores in addition to raw
+    solver selection and post-hoc character accuracy. The current v2 score
+    reduces raw anneal-selection weight and adds stricter German coherence,
+    letter-diversity, top-letter, and repetition controls.
+  - On the full-row five-page packet, v2 still picks the exact post-hoc best
+    mask on only `1/5` pages, but it captures the post-hoc best within the
+    top-3 validation finalists on `5/5` pages. Treat top-N finalist promotion
+    as the next design target rather than single-winner selection.
 - [x] Add a prototype null-mask search script:
   `scripts/probe_copiale_null_masks.py`. It generates candidate null masks
   without plaintext, reruns the homophonic solver on filtered token streams,
@@ -123,8 +126,8 @@ benchmark issue.
   `--include-all-rows` when tuning validation; the report can then compare raw
   solver selection, no-ground-truth validation ranking, and post-hoc character
   accuracy without rerunning the native solver. It also reports aggregate
-  exact-hit/gap metrics and component-level miss analysis, which currently
-  suggests the validation scorer still overweights raw anneal selection.
+  exact-hit/gap metrics, top-N capture rates, and component-level miss
+  analysis.
 - [ ] Decide whether the automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling

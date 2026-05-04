@@ -217,10 +217,10 @@ This probe generates null-mask candidates without plaintext, reruns the native
 homophonic solver on each filtered stream, and then reports post-hoc scores for
 calibration. The companion report compares raw solver selection, no-ground-truth
 validation ranking, and post-hoc character accuracy. It also prints aggregate
-hit/gap metrics and component-level miss analysis when validation does not pick
-the post-hoc best mask. Use `--include-all-rows` when generating probe JSONL if
-you want to tune ranking without rerunning the expensive solver pass. This is
-not yet a production automated route.
+hit/gap metrics, top-N capture rates, and component-level miss analysis when
+validation does not pick the post-hoc best mask. Use `--include-all-rows` when
+generating probe JSONL if you want to tune ranking without rerunning the
+expensive solver pass. This is not yet a production automated route.
 
 ### English Model Comparison Packets
 

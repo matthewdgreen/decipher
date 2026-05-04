@@ -107,6 +107,15 @@ When adding, removing, or significantly changing tools in
 parameter table, and usage notes. The tool count in the `tools_v2.py` line
 above should also be kept current.
 
+**Artifact analyzer upkeep**: `scripts/inspect_artifact.py` is the standard
+post-run diagnostic tool, and `--analyze` on agentic CLI runs writes sibling
+`.analyzed.md` reports using that script. When artifacts gain new fields,
+branch metadata, tool result shapes, repair agendas, hypothesis state, or
+failure modes, update the analyzer so it surfaces the useful evidence. If an
+LLM analysis misses an obvious lesson because the prompt packet lacked data,
+fix the analyzer packet and add/adjust tests rather than relying on ad hoc
+manual inspection.
+
 ---
 
 ## Architecture Decisions

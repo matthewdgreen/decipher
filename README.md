@@ -580,6 +580,57 @@ Useful options:
 - `--extra-iterations N` — additional iterations to run (default: 10)
 - `--artifact-dir` — where to save the continuation artifact
 
+### Inspect and diagnose artifacts
+
+Agentic and automated runs write JSON artifacts under `artifacts/`. Use
+`scripts/inspect_artifact.py` for a compact human-readable summary of a saved
+run:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/inspect_artifact.py \
+  artifacts/my_cipher/run_abc123.json
+```
+
+Add `--analyze` to the inspector to ask an LLM to review any saved artifact and
+explain success or failure modes. The analysis packet includes the tool
+timeline, branch scores, failed tool calls, automated preflight, repair agenda,
+non-LLM analyzer findings, and decrypt previews. Reported `char`/`word` scores
+are explicitly post-hoc comparisons to known benchmark plaintext, not
+runtime-visible confidence.
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/inspect_artifact.py \
+  artifacts/my_cipher/run_abc123.json \
+  --analyze \
+  --provider openai \
+  --model gpt-5.4 \
+  --analysis-mode deep
+```
+
+The script prints `Performing LLM analysis...` before the API call and reports
+token usage plus estimated cost when the provider returns usage counters. It
+uses the same API-key locations and provider/model naming rules as agentic
+runs.
+
+For agentic CLI runs, pass `--analyze` directly to `decipher benchmark`,
+`decipher crack`, `decipher testgen`, or `decipher resume-artifact` to write a
+sibling Markdown report next to each JSON artifact:
+
+```bash
+decipher benchmark /path/to/cipher_benchmark/benchmark \
+  --test-id borg_single_B_borg_0109v \
+  --agentic \
+  --provider openai \
+  --model gpt-5.4 \
+  --analyze \
+  --analysis-mode deep
+```
+
+For `artifacts/foo/bar.json`, the automatic report is written to
+`artifacts/foo/bar.analyzed.md`. This automatic LLM analysis hook runs only for
+agentic runs; use the standalone `scripts/inspect_artifact.py --analyze` command
+for automated artifacts.
+
 ### LLM provider and model selection
 
 Pass `--model` to choose a model; the provider is inferred from the name
