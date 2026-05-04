@@ -1969,6 +1969,17 @@ class WorkspaceToolExecutor:
         # and to escalate the error message on repeated attempts.
         self._gate_hits: list[dict[str, Any]] = []
 
+        # Resegmentation dedup: track (branch, normalized_proposed_text) pairs that have
+        # already been attempted, keyed to the iteration number of the first attempt.
+        # Identical retries are blocked immediately with an actionable error.
+        self._seen_resegment_proposals: dict[tuple[str, str], int] = {}
+
+        # branch_cards_required gate signal: set to the iteration number when
+        # meta_declare_solution is blocked with reason=branch_cards_required.
+        # workspace_branch_cards reads and clears this to add a "gate satisfied"
+        # prompt, steering the agent to call meta_declare_solution immediately.
+        self._branch_cards_gate_fired_at: int | None = None
+
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
         self.context_family_overrides: list[dict[str, Any]] = []
@@ -4710,10 +4721,22 @@ class WorkspaceToolExecutor:
             cards = [self._branch_card(branch)]
         else:
             cards = [self._branch_card(name) for name in self.workspace.branch_names()]
-        return {
-            "status": "ok",
-            "cards": cards,
-            "note": (
+
+        # If this call is satisfying a branch_cards_required gate on
+        # meta_declare_solution, tell the agent explicitly what to do next
+        # so it does not drift into further inspection.
+        gate_satisfied = self._branch_cards_gate_fired_at is not None
+        self._branch_cards_gate_fired_at = None  # consume the signal
+
+        if gate_satisfied:
+            note = (
+                "GATE SATISFIED — you called workspace_branch_cards to satisfy "
+                "the branch_cards_required prerequisite on meta_declare_solution. "
+                "Your next action must be meta_declare_solution with your chosen "
+                "branch. Do not call any other tool first."
+            )
+        else:
+            note = (
                 "Use these cards before declaration: compare readability, "
                 "internal scores, basin status, applied/held repairs, and "
                 "orthography risks. If a branch card says `word_islands_only`, "
@@ -4723,7 +4746,12 @@ class WorkspaceToolExecutor:
                 "do not discard it in favor of a modernized/classicized edit "
                 "unless the edited branch is clearly better in the manuscript "
                 "transcription style."
-            ),
+            )
+        return {
+            "status": "ok",
+            "gate_satisfied": gate_satisfied,
+            "cards": cards,
+            "note": note,
         }
 
     def _has_seen_branch_cards(self, branch_name: str | None = None) -> bool:
@@ -7911,6 +7939,28 @@ class WorkspaceToolExecutor:
         mismatch0 = mismatches[0]
 
         applied_preview = safe_words[-5:]  # last few applied words for readability
+
+        # Build the hint note.  If nearly all the text is already correctly
+        # segmented, steer the agent to declare rather than grinding on the
+        # last few characters.
+        nearly_complete = remaining_chars <= 20 or (
+            total_chars > 0 and remaining_chars / total_chars <= 0.15
+        )
+        if nearly_complete:
+            boundary_hint = (
+                f"NEARLY COMPLETE — only {remaining_chars} character(s) remain "
+                "unsegmented. Word boundaries are cosmetic; if the decryption "
+                "reads correctly, call meta_declare_solution now rather than "
+                "spending more iterations on segmentation. The key is already "
+                "fully recovered."
+            )
+        else:
+            boundary_hint = (
+                f"Fix the divergence: change {bad_word!r} so its first character "
+                f"matches the decoded stream ({mismatch0.get('current_char')!r}), "
+                "then call act_resegment_by_reading with the corrected proposed_text."
+            )
+
         return {
             "status": "partial",
             "branch": branch,
@@ -7920,6 +7970,7 @@ class WorkspaceToolExecutor:
             "applied_words_tail": applied_preview,
             "remaining_char_count": remaining_chars,
             "remaining_stream_preview": remaining_preview,
+            "nearly_complete": nearly_complete,
             "mismatch": {
                 "at_proposed_word_index": len(safe_words),
                 "proposed_word": bad_word,
@@ -7939,8 +7990,7 @@ class WorkspaceToolExecutor:
                 f"at character position {mismatch0.get('char_index')}. "
                 f"The remaining {remaining_chars} characters are left "
                 f"unsegmented (starting: {remaining_preview!r}). "
-                "Fix the divergence and call act_resegment_by_reading again "
-                "with the full corrected proposed_text."
+                + boundary_hint
             ),
         }
 
@@ -7954,6 +8004,32 @@ class WorkspaceToolExecutor:
                     "plaintext alphabets only"
                 )
             }
+
+        # Dedup: reject identical proposed_text submitted to the same branch
+        # more than once.  This catches the common failure mode where the agent
+        # submits the same mismatched text repeatedly and wastes iterations on
+        # a call that will always produce the same partial/error result.
+        _norm_key = (branch, " ".join(proposed_text.upper().split()))
+        _prior_iter = self._seen_resegment_proposals.get(_norm_key)
+        if _prior_iter is not None:
+            decoded_stream = "".join(self._branch_reading_words(branch))
+            return {
+                "error": (
+                    f"DUPLICATE CALL — identical proposed_text was already "
+                    f"submitted for branch '{branch}' on iteration {_prior_iter}. "
+                    "Retrying with the same text will always produce the same result."
+                ),
+                "action_required": (
+                    "Option A — fix the diverging word: read the decoded stream "
+                    "carefully and correct the word that diverges (e.g. add/remove "
+                    "a letter). "
+                    "Option B — declare now: word boundaries are cosmetic; if the "
+                    "decryption reads correctly, call meta_declare_solution with this "
+                    "branch — do not wait for perfect segmentation."
+                ),
+                "decoded_stream_preview": decoded_stream[:200],
+            }
+        self._seen_resegment_proposals[_norm_key] = self._current_iteration
 
         validation = self._reading_validation(branch, proposed_text)
         if not validation["character_preserving"]:
@@ -10574,6 +10650,7 @@ class WorkspaceToolExecutor:
                 ],
             }
         if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards(branch):
+            self._branch_cards_gate_fired_at = self._current_iteration
             return {
                 "status": "blocked",
                 "accepted": False,
@@ -10582,8 +10659,8 @@ class WorkspaceToolExecutor:
                 "note": (
                     "Multiple branches exist, or this branch was created after "
                     "the last branch-card review. Call workspace_branch_cards "
-                    "before declaring so you compare readable excerpts, "
-                    "internal scores, repairs, and orthography risks."
+                    "now, then call meta_declare_solution IMMEDIATELY — do not "
+                    "call any other tool between them."
                 ),
                 "suggested_next_tools": [
                     "workspace_branch_cards",
