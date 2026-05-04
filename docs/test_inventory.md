@@ -190,9 +190,37 @@ PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
   --sampler-iterations 1200
 ```
 
+Five-page packet with saved candidate rows for later no-rerun ranking:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
+  --suite-file frontier/copiale_evidence_packet.jsonl \
+  --summary-jsonl artifacts/copiale_evidence_packet/automated/summary.jsonl \
+  --candidate-limit 18 \
+  --max-mask-size 2 \
+  --max-masks 80 \
+  --seeds 0,1,2 \
+  --epochs 4 \
+  --sampler-iterations 1200 \
+  --include-all-rows \
+  --output-jsonl artifacts/copiale_evidence_packet/null_probe_pair_masks_full_rows.jsonl
+```
+
+Cheap report/rerank pass over a saved null-mask probe:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_null_probe.py \
+  artifacts/copiale_evidence_packet/null_probe_pair_masks_full_rows.jsonl
+```
+
 This probe generates null-mask candidates without plaintext, reruns the native
 homophonic solver on each filtered stream, and then reports post-hoc scores for
-calibration. It is not yet a production automated route.
+calibration. The companion report compares raw solver selection, no-ground-truth
+validation ranking, and post-hoc character accuracy. It also prints aggregate
+hit/gap metrics and component-level miss analysis when validation does not pick
+the post-hoc best mask. Use `--include-all-rows` when generating probe JSONL if
+you want to tune ranking without rerunning the expensive solver pass. This is
+not yet a production automated route.
 
 ### English Model Comparison Packets
 

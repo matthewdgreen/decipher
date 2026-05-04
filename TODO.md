@@ -1488,6 +1488,23 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         `70.6%` with mask `S005,S014`; the same mask ranked second by solver
         selection score without ground truth. This is promising but still
         calibration-only.
+      - First five-page pair-mask packet shows that null-mask generation
+        generalizes: best-by-selection improved every page (`p017` 75.3%,
+        `p035` 61.2%, `p052` 66.1%, `p068` 54.0%, `p084` 63.0%). The
+        post-hoc best was often higher than selection best, so the main gap is
+        now finalist selection/calibration, not merely candidate generation.
+      - `scripts/probe_copiale_null_masks.py` now reports a transparent
+        no-ground-truth `validation_score` that combines raw solver selection
+        with dictionary rate, German fragment hits, letter diversity,
+        segmentation cost, top-letter collapse, length plausibility, and mask
+        size. Use this to iterate on finalist ranking before promoting null
+        masks into automated routing.
+      - `scripts/report_copiale_null_probe.py` can summarize and rerank saved
+        probe JSONL cheaply. Use `--include-all-rows` on the probe when doing
+        scorer-tuning runs so validation changes do not require rerunning all
+        null-mask candidates. The report now includes aggregate exact-hit/gap
+        metrics and component-level miss analysis; the first saved top-list
+        packet suggests validation still overweights raw anneal selection.
     - Build a null-aware homophonic search profile and then evaluate whether
       some symbols or clusters should be treated as nulls, abbreviations, or
       multi-letter tokens rather than simple letter homophones.

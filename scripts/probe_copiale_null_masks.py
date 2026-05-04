@@ -63,6 +63,14 @@ def main() -> None:
         "--output-jsonl",
         help="Optional JSONL output with one probe summary per test.",
     )
+    parser.add_argument(
+        "--include-all-rows",
+        action="store_true",
+        help=(
+            "Include every evaluated mask row in --output-jsonl. This makes "
+            "later no-rerun finalist validation and scorer tuning possible."
+        ),
+    )
     args = parser.parse_args()
 
     loader = BenchmarkLoader(args.benchmark_root)
@@ -107,6 +115,7 @@ def main() -> None:
             epochs=args.epochs,
             sampler_iterations=args.sampler_iterations,
             top=args.top,
+            include_all_rows=args.include_all_rows,
         )
         if output_path:
             with output_path.open("a", encoding="utf-8") as handle:
@@ -130,6 +139,7 @@ def run_probe(
     epochs: int,
     sampler_iterations: int,
     top: int,
+    include_all_rows: bool = False,
 ) -> dict[str, Any]:
     cipher = parse_canonical_transcription(canonical_transcription)
     candidates = _candidate_symbols(
@@ -185,12 +195,25 @@ def run_probe(
             status="completed",
         )
         selection_score = best.normalized_score - float(quality.get("penalty", 0.0))
+        validation = null_mask_validation_score(
+            {
+                "mask": list(mask),
+                "filtered_length": len(filtered_tokens),
+                "selection_score": selection_score,
+                "quality": quality,
+                "diagnostics": diagnostics,
+                "preview": best.plaintext[:120],
+            },
+            original_length=len(cipher.tokens),
+        )
         row = {
             "mask": list(mask),
             "mask_size": len(mask),
             "filtered_length": len(filtered_tokens),
             "anneal_score": best.normalized_score,
             "selection_score": selection_score,
+            "validation_score": validation["score"],
+            "validation_components": validation["components"],
             "char_accuracy": score.char_accuracy,
             "word_accuracy": score.word_accuracy,
             "quality": quality,
@@ -202,11 +225,13 @@ def run_probe(
             f"[{idx:>3}/{len(masks)}] mask={','.join(mask) or '(none)'} "
             f"len={len(filtered_tokens)} char={score.char_accuracy:.1%} "
             f"word={score.word_accuracy:.1%} sel={selection_score:.3f} "
+            f"val={validation['score']:.3f} "
             f"dict={diagnostics.get('dict_rate', 0.0):.3f} "
             f"top={quality.get('top_letter_fraction', 0.0):.3f}"
         )
 
     rows_by_selection = sorted(rows, key=lambda item: (-item["selection_score"], -item["char_accuracy"]))
+    rows_by_validation = sorted(rows, key=lambda item: (-item["validation_score"], -item["char_accuracy"]))
     rows_by_char = sorted(rows, key=lambda item: (-item["char_accuracy"], -item["selection_score"]))
     print()
     print(f"Elapsed: {time.time() - t0:.1f}s")
@@ -218,6 +243,16 @@ def run_probe(
             f"len={row['filtered_length']} preview={row['preview']}"
         )
     print()
+    print("Top by null-mask validation score (no ground truth):")
+    for row in rows_by_validation[: top]:
+        print(
+            f"  val={row['validation_score']:.3f} sel={row['selection_score']:.3f} "
+            f"char={row['char_accuracy']:.1%} word={row['word_accuracy']:.1%} "
+            f"mask={','.join(row['mask']) or '(none)'} "
+            f"components={_format_validation_components(row['validation_components'])} "
+            f"preview={row['preview']}"
+        )
+    print()
     print("Top by post-hoc char accuracy:")
     for row in rows_by_char[: top]:
         print(
@@ -226,7 +261,7 @@ def run_probe(
             f"len={row['filtered_length']} sel={row['selection_score']:.3f} "
             f"preview={row['preview']}"
         )
-    return {
+    payload = {
         "test_id": test_id,
         "candidate_symbols": candidates,
         "mask_count": len(masks),
@@ -235,10 +270,97 @@ def run_probe(
         "sampler_iterations": sampler_iterations,
         "elapsed_seconds": round(time.time() - t0, 3),
         "best_by_selection": rows_by_selection[0] if rows_by_selection else None,
+        "best_by_validation": rows_by_validation[0] if rows_by_validation else None,
         "best_by_char_accuracy": rows_by_char[0] if rows_by_char else None,
         "top_by_selection": rows_by_selection[:top],
+        "top_by_validation": rows_by_validation[:top],
         "top_by_char_accuracy": rows_by_char[:top],
     }
+    if include_all_rows:
+        payload["all_rows"] = rows
+    return payload
+
+
+def null_mask_validation_score(row: dict[str, Any], original_length: int) -> dict[str, Any]:
+    """No-ground-truth finalist score for Copiale null-mask probes.
+
+    This complements raw anneal selection with German-ish readability and
+    collapse controls. It is deliberately transparent rather than magic:
+    artifacts keep every component so we can inspect why a mask won.
+    """
+    diagnostics = row.get("diagnostics") or {}
+    quality = row.get("quality") or {}
+    selection_score = float(row.get("selection_score") or 0.0)
+    dict_rate = float(diagnostics.get("dict_rate") or 0.0)
+    top_letter_fraction = float(quality.get("top_letter_fraction") or 0.0)
+    unique_letters = float(quality.get("unique_letters") or diagnostics.get("unique_letters") or 0.0)
+    letter_count = float(diagnostics.get("letter_count") or row.get("filtered_length") or 1)
+    segmentation_cost = float(diagnostics.get("segmentation_cost") or 0.0)
+    preview = str(row.get("preview") or diagnostics.get("segmented_preview") or "")
+    fragment_score = german_fragment_score(preview)
+    deletion_fraction = max(0.0, (original_length - int(row.get("filtered_length") or original_length)) / max(1, original_length))
+    mask_size = len(row.get("mask") or [])
+
+    components = {
+        "selection": selection_score,
+        "dictionary": dict_rate * 4.0,
+        "german_fragments": fragment_score * 1.35,
+        "letter_diversity": min(unique_letters, 20.0) / 20.0 * 0.75,
+        "segmentation_cost": -min(1.0, segmentation_cost / max(1.0, letter_count) / 6.0) * 0.45,
+        "top_letter_penalty": -max(0.0, top_letter_fraction - 0.265) * 9.0,
+        "length_penalty": -max(0.0, deletion_fraction - 0.12) * 4.0,
+        "mask_penalty": -max(0, mask_size - 2) * 0.08,
+    }
+    score = sum(components.values())
+    return {
+        "score": round(score, 6),
+        "components": {name: round(value, 6) for name, value in components.items()},
+    }
+
+
+def german_fragment_score(text: str) -> float:
+    """Cheap German readability signal for no-boundary finalist ranking."""
+    cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
+    if len(cleaned) < 20:
+        return 0.0
+    weighted_fragments = {
+        "DER": 1.0,
+        "DIE": 1.0,
+        "DAS": 1.0,
+        "UND": 1.15,
+        "DEN": 0.9,
+        "DEM": 0.9,
+        "DES": 0.9,
+        "EIN": 1.0,
+        "EINE": 1.2,
+        "EINER": 1.25,
+        "IST": 0.9,
+        "SICH": 1.2,
+        "NICHT": 1.35,
+        "MIT": 0.8,
+        "ICH": 0.7,
+        "SCH": 0.65,
+        "CHT": 0.8,
+        "UNG": 0.75,
+        "EIT": 0.65,
+        "ARBEIT": 1.5,
+    }
+    score = 0.0
+    for fragment, weight in weighted_fragments.items():
+        score += cleaned.count(fragment) * weight
+    expected_slots = max(1.0, len(cleaned) / 22.0)
+    return min(1.0, score / expected_slots)
+
+
+def _format_validation_components(components: dict[str, Any]) -> str:
+    names = [
+        "dictionary",
+        "german_fragments",
+        "letter_diversity",
+        "segmentation_cost",
+        "top_letter_penalty",
+    ]
+    return ",".join(f"{name}={float(components.get(name) or 0.0):+.2f}" for name in names)
 
 
 def _selected_test_ids(args: argparse.Namespace) -> list[str]:

@@ -102,12 +102,29 @@ benchmark issue.
     ranked it second. The top selection mask `S020,S050` reached `66.1%`.
     This is enough signal to continue probing, but not yet enough to promote
     null masks into the default automated route.
+  - First five-page pair-mask packet: best-by-selection improved all pages
+    materially (`p017` 75.3%, `p035` 61.2%, `p052` 66.1%, `p068` 54.0%,
+    `p084` 63.0%). Best post-hoc masks were higher on four of five pages
+    (`p035` 68.7%, `p052` 70.6%, `p068` 55.3%, `p084` 63.4%), so generation
+    is clearly useful while selection still needs calibration.
+  - The probe now reports a third no-ground-truth `validation_score` in
+    addition to raw solver selection and post-hoc character accuracy. This
+    score keeps transparent components for dictionary rate, German fragment
+    hits, letter diversity, segmentation cost, top-letter collapse, length
+    plausibility, and mask size.
 - [x] Add a prototype null-mask search script:
   `scripts/probe_copiale_null_masks.py`. It generates candidate null masks
   without plaintext, reruns the homophonic solver on filtered token streams,
   and reports ground-truth accuracy only after each candidate is produced.
   Keep it as a calibration tool until the selection signal is strong enough to
   promote into `AutomatedBenchmarkRunner`.
+- [x] Add a cheap saved-probe reporter:
+  `scripts/report_copiale_null_probe.py`. Run the probe with
+  `--include-all-rows` when tuning validation; the report can then compare raw
+  solver selection, no-ground-truth validation ranking, and post-hoc character
+  accuracy without rerunning the native solver. It also reports aggregate
+  exact-hit/gap metrics and component-level miss analysis, which currently
+  suggests the validation scorer still overweights raw anneal selection.
 - [ ] Decide whether the automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling
