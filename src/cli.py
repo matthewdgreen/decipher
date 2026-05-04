@@ -120,6 +120,58 @@ def get_api_key(provider: str = "anthropic") -> str:
     sys.exit(1)
 
 
+def _probe_api_key(provider: str) -> str:
+    """Return the API key for *provider* if one is configured, else ''.
+
+    Silent version of get_api_key — never prints or exits.  Only meaningful
+    for remote providers (anthropic, openai, gemini); local providers like
+    ollama have no key and should be probed via _ollama_status() instead.
+    """
+    from agent.model_provider import canonical_provider
+
+    provider = canonical_provider(provider)
+    for env_name in _PROVIDER_ENV_KEYS.get(provider, []):
+        key = os.environ.get(env_name)
+        if key:
+            return key
+    key = _read_dotenv_key(provider)
+    if key:
+        return key
+    key = _read_key_file(provider)
+    if key:
+        return key
+    try:
+        import keyring
+
+        key = keyring.get_password(
+            "decipher",
+            _PROVIDER_KEYRING_ACCOUNTS.get(provider, f"{provider}_api_key"),
+        )
+        if key:
+            return key
+    except Exception:
+        pass
+    return ""
+
+
+def _auto_detect_provider() -> str:
+    """Return the first available provider in preference order.
+
+    Preference: anthropic → openai → gemini → ollama (only if server is
+    reachable).  Falls back to "anthropic" so that the normal get_api_key()
+    error message fires if nothing is configured.
+    """
+    for provider in ("anthropic", "openai", "gemini"):
+        if _probe_api_key(provider):
+            return provider
+    # Ollama is local and needs no key, but only treat it as available if the
+    # server is actually running — otherwise the user gets a confusing
+    # connection-refused error rather than a helpful "no key" message.
+    if _ollama_status()["running"]:
+        return "ollama"
+    return "anthropic"  # default so get_api_key() produces the right error
+
+
 def _resolve_provider_and_model(args: argparse.Namespace) -> tuple[str, str]:
     from agent.model_provider import (
         default_model_for_provider,
@@ -128,7 +180,14 @@ def _resolve_provider_and_model(args: argparse.Namespace) -> tuple[str, str]:
 
     requested_provider = getattr(args, "provider", None)
     requested_model = getattr(args, "model", None)
-    provider = infer_provider_from_model(requested_model, requested_provider)
+    if requested_provider or requested_model:
+        # Explicit flags: honour them exactly as before.
+        provider = infer_provider_from_model(requested_model, requested_provider)
+    else:
+        # Nothing specified: pick the first provider that has a key (or a
+        # running Ollama instance) so the user doesn't need --provider when
+        # only one provider is configured.
+        provider = _auto_detect_provider()
     model = requested_model or default_model_for_provider(provider)
     return provider, model
 
