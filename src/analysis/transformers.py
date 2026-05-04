@@ -206,6 +206,10 @@ def _apply_step(
         return _split_grid_route(tokens, locked, pipeline, data)
     if name == "maskroute":
         return _mask_route(tokens, locked, pipeline, data)
+    if name == "turningmaskroute":
+        return _turning_mask_route(tokens, locked, data)
+    if name == "blockroute":
+        return _block_route(tokens, locked, pipeline, data)
     if name == "gridpermute":
         return _grid_permute(tokens, locked, pipeline, data)
     if name == "railfenceroute":
@@ -487,6 +491,85 @@ def _mask_route(
         raise ValueError("MaskRoute did not produce a grid permutation")
     new_tokens = [tokens[i] for i in order] + list(tokens[usable:])
     new_locked = [locked[i] for i in order] + list(locked[usable:])
+    return new_tokens, new_locked
+
+
+def _turning_mask_route(
+    tokens: list[int],
+    locked: list[bool],
+    data: dict[str, Any],
+) -> tuple[list[int], list[bool]]:
+    size = int(data.get("blockSize") or data.get("size") or data.get("width") or 0)
+    if size <= 1:
+        raise ValueError("TurningMaskRoute requires blockSize > 1")
+    if size % 2:
+        raise ValueError("TurningMaskRoute currently requires an even blockSize")
+    block_len = size * size
+    if block_len > len(tokens):
+        return list(tokens), list(locked)
+    pattern = str(data.get("pattern") or "top_left_quadrant").lower()
+    route = str(data.get("route") or "rows").lower()
+    direction = str(data.get("direction") or "cw").lower()
+    turns = (0, 1, 2, 3) if direction in {"cw", "clockwise", "right"} else (0, 3, 2, 1)
+    block_order = _turning_mask_block_order(size, pattern, route, turns)
+    if sorted(block_order) != list(range(block_len)):
+        raise ValueError("TurningMaskRoute did not produce a block permutation")
+
+    new_tokens: list[int] = []
+    new_locked: list[bool] = []
+    usable = (len(tokens) // block_len) * block_len
+    for block_start in range(0, usable, block_len):
+        new_tokens.extend(tokens[block_start + index] for index in block_order)
+        new_locked.extend(locked[block_start + index] for index in block_order)
+    new_tokens.extend(tokens[usable:])
+    new_locked.extend(locked[usable:])
+    return new_tokens, new_locked
+
+
+def _block_route(
+    tokens: list[int],
+    locked: list[bool],
+    pipeline: TransformPipeline,
+    data: dict[str, Any],
+) -> tuple[list[int], list[bool]]:
+    block_size = int(data.get("blockSize") or data.get("block_size") or data.get("size") or 0)
+    columns = int(data.get("columns") or pipeline.columns or 0)
+    rows = int(data.get("rows") or pipeline.rows or 0)
+    if block_size <= 0:
+        raise ValueError("BlockRoute requires blockSize > 0")
+    if columns <= 1:
+        raise ValueError("BlockRoute requires columns > 1")
+    block_count = len(tokens) // block_size
+    if rows <= 0:
+        rows = block_count // columns
+    usable_blocks = min(rows * columns, block_count)
+    if rows <= 0 or usable_blocks <= 0:
+        return list(tokens), list(locked)
+    route = str(data.get("route") or "columns_down").lower()
+    block_order_mode = str(data.get("blockOrder") or data.get("block_order") or "normal").lower()
+    positions = _route_positions(rows, columns, route)
+    if len(positions) != rows * columns:
+        raise ValueError(f"block route {route!r} did not cover the grid")
+    block_order = [row * columns + col for row, col in positions if row * columns + col < usable_blocks]
+    if sorted(block_order) != list(range(usable_blocks)):
+        raise ValueError("BlockRoute did not produce a block permutation")
+    new_tokens: list[int] = []
+    new_locked: list[bool] = []
+    for block_index in block_order:
+        start = block_index * block_size
+        end = start + block_size
+        block_tokens = list(tokens[start:end])
+        block_locked = list(locked[start:end])
+        if block_order_mode in {"reverse", "reversed"}:
+            block_tokens.reverse()
+            block_locked.reverse()
+        elif block_order_mode not in {"normal", "identity", "forward"}:
+            raise ValueError(f"unsupported BlockRoute block order: {block_order_mode}")
+        new_tokens.extend(block_tokens)
+        new_locked.extend(block_locked)
+    tail_start = usable_blocks * block_size
+    new_tokens.extend(tokens[tail_start:])
+    new_locked.extend(locked[tail_start:])
     return new_tokens, new_locked
 
 
@@ -815,6 +898,45 @@ def _mask_cell_matches(row: int, col: int, rows: int, columns: int, pattern: str
     if pattern in {"quadrants_tr_bl", "tr_bl"}:
         return (row < rows / 2 and col >= columns / 2) or (row >= rows / 2 and col < columns / 2)
     raise ValueError(f"unsupported MaskRoute pattern: {pattern}")
+
+
+def _turning_mask_block_order(
+    size: int,
+    pattern: str,
+    route: str,
+    turns: tuple[int, int, int, int],
+) -> list[int]:
+    route_positions = _route_positions(size, size, route)
+    seen: set[tuple[int, int]] = set()
+    out: list[int] = []
+    for turn in turns:
+        cells = {
+            _rotate_square_cell(row, col, size, turn)
+            for row in range(size)
+            for col in range(size)
+            if _turning_mask_base_cell_matches(row, col, size, pattern)
+        }
+        for row, col in route_positions:
+            if (row, col) in cells and (row, col) not in seen:
+                seen.add((row, col))
+                out.append(row * size + col)
+    return out
+
+
+def _turning_mask_base_cell_matches(row: int, col: int, size: int, pattern: str) -> bool:
+    half = size // 2
+    if pattern in {"top_left_quadrant", "upper_left_quadrant", "tl"}:
+        return row < half and col < half
+    if pattern in {"top_right_quadrant", "upper_right_quadrant", "tr"}:
+        return row < half and col >= half
+    raise ValueError(f"unsupported TurningMaskRoute pattern: {pattern}")
+
+
+def _rotate_square_cell(row: int, col: int, size: int, turns: int) -> tuple[int, int]:
+    turns %= 4
+    for _ in range(turns):
+        row, col = col, size - 1 - row
+    return row, col
 
 
 def _progressive_shift_positions(

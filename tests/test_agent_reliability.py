@@ -1020,6 +1020,54 @@ def test_system_prompt_carries_reading_first_discipline():
     assert "partial solution is always better" not in prompt
 
 
+def test_compact_system_prompt_style():
+    """Compact style replaces the verbose toolkit with a sequencing cheatsheet
+    and is shorter, but retains all critical sequencing rules."""
+    full = get_system_prompt("en", "full")
+    compact = get_system_prompt("en", "compact")
+
+    # Compact must be meaningfully shorter
+    assert len(compact) < len(full) - 5000, (
+        f"compact ({len(compact)}) should be ≥5000 chars shorter than full ({len(full)})"
+    )
+    # Critical sequencing rules still present in compact
+    assert "search_anneal" in compact
+    assert "preserve_existing" in compact
+    assert "search_transform" in compact
+    assert "search_automated_solver" in compact
+    # Compact does NOT contain the long Quagmire-style narrative
+    assert "Quagmire-style" not in compact
+    # Full still has the verbose Quagmire guidance
+    assert "Quagmire-style" in full
+    # Both styles retain the core reading-first discipline
+    assert "Declare on reading" in compact
+    assert "reading is authoritative" in compact
+
+
+def test_compact_is_default_for_ollama():
+    """_resolve_system_prompt_style returns 'compact' for --provider ollama."""
+    import argparse
+    import sys
+    sys.path.insert(0, "src")
+    from cli import _resolve_system_prompt_style
+
+    def make_args(provider=None, model=None, style="auto"):
+        ns = argparse.Namespace()
+        ns.provider = provider
+        ns.model = model
+        ns.system_prompt_style = style
+        return ns
+
+    # auto + ollama → compact
+    assert _resolve_system_prompt_style(make_args(provider="ollama")) == "compact"
+    # auto + anthropic → full
+    assert _resolve_system_prompt_style(make_args(provider="anthropic")) == "full"
+    # explicit full overrides auto
+    assert _resolve_system_prompt_style(make_args(provider="ollama", style="full")) == "full"
+    # explicit compact always wins
+    assert _resolve_system_prompt_style(make_args(provider="anthropic", style="compact")) == "compact"
+
+
 def test_workspace_panel_does_not_encourage_early_partial_declaration():
     ex = _executor_for("ABC DEF", separator=" ")
     panel = build_workspace_panel(

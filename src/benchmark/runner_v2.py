@@ -57,6 +57,7 @@ class BenchmarkRunnerV2:
         display_mode: str = "off",
         external_context: str | None = None,
         benchmark_context_policy: str = "max",
+        system_prompt_style: str = "full",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -67,6 +68,7 @@ class BenchmarkRunnerV2:
         self.display_mode = display_mode
         self.external_context = external_context
         self.benchmark_context_policy = benchmark_context_policy
+        self.system_prompt_style = system_prompt_style
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -194,6 +196,7 @@ class BenchmarkRunnerV2:
             automated_preflight=automated_preflight,
             benchmark_context=benchmark_context,
             verbose=self.verbose,
+            system_prompt_style=self.system_prompt_style,
             on_event=on_event,
         )
 

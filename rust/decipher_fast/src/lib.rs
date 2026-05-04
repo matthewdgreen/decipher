@@ -1204,6 +1204,8 @@ fn apply_fast_step(
         "routeread" => route_read_fast(tokens, locked, pipeline, &step.data),
         "splitgridroute" => split_grid_route_fast(tokens, locked, pipeline, &step.data),
         "maskroute" => mask_route_fast(tokens, locked, pipeline, &step.data),
+        "turningmaskroute" => turning_mask_route_fast(tokens, locked, &step.data),
+        "blockroute" => block_route_fast(tokens, locked, pipeline, &step.data),
         "gridpermute" => grid_permute_fast(tokens, locked, pipeline, &step.data),
         "railfenceroute" => rail_fence_route_fast(tokens, locked, &step.data),
         "matrixrotate" => matrix_rotate_step_fast(tokens, locked, &step.data),
@@ -1789,6 +1791,167 @@ fn mask_cell_matches(
         }
         _ => Err(format!("unsupported MaskRoute pattern: {pattern}")),
     }
+}
+
+fn turning_mask_route_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let size = fast_int_any(data, &["blockSize", "size", "width"], 0).max(0) as usize;
+    if size <= 1 {
+        return Err("TurningMaskRoute requires blockSize > 1".to_string());
+    }
+    if size % 2 != 0 {
+        return Err("TurningMaskRoute currently requires an even blockSize".to_string());
+    }
+    let block_len = size * size;
+    if block_len > tokens.len() {
+        return Ok((tokens.to_vec(), locked.to_vec()));
+    }
+    let pattern = fast_string(data, &["pattern"], "top_left_quadrant").to_lowercase();
+    let route = fast_string(data, &["route"], "rows").to_lowercase();
+    let direction = fast_string(data, &["direction"], "cw").to_lowercase();
+    let turns: [usize; 4] = if matches!(direction.as_str(), "cw" | "clockwise" | "right") {
+        [0, 1, 2, 3]
+    } else {
+        [0, 3, 2, 1]
+    };
+    let block_order = turning_mask_block_order(size, &pattern, &route, &turns)?;
+    if !is_permutation(&block_order, block_len) {
+        return Err("TurningMaskRoute did not produce a block permutation".to_string());
+    }
+
+    let usable = (tokens.len() / block_len) * block_len;
+    let mut new_tokens = Vec::with_capacity(tokens.len());
+    let mut new_locked = Vec::with_capacity(tokens.len());
+    let mut block_start = 0;
+    while block_start < usable {
+        for idx in &block_order {
+            new_tokens.push(tokens[block_start + *idx]);
+            new_locked.push(locked[block_start + *idx]);
+        }
+        block_start += block_len;
+    }
+    new_tokens.extend_from_slice(&tokens[usable..]);
+    new_locked.extend_from_slice(&locked[usable..]);
+    Ok((new_tokens, new_locked))
+}
+
+fn turning_mask_block_order(
+    size: usize,
+    pattern: &str,
+    route: &str,
+    turns: &[usize; 4],
+) -> Result<Vec<usize>, String> {
+    let route_positions = route_positions(size, size, route)?;
+    let mut seen = vec![false; size * size];
+    let mut out = Vec::with_capacity(size * size);
+    for turn in turns {
+        let mut cells = vec![false; size * size];
+        for row in 0..size {
+            for col in 0..size {
+                if turning_mask_base_cell_matches(row, col, size, pattern)? {
+                    let (rr, cc) = rotate_square_cell(row, col, size, *turn);
+                    cells[rr * size + cc] = true;
+                }
+            }
+        }
+        for (row, col) in &route_positions {
+            let idx = row * size + col;
+            if cells[idx] && !seen[idx] {
+                seen[idx] = true;
+                out.push(idx);
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn turning_mask_base_cell_matches(
+    row: usize,
+    col: usize,
+    size: usize,
+    pattern: &str,
+) -> Result<bool, String> {
+    let half = size / 2;
+    match pattern {
+        "top_left_quadrant" | "upper_left_quadrant" | "tl" => Ok(row < half && col < half),
+        "top_right_quadrant" | "upper_right_quadrant" | "tr" => Ok(row < half && col >= half),
+        _ => Err(format!("unsupported TurningMaskRoute pattern: {pattern}")),
+    }
+}
+
+fn rotate_square_cell(row: usize, col: usize, size: usize, turns: usize) -> (usize, usize) {
+    let mut row = row;
+    let mut col = col;
+    for _ in 0..(turns % 4) {
+        let next_row = col;
+        let next_col = size - 1 - row;
+        row = next_row;
+        col = next_col;
+    }
+    (row, col)
+}
+
+fn block_route_fast(
+    tokens: &[usize],
+    locked: &[bool],
+    pipeline: &FastTransformPipeline,
+    data: &HashMap<String, FastValue>,
+) -> Result<(Vec<usize>, Vec<bool>), String> {
+    let block_size = fast_int_any(data, &["blockSize", "block_size", "size"], 0).max(0) as usize;
+    let columns = fast_int(data, "columns", pipeline.columns.unwrap_or(0) as i64) as usize;
+    let mut rows = fast_int(data, "rows", pipeline.rows.unwrap_or(0) as i64) as usize;
+    if block_size == 0 {
+        return Err("BlockRoute requires blockSize > 0".to_string());
+    }
+    if columns <= 1 {
+        return Err("BlockRoute requires columns > 1".to_string());
+    }
+    let block_count = tokens.len() / block_size;
+    if rows == 0 {
+        rows = block_count / columns;
+    }
+    let usable_blocks = (rows * columns).min(block_count);
+    if rows == 0 || usable_blocks == 0 {
+        return Ok((tokens.to_vec(), locked.to_vec()));
+    }
+    let route = fast_string(data, &["route"], "columns_down").to_lowercase();
+    let block_order_mode = fast_string(data, &["blockOrder", "block_order"], "normal").to_lowercase();
+    let positions = route_positions(rows, columns, &route)?;
+    if positions.len() != rows * columns {
+        return Err(format!("block route {route:?} did not cover the grid"));
+    }
+    let block_order: Vec<usize> = positions
+        .into_iter()
+        .map(|(row, col)| row * columns + col)
+        .filter(|idx| *idx < usable_blocks)
+        .collect();
+    if !is_permutation(&block_order, usable_blocks) {
+        return Err("BlockRoute did not produce a block permutation".to_string());
+    }
+    let mut new_tokens = Vec::with_capacity(tokens.len());
+    let mut new_locked = Vec::with_capacity(tokens.len());
+    for block_index in block_order {
+        let start = block_index * block_size;
+        let end = start + block_size;
+        match block_order_mode.as_str() {
+            "normal" | "identity" | "forward" => {
+                new_tokens.extend_from_slice(&tokens[start..end]);
+                new_locked.extend_from_slice(&locked[start..end]);
+            }
+            "reverse" | "reversed" => {
+                new_tokens.extend(tokens[start..end].iter().rev().copied());
+                new_locked.extend(locked[start..end].iter().rev().copied());
+            }
+            _ => return Err(format!("unsupported BlockRoute block order: {block_order_mode}")),
+        }
+    }
+    let tail_start = usable_blocks * block_size;
+    new_tokens.extend_from_slice(&tokens[tail_start..]);
+    new_locked.extend_from_slice(&locked[tail_start..]);
+    Ok((new_tokens, new_locked))
 }
 
 fn route_positions(

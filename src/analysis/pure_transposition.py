@@ -43,6 +43,8 @@ class PureTranspositionSearchConfig:
     include_route_composites: bool = True
     include_route_offsets: bool = True
     include_mask_routes: bool = True
+    include_turning_mask_routes: bool = True
+    include_block_routes: bool = True
     transmatrix_min_width: int = 2
     transmatrix_max_width: int | None = None
     provenance: str = "pure_transposition_screen"
@@ -69,6 +71,8 @@ class PureTranspositionSearchConfig:
             "include_route_composites": self.include_route_composites,
             "include_route_offsets": self.include_route_offsets,
             "include_mask_routes": self.include_mask_routes,
+            "include_turning_mask_routes": self.include_turning_mask_routes,
+            "include_block_routes": self.include_block_routes,
             "transmatrix_min_width": self.transmatrix_min_width,
             "transmatrix_max_width": self.effective_transmatrix_max_width(),
             "provenance": self.provenance,
@@ -88,6 +92,8 @@ def screen_pure_transposition(
     include_route_composites: bool = True,
     include_route_offsets: bool = True,
     include_mask_routes: bool = True,
+    include_turning_mask_routes: bool = True,
+    include_block_routes: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     threads: int = 0,
@@ -109,6 +115,8 @@ def screen_pure_transposition(
         include_route_composites=include_route_composites,
         include_route_offsets=include_route_offsets,
         include_mask_routes=include_mask_routes,
+        include_turning_mask_routes=include_turning_mask_routes,
+        include_block_routes=include_block_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -136,6 +144,8 @@ def screen_pure_transposition(
         include_route_composites=include_route_composites,
         include_route_offsets=include_route_offsets,
         include_mask_routes=include_mask_routes,
+        include_turning_mask_routes=include_turning_mask_routes,
+        include_block_routes=include_block_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
     )
@@ -226,6 +236,8 @@ def screen_pure_transposition(
         "include_route_composites": include_route_composites,
         "include_route_offsets": include_route_offsets,
         "include_mask_routes": include_mask_routes,
+        "include_turning_mask_routes": include_turning_mask_routes,
+        "include_block_routes": include_block_routes,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": _effective_transmatrix_max_width(
             len(values),
@@ -268,6 +280,8 @@ def generate_pure_transposition_candidates(
     include_route_composites: bool = True,
     include_route_offsets: bool = True,
     include_mask_routes: bool = True,
+    include_turning_mask_routes: bool = True,
+    include_block_routes: bool = True,
     transmatrix_min_width: int = 2,
     transmatrix_max_width: int | None = None,
     config: PureTranspositionSearchConfig | None = None,
@@ -287,6 +301,8 @@ def generate_pure_transposition_candidates(
             include_route_composites=include_route_composites,
             include_route_offsets=include_route_offsets,
             include_mask_routes=include_mask_routes,
+            include_turning_mask_routes=include_turning_mask_routes,
+            include_block_routes=include_block_routes,
             transmatrix_min_width=transmatrix_min_width,
             transmatrix_max_width=transmatrix_max_width,
         )
@@ -381,6 +397,30 @@ def iter_pure_transposition_candidates(
                 break
             ordinal += 1
             candidate = add(_mask_route_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
+
+    if config.include_turning_mask_routes and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _turning_mask_route_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_turning_mask_route_candidate(ordinal, params, config.provenance))
+            if candidate is not None:
+                yield candidate
+
+    if config.include_block_routes and (
+        config.max_candidates is None or len(out) < config.max_candidates
+    ):
+        ordinal = 0
+        for params in _block_route_params(config.token_count, config.profile_key):
+            if config.max_candidates is not None and len(out) >= config.max_candidates:
+                break
+            ordinal += 1
+            candidate = add(_block_route_candidate(ordinal, params, config.provenance))
             if candidate is not None:
                 yield candidate
 
@@ -557,9 +597,16 @@ def _route_composite_candidate(
     steps = [TransformStep("RouteRead", {"route": route})]
     if repair == "reverse":
         steps.append(TransformStep("Reverse", {}))
-    elif repair in {"matrix_rotate_cw", "matrix_rotate_ccw"}:
-        direction = "cw" if repair.endswith("_cw") else "ccw"
+    elif repair in {
+        "matrix_rotate_cw",
+        "matrix_rotate_ccw",
+        "matrix_rotate_cw_reverse",
+        "matrix_rotate_ccw_reverse",
+    }:
+        direction = "cw" if "_cw" in repair else "ccw"
         steps.append(TransformStep("MatrixRotate", {"width": width, "direction": direction}))
+        if repair.endswith("_reverse"):
+            steps.append(TransformStep("Reverse", {}))
     else:
         raise ValueError(f"unsupported route-composite repair: {repair}")
     pipeline = TransformPipeline(columns=width, steps=tuple(steps))
@@ -619,11 +666,18 @@ def _route_composite_params(token_count: int, profile: str) -> list[dict[str, An
         if profile_key == "medium"
         else ("columns_down", "rows_boustrophedon", "diagonal_down_right")
     )
-    repairs = (
-        ("matrix_rotate_cw", "matrix_rotate_ccw", "reverse")
-        if profile_key != "small"
-        else ("matrix_rotate_cw", "reverse")
-    )
+    if profile_key == "wide":
+        repairs = (
+            "matrix_rotate_cw",
+            "matrix_rotate_ccw",
+            "matrix_rotate_cw_reverse",
+            "matrix_rotate_ccw_reverse",
+            "reverse",
+        )
+    elif profile_key == "medium":
+        repairs = ("matrix_rotate_cw", "matrix_rotate_ccw", "matrix_rotate_cw_reverse", "reverse")
+    else:
+        repairs = ("matrix_rotate_cw", "reverse")
     out: list[dict[str, Any]] = []
     for width in widths:
         for route in routes:
@@ -752,9 +806,16 @@ def _mask_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
         add_width(width)
 
     patterns = (
-        ("border", "cross", "quadrants_tl_br", "quadrants_tr_bl")
+        (
+            "border",
+            "cross",
+            "checkerboard_even",
+            "checkerboard_odd",
+            "quadrants_tl_br",
+            "quadrants_tr_bl",
+        )
         if profile_key == "wide"
-        else ("border", "cross", "quadrants_tl_br")
+        else ("border", "cross", "checkerboard_even", "quadrants_tl_br")
         if profile_key == "medium"
         else ("border",)
     )
@@ -780,6 +841,136 @@ def _mask_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
                         "secondRoute": second_route,
                         "maskOrder": mask_order,
                     })
+    return out
+
+
+def _turning_mask_route_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    block_size = int(params["blockSize"])
+    pattern = str(params["pattern"])
+    route = str(params.get("route") or "rows")
+    direction = str(params.get("direction") or "cw")
+    pipeline = TransformPipeline(
+        steps=(TransformStep("TurningMaskRoute", {
+            "blockSize": block_size,
+            "pattern": pattern,
+            "route": route,
+            "direction": direction,
+        }),),
+    )
+    return TransformCandidate(
+        candidate_id=f"tg_{ordinal:05d}_{block_size}_{pattern}_{route}_{direction}",
+        family=f"turning_mask_{pattern}",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _turning_mask_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count < 16:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    max_block_size = 14 if profile_key == "wide" else 10 if profile_key == "medium" else 6
+    block_sizes = [size for size in range(4, max_block_size + 1, 2) if size * size <= token_count]
+    for size in (6, 8, 10, 12):
+        if size <= max_block_size and size * size <= token_count and size not in block_sizes:
+            block_sizes.append(size)
+    patterns = (
+        ("top_left_quadrant", "top_right_quadrant")
+        if profile_key == "wide"
+        else ("top_left_quadrant",)
+    )
+    routes = (
+        ("rows", "rows_boustrophedon", "columns_down")
+        if profile_key != "small"
+        else ("rows",)
+    )
+    directions = ("cw", "ccw") if profile_key == "wide" else ("cw",)
+    out: list[dict[str, Any]] = []
+    for block_size in sorted(block_sizes):
+        for pattern in patterns:
+            for route in routes:
+                for direction in directions:
+                    out.append({
+                        "blockSize": block_size,
+                        "pattern": pattern,
+                        "route": route,
+                        "direction": direction,
+                    })
+    return out
+
+
+def _block_route_candidate(
+    ordinal: int,
+    params: dict[str, Any],
+    provenance: str,
+) -> TransformCandidate:
+    block_size = int(params["blockSize"])
+    columns = int(params["columns"])
+    route = str(params["route"])
+    block_order = str(params.get("blockOrder") or "normal")
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": block_size,
+            "columns": columns,
+            "route": route,
+            "blockOrder": block_order,
+        }),),
+    )
+    return TransformCandidate(
+        candidate_id=f"br_{ordinal:05d}_{block_size}_{columns}_{route}_{block_order}",
+        family=f"block_route_{route}_{block_order}",
+        params=dict(params),
+        pipeline=pipeline,
+        provenance=provenance,
+    )
+
+
+def _block_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
+    if token_count < 20:
+        return []
+    profile_key = (profile or "wide").strip().lower()
+    block_sizes = (2, 3, 4, 5, 6, 8) if profile_key == "wide" else (3, 4, 5, 6) if profile_key == "medium" else (4,)
+    routes = (
+        ("columns_down", "columns_up", "rows_boustrophedon", "columns_boustrophedon", "spiral_clockwise")
+        if profile_key == "wide"
+        else ("columns_down", "rows_boustrophedon", "spiral_clockwise")
+        if profile_key == "medium"
+        else ("columns_down",)
+    )
+    out: list[dict[str, Any]] = []
+    for block_size in block_sizes:
+        block_count = token_count // block_size
+        if block_count < 4:
+            continue
+        max_columns = min(block_count - 1, 36 if profile_key == "wide" else 24 if profile_key == "medium" else 12)
+        widths: list[int] = []
+
+        def add_width(width: int) -> None:
+            if 1 < width <= max_columns and width not in widths:
+                widths.append(width)
+
+        for grid in plausible_grid_dimensions(
+            block_count,
+            max_columns=max_columns,
+            max_results=14 if profile_key == "wide" else 8 if profile_key == "medium" else 4,
+        ):
+            add_width(int(grid["columns"]))
+            add_width(int(grid["rows"]))
+        for width in (6, 8, 10, 12, 15, 16, 17, 20):
+            add_width(width)
+        for columns in widths:
+            rows = block_count // columns
+            if rows <= 0:
+                continue
+            for route in routes:
+                out.append({"blockSize": block_size, "columns": columns, "route": route, "blockOrder": "normal"})
+                if profile_key != "small":
+                    out.append({"blockSize": block_size, "columns": columns, "route": route, "blockOrder": "reverse"})
     return out
 
 
@@ -834,6 +1025,8 @@ def _screen_cache_key(
     include_route_composites: bool,
     include_route_offsets: bool,
     include_mask_routes: bool,
+    include_turning_mask_routes: bool,
+    include_block_routes: bool,
     transmatrix_min_width: int,
     transmatrix_max_width: int | None,
 ) -> str:
@@ -850,6 +1043,8 @@ def _screen_cache_key(
         "include_route_composites": include_route_composites,
         "include_route_offsets": include_route_offsets,
         "include_mask_routes": include_mask_routes,
+        "include_turning_mask_routes": include_turning_mask_routes,
+        "include_block_routes": include_block_routes,
         "transmatrix_min_width": transmatrix_min_width,
         "transmatrix_max_width": transmatrix_max_width,
     }
@@ -884,6 +1079,10 @@ def _family_bucket(family: str) -> str:
         return "route_offset"
     if family.startswith("mask_route"):
         return "mask_route"
+    if family.startswith("turning_mask"):
+        return "turning_mask"
+    if family.startswith("block_route"):
+        return "block_route"
     if family.startswith("route_"):
         return "route"
     if family.startswith("columnar_transposition"):

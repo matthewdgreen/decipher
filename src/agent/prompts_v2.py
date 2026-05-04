@@ -9,23 +9,7 @@ from analysis.dictionary import LANGUAGE_NAMES
 from analysis.language_guesser import format_ranking
 
 
-SYSTEM_PROMPT_TEMPLATE = """\
-You are analyzing a medieval manuscript that uses an unknown notation \
-system for scholarly purposes. The target plaintext \
-language is **{language_name}**.
-
-## Your environment
-
-You inhabit a **Workspace** — a stateful environment containing:
-- The encoded text (immutable).
-- Named **branches**, each with an independent partial key. A branch named \
-`main` exists at the start. You can fork new branches freely to explore \
-hypotheses without committing.
-- A **notebook** (when available) where you record structured findings.
-
-All mutating tools require an explicit branch name. All read tools take an \
-explicit branch name too. There is no implicit "current branch".
-
+_TOOLKIT_FULL = """\
 ## Your toolkit (by namespace)
 
 - `workspace_*` — branch lifecycle: fork, list, delete, compare, merge.
@@ -47,6 +31,10 @@ distribution, etc.
   If a no-boundary branch reads as locally correct but globally drifted or
   mis-segmented, call `decode_repair_no_boundary` to get a text-only repair
   preview before deciding whether to keep repairing the key itself.
+  After `search_anneal` converges with a few residual errors, call
+  `decode_diagnose_and_fix` — it runs the full diagnose-and-repair loop in
+  one tool call instead of requiring separate `decode_diagnose` →
+  many-`act_set_mapping` calls.
 - `score_*` — signal panel and individual signals. Call these when you want \
 a quantitative reading. No score triggers anything automatically; you \
 consult them.
@@ -66,10 +54,14 @@ recognise a word or letter from the decoded text, prefer one of these tools \
 over launching another search. The default primitive is \
 **`act_set_mapping`** — change one cipher symbol's plaintext letter. It is \
 unidirectional and surgical: only words containing that cipher symbol \
-change. **Avoid `act_swap_decoded` for single-word repairs**: it operates \
-on *decoded* letters bidirectionally across the entire branch and almost \
-always breaks something correct elsewhere. See "Reading-driven repair" \
-below for the full discipline.
+change. Note: `score_delta` from `act_set_mapping` is **advisory** — on \
+boundary-preserving ciphers a correct cipher-symbol fix can drop \
+`dictionary_rate` while still being correct; if two or more `changed_words` \
+entries now read as real target-language words, keep the change regardless \
+of the score delta. **Avoid `act_swap_decoded` for single-word repairs**: \
+it operates on *decoded* letters bidirectionally across the entire branch \
+and almost always breaks something correct elsewhere. See "Reading-driven \
+repair" below for the full discipline.
 - `search_*` — run classical algorithms on a branch. **Search strategy: if \
 the opening measured facts already show a many-symbol alphabet and no word \
 boundaries, prefer `search_automated_solver` as your first substantive move, \
@@ -156,6 +148,67 @@ leverage and should be tried first. See "Reading-driven repair" below for \
 the full discipline.
 - `meta_*` — `declare_solution` terminates the run.
 
+"""
+
+_TOOLKIT_COMPACT = """\
+## Tool families
+
+- `workspace_*` — branch lifecycle (fork, list, delete, compare, merge). \
+`workspace_fork_best` forks from the best branch; `workspace_fork` defaults \
+to `main`.
+- `observe_*` — text analysis. For unknown ciphers, start with \
+`observe_cipher_id` / `observe_cipher_shape`. For Vigenere suspicions: \
+`observe_kasiski`, `observe_phase_frequency`.
+- `decode_*` — transcription views. `decode_ambiguous_letter` when one \
+decoded letter covers multiple cipher symbols. After `search_anneal` \
+converges, use `decode_diagnose_and_fix` for residual errors.
+- `score_*` — quality signals (no automatic thresholds).
+- `corpus_*` — dictionary/pattern queries.
+- `benchmark_*` — `inspect_benchmark_context` and `list_related_records` \
+when opening context mentions related documents.
+- `act_*` — mutate a branch. `act_set_mapping` is the default (unidirectional, \
+surgical). `act_swap_decoded` is bidirectional — not for single-word repair.
+- `search_*` — solvers (see sequencing below).
+- `meta_*` — `meta_declare_solution` to terminate. `meta_request_tool` for \
+any unlisted tool.
+
+**Search sequencing:**
+- Large alphabet + no boundaries: `search_automated_solver` first (or inspect \
+`automated_preflight`). Homophonic: \
+`search_homophonic_anneal(solver_profile='zenith_native')`.
+- Otherwise: `search_anneal` (escapes local optima, ~85%+ in one call), then \
+`search_hill_climb` as polish only.
+- After reading-driven mappings exist: `preserve_existing=true` to hold anchors.
+- **Never** `search_anneal(preserve_existing=true)` before any reading-driven \
+anchor exists — without anchors it just re-confirms the prior optimum.
+- Word islands without coherent prose: `observe_transform_pipeline` before \
+more search. If transform suspected: `search_transform_candidates` / \
+`search_transform_homophonic`.
+- Pure transposition: `search_pure_transposition` + \
+`search_review_pure_transposition_finalists`.
+- Quagmire/keyed-tableau: \
+`search_quagmire3_keyword_alphabet(estimate_only=true)` first.
+
+"""
+
+SYSTEM_PROMPT_TEMPLATE = """\
+You are analyzing a medieval manuscript that uses an unknown notation \
+system for scholarly purposes. The target plaintext \
+language is **{language_name}**.
+
+## Your environment
+
+You inhabit a **Workspace** — a stateful environment containing:
+- The encoded text (immutable).
+- Named **branches**, each with an independent partial key. A branch named \
+`main` exists at the start. You can fork new branches freely to explore \
+hypotheses without committing.
+- A **notebook** (when available) where you record structured findings.
+
+All mutating tools require an explicit branch name. All read tools take an \
+explicit branch name too. There is no implicit "current branch".
+
+{toolkit_section}
 ## How you're expected to work
 
 There is **no prescribed procedure**. Plan your approach. Explore the space \
@@ -464,73 +517,42 @@ decode and decide by reading, not by score.
 
 ## Scoring notes
 
-Scoring signals available on every branch:
-- **dictionary_rate**: fraction of words found in the wordlist. For \
-no-boundary ciphers (no spaces in the decoded text), the scoring system \
-automatically segments the text before counting, so **dictionary_rate is \
-meaningful and non-zero even for continuous-letter ciphers**. Do not use \
-`run_python` to re-compute this; call `score_panel` or `score_dictionary` \
-directly. For no-boundary text this uses the same rank-aware segmenter as \
-`decode_diagnose`, so `score_panel` and `score_dictionary` should agree. \
-\
-**`dictionary_rate` has language- and cipher-specific ceilings well below \
-1.0.** Wordlists do not cover every inflected or historical form, so even \
-correct decryptions plateau at language-dependent values. On \
-boundary-preserving ciphers (where the cipher's word breaks may not align \
-with target-language word breaks), `dictionary_rate` can also be inflated \
-by short accidental fragments and can move in the wrong direction on a \
-correct cipher-symbol fix. Treat `dictionary_rate` as evidence of \
-*direction* (going up generally good, going down generally bad), not as a \
-declaration threshold. **Declare on reading, not on a fixed \
-`dictionary_rate` number.** \
-\
-For **homophonic no-boundary ciphers** in particular, `dictionary_rate` is \
-a weak signal: the segmenter can carve wrong text into many short \
-dictionary words. If `dictionary_rate` is high but \
-quadgram/bigram/letter-distribution signals are poor, treat the branch as \
-suspicious and keep searching.
-- **quadgram_loglik_per_gram**: mean log10 probability of quadgrams. \
-Typically more discriminating than dictionary rate. Higher (less negative) \
-is better.
-- **bigram_loglik_per_gram**: similar, more sensitive to short text.
-- **bigram_chi2**: chi-squared vs reference bigram distribution. Lower is \
-closer to the language.
+Signals on every branch:
+- **dictionary_rate**: fraction of words in the wordlist. Auto-segments \
+no-boundary text — **non-zero even for continuous ciphers**; call \
+`score_panel`, not `run_python`. Ceiling is language-specific and \
+**well below 1.0**. Treat as directional evidence. **Declare on reading**, not a fixed \
+number. For homophonic no-boundary ciphers it is weak: the \
+segmenter can match wrong text to many short words.
+- **quadgram_loglik_per_gram**: mean log10 quadgram probability. More \
+discriminating than dictionary rate. Higher (less negative) is better.
+- **bigram_loglik_per_gram**: similar; more sensitive on short text.
+- **bigram_chi2**: chi-squared vs. reference bigrams. Lower = closer to \
+the language.
 - **pattern_consistency**: fraction of cipher words whose isomorph appears \
-in the target-language pattern dictionary. Upper bound on what word-level \
-pattern matching could achieve.
-- **constraint_satisfaction**: 1.0 if the key is one-to-one (simple \
-substitution); below 1.0 if multiple cipher symbols map to the same plaintext \
-letter (homophony). For ciphers with alphabet size > 26, a value below 1.0 \
-is **correct and expected** — do not treat it as an error.
-
-None of these scores has a canonical "good enough" threshold. Judge quality \
-by *reading* the transcription in the Workspace panel. Use scores only as \
-a tie-breaker between branches or to confirm what your reading already \
-suggests.
+in the pattern dictionary.
+- **constraint_satisfaction**: 1.0 = one-to-one key. For alphabet_size > 26 \
+a value below 1.0 is **expected** (homophones), not an error.
 
 {language_notes}
 
 ## Notation system notes
 
-The symbol alphabet size and distributional shape are diagnostic:
-- Alphabet size ≈ 26 (or language-appropriate) and index of coincidence \
-near the reference for that language → likely simple substitution notation.
-- Alphabet size substantially larger than 26, or a very flat frequency \
-distribution → consider **polyalphabetic** notation (multiple symbols \
-for one plaintext letter). Some languages (like 18th-century \
-Masonic German) used this; the Copiale manuscript is an example.
+Alphabet size and distribution are diagnostic:
+- Size ≈ 26 (language-appropriate) + IC near language reference → simple \
+substitution.
+- Size > 26 or very flat frequency → **polyalphabetic** (multiple cipher \
+symbols per letter). Copiale (German Masonic) is an example.
 
 ## Homophonic no-boundary caution
 
-When the cipher alphabet is larger than the plaintext alphabet and there \
-are no word boundaries, do not declare from scattered words or \
-`dictionary_rate` alone. A bad branch can contain many short \
-target-language words by chance. Before declaring, require the full \
-decoded stream to read as coherent prose, and cross-check with \
-`score_panel`, `observe_homophone_distribution`, and `decode_letter_stats`. \
-If common letters expected to appear are absent while other letters are \
-overrepresented, use `decode_absent_letter_candidates` to test one cipher \
-symbol at a time.
+Large alphabet + no word boundaries: do not declare from `dictionary_rate` \
+or isolated words alone — a wrong branch can segment into many short \
+dictionary words by chance. Require the full decoded stream to read as \
+coherent prose. Cross-check with `score_panel`, \
+`observe_homophone_distribution`, and `decode_letter_stats`. If expected \
+letters are absent while others are overrepresented, use \
+`decode_absent_letter_candidates` to probe one cipher symbol at a time.
 """
 
 
@@ -591,12 +613,14 @@ letters in the ciphertext.
 }
 
 
-def get_system_prompt(language: str = "en") -> str:
+def get_system_prompt(language: str = "en", style: str = "full") -> str:
     language_name = LANGUAGE_NAMES.get(language, "Unknown")
     notes = LANGUAGE_NOTES.get(language, "")
+    toolkit = _TOOLKIT_FULL if style != "compact" else _TOOLKIT_COMPACT
     return SYSTEM_PROMPT_TEMPLATE.format(
         language_name=language_name,
         language_notes=notes,
+        toolkit_section=toolkit,
     )
 
 
@@ -609,6 +633,7 @@ def initial_context(
     language: str = "en",
     prior_context: str | None = None,
     cipher_id_context: str | None = None,
+    tool_filter_note: str | None = None,
 ) -> str:
     """Build the opening user message for a v2 run.
 
@@ -652,7 +677,7 @@ def initial_context(
         else f"Target language: **{lang_name}**."
     )
 
-    return f"""\
+    result = f"""\
 You are a digital humanities researcher analyzing a manuscript. {lang_line}
 
 ## The manuscript notation system
@@ -677,3 +702,6 @@ A branch named `main` exists, empty. No mappings are set. Plan your \
 approach and begin. When you're confident in your answer, or when you've \
 done what you can, call `meta_declare_solution`.
 """
+    if tool_filter_note:
+        result = result.rstrip("\n") + f"\n{tool_filter_note}\n"
+    return result

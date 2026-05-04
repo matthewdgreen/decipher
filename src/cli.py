@@ -13,7 +13,7 @@ def _use_agentic_mode(args: argparse.Namespace) -> bool:
 
 
 def _resolve_agent_display(args: argparse.Namespace) -> str:
-    requested = getattr(args, "display", "auto")
+    requested = getattr(args, "display", "pretty")
     if requested != "auto":
         return requested
     if getattr(args, "verbose", False):
@@ -131,6 +131,15 @@ def _resolve_provider_and_model(args: argparse.Namespace) -> tuple[str, str]:
     provider = infer_provider_from_model(requested_model, requested_provider)
     model = requested_model or default_model_for_provider(provider)
     return provider, model
+
+
+def _resolve_system_prompt_style(args: argparse.Namespace) -> str:
+    """Return 'full' or 'compact' based on --system-prompt-style and provider."""
+    requested = getattr(args, "system_prompt_style", "auto")
+    if requested != "auto":
+        return requested
+    provider, _ = _resolve_provider_and_model(args)
+    return "compact" if provider == "ollama" else "full"
 
 
 def _make_agent_provider(args: argparse.Namespace):
@@ -357,6 +366,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             display_mode=display_mode,
             external_context=_read_external_context(args),
             benchmark_context_policy=args.benchmark_context,
+            system_prompt_style=_resolve_system_prompt_style(args),
         )
         mode_label = f"agentic ({provider}/{model})"
 
@@ -543,6 +553,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
         prior_context=_read_external_context(args),
         automated_preflight=automated_preflight,
         verbose=args.verbose and display_mode == "off",
+        system_prompt_style=_resolve_system_prompt_style(args),
         on_event=on_event,
     )
 
@@ -941,6 +952,13 @@ def main() -> None:
         "-m",
         help="LLM model name. Defaults by provider.",
     )
+    bench.add_argument(
+        "--system-prompt-style",
+        choices=["full", "compact", "auto"],
+        default="auto",
+        dest="system_prompt_style",
+        help="System prompt size. 'compact' replaces the verbose toolkit section with a cheatsheet (~1,400 chars vs ~9,200). 'auto' selects compact for ollama, full otherwise.",
+    )
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     bench.add_argument(
         "--context",
@@ -979,10 +997,10 @@ def main() -> None:
     bench.add_argument(
         "--display",
         choices=["auto", "pretty", "raw", "jsonl"],
-        default="auto",
+        default="pretty",
         help=(
-            "Agentic terminal display mode. auto uses pretty on an interactive "
-            "terminal, raw when piped, and the legacy verbose stream with -v."
+            "Agentic terminal display mode (default: pretty). auto uses pretty on an "
+            "interactive terminal, raw when piped, and the legacy verbose stream with -v."
         ),
     )
     bench.add_argument(
@@ -1073,6 +1091,13 @@ def main() -> None:
         help="LLM provider for agentic runs. Default is inferred from --model, else anthropic.",
     )
     crack.add_argument("--model", "-m", help="LLM model name. Defaults by provider.")
+    crack.add_argument(
+        "--system-prompt-style",
+        choices=["full", "compact", "auto"],
+        default="auto",
+        dest="system_prompt_style",
+        help="System prompt size. 'compact' replaces the verbose toolkit section with a cheatsheet (~1,400 chars vs ~9,200). 'auto' selects compact for ollama, full otherwise.",
+    )
     crack.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"],
                        default="en")
     crack.add_argument(
@@ -1094,8 +1119,8 @@ def main() -> None:
     crack.add_argument(
         "--display",
         choices=["auto", "pretty", "raw", "jsonl"],
-        default="auto",
-        help="Agentic terminal display mode.",
+        default="pretty",
+        help="Agentic terminal display mode (default: pretty).",
     )
     crack.add_argument(
         "--agentic",
@@ -1197,8 +1222,8 @@ def main() -> None:
     resume.add_argument(
         "--display",
         choices=["auto", "pretty", "raw", "jsonl"],
-        default="auto",
-        help="Agentic terminal display mode.",
+        default="pretty",
+        help="Agentic terminal display mode (default: pretty).",
     )
 
     # testgen
@@ -1263,8 +1288,8 @@ def main() -> None:
     tg.add_argument(
         "--display",
         choices=["auto", "pretty", "raw", "jsonl"],
-        default="auto",
-        help="Agentic terminal display mode.",
+        default="pretty",
+        help="Agentic terminal display mode (default: pretty).",
     )
     tg.add_argument(
         "--agentic",

@@ -603,6 +603,18 @@ Recommended for historical manuscript analysis: `gpt-5.4` though `claude-sonnet-
 > `qwen3:14b`, `qwen3:8b`, `llama3.1:8b`). Ollama support has not been
 > extensively tested and effectiveness will vary significantly by model.
 > Run `decipher doctor` to see which Ollama models are currently installed.
+>
+> **Context window:** Decipher's initial prompt is typically 20–25 K tokens.
+> Ollama's per-model default context window is often only 4 096 tokens,
+> which silently truncates the prompt to almost nothing. Set
+> `OLLAMA_NUM_CTX=32768` (or higher) before running to ensure the full
+> context is received. The default when using `--provider ollama` is already
+> 32 768, but if you load the model via a custom Modelfile with a lower
+> `num_ctx`, set this env var to override.
+>
+> ```bash
+> OLLAMA_NUM_CTX=32768 decipher crack -f cipher.txt --agentic --provider ollama --model qwen2.5:32b
+> ```
 
 ### Terminal display mode
 

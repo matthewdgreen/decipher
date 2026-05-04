@@ -56,13 +56,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- workspace_* -----
     {
         "name": "workspace_fork",
-        "description": (
-            "Create a new branch by copying the key of an existing branch. "
-            "Cheap — branches are independent dicts. Use this to test a "
-            "hypothesis without committing to main. If an automated preflight "
-            "or other readable branch exists and you want to repair it, prefer "
-            "`workspace_fork_best` so you do not accidentally fork empty `main`."
-        ),
+        "description": "Create a new branch from an existing one (from_branch, default empty main). Returns the new branch name.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -74,13 +68,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_fork_best",
-        "description": (
-            "Create a new repair branch from the strongest existing branch. "
-            "Use this when an automated preflight branch exists or when you "
-            "want to repair the current best decode. It avoids accidentally "
-            "forking empty `main`; the result tells you exactly which source "
-            "branch was copied."
-        ),
+        "description": "Fork the current best-scoring branch into a new named branch. Equivalent to workspace_fork with from_branch=<best branch>.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -90,10 +78,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "prefer_branch": {
                     "type": "string",
-                    "description": (
-                        "Optional source branch to copy if it exists. Omit to "
-                        "let the tool choose the strongest branch."
-                    ),
+                    "description": "Source branch to copy if it exists; omit to choose the strongest branch.",
                 },
             },
             "required": ["new_name"],
@@ -106,12 +91,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_branch_cards",
-        "description": (
-            "Show compact branch state cards: scores, mapped count, readable "
-            "excerpt, applied/held/open repair agenda items, and risk warnings. "
-            "Use this before declaration when multiple branches or repair "
-            "hypotheses exist."
-        ),
+        "description": "Show a summary card for each workspace branch: name, score panel, mapped count, and top decoded words.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -124,13 +104,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_create_hypothesis_branch",
-        "description": (
-            "Create a branch tagged with an explicit cipher-mode hypothesis "
-            "without assuming a substitution key. Use this early on unknown "
-            "ciphers to separate hypotheses such as homophonic, "
-            "periodic_polyalphabetic, transposition_homophonic, or "
-            "fractionation_transposition."
-        ),
+        "description": "Create a new hypothesis branch with a cipher_type label and optional evidence_source. Returns the branch name.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -152,11 +126,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "other",
                     ],
                     "default": "agent_inference",
-                    "description": (
-                        "Where this cipher-mode hypothesis came from. Use "
-                        "`benchmark_context` when you read the exposed context "
-                        "and are treating it as a controlling working assumption."
-                    ),
+                    "description": "Origin: `benchmark_context` if from injected layer, `fingerprint` for tool inference.",
                 },
                 "mode_confidence": {
                     "type": "string",
@@ -169,13 +139,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_reject_hypothesis",
-        "description": (
-            "Mark a hypothesis branch as rejected or superseded and record the "
-            "reason. Use this when a mode/search basin produced only word "
-            "islands, incoherent text, or incompatible evidence. The executor "
-            "may block rejection when context-supported or statistically "
-            "required family-level tools are still pending."
-        ),
+        "description": "Mark a hypothesis branch as rejected and record a reason. Keeps the branch but flags it as eliminated.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -189,11 +153,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "acknowledge_pending_required_tools": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Emergency override only. Set true only when pending "
-                        "required tools are impossible or irrelevant, and "
-                        "explain why in reason."
-                    ),
+                    "description": "Emergency override: set true only when pending tools are impossible or irrelevant.",
                 },
             },
             "required": ["branch", "reason"],
@@ -201,12 +161,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_update_hypothesis",
-        "description": (
-            "Update the cipher-mode hypothesis metadata for an existing branch "
-            "without changing its key or decoded text. Use this to activate, "
-            "downgrade, supersede, or add evidence/counter-evidence after a "
-            "diagnostic or solver attempt."
-        ),
+        "description": "Update an existing hypothesis branch: change status (open/testing/eliminated/confirmed), confidence, evidence, or notes.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -237,11 +192,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                         "related_record",
                         "other",
                     ],
-                    "description": (
-                        "Optional replacement evidence source. Set to "
-                        "`benchmark_context` only after reading exposed context "
-                        "and deciding it should control the active cipher family."
-                    ),
+                    "description": "Updated origin. Use `benchmark_context` after reading context layers.",
                 },
             },
             "required": ["branch"],
@@ -249,23 +200,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_hypothesis_cards",
-        "description": (
-            "Show branch cards filtered and summarized as cipher-type "
-            "hypotheses: active/rejected mode, evidence, decoded preview, and "
-            "next action. Use this before switching modes or declaring an "
-            "unknown-cipher result."
-        ),
+        "description": "Show hypothesis cards: cipher_type, confidence, status, and evidence for each active hypothesis branch.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
         "name": "workspace_hypothesis_next_steps",
-        "description": (
-            "Return a mode-specific diagnostic/solver playbook for one "
-            "hypothesis branch or all active hypotheses. It marks which "
-            "recommended tools have already been tried in this run and names "
-            "the next pending action, so the agent can avoid looping on the "
-            "same diagnostic."
-        ),
+        "description": "Return the suggested next tools for a hypothesis branch based on its current status and score.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -359,12 +299,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "observe_cipher_id",
-        "description": (
-            "Cheap unknown-cipher fingerprint for a branch: IC, entropy, "
-            "periodic IC, Kasiski hints, doubled-digraph rate, symbol counts, "
-            "and ranked cipher-mode suspicions. Use this before committing to "
-            "a solver family."
-        ),
+        "description": "Compute and return a fresh cipher-type fingerprint for a branch's current token order. Returns suspicion scores, IC, entropy, and periodic IC.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -467,14 +402,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "observe_homophone_distribution",
-        "description": (
-            "Homophonic-cipher diagnostic. Estimates how many cipher symbols "
-            "should map to each plaintext letter from reference language "
-            "frequencies, and compares that expectation with the current branch "
-            "if one is supplied. Use this when the cipher alphabet is larger "
-            "than the plaintext alphabet, IC is very low, or many decoded "
-            "letters are absent/overrepresented."
-        ),
+        "description": "Show how many cipher symbols map to each decoded plaintext letter. Identifies overloaded letters (possible homophones) and absent letters. Use before homophonic solvers or targeted repairs.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -487,12 +415,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "observe_transform_pipeline",
-        "description": (
-            "Inspect ciphertext-transform state for a branch: current grid "
-            "metadata, active token-order overlay, and any applied "
-            "Zenith-compatible transform pipeline. Use this when a cipher may "
-            "be transposition+homophonic and the reading order itself may be wrong."
-        ),
+        "description": "Show the current transform pipeline state for a branch: applied transforms, column count, row count, and derived token order.",
         "input_schema": {
             "type": "object",
             "properties": {"branch": {"type": "string", "default": "main"}},
@@ -500,14 +423,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "observe_transform_suspicion",
-        "description": (
-            "Cheap diagnostic for deciding whether transform search is worth "
-            "trying on a cipher with unknown or incomplete type metadata. It "
-            "reports plausible grid dimensions, homophonic/order-scramble "
-            "signals, and a conservative recommendation. Use this before "
-            "spending solver budget on search_pure_transposition or "
-            "search_transform_homophonic."
-        ),
+        "description": "Observe statistical signals (IC, bigram entropy, periodic IC) to estimate how likely a transposition or transform step is present. Returns suspicion scores per family.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -529,12 +445,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_transform_candidates",
-        "description": (
-            "Run a structural-only transform candidate search. This can use "
-            "fast, broad, or wide breadth without spending homophonic solver "
-            "budget. Use it when deciding whether a large transform search is "
-            "worth promoting into search_transform_homophonic."
-        ),
+        "description": "Generate and score transposition transform candidates for a branch. Returns ranked finalists for review via search_review_transform_finalists.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -560,31 +471,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
         },
     },
     {
         "name": "search_pure_transposition",
-        "description": (
-            "Run the broad Rust-backed pure-transposition screen and rank "
-            "candidate reading orders directly by plaintext quality. Use this "
-            "when the working hypothesis is transposition-only, e.g. Kryptos "
-            "K3-style or route/order scrambling with no homophonic alphabet. "
-            "Do not use this for Zodiac/Z340-style transposition+homophonic "
-            "cases; use search_transform_homophonic for those."
-        ),
+        "description": "Search for a pure columnar transposition key on a branch. Tries candidate column counts and orderings; returns finalist keys ranked by n-gram score.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -636,29 +534,18 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
         },
     },
     {
         "name": "search_periodic_polyalphabetic",
-        "description": (
-            "Run a bounded Vigenere-family search over clean A-Z ciphertext "
-            "and optionally install the best candidates as mode-tagged "
-            "hypothesis branches. This is not a substitution mapping; the "
-            "periodic key is stored in branch metadata."
-        ),
+        "description": "Search for a periodic polyalphabetic (Vigenère-family) key given a known or estimated key length. Returns candidate keys ranked by n-gram score.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -688,14 +575,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_quagmire3_keyword_alphabet",
-        "description": (
-            "Search Quagmire III keyword-shaped shared alphabets and derive "
-            "cyclewords for each candidate. Use this after ordinary "
-            "Vigenere-family search fails but periodic evidence remains, or "
-            "when context suggests a keyed-tableau/Quagmire-style cipher. "
-            "This is bounded and diagnostic, not a full open-ended Quagmire "
-            "crack."
-        ),
+        "description": "Search for a Quagmire III cipher key: keyword-generated alphabet with a running key. Returns ranked candidate keyword-alphabet pairs.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -713,12 +593,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "initial_keywords": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Optional context/crib keyword starts. Supplying a "
-                        "solution-bearing or title/source-derived keyword "
-                        "makes this a seeded/context-assisted probe, not a "
-                        "blind solve."
-                    ),
+                    "description": "Crib keyword seeds. A solution-bearing keyword makes results seeded, not blind.",
                 },
                 "steps": {"type": "integer", "default": 200},
                 "restarts": {"type": "integer", "default": 8},
@@ -732,10 +607,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "estimate_only": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Return budget/runtime estimates without running the "
-                        "search. Recommended before broad rust_shotgun runs."
-                    ),
+                    "description": "Return budget/runtime estimates without running. Recommended before broad searches.",
                 },
                 "screen_top_n": {"type": "integer", "default": 64},
                 "word_weight": {"type": "number", "default": 0.25},
@@ -748,12 +620,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "string",
                     "enum": ["python_screen", "rust_shotgun"],
                     "default": "rust_shotgun",
-                    "description": (
-                        "Use rust_shotgun for the compiled Blake-style "
-                        "parallel restart/hillclimb loop. python_screen is "
-                        "a small reference/diagnostic path, not a large-run "
-                        "fallback."
-                    ),
+                    "description": "rust_shotgun=parallel compiled loop (fast); python_screen=quick; python_broad=exhaustive.",
                 },
                 "hillclimbs": {
                     "type": "integer",
@@ -790,12 +657,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_show_phases",
-        "description": (
-            "For a periodic polyalphabetic hypothesis, show ciphertext grouped "
-            "by key phase with phase shifts, key letters/digits, decoded samples, "
-            "and top phase-local symbols. Use this to inspect or manually adjust "
-            "a Vigenere/Beaufort/Gronsfeld candidate."
-        ),
+        "description": "Show the decoded text split into period-length phases (columns). Use with periodic ciphers to inspect per-column letter distributions.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -842,15 +704,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- score_* -----
     {
         "name": "score_panel",
-        "description": (
-            "Full signal panel for a branch: dictionary_rate, "
-            "quadgram_loglik_per_gram, bigram_loglik_per_gram, bigram_chi2, "
-            "pattern_consistency, constraint_satisfaction, and mapped counts. "
-            "dictionary_rate works correctly for BOTH word-boundary and "
-            "no-boundary ciphers — for no-boundary text it uses automatic "
-            "word segmentation before scoring, so it will return a meaningful "
-            "non-zero value even for continuous-letter ciphers."
-        ),
+        "description": "Signal panel for a branch: dictionary_rate, quadgram + bigram loglik, bigram_chi2, pattern_consistency, constraint_satisfaction, mapped counts. Works for both word-boundary and no-boundary ciphers.",
         "input_schema": {
             "type": "object",
             "properties": {"branch": {"type": "string"}},
@@ -868,13 +722,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "score_dictionary",
-        "description": (
-            "Dictionary hit-rate of the branch's transcription, plus a sample "
-            "of unrecognized words. For no-boundary ciphers (one continuous run "
-            "of letters), automatically segments using a word-boundary finder "
-            "before scoring, and returns the segmented text preview and "
-            "pseudo-words for diagnosis. Works correctly for all cipher types."
-        ),
+        "description": "Dictionary hit rate for a branch: fraction of decoded word groups matching the target-language dictionary. Works for both word-boundary and no-boundary ciphers.",
         "input_schema": {
             "type": "object",
             "properties": {"branch": {"type": "string"}},
@@ -893,12 +741,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "corpus_word_candidates",
-        "description": (
-            "Candidate plaintext words matching an encoded word's isomorph"
-            "pattern. If `consistent_with_branch` is set, filters to "
-            "candidates whose letter assignments are compatible with existing "
-            "mappings on that branch."
-        ),
+        "description": "Return dictionary words matching a decoded word pattern (including ? wildcards). Useful for identifying candidate words for act_anchor_word.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -912,19 +755,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- act_* -----
     {
         "name": "act_set_mapping",
-        "description": (
-            "Set a single encoded-symbol → plaintext-letter mapping on a branch. "
-            "**This is the default primitive for reading-driven repair.** "
-            "cipher_symbol must be the name of a symbol from the cipher alphabet "
-            "(e.g. 'S001', 'A', 'X') — NOT a letter you see in the decoded output. "
-            "Unidirectional and surgical: only words containing this cipher "
-            "symbol change. Result includes a `changed_words` sample (was→now) "
-            "so you can decide by reading rather than by score. The score_delta "
-            "is advisory — on boundary-preserving ciphers a correct cipher- "
-            "symbol fix can drop dictionary_rate while still being correct. "
-            "If two or more `changed_words` entries now read as real target- "
-            "language words (or fragments of real words), keep the change."
-        ),
+        "description": "Map a single cipher symbol to a plaintext letter. cipher_symbol is a symbol name (e.g. 'S001', 'X'), not a decoded letter. Surgical and unidirectional. Returns changed_words sample.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -934,20 +765,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "dry_run": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Preview the mapping and changed_words without "
-                        "mutating the branch. Use this for speculative "
-                        "near-solved repairs before committing them."
-                    ),
+                    "description": "Preview changed_words without mutating the branch.",
                 },
                 "allow_mode_mismatch_repair": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Override the cipher-mode guard when deliberately "
-                        "using a substitution-style repair on a non-"
-                        "substitution hypothesis branch."
-                    ),
+                    "description": "Override cipher-mode guard for substitution repair on a non-substitution branch.",
                 },
             },
             "required": ["branch", "cipher_symbol", "plain_letter"],
@@ -955,12 +778,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_set_periodic_key",
-        "description": (
-            "Set the full periodic key for a periodic polyalphabetic branch. "
-            "For Vigenere/Beaufort variants, pass a key string like LEMON or "
-            "a shift list. For Gronsfeld, pass digits or shifts 0-9. This "
-            "updates mode-specific metadata and decoded_text, not branch.key."
-        ),
+        "description": "Set a full periodic (Vigenère-style) key on a branch: provide key_length and per-position shift values.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1036,12 +854,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_anchor_word",
-        "description": (
-            "Assert that an encoded word decodes to a specific plaintext word on "
-            "a given branch. Directly assigns each cipher symbol to its plaintext "
-            "letter. Multiple cipher symbols may map to the same plaintext letter "
-            "(homophonic ciphers are fully supported)."
-        ),
+        "description": "Anchor a known plaintext word at a cipher position: sets all cipher-symbol mappings implied by word=... at position=... Updates the branch key.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1067,23 +880,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_swap_decoded",
-        "description": (
-            "**Bidirectional letter-population swap** — exchanges the cipher "
-            "symbols mapped to two decoded letters across the entire branch. "
-            "**Rarely the right primitive for reading-driven repairs**: if you "
-            "see decoded T in a word that should be B, this tool will move "
-            "every cipher symbol currently producing T to produce B *and* "
-            "every symbol producing B to produce T, almost always breaking "
-            "correctly-decoded words elsewhere. For 'this letter should be "
-            "that letter in this word' fixes, use `act_set_mapping` on the "
-            "single cipher symbol producing the wrong letter — that is "
-            "unidirectional and surgical. Use act_swap_decoded only when you "
-            "deliberately want to swap two whole decoded-letter populations "
-            "(e.g. a confirmed full ↔ swap such as A↔E). When auto-reverted, "
-            "the result includes `unidirectional_alternatives` listing the "
-            "specific act_set_mapping calls that would have made the same "
-            "intent without the bidirectional side-effects."
-        ),
+        "description": "Bidirectional swap: exchanges ALL cipher symbols mapped to two decoded letters. Use only for deliberate full-population swaps. For single-word fixes use act_set_mapping on the specific cipher symbol instead.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1117,14 +914,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_merge_cipher_words",
-        "description": (
-            "Merge two adjacent ciphertext words on this branch only. "
-            "Use this when a transcription likely inserted a spurious "
-            "boundary, e.g. CUR | A -> CURA. Numeric word indices shift "
-            "after every split/merge; when acting from decoded text, prefer "
-            "`act_merge_decoded_words` or re-run decode_show/decode_diagnose "
-            "before using another numeric index."
-        ),
+        "description": "Merge two adjacent cipher-text word groups into one at position word_index. Affects all branches. Use to fix over-split cipher transcription boundaries.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1139,14 +929,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_merge_decoded_words",
-        "description": (
-            "Merge the currently adjacent cipher words whose decoded forms "
-            "match left_decoded and right_decoded. This is the safest boundary "
-            "tool when you are reading the plaintext directly, because it "
-            "finds the current pair after earlier merges have shifted numeric "
-            "word indices. Example: left_decoded='AP', right_decoded='PLY' "
-            "merges the current AP | PLY pair into APPLY."
-        ),
+        "description": "Merge two adjacent decoded words into one at word_index and word_index+1. Safer than act_resegment_by_reading when only one merge is needed; earlier edits cannot stale later indices.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1164,13 +947,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_apply_boundary_candidate",
-        "description": (
-            "Apply one of the currently suggested boundary edits for this branch. "
-            "Use this when decode_diagnose or decode_diagnose_and_fix returns "
-            "boundary_candidates or a recommended_next_tool for split/merge. "
-            "It recomputes candidates each call, so repeated calls are safer "
-            "than manually reusing old numeric word indices."
-        ),
+        "description": "Apply a word-boundary candidate returned by decode_diagnose or decode_repair_no_boundary. Provide the boundary_candidate_id from the diagnostic result.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1186,15 +963,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_apply_word_repair",
-        "description": (
-            "Apply a same-length reading-driven word repair such as TREUITER "
-            "-> BREUITER. This is a low-friction wrapper around the correct "
-            "act_set_mapping calls: it locates the word, identifies the "
-            "cipher symbols responsible for differing letters, applies those "
-            "symbol mappings, and returns changed_words so you can judge the "
-            "repair by reading. Provide either cipher_word_index or "
-            "decoded_word plus optional occurrence."
-        ),
+        "description": "Apply a word repair from decode_plan_word_repair_menu or decode_plan_word_repair. Use the suggested_call from those tools rather than constructing this call manually.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1206,19 +975,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "dry_run": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Preview the same-length word repair without mutating "
-                        "the branch or repair agenda."
-                    ),
+                    "description": "Preview the repair without mutating branch or agenda.",
                 },
                 "allow_bad_basin_repair": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Override the bad-basin repair guard. Use only when "
-                        "you can paraphrase a coherent clause and intentionally "
-                        "want this local word repair despite the warning."
-                    ),
+                    "description": "Override bad-basin guard when the repair is manuscript-faithful despite a score drop.",
                 },
                 "allow_mode_mismatch_repair": {"type": "boolean", "default": False},
             },
@@ -1227,27 +989,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_resegment_by_reading",
-        "description": (
-            "Replace this branch's word boundaries with a complete reading that "
-            "you propose, while preserving the exact decoded character stream. "
-            "This is the one-shot boundary-normalization tool: instead of "
-            "merging THERE | FORE, AP | PLY, UN | TO, AFTER | WARD one at a "
-            "time, provide proposed_text='THEREFORE THE ... APPLY ... UNTO ...' "
-            "and the tool applies the new word spans only if the letters match "
-            "exactly after removing spaces/punctuation. If you need to change "
-            "letters too, first call decode_validate_reading_repair and then "
-            "use act_set_mapping/act_bulk_set for the character repairs."
-        ),
+        "description": "Replace a branch's word boundaries with a proposed reading, preserving the exact decoded character stream. Applies new word spans only if letters match exactly. For letter changes use act_set_mapping after.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
                 "proposed_text": {
                     "type": "string",
-                    "description": (
-                        "Complete best reading with desired word boundaries. "
-                        "Must have the same letters as the current branch."
-                    ),
+                    "description": "Reading with desired boundaries. Letters must match the current decoded stream exactly.",
                 },
             },
             "required": ["branch", "proposed_text"],
@@ -1255,28 +1004,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_resegment_from_reading_repair",
-        "description": (
-            "Apply only the word-boundary pattern implied by a proposed best "
-            "reading, while preserving the branch's current decoded letters "
-            "and key. Use this when the branch is readable-but-damaged and "
-            "your best reading changes both spaces and a few letters. Example: "
-            "current PHYSICS ER, proposed PHYSICKER has the same character "
-            "count, so this tool can safely install one word boundary span and "
-            "leave the current letters as PHYSICSER. It returns mismatch spans "
-            "so you can then repair the true letter/key errors with "
-            "act_set_mapping or act_bulk_set."
-        ),
+        "description": "Apply the word-boundary pattern of a proposed reading without changing decoded letters or key. Use when characters are correct but boundaries are wrong. Returns mismatch spans for act_set_mapping follow-up.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
                 "proposed_text": {
                     "type": "string",
-                    "description": (
-                        "Best target-language reading. The letters may differ "
-                        "from the current branch, but the normalized character "
-                        "count must match."
-                    ),
+                    "description": "Best reading. Letters may differ from branch; normalised character count must match.",
                 },
             },
             "required": ["branch", "proposed_text"],
@@ -1284,16 +1019,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_resegment_window_by_reading",
-        "description": (
-            "Apply word-boundary changes to a local window of decoded words "
-            "instead of rewriting the entire plaintext stream. Use this for "
-            "repairs like LIBE | BITUR -> LIBEBITUR, A | RI -> ARI, or "
-            "POTESTQUIBUS -> POTEST | QUIBUS. The proposed text only needs to "
-            "cover the selected window. If proposed letters differ but the "
-            "character count matches, the tool applies only the boundary "
-            "pattern to the current decoded letters and returns mismatch spans "
-            "for later key repair."
-        ),
+        "description": "Replace word boundaries in a window of decoded words (start_word_index..end_word_index) with a proposed reading, preserving the decoded character stream in that window.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1317,15 +1043,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- search_* -----
     {
         "name": "search_hill_climb",
-        "description": (
-            "Greedy per-symbol refinement of a branch's key. ONLY use AFTER "
-            "search_anneal has produced a good starting point — hill-climbing "
-            "from random/empty starts frequently stalls in wrong local optima "
-            "(observed: ~40% accuracy on English). Use when search_anneal's "
-            "output is readable but has a few residual errors; hill_climb will "
-            "polish the last few symbols. If unsure, use search_anneal. "
-            "Works for both bijective and homophonic ciphers."
-        ),
+        "description": "Greedy per-symbol key refinement. Only use after search_anneal has produced a good starting point. Polishes last few residual symbols.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1339,21 +1057,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_anneal",
-        "description": (
-            "Simulated annealing — THE PRIMARY SEARCH TOOL. Use first on any "
-            "branch that needs a starting solution (empty, partially-mapped, "
-            "or stuck). Mixes single-symbol reassignment (70%) and 2-symbol "
-            "swaps (30%). By default, partial manual anchors are preserved, "
-            "but a fully mapped inherited branch is treated as a fresh restart "
-            "so a fork can escape a bad complete key. Set preserve_existing=true "
-            "only when you deliberately want to polish the current full key. "
-            "score_fn defaults to 'combined' (dictionary + quadgram + "
-            "language chi²). Typically achieves 85%+ on English/Latin in one "
-            "call. After annealing, read the decoded text; if a few errors "
-            "remain, EITHER declare (if readable) OR call "
-            "decode_diagnose_and_fix(branch) to fix all residual errors in one "
-            "iteration. Only run search_hill_climb as a final polish."
-        ),
+        "description": "Simulated annealing — primary search tool. Preserves partial anchors by default; treats fully-mapped inherited key as a fresh restart unless preserve_existing=true. score_fn defaults to 'combined'.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1385,26 +1089,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "preserve_existing": {
                     "type": "boolean",
-                    "description": (
-                        "Whether to preserve current mappings as fixed anchors. "
-                        "If omitted, partial keys are preserved but complete "
-                        "inherited keys are restarted from scratch."
-                    ),
+                    "description": "Preserve current mappings as anchors. Omitted: partial keys preserved, full key reset.",
                 },
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["branch"],
@@ -1412,13 +1106,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_automated_solver",
-        "description": (
-            "Run Decipher's current best automated local solver stack on the "
-            "current ciphertext and install the resulting full key onto the "
-            "named branch. This mirrors the no-LLM automated runner used by "
-            "frontier/parity evaluation, including the modern `zenith_native` "
-            "homophonic path when the routing logic selects it."
-        ),
+        "description": "Run the automated no-LLM solver on a branch. Returns solver status, key, and decoded text. Use to get a fresh automated baseline without a full preflight run.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1441,17 +1129,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["branch"],
@@ -1459,18 +1141,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_homophonic_anneal",
-        "description": (
-            "Purpose-built automated solver for homophonic no-boundary ciphers. "
-            "This is the strongest first move when the cipher has more symbols "
-            "than plaintext letters or observe_homophone_distribution says it "
-            "is likely homophonic. It independently maps every cipher symbol "
-            "to a plaintext letter, uses continuous 5-gram scoring plus a "
-            "global letter-distribution objective, and returns a near-complete "
-            "branch for reading/refinement. Prefer this over generic "
-            "search_anneal for hardest/no-boundary homophonic tests. It can "
-            "run directly on `main`; do not spend a turn forking unless you "
-            "need to preserve an existing useful key."
-        ),
+        "description": "Primary solver for homophonic ciphers (alphabet_size > 26, no boundaries). Uses 5-gram + letter-distribution scoring. Runs directly on main. Prefer over search_anneal when homophonic evidence is present.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1506,12 +1177,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "model_path": {
                     "type": "string",
-                    "description": (
-                        "Optional Zenith-style continuous n-gram CSV model. "
-                        "If omitted, the tool auto-discovers "
-                        "other_tools/zenith-2026.2/zenith-model.csv when "
-                        "present; use 'word_list' to force the small fallback."
-                    ),
+                    "description": "Zenith n-gram CSV path. Auto-discovered if omitted; use 'word_list' for small fallback.",
                 },
                 "max_ngrams": {
                     "type": "integer",
@@ -1521,19 +1187,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "distribution_weight": {
                     "type": "number",
                     "default": 4.0,
-                    "description": (
-                        "Weight for global plaintext letter-distribution penalty; "
-                        "prevents collapsed repeated-letter solutions."
-                    ),
+                    "description": "Plaintext letter-distribution penalty weight; prevents collapsed-letter solutions.",
                 },
                 "diversity_weight": {
                     "type": "number",
                     "default": 1.5,
-                    "description": (
-                        "Weight for plaintext diversity penalty; useful on short "
-                        "homophonic texts where collapsed low-letter solutions can "
-                        "look deceptively good to n-gram scoring."
-                    ),
+                    "description": "Plaintext diversity penalty weight; prevents collapsed-letter solutions on short texts.",
                 },
                 "seed": {
                     "type": "integer",
@@ -1547,25 +1206,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "write_candidate_branches": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "If true, write non-best candidates to sibling branches "
-                        "named <branch>_cand2, <branch>_cand3, ..."
-                    ),
+                    "description": "Write non-best candidates to sibling branches: <branch>_cand2, <branch>_cand3, …",
                 },
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["branch"],
@@ -1573,37 +1223,23 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_apply_transform_pipeline",
-        "description": (
-            "Apply a Zenith-compatible ciphertext transform pipeline to this "
-            "branch's reading order. This does not change symbol mappings; it "
-            "changes the branch's token order so subsequent decode/search tools "
-            "operate on the transformed ciphertext."
-        ),
+        "description": "Apply a transform pipeline (column/row permutation) to a branch's token order. Provide transform_spec as returned by search_transform_candidates.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
                 "pipeline": {
                     "type": "object",
-                    "description": (
-                        "Pipeline object with optional columns/rows and steps, "
-                        "where each step is {name, data}."
-                    ),
+                    "description": "Pipeline with optional columns/rows and steps [{name, data}].",
                 },
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["branch", "pipeline"],
@@ -1635,17 +1271,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["search_session_id", "ranks"],
@@ -1653,14 +1283,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "act_rate_transform_finalist",
-        "description": (
-            "Record the agent's contextual readability judgment for one "
-            "transform-search finalist. This is the primary ranking signal "
-            "for transform finalists: rate whether the preview reads as "
-            "coherent plaintext in context, not merely whether numeric scores "
-            "look strong. The rating is stored on the search session and "
-            "mirrored onto any installed finalist branches."
-        ),
+        "description": "Rate a transform finalist's quality: accept, refine, or reject it for promotion. Provide finalist_id and rating (accept/refine/reject) plus optional notes.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1673,11 +1296,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     "type": "number",
                     "minimum": 0,
                     "maximum": 4,
-                    "description": (
-                        "0=garbage, 1=word islands only, 2=word islands with "
-                        "some structure, 3=partial coherent clause, "
-                        "4=coherent plaintext."
-                    ),
+                    "description": "0=garbage 1=word-islands 2=structured 3=partial-clause 4=mostly-readable 5=solved.",
                 },
                 "label": {
                     "type": "string",
@@ -1691,17 +1310,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "rationale": {
                     "type": "string",
-                    "description": (
-                        "Short contextual reading evidence: quote/paraphrase "
-                        "what it appears to say, or why it is only islands."
-                    ),
+                    "description": "Reading evidence: quote/paraphrase what it appears to say, or why it is garbage.",
                 },
                 "coherent_clause": {
                     "type": "string",
-                    "description": (
-                        "Optional paraphrasable clause if one exists; leave "
-                        "empty for word-island/garbage ratings."
-                    ),
+                    "description": "Paraphrasable clause if any; empty for word-island/garbage.",
                 },
             },
             "required": ["search_session_id", "rank", "readability_score", "label", "rationale"],
@@ -1709,13 +1322,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_transform_homophonic",
-        "description": (
-            "Try a bounded set of ciphertext transform candidates. For each "
-            "candidate, apply the transform, run a short homophonic search, "
-            "rank the candidates, and optionally write the best transformed "
-            "branch. With include_program_search=true, also construct small "
-            "transform pipelines from a grammar before probing finalists."
-        ),
+        "description": "Search for transposition + homophonic solve in one pass. Tests candidate column/row permutations then solves the rearranged cipher as homophonic. Use when transform suspicion is present.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1731,12 +1338,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "write_candidate_branches": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Also write separate branches for the top finalist "
-                        "candidates, e.g. main_transform_rank1, "
-                        "main_transform_rank2. Use this for wide searches "
-                        "where the agent should compare finalists."
-                    ),
+                    "description": "Write extra branches for top-N finalist candidates, e.g. main_transform_rank1, rank2…",
                 },
                 "candidate_branch_count": {
                     "type": "integer",
@@ -1751,10 +1353,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "good_score_gap": {
                     "type": "number",
                     "default": 0.25,
-                    "description": (
-                        "Finalists within this anneal-score gap of the best "
-                        "candidate are counted as good-score finalists."
-                    ),
+                    "description": "Finalists within this score gap of the best are counted as good-score candidates.",
                 },
                 "homophonic_budget": {"type": "string", "enum": ["screen", "full"], "default": "screen"},
                 "include_program_search": {"type": "boolean", "default": False},
@@ -1763,17 +1362,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["branch"],
@@ -1781,13 +1374,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_review_transform_finalists",
-        "description": (
-            "Page through finalists from a previous search_transform_homophonic "
-            "session without rerunning the search. Returns compact previews, "
-            "scores, basin status for installed branches, a required agent "
-            "readability-judgment slot, and whether more good-score finalists "
-            "exist beyond this page."
-        ),
+        "description": "Review ranked transform finalists from search_transform_candidates or search_transform_homophonic. Returns finalist IDs, keys, decoded previews, and scores.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1802,12 +1389,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "search_review_pure_transposition_finalists",
-        "description": (
-            "Page through finalists from a previous search_pure_transposition "
-            "session without rerunning the Rust screen. Returns compact "
-            "plaintext previews, scores, a required agent readability-judgment "
-            "slot, and install guidance."
-        ),
+        "description": "Review ranked finalists from search_pure_transposition. Returns finalist IDs, column orderings, decoded previews, and scores.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1846,17 +1428,11 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "override_context_cipher_family": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Only set true when deliberately leaving an exposed "
-                        "benchmark-context cipher family."
-                    ),
+                    "description": "Set true only when overriding an exposed benchmark-context cipher family.",
                 },
                 "context_override_rationale": {
                     "type": "string",
-                    "description": (
-                        "Required when override_context_cipher_family=true; "
-                        "explain why benchmark context may be wrong or exhausted."
-                    ),
+                    "description": "Required if override_context_cipher_family=true. Why the benchmark context is wrong.",
                 },
             },
             "required": ["search_session_id", "ranks"],
@@ -1864,14 +1440,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_letter_stats",
-        "description": (
-            "Show the letter-frequency distribution of a branch's decoded text "
-            "and compare it to the target language's reference distribution. "
-            "Highlights absent letters (0 occurrences) and letters with "
-            "frequency ratios far from expected — these are the most likely "
-            "candidates for wrong mappings. Much faster than re-deriving this "
-            "via run_python."
-        ),
+        "description": "Per-letter frequency table for a branch's decoded text: count, frequency, and deviation from language reference. Use to spot overrepresented or missing letters.",
         "input_schema": {
             "type": "object",
             "properties": {"branch": {"type": "string"}},
@@ -1880,15 +1449,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_ambiguous_letter",
-        "description": (
-            "When a decoded letter appears to stand for multiple true letters "
-            "in different contexts, show which cipher symbols currently produce "
-            "that decoded letter and sample contexts for each symbol. Use this "
-            "before changing an overused decoded letter such as I, E, or L. "
-            "The output lets you make targeted act_set_mapping calls on specific "
-            "cipher symbols instead of broad act_swap_decoded calls that can "
-            "damage correct occurrences."
-        ),
+        "description": "Show which cipher symbols produce a given decoded letter and sample contexts per symbol. Use before changing an overused decoded letter to make targeted act_set_mapping calls instead of act_swap_decoded.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1913,15 +1474,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_absent_letter_candidates",
-        "description": (
-            "When a plaintext letter is absent or badly underrepresented in a "
-            "homophonic/no-boundary decode, rank cipher symbols currently mapped "
-            "to overrepresented decoded letters as candidates for that missing "
-            "letter. For each candidate it returns contexts and the score delta "
-            "from temporarily remapping only that cipher symbol. This replaces "
-            "ad hoc run_python searches for patterns such as missing U, Y, P, "
-            "or V in homophonic ciphers."
-        ),
+        "description": "Rank cipher symbols as candidates for a missing plaintext letter. Returns contexts and score delta per candidate. Use when a plaintext letter is absent or underrepresented in homophonic decodes.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1933,11 +1486,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "source_letters": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": (
-                        "Optional decoded letters to inspect as sources. If "
-                        "omitted, the tool uses overrepresented letters from "
-                        "decode_letter_stats."
-                    ),
+                    "description": "Decoded letters to check as sources. Omit to auto-select overrepresented letters.",
                 },
                 "context": {"type": "integer", "default": 6},
                 "max_candidates": {"type": "integer", "default": 12},
@@ -1948,26 +1497,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_diagnose",
-        "description": (
-            "Analyse a branch's decoded text and rank likely residual single-"
-            "letter errors. Runs DP word segmentation, finds pseudo-words, and "
-            "for each pseudo-word searches the dictionary for same-length words "
-            "at edit distance 1 (single substitution). Groups suggestions by "
-            "(wrong, correct) letter pair and ranks by evidence count. "
-            "Each candidate includes cipher_symbols_for_wrong (the cipher "
-            "symbols currently producing the wrong letter), culprit_symbol "
-            "(the specific symbol most likely causing the errors), and "
-            "suggested_call (the exact tool call to make the fix). "
-            "For homophonic ciphers, suggested_call always uses "
-            "act_set_mapping(cipher_symbol=X, plain_letter=Y) on the culprit "
-            "symbol only — safer than act_swap_decoded which would move ALL "
-            "symbols for those decoded letters and can break correctly-decoded "
-            "homophones. "
-            "Also returns bulk_fix_call: a single decode_diagnose_and_fix call "
-            "that score-checks top candidates in one iteration and skips "
-            "worsening repairs by default. "
-            "Call this AFTER search_anneal has converged but a few errors remain."
-        ),
+        "description": "Rank residual single-letter errors in decoded text. Returns suggested_call (act_set_mapping on culprit symbol) and bulk_fix_call (decode_diagnose_and_fix). Call after search_anneal when a few errors remain.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1980,21 +1510,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_diagnose_and_fix",
-        "description": (
-            "Diagnose residual errors AND apply all high-confidence fixes in a "
-            "single call — collapsing many fix iterations into one. "
-            "Runs the same analysis as decode_diagnose (DP segmentation + "
-            "edit-distance-1 corrections + culprit-symbol identification), then "
-            "tests every candidate whose evidence_count >= "
-            "min_evidence (default 2) using act_set_mapping on the specific "
-            "culprit cipher symbol, reverting candidates that make the branch "
-            "worse by default. Returns a combined before/after score_delta, "
-            "dict_rate_after, pseudo_words_remaining, and a recommendation "
-            "(declare now vs. run again). "
-            "Use this immediately after search_anneal when the decoded text is "
-            "mostly readable but has a few systematic errors — it replaces "
-            "the decode_diagnose → many-act_set_mapping loop with one tool call."
-        ),
+        "description": "Diagnose residual errors and apply high-confidence fixes in one call. Tests each candidate with act_set_mapping, reverts worsening repairs. Returns before/after scores and a recommendation.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2007,10 +1523,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "min_evidence": {
                     "type": "integer",
                     "default": 2,
-                    "description": (
-                        "Minimum evidence_count to auto-apply a fix. "
-                        "Raise to be conservative; lower to 1 to apply all."
-                    ),
+                    "description": "Min evidence_count to auto-apply. Raise to be conservative; 1 to apply all candidates.",
                 },
                 "auto_revert_if_worse": {"type": "boolean", "default": True},
             },
@@ -2019,15 +1532,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_repair_no_boundary",
-        "description": (
-            "Run a conservative text-only repair pass over a branch's decoded "
-            "plaintext for no-boundary or drifted output. It segments the "
-            "current plaintext, applies confident one-edit word repairs, and "
-            "tries local re-segmentation over suspicious windows. This does "
-            "not mutate the branch key; it returns a repaired plaintext "
-            "candidate and before/after segmentation metrics so you can judge "
-            "whether the branch is close-but-drifted."
-        ),
+        "description": "Apply an automated no-boundary repair pass: runs DP word segmentation then diagnoses and fixes single-symbol errors that break word sequences. Returns score delta and pseudo_words_remaining.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2048,29 +1553,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_validate_reading_repair",
-        "description": (
-            "Validate a proposed best reading of a branch. This is read-only. "
-            "Use it when your human/agent reading wants to change letters, "
-            "archaic spellings, or word boundaries. The tool compares the "
-            "proposed text with the branch's current decoded character stream, "
-            "reports whether it is character-preserving, shows first mismatch "
-            "spans, and scores the proposed words against the target-language "
-            "dictionary. If the proposal is character-preserving, apply it "
-            "with act_resegment_by_reading. If it changes characters but has "
-            "the same character count, apply its boundary pattern safely with "
-            "act_resegment_from_reading_repair, then translate the mismatch "
-            "spans into act_set_mapping/act_bulk_set repairs."
-        ),
+        "description": "Read-only: validate a proposed reading against a branch. Reports character-preserving vs. character-changing, mismatch spans, and word scores. Apply with act_resegment_by_reading or act_resegment_from_reading_repair.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "branch": {"type": "string"},
                 "proposed_text": {
                     "type": "string",
-                    "description": (
-                        "Your best target-language reading. Spaces may differ; "
-                        "letters may differ only if this is a repair hypothesis."
-                    ),
+                    "description": "Best reading. Spaces may differ; letters may differ only for character-changing repairs.",
                 },
             },
             "required": ["branch", "proposed_text"],
@@ -2078,15 +1568,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_plan_word_repair",
-        "description": (
-            "Plan a reading-driven word repair such as TREUITER -> BREUITER "
-            "without mutating the branch. Use this when you can read a decoded "
-            "word or fragment and want the tool to identify the responsible "
-            "cipher symbol changes. Provide either cipher_word_index or "
-            "decoded_word plus optional occurrence. Same-length repairs return "
-            "proposed act_set_mapping-style changes, a changed_words preview, "
-            "and an act_apply_word_repair suggested call."
-        ),
+        "description": "Plan a single word repair: shows proposed cipher-symbol mappings, conflicts, changed-word preview, and delta scores. Returns suggested act_apply_word_repair call when safe.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2114,15 +1596,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "decode_plan_word_repair_menu",
-        "description": (
-            "Compare several possible same-length readings for the same decoded "
-            "word without mutating the branch. Use this before applying an "
-            "uncertain word repair: it shows each option's proposed cipher-symbol "
-            "mappings, intra-word conflicts, changed-word preview, dictionary-hit "
-            "delta, collateral-change count, and suggested act_apply_word_repair "
-            "call when safe. This is the repair menu: choose from evidence instead "
-            "of applying the first plausible word."
-        ),
+        "description": "Compare same-length readings for a decoded word (read-only). Shows proposed cipher-symbol mappings, conflicts, score deltas, and suggested act_apply_word_repair call. Use before committing an uncertain repair.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2154,12 +1628,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "repair_agenda_list",
-        "description": (
-            "List durable reading-repair agenda items accumulated during this "
-            "run. Use this before declaring if you have been making or "
-            "considering word-level reading repairs, so open hypotheses are "
-            "not lost in the transcript."
-        ),
+        "description": "List the current repair agenda: pending and completed repair items with priorities and notes.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2197,13 +1666,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- benchmark_* -----
     {
         "name": "inspect_benchmark_context",
-        "description": (
-            "Inspect the scoped benchmark context made available for this run: "
-            "selected policy, injected layers, target/context records, related "
-            "records, and associated documents. This does not read arbitrary "
-            "files and only exposes manifest-declared context for the current "
-            "benchmark test."
-        ),
+        "description": "Read the benchmark context record for the current test. Returns provenance, cipher type, plaintext language, and any injected context layers.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2226,12 +1689,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "inspect_related_transcription",
-        "description": (
-            "Read the canonical transcription of an allowed context or related "
-            "record. The record must be listed by the benchmark split or by the "
-            "record's `related_records` metadata; arbitrary filesystem paths "
-            "are not accepted."
-        ),
+        "description": "Read the canonical transcription of a related benchmark record. Returns the cipher text string.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2247,12 +1705,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "inspect_related_solution",
-        "description": (
-            "Read plaintext/solution text for an allowed related record, but "
-            "only when the benchmark context policy explicitly permits "
-            "solution-bearing related context. This is for controlled "
-            "context-ablation runs, not blind parity."
-        ),
+        "description": "Read the solution for a related benchmark record (if allowed by context policy). Returns plaintext and key metadata.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2268,12 +1721,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "list_associated_documents",
-        "description": (
-            "List long-form documents explicitly associated with the current "
-            "benchmark record, such as letters, plaintext notes, envelopes, or "
-            "source commentary. Use `inspect_associated_document` to read an "
-            "allowed document."
-        ),
+        "description": "List documents associated with the current benchmark record. Returns document IDs, titles, and types.",
         "input_schema": {"type": "object", "properties": {}},
     },
     {
@@ -2299,29 +1747,13 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- run_python -----
     {
         "name": "run_python",
-        "description": (
-            "Execute Python 3 code and return stdout/stderr. "
-            "This is allowed, but every use is treated as evidence of a possible "
-            "tool-design gap. Use it for calculations the built-in tools don't "
-            "cover: custom scoring formulas, statistical analysis, cipher-specific "
-            "algorithms, or bulk data manipulation. stdlib only — no external "
-            "packages. Timeout: 15 s. Print results to stdout. "
-            "You MUST provide a justification explaining the question you need "
-            "answered, why the first-class tools are insufficient, and what "
-            "dedicated tool would have made this Python call unnecessary. "
-            "If you find yourself needing this frequently for the same kind of "
-            "computation, also call meta_request_tool to document it as a gap."
-        ),
+        "description": "Execute Python 3 (stdlib only, 15 s timeout). Requires justification: why built-in tools are insufficient and what dedicated tool would replace this. Print results to stdout. Call meta_request_tool to flag tool gaps.",
         "input_schema": {
             "type": "object",
             "properties": {
                 "justification": {
                     "type": "string",
-                    "description": (
-                        "Why Python is needed here: the question being answered, "
-                        "why existing tools are insufficient, and the dedicated "
-                        "tool that would avoid this call."
-                    ),
+                    "description": "Why built-in tools are insufficient and what dedicated tool would replace this call.",
                 },
                 "code": {
                     "type": "string",
@@ -2334,14 +1766,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     # ----- meta_* -----
     {
         "name": "meta_request_tool",
-        "description": (
-            "Document a capability gap: call this when you need a calculation or "
-            "lookup that none of the available tools cover well. Describe what you "
-            "need precisely so it can be added as a permanent tool. "
-            "Does NOT execute code — use run_python as a workaround first. "
-            "These requests appear prominently in the benchmark report to guide "
-            "future tool development."
-        ),
+        "description": "Request a tool that is not currently in your tool list. Provide tool_name and reason. Use when you need a filtered-out tool or to flag a tool-design gap.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2367,15 +1792,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "meta_declare_solution",
-        "description": (
-            "Terminate the run. Specify the branch whose transcription you want "
-            "to submit, a rationale explaining your reasoning and remaining "
-            "uncertainty, a brief human-readable reading summary, whether "
-            "more iterations would likely help, and your self-confidence "
-            "(0.0 - 1.0). This ends the session — call it when you believe "
-            "you have the best answer you can produce or when further progress "
-            "seems impossible."
-        ),
+        "description": "Declare the run solved: provide final_branch, confidence (0–1), and rationale. Required fields: final_branch, confidence, rationale. Optional: partial_flag, notes.",
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2384,39 +1801,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "self_confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
                 "reading_summary": {
                     "type": "string",
-                    "description": (
-                        "Brief plain-language summary for the final screen: "
-                        "what the decipherment appears to say, especially if "
-                        "the target language is not the user's native language."
-                    ),
+                    "description": "What the decipherment appears to say (1–2 sentences for the final screen).",
                 },
                 "further_iterations_helpful": {
                     "type": "boolean",
-                    "description": (
-                        "True if additional iterations would likely improve "
-                        "the decipherment; false if remaining gains seem minor."
-                    ),
+                    "description": "Whether more iterations would likely improve results.",
                 },
                 "further_iterations_note": {
                     "type": "string",
-                    "description": (
-                        "One or two sentences explaining what further "
-                        "iterations should try, or why they are probably not "
-                        "needed."
-                    ),
+                    "description": "What further iterations should try, or why they won't help (1–2 sentences).",
                 },
                 "forced_partial": {
                     "type": "boolean",
                     "default": False,
-                    "description": (
-                        "Set true only when you are intentionally submitting a "
-                        "partial hypothesis near the end of the run, or after "
-                        "the high-leverage remaining tools have actually been "
-                        "tried and failed. This does not override "
-                        "`further_iterations_helpful=true`, and it is not a "
-                        "way to stop early on scattered word islands, a few "
-                        "correct words, or a merely repaired boundary overlay."
-                    ),
+                    "description": "Non-final partial submission. Does not end the run; a full declaration is still required.",
                 },
             },
             "required": [
@@ -2431,12 +1829,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "meta_declare_unsolved",
-        "description": (
-            "Terminate the run as honestly unsolved/exhausted instead of "
-            "submitting a bogus solution. Use this when the relevant "
-            "high-leverage tools have been tried, no branch is coherent, and "
-            "the right artifact outcome is a negative result with next steps."
-        ),
+        "description": "Declare the run exhausted without a solution. Provide rationale. Required when no coherent decryption was found after all planned approaches.",
         "input_schema": {
             "type": "object",
             "properties": {

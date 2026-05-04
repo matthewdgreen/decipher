@@ -1033,6 +1033,13 @@ def test_pure_transposition_ladder_suite_loads():
         "synth_en_150ptnb_route_composite_s38",
         "synth_en_150ptnb_spiral_offset_s39",
         "synth_en_150ptnb_mask_border_s40",
+        "synth_en_150ptnb_route_rotate_reverse_s41",
+        "synth_en_80ptnb_short_matrix_s42",
+        "synth_en_240ptnb_long_route_rotate_reverse_s43",
+        "synth_en_150ptnb_mask_checkerboard_s44",
+        "synth_en_144ptnb_turning_mask_s45",
+        "synth_en_144ptnb_block_route_s46",
+        "synth_en_144ptnb_block_route_reverse_s47",
     ]
     assert all(case.synthetic_spec is not None for case in cases)
     assert all(case.synthetic_spec.transposition_only for case in cases if case.synthetic_spec)
@@ -1051,6 +1058,22 @@ def test_pure_transposition_ladder_suite_loads():
     assert cases[8].synthetic_spec.transform_pipeline["steps"][0]["data"]["orderOffset"] == 30
     assert cases[9].synthetic_spec.transform_pipeline["steps"][0]["name"] == "MaskRoute"
     assert cases[9].synthetic_spec.transform_pipeline["steps"][0]["data"]["pattern"] == "border"
+    assert cases[10].synthetic_spec.transform_pipeline["steps"][0]["data"]["route"] == "columns_down"
+    assert cases[10].synthetic_spec.transform_pipeline["steps"][1]["name"] == "MatrixRotate"
+    assert cases[10].synthetic_spec.transform_pipeline["steps"][2]["name"] == "Reverse"
+    assert cases[11].synthetic_spec.approx_length == 80
+    assert cases[11].synthetic_spec.transform_pipeline["steps"][0]["name"] == "MatrixRotate"
+    assert cases[12].synthetic_spec.approx_length == 240
+    assert cases[12].synthetic_spec.transform_pipeline["steps"][2]["name"] == "Reverse"
+    assert cases[13].synthetic_spec.transform_pipeline["steps"][0]["name"] == "MaskRoute"
+    assert cases[13].synthetic_spec.transform_pipeline["steps"][0]["data"]["pattern"] == "checkerboard_even"
+    assert cases[13].synthetic_spec.transform_pipeline["steps"][0]["data"]["maskOrder"] == "complement_first"
+    assert cases[14].synthetic_spec.transform_pipeline["steps"][0]["name"] == "TurningMaskRoute"
+    assert cases[14].synthetic_spec.transform_pipeline["steps"][0]["data"]["blockSize"] == 6
+    assert cases[15].synthetic_spec.transform_pipeline["steps"][0]["name"] == "BlockRoute"
+    assert cases[15].synthetic_spec.transform_pipeline["steps"][0]["data"]["blockSize"] == 4
+    assert cases[16].synthetic_spec.transform_pipeline["steps"][0]["name"] == "BlockRoute"
+    assert cases[16].synthetic_spec.transform_pipeline["steps"][0]["data"]["blockOrder"] == "reverse"
 
 
 def test_hidden_transform_frontier_case_withholds_pipeline_from_solver(tmp_path):

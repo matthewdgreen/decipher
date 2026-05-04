@@ -261,6 +261,83 @@ def test_python_and_fast_mask_route_match():
     assert results[0]["position_order_preview"] == expected_order
 
 
+def test_python_and_fast_turning_mask_route_match():
+    pipeline = TransformPipeline(
+        steps=(TransformStep("TurningMaskRoute", {
+            "blockSize": 6,
+            "pattern": "top_left_quadrant",
+            "route": "rows_boustrophedon",
+            "direction": "cw",
+        }),),
+    )
+    tokens = list(range(72))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "turning_mask",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
+
+
+def test_python_and_fast_block_route_match():
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 3,
+            "columns": 5,
+            "route": "columns_down",
+        }),),
+    )
+    tokens = list(range(72))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "block_route",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
+
+
+def test_python_and_fast_block_route_reverse_block_order_match():
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 4,
+            "columns": 4,
+            "route": "rows_boustrophedon",
+            "blockOrder": "reverse",
+        }),),
+    )
+    tokens = list(range(80))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "block_route_reverse",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
+
+
 def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     candidates = generate_pure_transposition_candidates(
         token_count=120,
@@ -275,9 +352,14 @@ def test_pure_transposition_candidates_include_matrix_rotate_breadth():
     assert "transmatrix" in families
     assert "rail_fence" in families
     assert "route_composite_matrix_rotate_cw" in families
+    assert "route_composite_matrix_rotate_cw_reverse" in families
     assert "route_composite_reverse" in families
     assert "route_offset_spiral_clockwise" in families
     assert "mask_route_border" in families
+    assert "mask_route_checkerboard_even" in families
+    assert "turning_mask_top_left_quadrant" in families
+    assert "block_route_columns_down_normal" in families
+    assert "block_route_columns_down_reverse" in families
 
 
 @_requires_k3
@@ -460,6 +542,43 @@ def test_pure_transposition_screen_recovers_route_composite_candidate():
     assert result["candidate_plan"]["include_route_composites"] is True
 
 
+def test_pure_transposition_screen_recovers_route_composite_double_repair_candidate():
+    base_plaintext = (
+        "ORDINARYLETTERSARRANGEDINASIMPLEGRIDCANBECOMESURPRISINGLY"
+        "DIFFICULTONCETHEROWORDERANDORIENTATIONAREBOTHWRONG"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    pipeline = TransformPipeline(
+        columns=15,
+        steps=(
+            TransformStep("RouteRead", {"route": "columns_down"}),
+            TransformStep("MatrixRotate", {"width": 15, "direction": "cw"}),
+            TransformStep("Reverse", {}),
+        ),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    composite_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "route_composite_matrix_rotate_cw_reverse"
+        and candidate["params"]["width"] == 15
+        and candidate["params"]["route"] == "columns_down"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert composite_hits
+
+
 def test_pure_transposition_screen_recovers_route_offset_candidate():
     base_plaintext = (
         "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOGANDTHENRUNSACROSSTHE"
@@ -531,6 +650,159 @@ def test_pure_transposition_screen_recovers_mask_route_candidate():
     ]
     assert mask_hits
     assert result["candidate_plan"]["include_mask_routes"] is True
+
+
+def test_pure_transposition_screen_recovers_checkerboard_mask_route_candidate():
+    base_plaintext = (
+        "CHECKEREDPATTERNSDIVIDETHEGRIDINTOALTERNATINGCELLS"
+        "ANDMAKEAREASONABLESMALLGRILLESTYLETRANSPOSITION"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    pipeline = TransformPipeline(
+        columns=15,
+        steps=(TransformStep("MaskRoute", {
+            "pattern": "checkerboard_even",
+            "firstRoute": "columns_down",
+            "secondRoute": "rows",
+            "maskOrder": "complement_first",
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="wide",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    mask_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "mask_route_checkerboard_even"
+        and candidate["params"]["width"] == 15
+        and candidate["params"]["pattern"] == "checkerboard_even"
+        and candidate["params"]["maskOrder"] == "complement_first"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert mask_hits
+
+
+def test_pure_transposition_screen_recovers_turning_mask_route_candidate():
+    base_plaintext = (
+        "ATURNINGGRILLECARRIESHOLESAROUNDASQUAREGRIDANDREADSTHE"
+        "MESSAGEINROTATEDPASSESBEFORETHELETTERSSETTLEINTOORDER"
+    )
+    plaintext = (base_plaintext * 2)[:144]
+    pipeline = TransformPipeline(
+        steps=(TransformStep("TurningMaskRoute", {
+            "blockSize": 6,
+            "pattern": "top_left_quadrant",
+            "route": "rows_boustrophedon",
+            "direction": "cw",
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    turning_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "turning_mask_top_left_quadrant"
+        and candidate["params"]["blockSize"] == 6
+        and candidate["params"]["route"] == "rows_boustrophedon"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert turning_hits
+    assert result["candidate_plan"]["include_turning_mask_routes"] is True
+
+
+def test_pure_transposition_screen_recovers_block_route_candidate():
+    base_plaintext = (
+        "SMALLGROUPSOFLETTERSSTAYTOGETHERWHILETHEGROUPSTHEMSELVES"
+        "MOVEAROUNDABLOCKGRIDTOFORMANEWREADINGORDER"
+    )
+    plaintext = (base_plaintext * 2)[:144]
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 4,
+            "columns": 9,
+            "route": "columns_down",
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    block_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "block_route_columns_down_normal"
+        and candidate["params"]["blockSize"] == 4
+        and candidate["params"]["columns"] == 9
+        and candidate["params"]["blockOrder"] == "normal"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert block_hits
+    assert result["candidate_plan"]["include_block_routes"] is True
+
+
+def test_pure_transposition_screen_recovers_block_route_reverse_block_order_candidate():
+    base_plaintext = (
+        "REVERSINGEACHSMALLBLOCKAFTERTHEBLOCKSMOVEADDSANOTHER"
+        "LOCALORIENTATIONPROBLEMTOTHEPURETRANSPOSITIONSEARCH"
+    )
+    plaintext = (base_plaintext * 2)[:144]
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 4,
+            "columns": 9,
+            "route": "columns_down",
+            "blockOrder": "reverse",
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    block_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "block_route_columns_down_reverse"
+        and candidate["params"]["blockSize"] == 4
+        and candidate["params"]["columns"] == 9
+        and candidate["params"]["blockOrder"] == "reverse"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert block_hits
 
 
 def test_synthetic_builder_can_generate_pure_transposition_case(tmp_path):

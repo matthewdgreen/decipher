@@ -437,6 +437,86 @@ def _filter_tool_definitions(allowed_names: set[str]) -> list[dict[str, Any]]:
     return [tool for tool in TOOL_DEFINITIONS if tool["name"] in allowed_names]
 
 
+# ---------------------------------------------------------------------------
+# Mode-driven tool filtering
+# ---------------------------------------------------------------------------
+# Tools NOT listed here are always included (tagged as "all").
+# Keys match the cipher-mode names in CipherFingerprint.suspicion_scores.
+_TOOL_MODE_TAGS: dict[str, list[str]] = {
+    # polyalphabetic_vigenere family
+    "observe_periodic_ic":             ["polyalphabetic_vigenere"],
+    "observe_kasiski":                 ["polyalphabetic_vigenere"],
+    "observe_phase_frequency":         ["polyalphabetic_vigenere"],
+    "observe_periodic_shift_candidates": ["polyalphabetic_vigenere"],
+    "decode_show_phases":              ["polyalphabetic_vigenere"],
+    "search_periodic_polyalphabetic":  ["polyalphabetic_vigenere"],
+    "search_quagmire3_keyword_alphabet": ["polyalphabetic_vigenere"],
+    "act_set_periodic_key":            ["polyalphabetic_vigenere"],
+    "act_set_periodic_shift":          ["polyalphabetic_vigenere"],
+    "act_adjust_periodic_shift":       ["polyalphabetic_vigenere"],
+    # homophonic_substitution family
+    "observe_homophone_distribution":  ["homophonic_substitution"],
+    "search_homophonic_anneal":        ["homophonic_substitution"],
+    "decode_absent_letter_candidates": ["homophonic_substitution"],
+    # monoalphabetic + homophonic bijective solvers (useful for both)
+    "search_hill_climb":  ["monoalphabetic_substitution", "homophonic_substitution"],
+    "search_anneal":      ["monoalphabetic_substitution", "homophonic_substitution"],
+    # transposition family (pure and compound)
+    "observe_transform_pipeline":   ["transposition", "transposition_homophonic"],
+    "observe_transform_suspicion":  ["transposition", "transposition_homophonic"],
+    "search_transform_candidates":  ["transposition", "transposition_homophonic"],
+    "act_apply_transform_pipeline": ["transposition", "transposition_homophonic"],
+    "search_pure_transposition":              ["transposition"],
+    "search_review_pure_transposition_finalists": ["transposition"],
+    "act_install_pure_transposition_finalists":   ["transposition"],
+    # transposition_homophonic compound family
+    "search_transform_homophonic":        ["transposition_homophonic"],
+    "search_review_transform_finalists":  ["transposition_homophonic"],
+    "act_install_transform_finalists":    ["transposition_homophonic"],
+    "act_rate_transform_finalist":        ["transposition_homophonic"],
+}
+
+_MODE_FILTER_THRESHOLD = 0.15
+
+
+def _active_modes_from_suspicion(
+    suspicion_scores: dict[str, float] | None,
+) -> set[str]:
+    """Return cipher modes with score >= threshold; empty set = no filtering."""
+    if not suspicion_scores:
+        return set()
+    return {m for m, s in suspicion_scores.items() if s >= _MODE_FILTER_THRESHOLD}
+
+
+def _apply_mode_filter(
+    tools: list[dict[str, Any]],
+    active_modes: set[str],
+) -> list[dict[str, Any]]:
+    """Keep tools tagged for any active mode, plus untagged (always-on) tools."""
+    if not active_modes:
+        return tools
+    result = []
+    for tool in tools:
+        tags = _TOOL_MODE_TAGS.get(tool["name"])
+        if tags is None or any(t in active_modes for t in tags):
+            result.append(tool)
+    return result
+
+
+def _mode_filter_note(
+    baseline: list[dict[str, Any]],
+    filtered: list[dict[str, Any]],
+) -> str | None:
+    """One-line note listing hidden tool names for the initial context."""
+    if len(baseline) == len(filtered):
+        return None
+    hidden = sorted({t["name"] for t in baseline} - {t["name"] for t in filtered})
+    return (
+        f"Mode-filtered tools (suspicion score < {_MODE_FILTER_THRESHOLD:.2f}; "
+        f"request any via meta_request_tool if needed): {', '.join(hidden)}"
+    )
+
+
 def _has_used_full_reading_workflow(executor: WorkspaceToolExecutor) -> bool:
     return any(
         call.tool_name in FULL_READING_ACTUATOR_TOOL_NAMES
@@ -460,12 +540,13 @@ def _tool_definitions_for_turn(
     executor: WorkspaceToolExecutor,
     iteration: int,
     max_iterations: int,
+    active_modes: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     if iteration == max_iterations:
         return _filter_tool_definitions(FINAL_ALLOWED_TOOL_NAMES)
     if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
         return _filter_tool_definitions(PENULTIMATE_ALLOWED_TOOL_NAMES)
-    return TOOL_DEFINITIONS
+    return _apply_mode_filter(TOOL_DEFINITIONS, active_modes or set())
 
 
 def _mode_for_turn(
@@ -937,6 +1018,7 @@ def run_v2(
     resume_branch: str | None = None,
     parent_artifact_path: str = "",
     verbose: bool = False,
+    system_prompt_style: str = "full",
     on_event: Any = None,  # optional callback(event_type: str, payload: dict)
 ) -> RunArtifact:
     """Run one v2 agent session against a cipher. Returns a full RunArtifact."""
@@ -1031,6 +1113,18 @@ def run_v2(
     )
     artifact.cipher_id_report = fingerprint.to_dict()
     cipher_id_context = cipher_id_analysis.format_fingerprint_for_context(fingerprint)
+
+    # Compute mode filter once — stays fixed for the whole run so caching is stable.
+    # Skip filtering on very short ciphers where the fingerprint is unreliable.
+    _MIN_TOKENS_FOR_MODE_FILTER = 30
+    _active_modes = (
+        _active_modes_from_suspicion(fingerprint.suspicion_scores)
+        if fingerprint and len(cipher_text.tokens) >= _MIN_TOKENS_FOR_MODE_FILTER
+        else set()
+    )
+    _initial_tools = _apply_mode_filter(TOOL_DEFINITIONS, _active_modes)
+    _filter_note = _mode_filter_note(TOOL_DEFINITIONS, _initial_tools)
+
     context_parts = [part for part in [prior_context, _preflight_context(automated_preflight)] if part]
     context_msg = initial_context(
         cipher_display=cipher_text.raw,
@@ -1041,6 +1135,7 @@ def run_v2(
         language=language,
         prior_context="\n\n".join(context_parts) if context_parts else None,
         cipher_id_context=cipher_id_context,
+        tool_filter_note=_filter_note,
     )
 
     messages: list[dict[str, Any]] = [{"role": "user", "content": context_msg}]
@@ -1048,7 +1143,7 @@ def run_v2(
     if benchmark_context is not None and hasattr(benchmark_context, "to_artifact_dict"):
         artifact.benchmark_context = benchmark_context.to_artifact_dict()
 
-    system = get_system_prompt(language)
+    system = get_system_prompt(language, style=system_prompt_style)
 
     start = time.time()
 
@@ -1103,6 +1198,7 @@ def run_v2(
             executor,
             iteration,
             max_iterations,
+            active_modes=_active_modes,
         )
         executor.set_allowed_tool_names({tool["name"] for tool in tool_definitions})
 

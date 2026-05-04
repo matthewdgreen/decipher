@@ -195,11 +195,25 @@ class OllamaModelProvider:
     so this adapter reuses the OpenAI chat-completions path with a custom
     base URL.  No API key is required.
 
-    Set OLLAMA_HOST to override the default base URL, e.g.:
-        OLLAMA_HOST=http://192.168.1.10:11434
+    Environment variables
+    ---------------------
+    OLLAMA_HOST     Override base URL (default: http://localhost:11434).
+    OLLAMA_NUM_CTX  Context window size passed to Ollama as num_ctx
+                    (default: 32768).  Decipher prompts are typically
+                    20 K+ tokens; Ollama's built-in model default (often
+                    4 096) will silently truncate them.
+    OLLAMA_TIMEOUT  Per-request timeout in seconds (default: 120).
+                    Ollama returns HTTP 500 after its own internal timeout
+                    (~10 min); setting a client-side limit avoids waiting
+                    that long before surfacing the failure.
     """
 
     provider_name = "ollama"
+    # Minimum context window to request from Ollama.  Decipher's initial
+    # user message for a typical benchmark case is 20-25 K tokens; the
+    # Ollama default of 4 096 silently truncates to almost nothing.
+    DEFAULT_NUM_CTX = 32768
+    DEFAULT_TIMEOUT = 120.0
 
     def __init__(self, model: str) -> None:
         import os
@@ -212,8 +226,20 @@ class OllamaModelProvider:
                 "Install with: pip install -e '.[providers]'"
             ) from exc
         host = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+        try:
+            self.num_ctx = int(os.environ.get("OLLAMA_NUM_CTX", self.DEFAULT_NUM_CTX))
+        except ValueError:
+            self.num_ctx = self.DEFAULT_NUM_CTX
+        try:
+            timeout = float(os.environ.get("OLLAMA_TIMEOUT", self.DEFAULT_TIMEOUT))
+        except ValueError:
+            timeout = self.DEFAULT_TIMEOUT
         self.model = model
-        self.client = OpenAI(base_url=f"{host.rstrip('/')}/v1", api_key="ollama")
+        self.client = OpenAI(
+            base_url=f"{host.rstrip('/')}/v1",
+            api_key="ollama",
+            timeout=timeout,
+        )
 
     def send(
         self,
@@ -229,6 +255,7 @@ class OllamaModelProvider:
                 messages=_messages_to_openai_chat(messages, system=system),
                 tools=_tools_to_openai_chat(tools),
                 max_tokens=max_tokens,
+                extra_body={"options": {"num_ctx": self.num_ctx}},
             )
         except Exception as exc:  # noqa: BLE001
             raise ModelProviderError(str(exc)) from exc

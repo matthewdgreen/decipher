@@ -550,13 +550,34 @@ def _compute_suspicion_scores(
 
     # ---- polyalphabetic_vigenere ----
     vig = 0.0
-    # Core signal: IC depressed below language reference
-    if ic_delta is not None and ic_delta < -0.015:
-        vig += 0.40
-    elif ic_delta is not None and ic_delta < -0.008:
+    # Core signal: IC depressed below language reference.
+    # Use a normalized IC fraction so large alphabets (e.g. 33-symbol Borg) are
+    # not falsely penalised. random_ic = 1/alphabet_size; lang_ic_ref is the
+    # target-language reference for 26 letters, which also applies to
+    # monoalphabetic ciphers over larger symbol sets (the substitution
+    # preserves the collision probability). norm_ic_frac ≈ 1.0 for
+    # monoalphabetic, ≈ 0.0 for random/polyalphabetic.
+    random_ic = 1.0 / max(alphabet_size, unique_symbols, 1)
+    ic_range = lang_ic_ref - random_ic
+    if ic_range > 0 and not math.isnan(ic):
+        norm_ic_frac = (ic - random_ic) / ic_range
+    else:
+        norm_ic_frac = 0.5  # unknown; treat as neutral
+    ic_poly_signal = 1.0 - max(0.0, min(1.0, norm_ic_frac))
+    if ic_poly_signal > 0.80:
+        vig += 0.40  # IC close to random → strong Vigenère signal
+    elif ic_poly_signal > 0.55:
         vig += 0.20
-    # Periodic IC recovering to language reference at some period k
-    if best_period is not None and best_period_ic is not None:
+    # Periodic IC recovering to language reference at some period k.
+    # Only meaningful when columns are long enough for a reliable IC estimate;
+    # require at least 25 tokens per column to avoid spurious peaks on short texts.
+    _MIN_COLS_FOR_PERIODIC = 25
+    periodic_ic_reliable = (
+        best_period is not None
+        and best_period_ic is not None
+        and token_count // best_period >= _MIN_COLS_FOR_PERIODIC
+    )
+    if periodic_ic_reliable:
         recovery = best_period_ic - ic  # how much IC rises at best period
         if recovery > 0.010 and best_period_ic >= lang_ic_ref - 0.015:
             vig += 0.35  # strong recovery
@@ -670,9 +691,17 @@ def _format_natural_language_summary(
         parts.append("The frequency distribution is peaked, consistent with monoalphabetic substitution.")
 
     # Periodic / Kasiski
+    _MIN_COLS_FOR_PERIODIC_SUMMARY = 25
     if best_period is not None and best_period_ic is not None:
+        col_size = token_count // best_period
         recovery = best_period_ic - ic
-        if recovery > 0.010 and best_period_ic >= lang_ic_ref - 0.015:
+        if col_size < _MIN_COLS_FOR_PERIODIC_SUMMARY:
+            parts.append(
+                f"Periodic IC found a peak at period {best_period} "
+                f"(mean IC {best_period_ic:.4f}), but only ~{col_size} tokens/column — "
+                "unreliable; treat this as noise."
+            )
+        elif recovery > 0.010 and best_period_ic >= lang_ic_ref - 0.015:
             parts.append(
                 f"Periodic IC analysis strongly suggests period {best_period}: "
                 f"the mean IC of every-{best_period}th-token streams is {best_period_ic:.4f}, "

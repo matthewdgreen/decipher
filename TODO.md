@@ -433,14 +433,38 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       transformer that reads selected grid cells first and then the complement,
       with matching Rust fast-kernel support and `mask_route_*` candidates.
       The ladder now includes `synth_en_150ptnb_mask_border_s40` as a
-      hidden-pipeline known-good row. Full ladder validation in
-      `artifacts/validate_pure_transposition_ladder_mask` passes all 10 rows;
+      hidden-pipeline known-good row. The latest slice expands
+      route-composite repair from single orientation fixes to a bounded
+      route+matrix-rotate+reverse family, with
+      `synth_en_150ptnb_route_rotate_reverse_s41` as a known-good row. Full
+      ladder validation in
+      `artifacts/validate_pure_transposition_ladder_route_rotate_reverse`
+      passes all 11 rows;
       `split_grid_s33` and plain `spiral_s35` remain `shared_hard` rows
       because broader route breadth exposes plausible wrong-family basins.
+      The latest size-coverage slice adds
+      `synth_en_80ptnb_short_matrix_s42` and
+      `synth_en_240ptnb_long_route_rotate_reverse_s43`, both known-good, so
+      the ladder is no longer concentrated only in the 120-160 character band.
+      The latest mask/grille slice adds checkerboard mask candidates and
+      `synth_en_150ptnb_mask_checkerboard_s44`, a known-good complement-first
+      alternating-mask row.
+      The first turning-grille-shaped slice adds `TurningMaskRoute`, with
+      matching Python/Rust semantics and bounded `turning_mask_*` candidates.
+      `synth_en_144ptnb_turning_mask_s45` is a known-good repeated 6x6 block
+      turning-mask row; this is still constrained and square-block based, not
+      a full open-ended grille search.
+      The latest block-route slice adds `BlockRoute`, with matching
+      Python/Rust semantics and bounded `block_route_*` candidates.
+      `synth_en_144ptnb_block_route_s46` is a known-good row where contiguous
+      chunks remain locally ordered while the chunk order is routed through a
+      grid. `BlockRoute` now also supports `blockOrder=reverse`, and
+      `synth_en_144ptnb_block_route_reverse_s47` is a known-good row where
+      each moved block is locally reversed.
     - [ ] Expand the pure-transposition ladder further with route+rotation
-      composites beyond the first bounded slice, richer turning-grille/mask
-      families, and short/medium/long no-boundary examples with calibrated
-      watch/pass thresholds.
+      composites beyond the bounded route+rotate+reverse slice, richer
+      turning-grille/mask families, and additional varied-length no-boundary
+      examples with calibrated watch/pass thresholds.
     - [x] Add a better pure-transposition finalist validator/reranker that
       distinguishes true coherent plaintext from high-scoring word islands:
       direct n-gram score, strict word-hit score, edit-aware segmentation,

@@ -2788,10 +2788,9 @@ def format_automated_preflight_for_llm(
         lines += [
             "",
             "Cipher-type fingerprint:",
+            # Natural-language summary is already in the ## Cipher-diagnostic preflight
+            # section of the initial context — omit it here to avoid verbatim repetition.
         ]
-        summary = cipher_report.get("natural_language_summary")
-        if isinstance(summary, str) and summary.strip():
-            lines.append(f"- Summary: {summary}")
         if ranked:
             lines.append(
                 "- Ranked mode suspicions: "
@@ -2971,6 +2970,8 @@ def _run_pure_transposition(
     include_route_composites = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_ROUTE_COMPOSITES", default=True)
     include_route_offsets = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_ROUTE_OFFSETS", default=True)
     include_mask_routes = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_MASK_ROUTES", default=True)
+    include_turning_mask_routes = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_TURNING_MASK_ROUTES", default=True)
+    include_block_routes = _env_bool("DECIPHER_PURE_TRANSPOSITION_INCLUDE_BLOCK_ROUTES", default=True)
     top_n = int(os.environ.get("DECIPHER_PURE_TRANSPOSITION_TOP_N", os.environ.get("DECIPHER_K3_TRANSMATRIX_TOP_N", "25")))
     threads = pure_transposition_threads_from_env()
     result = screen_pure_transposition(
@@ -2984,6 +2985,8 @@ def _run_pure_transposition(
         include_route_composites=include_route_composites,
         include_route_offsets=include_route_offsets,
         include_mask_routes=include_mask_routes,
+        include_turning_mask_routes=include_turning_mask_routes,
+        include_block_routes=include_block_routes,
         transmatrix_min_width=transmatrix_min_width,
         transmatrix_max_width=transmatrix_max_width,
         threads=threads,

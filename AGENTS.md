@@ -499,8 +499,10 @@ Kryptos status:
   `frontier/pure_transposition_ladder.jsonl`. It uses the `transposition_only`
   testgen mode to create no-substitution route/order cases for MatrixRotate,
   diagonal route reads, split-grid routes, spiral/rail/boustrophedon routes,
-  route+repair composites, shifted spiral routes, border-mask routes, and
-  non-Kryptos TransMatrix.
+  route+repair composites including route+rotate+reverse, shifted spiral
+  routes, border/checkerboard mask routes, repeated-block turning-mask routes,
+  block-level route transpositions with optional local block reversal,
+  short/long no-boundary calibration rows, and non-Kryptos TransMatrix.
 - Agentic runs can invoke that same screen through
   `search_pure_transposition`. Pure-transposition searches now create
   `search_session_id` menus analogous to transform+homophonic searches:

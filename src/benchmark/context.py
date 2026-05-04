@@ -206,19 +206,33 @@ def _format_prompt_context(
     if context.injected_layers:
         lines.append("")
         lines.append("### Context Layers Injected")
+        # Group layers by record_id to avoid repeating the record ID on every line.
+        from collections import defaultdict
+        layers_by_record: dict[str, list[dict]] = defaultdict(list)
+        record_order: list[str] = []
         for item in context.injected_layers:
-            flags = []
-            if item["contains_solution"]:
-                flags.append("contains solution")
-            if item["contains_plaintext_hint"]:
-                flags.append("plaintext hint")
-            if item["contains_cipher_type_hint"]:
-                flags.append("cipher-type hint")
-            flag_text = f" ({', '.join(flags)})" if flags else ""
-            lines.append(
-                f"- {item['record_id']} / {item['layer']} "
-                f"({item['label']}){flag_text}: {item['text']}"
-            )
+            rid = item["record_id"]
+            if rid not in layers_by_record:
+                record_order.append(rid)
+            layers_by_record[rid].append(item)
+        for rid in record_order:
+            record_layers = layers_by_record[rid]
+            layer_tags = []
+            for item in record_layers:
+                flags = []
+                if item["contains_solution"]:
+                    flags.append("contains solution")
+                if item["contains_plaintext_hint"]:
+                    flags.append("plaintext hint")
+                if item["contains_cipher_type_hint"]:
+                    flags.append("cipher-type hint")
+                tag = item["label"]  # human-readable label, e.g. "Basic provenance"
+                if flags:
+                    tag += f" ({', '.join(flags)})"
+                layer_tags.append(tag)
+            header = f"- {rid} [{' | '.join(layer_tags)}]:"
+            texts = " ".join(item["text"] for item in record_layers if item.get("text"))
+            lines.append(f"{header} {texts}")
         if any(item.get("contains_cipher_type_hint") for item in context.injected_layers):
             lines.append("")
             lines.append("### Agent-Declared Context Assumptions")
