@@ -624,6 +624,157 @@ Some scripts have focused pytest coverage:
 - `scripts/run_agent_model_packet.py` -> compile-checked and exercised by dry
   runs; add explicit unit coverage if the packet runner grows more logic.
 
+## Generating New Synthetic Test Cases
+
+Synthetic plaintexts are generated once, cached to `testgen_cache/`, and
+reused forever. Generation requires one LLM call per unique spec; all
+subsequent runs are fully local. The `--agentic` flag allows plaintext
+generation; without it the runner errors if the spec is not already cached.
+
+### LLM providers for generation
+
+`PlaintextGenerator` supports all four providers with cheap defaults:
+
+| Provider flag | Default generation model | Cost note |
+|---|---|---|
+| `--provider anthropic` (default) | `claude-haiku-4-5-20251001` | Cheapest Claude |
+| `--provider openai` | `gpt-5.4-mini` | Cheapest GPT |
+| `--provider gemini` | `gemini-3.1-flash-lite-preview` | Cheapest Gemini |
+| `--provider ollama` | `qwen3:8b` | Free (local) |
+
+Pass `--model <name>` to override. For a typical ~100-word spec the
+generation cost is a fraction of a cent on any hosted provider; Ollama is
+free but requires a running local instance (`ollama serve`).
+
+### Simple-substitution case (no word boundaries)
+
+```bash
+PYTHONPATH=src .venv/bin/decipher testgen \
+  --preset hard \
+  --seed 60 \
+  --agentic \
+  --model claude-sonnet-4-6 \
+  --max-iterations 20 \
+  --verbose
+```
+
+For a word-boundary variant use `--preset medium` (boundaries are on by
+default).  To use a different generation provider add e.g.
+`--provider openai`.
+
+### Homophonic no-boundary case
+
+```bash
+PYTHONPATH=src .venv/bin/decipher testgen \
+  --preset hardest \
+  --seed 60 \
+  --agentic \
+  --model claude-sonnet-4-6 \
+  --max-iterations 25 \
+  --verbose
+```
+
+### Vigenère-family case
+
+```bash
+PYTHONPATH=src .venv/bin/decipher testgen \
+  --cipher-system vigenere \
+  --poly-key LEMON \
+  --length 120 \
+  --seed 60 \
+  --agentic \
+  --model claude-sonnet-4-6 \
+  --max-iterations 20 \
+  --verbose
+```
+
+Replace `vigenere` with `beaufort`, `variant_beaufort`, or `gronsfeld`
+(digit key) for the other Vigenère-family variants.
+
+### Quagmire III / K2-like case
+
+```bash
+PYTHONPATH=src .venv/bin/decipher testgen \
+  --cipher-system quagmire3 \
+  --poly-key PROBLEMS \
+  --poly-tableau-keyword SOLUTION \
+  --length 97 \
+  --seed 60 \
+  --agentic \
+  --model claude-sonnet-4-6 \
+  --max-iterations 20 \
+  --verbose
+```
+
+`--poly-key` is the cycleword (period = key length). `--poly-tableau-keyword`
+is the keyed-alphabet keyword.  Omit either to get a random one.
+
+### Pure-transposition case (TransMatrix / K3-like)
+
+Pure-transposition cases cannot be generated through `testgen` yet — the
+CLI does not expose a transform-pipeline argument. Generate them by adding
+a new row to `frontier/pure_transposition_ladder.jsonl` with a
+`synthetic_spec.transform_pipeline`, then run via the frontier suite:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/pure_transposition_ladder.jsonl \
+  --solvers decipher \
+  --test-id <your-new-test-id> \
+  --allow-generate
+```
+
+`--allow-generate` triggers LLM plaintext generation on a cache miss and
+writes to `testgen_cache/` for future reuse. The test ID must match the
+`test_id` field in the JSONL row.
+
+### Adding a new row to the frontier JSONL files
+
+After running a new spec and verifying it is solvable, add a row to the
+appropriate ladder file.  Consult an existing row for the full schema; the
+minimum required fields are:
+
+```jsonc
+{
+  "test_id": "synth_en_97q3nb_s60",   // must match _poly_flag + seed
+  "track": "transcription2plaintext",
+  "cipher_system": "quagmire3",        // cipher family string
+  "target_records": [],
+  "context_records": [],
+  "description": "...",
+  "frontier_class": "known_good",      // or shared_hard / bad_result
+  "frontier_tags": ["polyalphabetic_ladder", "quagmire3", "k2_like", ...],
+  "expected_solvers": ["decipher-automated"],
+  "expected_status_by_solver": {"decipher-automated": "completed"},
+  "min_char_accuracy_by_solver": {"decipher-automated": 0.95},
+  "max_elapsed_seconds_by_solver": {"decipher-automated": 120.0},
+  "synthetic_spec": {
+    "language": "en",
+    "approx_length": 97,
+    "word_boundaries": false,
+    "seed": 60,
+    "topic": "general",
+    "frequency_style": "normal",
+    "polyalphabetic_variant": "quagmire3",
+    "polyalphabetic_key": "...",
+    "polyalphabetic_tableau_keyword": "..."
+  }
+}
+```
+
+For pure-transposition rows also add
+`"hide_transform_pipeline_from_solver": true` and embed the
+`transform_pipeline` inside `synthetic_spec`.
+
+After adding the row, run:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_frontier_suite.py \
+  tests/test_polyalphabetic.py -q
+```
+
+to confirm the suite still loads and parses the new spec correctly.
+
 ## Maintenance Rules
 
 - New test files should be added to the table above in the same PR/commit.

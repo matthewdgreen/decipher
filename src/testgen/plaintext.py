@@ -8,6 +8,7 @@ _DEFAULT_GENERATION_MODELS = {
     "anthropic": "claude-haiku-4-5-20251001",
     "openai": "gpt-5.4-mini",
     "gemini": "gemini-3.1-flash-lite-preview",
+    "ollama": "qwen3:8b",          # smallest commonly available Ollama model
 }
 
 _LANGUAGE_NAMES: dict[str, str] = {
