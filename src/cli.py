@@ -819,6 +819,8 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             spec.word_boundaries = False if not args.keep_boundaries else spec.word_boundaries
     if args.poly_key:
         spec.polyalphabetic_key = args.poly_key
+    if getattr(args, "poly_tableau_keyword", None):
+        spec.polyalphabetic_tableau_keyword = args.poly_tableau_keyword
     if args.poly_period:
         spec.polyalphabetic_period = args.poly_period
     if args.seed is not None:
@@ -1246,6 +1248,7 @@ def main() -> None:
             "beaufort",
             "variant_beaufort",
             "gronsfeld",
+            "quagmire3",
         ],
         help=(
             "Synthetic cipher family to generate. Defaults to the selected preset; "
@@ -1257,7 +1260,15 @@ def main() -> None:
         "--poly-key",
         help=(
             "Explicit periodic key for Vigenere-family synthetic cases. "
-            "Use letters for Vigenere/Beaufort and digits for Gronsfeld."
+            "For quagmire3 this is the cycleword. "
+            "Use letters for Vigenere/Beaufort/Quagmire and digits for Gronsfeld."
+        ),
+    )
+    tg.add_argument(
+        "--poly-tableau-keyword",
+        help=(
+            "Keyword used to build the keyed alphabet for Quagmire III ciphers. "
+            "Ignored for standard Vigenere-family variants."
         ),
     )
     tg.add_argument(
