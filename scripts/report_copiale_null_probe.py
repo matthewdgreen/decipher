@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.probe_copiale_null_masks import null_mask_validation_score
+from scripts.probe_copiale_null_masks import null_mask_validation_score, null_mask_validation_score_v2
 
 
 def main() -> None:
@@ -56,9 +56,12 @@ def summarize_probe_payload(payload: dict[str, Any]) -> dict[str, Any]:
             validation = null_mask_validation_score(row, original_length=original_length)
             row["validation_score"] = validation["score"]
             row["validation_components"] = validation["components"]
+        validation_v2 = null_mask_validation_score_v2(row, original_length=original_length)
+        row["validation_score_v2"] = validation_v2["score"]
+        row["validation_components_v2"] = validation_v2["components"]
 
     rows_by_selection = sorted(rows, key=lambda item: (-float(item.get("selection_score") or 0.0), -float(item.get("char_accuracy") or 0.0)))
-    rows_by_validation = sorted(rows, key=lambda item: (-float(item.get("validation_score") or 0.0), -float(item.get("char_accuracy") or 0.0)))
+    rows_by_validation = sorted(rows, key=lambda item: (-float(item.get("validation_score_v2") or 0.0), -float(item.get("char_accuracy") or 0.0)))
     rows_by_char = sorted(rows, key=lambda item: (-float(item.get("char_accuracy") or 0.0), -float(item.get("selection_score") or 0.0)))
     best_selection = rows_by_selection[0] if rows_by_selection else None
     best_validation = rows_by_validation[0] if rows_by_validation else None
@@ -76,6 +79,8 @@ def summarize_probe_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "char_best_validation_rank": _rank_of(rows_by_validation, best_char),
         "validation_best_char_gap": _char_gap(best_validation, best_char),
         "selection_best_char_gap": _char_gap(best_selection, best_char),
+        "capture_by_validation_top_n": _capture_by_top_n(rows_by_validation, best_char, ns=(1, 3, 5, 8, 10)),
+        "capture_by_selection_top_n": _capture_by_top_n(rows_by_selection, best_char, ns=(1, 3, 5, 8, 10)),
         "top_by_validation": rows_by_validation,
         "top_by_selection": rows_by_selection,
         "top_by_char_accuracy": rows_by_char,
@@ -99,24 +104,28 @@ def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
         f"| mean validation char gap | {_format_percent(aggregate['mean_validation_gap'])} |",
         f"| mean selection char gap | {_format_percent(aggregate['mean_selection_gap'])} |",
         f"| mean char-best validation rank | {aggregate['mean_char_best_validation_rank']:.2f} |",
+        f"| validation top-3 captures | {aggregate['validation_top_n_captures'][3]}/{aggregate['tests']} |",
+        f"| validation top-5 captures | {aggregate['validation_top_n_captures'][5]}/{aggregate['tests']} |",
+        f"| validation top-8 captures | {aggregate['validation_top_n_captures'][8]}/{aggregate['tests']} |",
         "",
         "## Tests",
         "",
-        "| Test | Masks | Rows | Best selection | Best validation | Best char | Char-best rank by validation | Validation char gap |",
-        "|---|---:|---:|---|---|---|---:|---:|",
+        "| Test | Masks | Rows | Best selection | Best validation v2 | Best char | Char-best rank by validation | Validation char gap | Top-N capture |",
+        "|---|---:|---:|---|---|---|---:|---:|---|",
     ]
     for report in reports:
         lines.append(
-            "| {test} | {masks} | {rows}{row_note} | {sel} | {val} | {char} | {rank} | {gap} |".format(
+            "| {test} | {masks} | {rows}{row_note} | {sel} | {val} | {char} | {rank} | {gap} | {capture} |".format(
                 test=report["test_id"],
                 masks=report["mask_count"],
                 rows=report["stored_rows"],
                 row_note="" if report["has_all_rows"] else "*",
                 sel=_format_row(report["best_by_selection"], score_name="selection_score"),
-                val=_format_row(report["best_by_validation"], score_name="validation_score"),
+                val=_format_row(report["best_by_validation"], score_name="validation_score_v2"),
                 char=_format_row(report["best_by_char_accuracy"], score_name="char_accuracy"),
                 rank=report["char_best_validation_rank"] or "",
                 gap=_format_percent(report["validation_best_char_gap"]),
+                capture=_format_capture(report["capture_by_validation_top_n"]),
             )
         )
     if any(not report["has_all_rows"] for report in reports):
@@ -129,7 +138,7 @@ def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
             "",
             f"## {report['test_id']}",
             "",
-            "| Rank | Mask | Validation | Selection | Char | Dict | Top letter | Preview |",
+            "| Rank | Mask | Validation v2 | Selection | Char | Dict | Top letter | Preview |",
             "|---:|---|---:|---:|---:|---:|---:|---|",
         ])
         for rank, row in enumerate(report["top_by_validation"][:top], start=1):
@@ -139,7 +148,7 @@ def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
                 "| {rank} | {mask} | {val:.3f} | {sel:.3f} | {char} | {dict_rate:.3f} | {top_letter:.3f} | {preview} |".format(
                     rank=rank,
                     mask=_mask_label(row),
-                    val=float(row.get("validation_score") or 0.0),
+                    val=float(row.get("validation_score_v2") or 0.0),
                     sel=float(row.get("selection_score") or 0.0),
                     char=_format_percent(row.get("char_accuracy")),
                     dict_rate=float(diagnostics.get("dict_rate") or 0.0),
@@ -176,6 +185,7 @@ def _aggregate_report_metrics(reports: list[dict[str, Any]]) -> dict[str, Any]:
         for report in reports
         if report.get("char_best_validation_rank") is not None
     ]
+    capture_ns = (1, 3, 5, 8, 10)
     return {
         "tests": len(reports),
         "validation_exact_hits": sum(1 for gap in validation_gaps if abs(gap) < 1e-9),
@@ -185,6 +195,10 @@ def _aggregate_report_metrics(reports: list[dict[str, Any]]) -> dict[str, Any]:
         "mean_char_best_validation_rank": (
             sum(validation_ranks) / len(validation_ranks) if validation_ranks else 0.0
         ),
+        "validation_top_n_captures": {
+            n: sum(1 for report in reports if (report.get("capture_by_validation_top_n") or {}).get(n))
+            for n in capture_ns
+        },
     }
 
 
@@ -210,8 +224,8 @@ def _validation_miss_lines(report: dict[str, Any]) -> list[str]:
         return []
     if tuple(validation_winner.get("mask") or []) == tuple(char_winner.get("mask") or []):
         return []
-    left_components = validation_winner.get("validation_components") or {}
-    right_components = char_winner.get("validation_components") or {}
+    left_components = validation_winner.get("validation_components_v2") or {}
+    right_components = char_winner.get("validation_components_v2") or {}
     names = sorted(set(left_components) | set(right_components))
     if not names:
         return []
@@ -228,6 +242,16 @@ def _validation_miss_lines(report: dict[str, Any]) -> list[str]:
         right = float(right_components.get(name) or 0.0)
         lines.append(f"| {name} | {left:+.3f} | {right:+.3f} | {right - left:+.3f} |")
     return lines
+
+
+def _capture_by_top_n(
+    rows: list[dict[str, Any]],
+    target: dict[str, Any] | None,
+    *,
+    ns: tuple[int, ...],
+) -> dict[int, bool]:
+    rank = _rank_of(rows, target)
+    return {n: bool(rank is not None and rank <= n) for n in ns}
 
 
 def _rank_of(rows: list[dict[str, Any]], target: dict[str, Any] | None) -> int | None:
@@ -255,6 +279,10 @@ def _format_row(row: dict[str, Any] | None, *, score_name: str) -> str:
     else:
         score_text = f"{float(score or 0.0):.3f}"
     return f"{_mask_label(row)} ({score_text}, char {_format_percent(row.get('char_accuracy'))})"
+
+
+def _format_capture(capture: dict[int, bool]) -> str:
+    return ", ".join(f"@{n}={'Y' if capture.get(n) else 'n'}" for n in (1, 3, 5, 8, 10))
 
 
 def _mask_label(row: dict[str, Any] | None) -> str:

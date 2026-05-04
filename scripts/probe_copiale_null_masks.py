@@ -206,6 +206,17 @@ def run_probe(
             },
             original_length=len(cipher.tokens),
         )
+        validation_v2 = null_mask_validation_score_v2(
+            {
+                "mask": list(mask),
+                "filtered_length": len(filtered_tokens),
+                "selection_score": selection_score,
+                "quality": quality,
+                "diagnostics": diagnostics,
+                "preview": best.plaintext[:120],
+            },
+            original_length=len(cipher.tokens),
+        )
         row = {
             "mask": list(mask),
             "mask_size": len(mask),
@@ -214,6 +225,8 @@ def run_probe(
             "selection_score": selection_score,
             "validation_score": validation["score"],
             "validation_components": validation["components"],
+            "validation_score_v2": validation_v2["score"],
+            "validation_components_v2": validation_v2["components"],
             "char_accuracy": score.char_accuracy,
             "word_accuracy": score.word_accuracy,
             "quality": quality,
@@ -225,13 +238,13 @@ def run_probe(
             f"[{idx:>3}/{len(masks)}] mask={','.join(mask) or '(none)'} "
             f"len={len(filtered_tokens)} char={score.char_accuracy:.1%} "
             f"word={score.word_accuracy:.1%} sel={selection_score:.3f} "
-            f"val={validation['score']:.3f} "
+            f"val2={validation_v2['score']:.3f} "
             f"dict={diagnostics.get('dict_rate', 0.0):.3f} "
             f"top={quality.get('top_letter_fraction', 0.0):.3f}"
         )
 
     rows_by_selection = sorted(rows, key=lambda item: (-item["selection_score"], -item["char_accuracy"]))
-    rows_by_validation = sorted(rows, key=lambda item: (-item["validation_score"], -item["char_accuracy"]))
+    rows_by_validation = sorted(rows, key=lambda item: (-item["validation_score_v2"], -item["char_accuracy"]))
     rows_by_char = sorted(rows, key=lambda item: (-item["char_accuracy"], -item["selection_score"]))
     print()
     print(f"Elapsed: {time.time() - t0:.1f}s")
@@ -246,10 +259,10 @@ def run_probe(
     print("Top by null-mask validation score (no ground truth):")
     for row in rows_by_validation[: top]:
         print(
-            f"  val={row['validation_score']:.3f} sel={row['selection_score']:.3f} "
+            f"  val2={row['validation_score_v2']:.3f} sel={row['selection_score']:.3f} "
             f"char={row['char_accuracy']:.1%} word={row['word_accuracy']:.1%} "
             f"mask={','.join(row['mask']) or '(none)'} "
-            f"components={_format_validation_components(row['validation_components'])} "
+            f"components={_format_validation_components(row['validation_components_v2'])} "
             f"preview={row['preview']}"
         )
     print()
@@ -318,6 +331,46 @@ def null_mask_validation_score(row: dict[str, Any], original_length: int) -> dic
     }
 
 
+def null_mask_validation_score_v2(row: dict[str, Any], original_length: int) -> dict[str, Any]:
+    """Stricter no-ground-truth finalist score for Copiale null-mask probes.
+
+    V1 intentionally stayed close to raw anneal selection. The first five-page
+    packet showed that this over-trusts bad but well-scored word-island basins,
+    so v2 reduces the selection weight and adds stronger readability/collapse
+    controls. It is still calibration tooling, not a production truth signal.
+    """
+    diagnostics = row.get("diagnostics") or {}
+    quality = row.get("quality") or {}
+    selection_score = float(row.get("selection_score") or 0.0)
+    dict_rate = float(diagnostics.get("dict_rate") or 0.0)
+    top_letter_fraction = float(quality.get("top_letter_fraction") or 0.0)
+    unique_letters = float(quality.get("unique_letters") or diagnostics.get("unique_letters") or 0.0)
+    letter_count = float(diagnostics.get("letter_count") or row.get("filtered_length") or 1)
+    segmentation_cost = float(diagnostics.get("segmentation_cost") or 0.0)
+    preview = str(row.get("preview") or diagnostics.get("segmented_preview") or "")
+    deletion_fraction = max(0.0, (original_length - int(row.get("filtered_length") or original_length)) / max(1, original_length))
+    mask_size = len(row.get("mask") or [])
+
+    coherence = german_coherence_score(preview)
+    repetition = repetitive_word_island_penalty(preview)
+    components = {
+        "selection": selection_score * 0.45,
+        "dictionary": min(dict_rate, 0.64) * 2.35,
+        "german_coherence": coherence * 1.65,
+        "letter_diversity": min(unique_letters, 20.0) / 20.0 * 0.95,
+        "segmentation_cost": -min(1.0, segmentation_cost / max(1.0, letter_count) / 6.0) * 0.55,
+        "top_letter_penalty": -max(0.0, top_letter_fraction - 0.248) * 11.0,
+        "length_penalty": -max(0.0, deletion_fraction - 0.12) * 5.0,
+        "mask_penalty": -max(0, mask_size - 2) * 0.10,
+        "repetition_penalty": -repetition * 1.1,
+    }
+    score = sum(components.values())
+    return {
+        "score": round(score, 6),
+        "components": {name: round(value, 6) for name, value in components.items()},
+    }
+
+
 def german_fragment_score(text: str) -> float:
     """Cheap German readability signal for no-boundary finalist ranking."""
     cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
@@ -352,13 +405,80 @@ def german_fragment_score(text: str) -> float:
     return min(1.0, score / expected_slots)
 
 
+def german_coherence_score(text: str) -> float:
+    """Less saturating German signal than v1 fragment counts."""
+    cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
+    if len(cleaned) < 20:
+        return 0.0
+    long_fragments = {
+        "WENIG": 1.2,
+        "SICH": 1.0,
+        "DASS": 1.0,
+        "EINE": 0.9,
+        "EINER": 1.1,
+        "SEINE": 1.0,
+        "SEINER": 1.1,
+        "ARBEIT": 1.35,
+        "BEWEG": 1.2,
+        "GEORD": 1.2,
+        "ANFANG": 1.2,
+        "HEIM": 1.1,
+        "BRUDER": 1.2,
+        "ORDEN": 1.2,
+        "NICHT": 1.0,
+    }
+    function_fragments = {
+        "UND": 0.35,
+        "DER": 0.30,
+        "DIE": 0.30,
+        "DAS": 0.30,
+        "DEN": 0.25,
+        "DES": 0.25,
+        "EIN": 0.22,
+    }
+    score = 0.0
+    distinct = 0
+    for fragment, weight in long_fragments.items():
+        count = cleaned.count(fragment)
+        if count:
+            distinct += 1
+            score += min(2, count) * weight
+    function_score = 0.0
+    for fragment, weight in function_fragments.items():
+        count = cleaned.count(fragment)
+        if count:
+            distinct += 1
+            function_score += min(4, count) * weight
+    score += min(function_score, 2.4)
+    distinct_bonus = min(1.0, distinct / 8.0)
+    expected_slots = max(1.0, len(cleaned) / 95.0)
+    return min(1.0, (score / expected_slots) / 5.0 + distinct_bonus * 0.25)
+
+
+def repetitive_word_island_penalty(text: str) -> float:
+    """Penalty for repetitive German-ish islands that lack broader coherence."""
+    cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
+    if len(cleaned) < 24:
+        return 0.0
+    penalty = 0.0
+    for n in (3, 4, 5):
+        counts: dict[str, int] = {}
+        for idx in range(0, max(0, len(cleaned) - n + 1)):
+            gram = cleaned[idx: idx + n]
+            counts[gram] = counts.get(gram, 0) + 1
+        repeated = sum(max(0, count - 2) for count in counts.values())
+        penalty += repeated / max(1.0, len(cleaned) / (n * 2.0))
+    return min(1.0, penalty / 3.0)
+
+
 def _format_validation_components(components: dict[str, Any]) -> str:
     names = [
         "dictionary",
-        "german_fragments",
+        "german_coherence",
         "letter_diversity",
         "segmentation_cost",
         "top_letter_penalty",
+        "repetition_penalty",
     ]
     return ",".join(f"{name}={float(components.get(name) or 0.0):+.2f}" for name in names)
 

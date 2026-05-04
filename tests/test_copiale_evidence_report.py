@@ -152,7 +152,10 @@ def test_null_probe_report_summarizes_all_rows_and_validation_rank():
     assert report["has_all_rows"] is True
     assert report["best_by_validation"]["mask"] == ["S002"]
     assert report["char_best_validation_rank"] == 1
+    assert report["capture_by_validation_top_n"][1] is True
+    assert report["capture_by_validation_top_n"][3] is True
     assert "validation exact-best hits" in rendered
+    assert "validation top-3 captures" in rendered
     assert "copiale_probe_fixture" in rendered
     assert "S002" in rendered
 
@@ -191,6 +194,8 @@ def test_null_probe_report_explains_validation_misses():
     rendered = copiale_null_report.render_markdown([report], top=2)
 
     assert report["char_best_validation_rank"] == 2
+    assert report["capture_by_validation_top_n"][1] is False
+    assert report["capture_by_validation_top_n"][3] is True
     assert "Validation miss analysis" in rendered
     assert "char_accuracy" in rendered
     assert "dictionary" in rendered
