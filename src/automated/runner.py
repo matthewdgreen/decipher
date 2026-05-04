@@ -600,6 +600,21 @@ def run_automated(
         else:
             solver, key, decryption, step = _run_substitution(cipher_text, language)
             steps.append(step)
+            rescue = _maybe_rescue_substitution_run(
+                cipher_text=cipher_text,
+                language=language,
+                cipher_id=cipher_id,
+                initial_solver=solver,
+                initial_key=key,
+                initial_decryption=decryption,
+                initial_step=step,
+            )
+            if rescue is not None:
+                steps.append(rescue["step"])
+                if rescue["selected_attempt_index"] is not None:
+                    solver = rescue["solver"]
+                    key = rescue["key"]
+                    decryption = rescue["decryption"]
         status = "completed" if decryption or solver == "transform_search_structural_only" else "error"
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
@@ -3753,6 +3768,107 @@ def _run_substitution(
     if anchor_refine_info is not None:
         step["anchor_refine"] = anchor_refine_info
     return "native_substitution_anneal", best_key, best_decryption, step
+
+
+def _maybe_rescue_substitution_run(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    cipher_id: str,
+    initial_solver: str,
+    initial_key: dict[int, int],
+    initial_decryption: str,
+    initial_step: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Rerun substitution anneal only when solver score suggests a bad basin."""
+
+    if not initial_decryption:
+        return None
+    if not _env_bool("DECIPHER_SUBSTITUTION_RESCUE", True):
+        return None
+    threshold = _substitution_rescue_min_score()
+    max_attempts = _substitution_rescue_attempts()
+    if max_attempts <= 0:
+        return None
+    initial_internal_score = _float_or_none(initial_step.get("score"))
+    if initial_internal_score is None or initial_internal_score >= threshold:
+        return None
+
+    best_solver = initial_solver
+    best_key = dict(initial_key)
+    best_decryption = initial_decryption
+    best_internal_score = initial_internal_score
+    selected_attempt_index: int | None = None
+    attempts: list[dict[str, Any]] = []
+    started = time.time()
+    for attempt_index in range(1, max_attempts + 1):
+        solver, key, decryption, step = _run_substitution(cipher_text, language)
+        internal_score = _float_or_none(step.get("score"))
+        if internal_score is None:
+            continue
+        attempt_summary = {
+            "attempt_index": attempt_index,
+            "solver": solver,
+            "score": round(internal_score, 6),
+            "elapsed_seconds": step.get("elapsed_seconds"),
+            "selected": False,
+        }
+        if internal_score > best_internal_score:
+            best_solver = solver
+            best_key = dict(key)
+            best_decryption = decryption
+            best_internal_score = internal_score
+            selected_attempt_index = attempt_index
+            attempt_summary["selected"] = True
+        attempts.append(attempt_summary)
+        if best_internal_score >= threshold:
+            break
+
+    step = {
+        "name": "substitution_rescue_restarts",
+        "trigger": "initial_solver_score_below_threshold",
+        "enabled": True,
+        "threshold": threshold,
+        "max_additional_attempts": max_attempts,
+        "attempt_count": len(attempts),
+        "initial_score": round(initial_internal_score, 6),
+        "best_score": round(best_internal_score, 6),
+        "selected_attempt_index": selected_attempt_index,
+        "improved": selected_attempt_index is not None,
+        "elapsed_seconds": round(time.time() - started, 3),
+        "attempts": attempts,
+        "policy": (
+            "Substitution rescue keeps ordinary runs stochastic and cheap, but "
+            "when the first anneal score lands below the configured threshold, "
+            "it spends a few extra independent anneal attempts and keeps the "
+            "best solver-scored result. Benchmark ground truth is deliberately "
+            "not available to this rescue path."
+        ),
+    }
+    return {
+        "solver": best_solver,
+        "key": best_key,
+        "decryption": best_decryption,
+        "selected_attempt_index": selected_attempt_index,
+        "step": step,
+}
+
+
+def _substitution_rescue_min_score() -> float:
+    raw = os.environ.get("DECIPHER_SUBSTITUTION_RESCUE_MIN_SCORE", "-5.35").strip() or "-5.35"
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ValueError("DECIPHER_SUBSTITUTION_RESCUE_MIN_SCORE must be a float") from exc
+    return value
+
+
+def _substitution_rescue_attempts() -> int:
+    raw = os.environ.get("DECIPHER_SUBSTITUTION_RESCUE_ATTEMPTS", "3").strip() or "3"
+    try:
+        return max(0, int(raw))
+    except ValueError as exc:
+        raise ValueError("DECIPHER_SUBSTITUTION_RESCUE_ATTEMPTS must be an integer >= 0") from exc
 
 
 def _run_substitution_continuous(

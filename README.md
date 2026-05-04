@@ -79,6 +79,10 @@ For a fast smoke-check (completes in under two minutes):
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -m "not slow"
 ```
 
+For the full map of test files, opt-in smoke suites, frontier/evaluation
+packets, and longer synthetic runs, see
+[`docs/test_inventory.md`](docs/test_inventory.md).
+
 ## Automated Solving
 
 ### Crack a cipher from a file or stdin

@@ -1710,6 +1710,73 @@ def test_run_automated_marks_success_as_completed(monkeypatch):
     assert result.final_decryption == "THE"
 
 
+def test_substitution_rescue_reruns_only_after_low_solver_score(monkeypatch):
+    ct = automated_runner.parse_canonical_transcription("A B C")
+    calls = []
+    outputs = iter([
+        ("native_substitution_anneal", {0: 23}, "XXX", {"name": "search_anneal", "score": -9.0}),
+        ("native_substitution_anneal", {0: 19}, "THE", {"name": "search_anneal", "score": -1.0}),
+    ])
+
+    def fake_run_substitution(cipher_text, language):
+        calls.append(language)
+        return next(outputs)
+
+    monkeypatch.setattr(automated_runner, "_run_substitution", fake_run_substitution)
+    monkeypatch.setenv("DECIPHER_SUBSTITUTION_RESCUE_MIN_SCORE", "-5.35")
+    monkeypatch.setenv("DECIPHER_SUBSTITUTION_RESCUE_ATTEMPTS", "2")
+
+    result = automated_runner.run_automated(
+        cipher_text=ct,
+        language="la",
+        cipher_id="rescue_demo",
+        ground_truth="THE",
+        cipher_system="simple_substitution",
+    )
+
+    assert calls == ["la", "la"]
+    assert result.final_decryption == "THE"
+    assert result.char_accuracy == 1.0
+    rescue_step = result.steps[-1]
+    assert rescue_step["name"] == "substitution_rescue_restarts"
+    assert rescue_step["initial_score"] == -9.0
+    assert rescue_step["best_score"] == -1.0
+    assert "initial_char_accuracy" not in rescue_step
+    assert "best_char_accuracy" not in rescue_step
+    assert "char_accuracy" not in rescue_step["attempts"][0]
+    assert rescue_step["selected_attempt_index"] == 1
+
+
+def test_substitution_rescue_does_not_rerun_above_score_threshold(monkeypatch):
+    ct = automated_runner.parse_canonical_transcription("A B C")
+    calls = []
+
+    def fake_run_substitution(cipher_text, language):
+        calls.append(language)
+        return (
+            "native_substitution_anneal",
+            {0: 19},
+            "THE",
+            {"name": "search_anneal", "score": -1.0},
+        )
+
+    monkeypatch.setattr(automated_runner, "_run_substitution", fake_run_substitution)
+    monkeypatch.setenv("DECIPHER_SUBSTITUTION_RESCUE_MIN_SCORE", "-5.35")
+    monkeypatch.setenv("DECIPHER_SUBSTITUTION_RESCUE_ATTEMPTS", "2")
+
+    result = automated_runner.run_automated(
+        cipher_text=ct,
+        language="la",
+        cipher_id="rescue_demo",
+        ground_truth="THE",
+        cipher_system="simple_substitution",
+    )
+
+    assert calls == ["la"]
+    assert result.final_decryption == "THE"
+    assert all(step["name"] != "substitution_rescue_restarts" for step in result.steps)
+
+
 def test_homophonic_score_profile_reads_env_and_exposes_weights(monkeypatch):
     monkeypatch.setenv("DECIPHER_HOMOPHONIC_SCORE_PROFILE", "ioc_ngram")
 
