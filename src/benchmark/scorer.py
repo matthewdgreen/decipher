@@ -90,7 +90,14 @@ def score_decryption(
     # cause every subsequent word to score as wrong.
     dec_words = dec_clean.split()
     gt_words = gt_clean.split()
-    word_accuracy, correct_words, max_words = aligned_word_accuracy(dec_words, gt_words)
+    if len(gt_words) <= 1:
+        # Ground truth has no word boundaries (no-boundary cipher).  Any word
+        # segmentation the agent adds is useful bookkeeping but cannot be
+        # evaluated against an unsegmented ground truth, so word accuracy is
+        # not meaningful here.  Return total_words=0 so the report shows N/A.
+        word_accuracy, correct_words, max_words = 0.0, 0, 0
+    else:
+        word_accuracy, correct_words, max_words = aligned_word_accuracy(dec_words, gt_words)
 
     return ScoreResult(
         test_id=test_id,

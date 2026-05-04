@@ -7686,6 +7686,108 @@ class WorkspaceToolExecutor:
             ),
         }
 
+    def _apply_resegment_safe_prefix(
+        self,
+        branch: str,
+        proposed_text: str,
+        validation: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Try to apply the safe word-boundary prefix when a count-mismatch occurs.
+
+        When the proposed text inserts or deletes characters relative to the
+        decoded stream, we find the last word boundary that is still in sync,
+        apply those spans, and leave the remaining tokens as one unsegmented
+        block.  Returns a "partial" result dict, or None if there is no safe
+        prefix to save (mismatch at the very first character).
+        """
+        mismatches = validation.get("mismatches") or []
+        if not mismatches:
+            return None
+
+        first_mismatch_char = int(mismatches[0].get("char_index") or 0)
+        if first_mismatch_char == 0:
+            return None  # divergence at the very start; nothing to save
+
+        proposed_words = self._reading_words_from_text(proposed_text)
+        if not proposed_words:
+            return None
+
+        current_stream = "".join(self._branch_reading_words(branch))
+        total_chars = len(current_stream)
+
+        # Walk proposed words until we would exceed the mismatch position.
+        safe_words: list[str] = []
+        pos = 0
+        for word in proposed_words:
+            if pos + len(word) > first_mismatch_char:
+                break
+            safe_words.append(word)
+            pos += len(word)
+
+        if not safe_words:
+            return None
+
+        safe_char_count = pos  # = sum of lengths of safe words
+
+        # Build spans: one per safe word, then a single trailing span for
+        # everything from safe_char_count to the end.
+        spans: list[tuple[int, int]] = []
+        start = 0
+        for word in safe_words:
+            end = start + len(word)
+            spans.append((start, end))
+            start = end
+        if start < total_chars:
+            spans.append((start, total_chars))
+
+        try:
+            self.workspace.set_word_spans(branch, spans)
+        except WorkspaceError:
+            return None  # should not happen; fall through to the normal error
+
+        remaining_chars = total_chars - safe_char_count
+        remaining_preview = current_stream[safe_char_count:safe_char_count + 80]
+        bad_word = (
+            proposed_words[len(safe_words)]
+            if len(safe_words) < len(proposed_words)
+            else None
+        )
+        mismatch0 = mismatches[0]
+
+        applied_preview = safe_words[-5:]  # last few applied words for readability
+        return {
+            "status": "partial",
+            "branch": branch,
+            "character_preserving": False,
+            "applied": True,
+            "applied_word_count": len(safe_words),
+            "applied_words_tail": applied_preview,
+            "remaining_char_count": remaining_chars,
+            "remaining_stream_preview": remaining_preview,
+            "mismatch": {
+                "at_proposed_word_index": len(safe_words),
+                "proposed_word": bad_word,
+                "char_index": mismatch0.get("char_index"),
+                "decoded_char": mismatch0.get("current_char"),
+                "proposed_char": mismatch0.get("proposed_char"),
+                "decoded_context": mismatch0.get("current_context"),
+                "proposed_context": mismatch0.get("proposed_context"),
+            },
+            "note": (
+                f"Applied word boundaries for the first {len(safe_words)} word(s) "
+                f"(ending with {applied_preview!r}). "
+                f"The proposed text diverges at word {len(safe_words)}"
+                + (f" ({bad_word!r})" if bad_word else "")
+                + f": proposed has {mismatch0.get('proposed_char')!r} "
+                f"but the decoded stream has {mismatch0.get('current_char')!r} "
+                f"at character position {mismatch0.get('char_index')}. "
+                f"The remaining {remaining_chars} characters are left "
+                f"unsegmented (starting: {remaining_preview!r}). "
+                "Fix the divergence and call act_resegment_by_reading again "
+                "with the full corrected proposed_text."
+            ),
+        }
+
     def _tool_act_resegment_by_reading(self, args: dict) -> Any:
         branch = args["branch"]
         proposed_text = str(args["proposed_text"])
@@ -7715,6 +7817,14 @@ class WorkspaceToolExecutor:
                     "proposed_text. Then repair the mismatch spans with "
                     "act_set_mapping/act_bulk_set."
                 )
+            # When the character count differs (spurious insert/delete), try to
+            # save the work by applying the correct prefix.  Find the last safe
+            # word boundary before the first mismatch and apply those spans,
+            # leaving the remainder as one unsegmented block.
+            if not validation.get("same_character_count"):
+                partial = self._apply_resegment_safe_prefix(branch, proposed_text, validation)
+                if partial is not None:
+                    return partial
             return {
                 "error": (
                     "Proposed reading is not character-preserving; no boundaries "

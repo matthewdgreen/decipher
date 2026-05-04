@@ -3639,6 +3639,94 @@ def test_act_resegment_by_reading_rejects_letter_changing_proposal():
     assert ws.apply_key("main") == "PHYSICS ER"
 
 
+def test_act_resegment_by_reading_partial_apply_saves_correct_prefix():
+    """When proposed text inserts a spurious word, apply the correct prefix and
+    report exactly where the divergence occurred."""
+    # Simulate the 'OCCUPIED A NARROW' scenario: decoded stream is
+    # "THEOLDBOOKSTOREOCCUPIEDNARROW" (no spaces), agent proposes with extra A.
+    decoded = "THEOLDBOOKSTOREOCCUPIEDNARROW"
+    raw = decoded  # single-char alphabet, separator=None
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE", "OLD", "BOOKSTORE", "OCCUPIED", "NARROW"},
+        word_list=["THE", "OLD", "BOOKSTORE", "OCCUPIED", "NARROW"],
+        pattern_dict={},
+    )
+    # Set identity mapping so decoded text equals cipher text
+    alpha_obj = ex.workspace.cipher_text.alphabet
+    pt = ex.workspace.plaintext_alphabet
+    for sym in alpha_obj.symbols:
+        ex.workspace.set_mapping("main", alpha_obj.id_for(sym), pt.id_for(sym))
+
+    # Propose text with a spurious "A" inserted: one extra char
+    out = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": "THE OLD BOOKSTORE OCCUPIED A NARROW",
+    })
+
+    # Should return partial, not error
+    assert out["status"] == "partial"
+    assert out["applied"] is True
+    # The first 4 words are correct (THE, OLD, BOOKSTORE, OCCUPIED)
+    assert out["applied_word_count"] == 4
+    # The mismatch is at word index 4, proposed word "A"
+    assert out["mismatch"]["at_proposed_word_index"] == 4
+    assert out["mismatch"]["proposed_word"] == "A"
+    assert out["mismatch"]["decoded_char"] == "N"   # 'N' for NARROW
+    # Correct prefix boundaries were applied; remaining stream starts with NARROW
+    assert out["remaining_stream_preview"].startswith("NARROW")
+    # Branch now has 5 spans: THE, OLD, BOOKSTORE, OCCUPIED, NARROW (one big)
+    spans = ex.workspace.effective_word_spans("main")
+    assert len(spans) == 5
+    assert spans[0] == (0, 3)   # THE
+    assert spans[1] == (3, 6)   # OLD
+    assert spans[2] == (6, 15)  # BOOKSTORE
+    assert spans[3] == (15, 23) # OCCUPIED
+    assert spans[4] == (23, 29) # NARROW (remaining, unsegmented as one block)
+
+    # Now the corrected call (without 'A') should succeed
+    out2 = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": "THE OLD BOOKSTORE OCCUPIED NARROW",
+    })
+    assert out2["status"] == "ok"
+    assert out2["applied"] is True
+    spans2 = ex.workspace.effective_word_spans("main")
+    assert len(spans2) == 5
+    assert spans2[4] == (23, 29)  # NARROW as its own word
+
+
+def test_act_resegment_by_reading_no_partial_when_mismatch_at_first_char():
+    """When the mismatch is at character 0 there is nothing to save."""
+    raw = "ABCDE"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set=set(),
+        word_list=[],
+        pattern_dict={},
+    )
+    alpha_obj = ex.workspace.cipher_text.alphabet
+    pt = ex.workspace.plaintext_alphabet
+    for sym in alpha_obj.symbols:
+        ex.workspace.set_mapping("main", alpha_obj.id_for(sym), pt.id_for(sym))
+
+    # Propose a completely different (longer) prefix — diverges at char 0
+    out = ex._tool_act_resegment_by_reading({
+        "branch": "main",
+        "proposed_text": "X ABCDE",
+    })
+
+    # Should return error, not partial (nothing to save)
+    assert "error" in out
+    assert out["character_preserving"] is False
+
+
 def test_act_resegment_window_by_reading_merges_local_words():
     raw = "LIBE BITUR SI"
     alpha = Alphabet.from_text(raw, ignore_chars={" "})

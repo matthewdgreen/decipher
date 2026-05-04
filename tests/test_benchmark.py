@@ -147,6 +147,31 @@ class TestScoreDecryption:
             "match",
         ]
 
+    def test_word_accuracy_is_na_when_ground_truth_has_no_word_boundaries(self):
+        # No-boundary ground truth (e.g. synth_en_97q3nb): agent correctly
+        # adds word segmentation but char accuracy is 1.0.  Word accuracy
+        # should be N/A (total_words == 0) not a misleading 0%.
+        gt = "THEOLDBOOKSTOREOCCUPIEDNARROWCORNERLOTWHERETWOSTREETSINTERSECTED"
+        decrypted = "THE OLD BOOKSTORE OCCUPIED NARROW CORNER LOT WHERE TWO STREETS INTERSECTED"
+        result = score_decryption("nb_test", decrypted, gt, 1.0, "solved")
+
+        assert result.char_accuracy == pytest.approx(1.0)
+        assert result.total_words == 0   # triggers N/A in the report
+        assert result.word_accuracy == 0.0  # stored value; display shows N/A
+
+    def test_word_accuracy_is_computed_when_ground_truth_has_boundaries(self):
+        # When ground truth has spaces, word accuracy is computed normally.
+        result = score_decryption(
+            "wb_test",
+            "THE OLD BOOKSTORE",
+            "THE OLD BOOKSTORE",
+            1.0,
+            "solved",
+        )
+        assert result.char_accuracy == pytest.approx(1.0)
+        assert result.word_accuracy == pytest.approx(1.0)
+        assert result.total_words == 3
+
 
 class TestFormatReport:
     def test_basic(self):
