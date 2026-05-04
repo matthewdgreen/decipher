@@ -4328,7 +4328,7 @@ def test_execute_rejects_tools_not_allowed_on_gated_turn():
 
     assert "tool_gated" in raw
     assert "decode_validate_reading_repair" in raw
-    assert "no longer allowed" in raw
+    assert "not available on this turn" in raw
     assert "allowed_tools" in raw
     assert "Do not call it again" in raw
     assert ex.call_log[-1].tool_name == "act_bulk_set"

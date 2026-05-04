@@ -1963,6 +1963,12 @@ class WorkspaceToolExecutor:
         self.call_log: list[ToolCall] = []
         self._current_iteration: int = 0
 
+        # Gate-hit history: tools blocked by the mode filter or allowed_tool_names.
+        # Each entry: {"tool": str, "iteration": int, "count": int}
+        # Used to surface a compact "tried but blocked" reminder in the workspace panel
+        # and to escalate the error message on repeated attempts.
+        self._gate_hits: list[dict[str, Any]] = []
+
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
         self.context_family_overrides: list[dict[str, Any]] = []
@@ -2006,15 +2012,33 @@ class WorkspaceToolExecutor:
         started = time.time()
         if self.allowed_tool_names is not None and tool_name not in self.allowed_tool_names:
             allowed = sorted(self.allowed_tool_names)
-            result = _json({
-                "error": (
-                    f"STOP: `{tool_name}` is no longer allowed on this turn. "
+            # Track gate hits; detect repeats for escalated messaging.
+            prior_hits = [h for h in self._gate_hits if h["tool"] == tool_name]
+            hit_count = len(prior_hits) + 1
+            self._gate_hits.append({
+                "tool": tool_name,
+                "iteration": self._current_iteration,
+                "count": hit_count,
+            })
+            if hit_count > 1:
+                prior_iters = [h["iteration"] for h in prior_hits]
+                error_msg = (
+                    f"STOP: `{tool_name}` has now been blocked {hit_count} time(s) "
+                    f"(previously on iteration(s) {', '.join(str(i) for i in prior_iters)}). "
+                    "This tool is unavailable for the rest of this gated window — "
+                    "stop attempting it. Choose a different action from `allowed_tools`."
+                )
+                note_msg = (
+                    "This tool is mode-filtered or gated for the entire current window. "
+                    "Repeated attempts will always be rejected. If you believe you need "
+                    "it, use `meta_request_tool` to request it with justification."
+                )
+            else:
+                error_msg = (
+                    f"STOP: `{tool_name}` is not available on this turn. "
                     "Do not call it again in this gated window."
-                ),
-                "reason": "tool_gated",
-                "attempted_tool": tool_name,
-                "allowed_tools": allowed,
-                "note": (
+                )
+                note_msg = (
                     "This turn is gated. Some tools are intentionally hidden "
                     "and executor-blocked. You must choose only from "
                     "`allowed_tools`. Do not use local split/merge, bulk "
@@ -2024,7 +2048,14 @@ class WorkspaceToolExecutor:
                     "`act_resegment_from_reading_repair`; use "
                     "`decode_validate_reading_repair` only if you need to "
                     "decide which resegmentation actuator applies."
-                ),
+                )
+            result = _json({
+                "error": error_msg,
+                "reason": "tool_gated",
+                "attempted_tool": tool_name,
+                "attempt_number": hit_count,
+                "allowed_tools": allowed,
+                "note": note_msg,
             })
         elif (context_block := self._context_cipher_family_tool_block(tool_name, args)) is not None:
             result = _json(context_block)
@@ -5535,7 +5566,14 @@ class WorkspaceToolExecutor:
                     "score": candidate["score"],
                     "preview": candidate["preview"],
                 })
-        return {
+        # Escalation signal: if all candidates scored poorly on a confirmed-periodic
+        # cipher, plain Vigenère/Beaufort is eliminated and quagmire3 is next.
+        top_cands = result.get("top_candidates") or []
+        best_score = max(
+            (c.get("score", float("-inf")) for c in top_cands), default=float("-inf")
+        )
+        escalation_required = bool(top_cands) and best_score < -5.5
+        out: dict[str, Any] = {
             "branch": branch_name,
             **branch_note,
             **result,
@@ -5564,6 +5602,19 @@ class WorkspaceToolExecutor:
                 "family."
             ),
         }
+        if escalation_required:
+            out["escalation_required"] = True
+            out["escalation_note"] = (
+                f"ALL plain-shift candidates scored below -5.5 (best={best_score:.4f}). "
+                "Plain Vigenère/Beaufort has been tested and eliminated. "
+                "If the cipher is confirmed polyalphabetic (e.g., strong periodic IC "
+                "peak), this failure is evidence of a keyed-tableau alphabet. "
+                "Next step: search_quagmire3_keyword_alphabet with "
+                "cycleword_lengths matching the confirmed period and "
+                "nominal_proposals >= 50000 (full budget). "
+                "Do NOT abandon the polyalphabetic family yet."
+            )
+        return out
 
     def _tool_search_quagmire3_keyword_alphabet(self, args: dict) -> Any:
         branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
@@ -5830,7 +5881,30 @@ class WorkspaceToolExecutor:
                     "preview": candidate.get("preview"),
                 })
 
-        return {
+        # Tag the source branch as "quagmire3 searched at this budget level".
+        # This enables the budget-guidance machinery to fire regardless of
+        # whether the agent created a hypothesis branch with cipher_mode set.
+        if self.workspace.has_branch(branch_name) and not bool(args.get("estimate_only", False)):
+            src_branch = self.workspace.get_branch(branch_name)
+            src_branch.metadata["quagmire3_searched"] = True
+            src_branch.metadata["quagmire3_best_budget_class"] = budget_class
+            src_branch.metadata["quagmire3_best_nominal_proposals"] = nominal_proposals
+            # If no cipher_mode yet, set it so budget guidance fires on future calls.
+            if not src_branch.metadata.get("cipher_mode"):
+                src_branch.metadata["cipher_mode"] = "quagmire3"
+
+        # Escalation note when diagnostic budget found nothing readable.
+        top_cands = result.get("top_candidates") or []
+        best_cand_score = max(
+            (c.get("score", float("-inf")) for c in top_cands), default=float("-inf")
+        )
+        escalation_required = (
+            budget_class == "diagnostic"
+            and bool(top_cands)
+            and best_cand_score < -5.5
+        )
+
+        out: dict[str, Any] = {
             "branch": branch_name,
             **branch_note,
             **result,
@@ -5866,6 +5940,19 @@ class WorkspaceToolExecutor:
                 "run as context-seeded rather than blind."
             ),
         }
+        if escalation_required:
+            out["escalation_required"] = True
+            out["escalation_note"] = (
+                f"DIAGNOSTIC BUDGET ONLY — {nominal_proposals:,} proposals is "
+                "insufficient to find a period-16+ quagmire key. "
+                f"Best candidate score={best_cand_score:.4f}. "
+                "A diagnostic run CANNOT reject the Quagmire/keyed-tableau family. "
+                "Re-run with nominal_proposals >= 50,000 (full budget) before "
+                "concluding this family is wrong. "
+                "Suggested: search_quagmire3_keyword_alphabet with "
+                "hillclimbs=2000, restarts=500, same cycleword_lengths."
+            )
+        return out
 
     def _apply_periodic_key_to_branch(
         self,
@@ -7053,6 +7140,51 @@ class WorkspaceToolExecutor:
             signals.get("quadgram_loglik_per_gram"),
         )
         result: dict[str, Any] = {"branch": branch, "signals": signals}
+
+        # --- English-plausibility verdict ---
+        # Combines quadgram, bigram chi², and letter-coverage into a single
+        # binary verdict that catches false-positive dict_rate from DP-segmenter
+        # carving short words out of letter soup (e.g., collapsed homophonic keys).
+        quad = signals.get("quadgram_loglik_per_gram") or float("-inf")
+        bigram_chi2 = signals.get("bigram_chi2") or 0.0
+        dict_rate = signals.get("dictionary_rate") or 0.0
+        # Letter coverage: how many of the 26 English letters appear at all
+        letters_present = {c.upper() for c in decrypted if c.isalpha() and "A" <= c.upper() <= "Z"}
+        letter_coverage = round(len(letters_present) / 26.0, 3)
+        unlikely = quad < -5.5 or bigram_chi2 > 2500 or letter_coverage < 0.65
+        likely = quad >= -4.5 and bigram_chi2 < 1500 and letter_coverage >= 0.75
+        if likely:
+            plausibility = "likely"
+        elif unlikely:
+            plausibility = "unlikely"
+        else:
+            plausibility = "uncertain"
+        result["english_plausibility"] = plausibility
+        result["letter_coverage"] = letter_coverage
+
+        if plausibility == "unlikely" and dict_rate >= 0.5:
+            result["plausibility_warning"] = (
+                f"MISLEADING DICT RATE. dict_rate={dict_rate:.2f} is high but "
+                f"quadgram={quad:.2f}, bigram_chi2={bigram_chi2:.0f}, "
+                f"letter_coverage={letter_coverage:.2f} all indicate this text is "
+                "NOT English. The DP segmenter inflates dict_rate by finding short "
+                "common words (IS, A, AN, TO...) in any letter sequence. "
+                "Do not treat this branch as a solve candidate. "
+                "Abandon it and try a different family or key."
+            )
+        elif plausibility == "likely":
+            result["plausibility_note"] = (
+                "Language-quality signals are consistent with English. "
+                "Confirm with meta_attest_reading_comprehensibility."
+            )
+
+        # Always surface the human-readability tool as the authoritative verdict.
+        result["readability_tool"] = (
+            "Use meta_attest_reading_comprehensibility(branch, score, excerpt) "
+            "for a human text-quality score — this is the most reliable signal "
+            "for whether the decryption is correct."
+        )
+
         if is_periodic_branch:
             result["note"] = (
                 "This branch uses a periodic or keyed-tableau cipher (quagmire, "

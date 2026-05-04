@@ -754,6 +754,7 @@ def build_workspace_panel(
     estimated_cost_usd: float = 0.0,
     run_python_calls: int = 0,
     repair_agenda: list[dict[str, Any]] | None = None,
+    gate_hits: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render ciphertext + current partial decode(s) for this turn.
 
@@ -880,6 +881,36 @@ def build_workspace_panel(
             f"risk *regression*. Declaration records the CURRENT accuracy; "
             f"chasing perfection and running out of iterations scores ZERO."
         )
+        lines.append("")
+
+    if gate_hits:
+        # Compact "tried but blocked" recap — only tools blocked by the mode filter
+        # or allowed_tool_names gate.  List each unique tool once with its iteration
+        # numbers; call out repeats explicitly.
+        from collections import defaultdict as _defaultdict
+        hits_by_tool: dict[str, list[int]] = _defaultdict(list)
+        for h in gate_hits:
+            hits_by_tool[h["tool"]].append(h["iteration"])
+        parts = []
+        repeats = []
+        for tool, iters in hits_by_tool.items():
+            part = f"`{tool}` (iter {', '.join(str(i) for i in iters)})"
+            parts.append(part)
+            if len(iters) > 1:
+                repeats.append(tool)
+        lines.append(
+            f"⛔ **Unavailable tools attempted this run** ({len(hits_by_tool)} tool(s)): "
+            + "; ".join(parts) + ". "
+            "These tools are mode-filtered or gated — they will be rejected "
+            "every time you call them. Do not retry them. "
+            "Use `meta_request_tool` if you believe one is genuinely needed."
+        )
+        if repeats:
+            lines.append(
+                f"  ↳ Repeated attempts (wasting iterations): "
+                + ", ".join(f"`{t}`" for t in repeats)
+                + " — stop calling these."
+            )
         lines.append("")
 
     if run_python_calls >= 3:
@@ -1541,6 +1572,7 @@ def run_v2(
                 estimated_cost_usd=artifact.estimated_cost_usd,
                 run_python_calls=run_python_calls,
                 repair_agenda=executor.repair_agenda,
+                gate_hits=executor._gate_hits,
             )
             tool_results_blocks.append({"type": "text", "text": panel_text})
 
