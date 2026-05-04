@@ -1776,6 +1776,124 @@ def test_moderate_quagmire_search_clears_family_coverage_for_installed_branch():
     assert out["accepted"] is True
 
 
+def test_word_boundary_block_fires_for_pure_transposition_branch():
+    """A pure-transposition branch (empty key, token_order set, decoded_text in
+    metadata) should be blocked at declaration until act_resegment_by_reading
+    is called — same as the polyalphabetic path."""
+    # 100-char no-boundary cipher
+    raw = "ABCDE" * 20
+    ex = _executor_for(raw, separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(5)
+
+    # Fork a branch and install it as a pure-transposition result:
+    # token_order = identity (simplest valid permutation), decoded_text = readable text.
+    ex.workspace.fork("transpos_branch", from_branch="main")
+    pipeline = {"steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 99}}]}
+    ex.workspace.apply_transform_pipeline("transpos_branch", pipeline)
+    ex.workspace.get_branch("transpos_branch").metadata["decoded_text"] = "EDCBA" * 20
+    ex.execute("workspace_branch_cards", {})
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "transpos_branch",
+        "rationale": "Pure transposition solved; letters are correct.",
+        "self_confidence": 0.97,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "word_boundary_pass_required"
+
+    # After adding boundaries, declaration should be accepted.
+    plain = "EDCBA" * 20
+    spaced = " ".join(plain[i:i+5] for i in range(0, 100, 5))
+    seg = ex._tool_act_resegment_by_reading({
+        "branch": "transpos_branch",
+        "proposed_text": spaced,
+    })
+    assert seg["status"] == "ok"
+
+    out2 = ex._tool_meta_declare_solution({
+        "branch": "transpos_branch",
+        "rationale": "Pure transposition solved; letters are correct.",
+        "self_confidence": 0.97,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "",
+    })
+    assert out2["status"] == "ok"
+    assert out2["accepted"] is True
+
+
+def test_word_boundary_block_fires_for_no_boundary_substitution_branch():
+    """A fully-mapped substitution branch on a no-boundary cipher is also
+    blocked at declaration until a word-boundary overlay is applied."""
+    # 100-char no-boundary cipher with 5 distinct symbols
+    raw = "ABCDE" * 20
+    ex = _executor_for(raw, separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(5)
+
+    # Map all 5 symbols to real letters so decoded text is 100 non-'?' chars.
+    pt_alpha = ex.workspace.plaintext_alphabet
+    mapping = {
+        ex.workspace.cipher_text.alphabet.id_for("A"): pt_alpha.id_for("H"),
+        ex.workspace.cipher_text.alphabet.id_for("B"): pt_alpha.id_for("E"),
+        ex.workspace.cipher_text.alphabet.id_for("C"): pt_alpha.id_for("L"),
+        ex.workspace.cipher_text.alphabet.id_for("D"): pt_alpha.id_for("L"),
+        ex.workspace.cipher_text.alphabet.id_for("E"): pt_alpha.id_for("O"),
+    }
+    ex.workspace.set_full_key("main", mapping)
+    ex.execute("workspace_branch_cards", {})
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "All symbols mapped; reads as HELLO repeated.",
+        "self_confidence": 0.95,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "",
+    })
+
+    assert out["status"] == "blocked"
+    assert out["reason"] == "word_boundary_pass_required"
+
+
+def test_word_boundary_block_skipped_when_spans_already_set():
+    """If word_spans have already been installed, the block should not fire."""
+    raw = "ABCDEF" * 20   # 120 tokens, matches "THEOLD" * 20
+    ex = _executor_for(raw, separator=None)
+    ex.set_max_iterations(30)
+    ex.set_iteration(5)
+
+    ex.workspace.fork("poly_branch", from_branch="main")
+    br = ex.workspace.get_branch("poly_branch")
+    plain = "THEOLD" * 20   # 120 chars
+    br.metadata["decoded_text"] = plain
+    # Pre-install word spans (THE | OLD | THE | ...) so the block should not fire.
+    spans = []
+    for i in range(0, 120, 6):
+        spans.append((i, i + 3))      # THE
+        spans.append((i + 3, i + 6))  # OLD
+    ex.workspace.set_word_spans("poly_branch", spans)
+    ex.execute("workspace_branch_cards", {})
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "poly_branch",
+        "rationale": "Fully segmented.",
+        "self_confidence": 0.95,
+        "reading_summary": "The plaintext reads coherently.",
+        "further_iterations_helpful": False,
+        "further_iterations_note": "",
+    })
+
+    # Should NOT be blocked for word boundaries (may be blocked for other reasons,
+    # but not word_boundary_pass_required).
+    assert out.get("reason") != "word_boundary_pass_required"
+
+
 def test_meta_declare_blocks_when_context_keyed_tableau_work_pending():
     ex = _executor_for("ABCABCABCABC", separator=None)
     ex.set_max_iterations(30)

@@ -4155,36 +4155,42 @@ class WorkspaceToolExecutor:
         confidence: float,
         forced_partial: bool,
     ) -> dict[str, Any] | None:
-        """Require one segmentation pass before declaring a solved stream.
+        """Require one segmentation pass before declaring a solved no-boundary stream.
 
-        Solver-backed polyalphabetic branches can carry a plaintext stream in
-        metadata instead of in the substitution key. When that stream is
-        continuous text, a declaration is usually premature until the agent has
-        installed an explicit word-boundary overlay for the artifact and final
-        scoring/reporting.
+        Fires for any cipher family (transposition, substitution, homophonic,
+        polyalphabetic) when all three conditions hold:
+          1. The original cipher had no word separators (_is_no_boundary_cipher).
+          2. The branch has no word-boundary overlay (word_spans is None).
+          3. The decoded text is substantially populated (≥50% non-'?' and ≥80
+             normalised chars) — i.e. the solve is good enough to be worth
+             segmenting.
+        Skipped for low-confidence or forced-partial declarations.
         """
         if forced_partial or confidence < 0.75:
             return None
+        if not self._is_no_boundary_cipher(branch_name):
+            return None
         branch = self.workspace.get_branch(branch_name)
-        metadata_text = branch.metadata.get("decoded_text")
-        if not isinstance(metadata_text, str) or not metadata_text.strip():
-            return None
-        decoded = metadata_text.strip()
-        if any(ch.isspace() for ch in decoded):
-            return None
         if branch.word_spans is not None:
             return None
-        if len(sig.normalize_for_scoring(decoded)) < 80:
+        # Get the decoded text via _decoded_words, which checks
+        # metadata["decoded_text"] first (transposition/polyalphabetic path)
+        # then falls back to key-based decoding (substitution/homophonic path).
+        words = self._decoded_words(branch_name)
+        decoded = "".join(words).strip()
+        if not decoded:
+            return None
+        # Only block when the decode is substantial enough to be worth
+        # segmenting: at least 80 normalised characters and ≥50% non-'?'.
+        normalised = sig.normalize_for_scoring(decoded)
+        if len(normalised) < 80:
+            return None
+        non_question = sum(1 for ch in decoded if ch != "?")
+        if non_question < len(decoded) * 0.5:
             return None
 
         mode = str(branch.metadata.get("cipher_mode") or "").strip()
         key_type = str(branch.metadata.get("key_type") or "").strip()
-        if mode not in self._POLY_MODE_NAMES and key_type not in {
-            "PeriodicShiftKey",
-            "QuagmireKey",
-        }:
-            return None
-
         return {
             "status": "blocked",
             "accepted": False,
@@ -4196,14 +4202,17 @@ class WorkspaceToolExecutor:
             "note": (
                 "This branch has a high-confidence decoded stream but no "
                 "word-boundary overlay. Before declaring, do a boundary pass "
-                "so the final artifact and word scoring reflect the readable "
-                "plaintext. If the letters are already correct, propose the "
-                "same letters with spaces and call act_resegment_by_reading."
+                "so the final artifact and word-accuracy scoring reflect the "
+                "readable plaintext. If the letters are already correct, "
+                "propose the same letters with spaces added and call "
+                "act_resegment_by_reading. For homophonic no-boundary text "
+                "you can first call decode_repair_no_boundary to get "
+                "segmentation candidates."
             ),
             "suggested_next_tools": [
+                "act_resegment_by_reading",
                 "decode_repair_no_boundary",
                 "decode_validate_reading_repair",
-                "act_resegment_by_reading",
                 "workspace_branch_cards",
                 "meta_declare_solution",
             ],
