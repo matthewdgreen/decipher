@@ -301,7 +301,7 @@ tool calls varies widely by model.** Tested as of May 2026:
 
 | Model | Tool calling | Notes |
 |---|---|---|
-| `tencent/hy3-preview:free` | ✅ Good tool use | Handles tool calls well; free tier; doesn't always solve but reliable loop |
+| `tencent/hy3-preview:free` | ✅ Solves | Good tool-call discipline and reasoning; free tier; confirmed solve on synth_en_97q3nb_s50 |
 | `meta-llama/llama-4-maverick` | ✅ Untested | Likely better than 3.3-70b; worth trying |
 | `deepseek/deepseek-chat` (`deepseek-v3`) | ⚠️ Partial | Tool calls fire; gives up too early; see note |
 | `qwen/qwen3-30b-a3b` | ✅ Untested | MoE; cheap at $0.09/$0.45 per M |
