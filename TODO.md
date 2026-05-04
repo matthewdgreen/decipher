@@ -70,6 +70,20 @@ Current planning split:
   - Define "cheap smoke" agent runs with small context/tool budgets and
     "headline" runs with full context and broader search, so we do not mix cost
     profiles accidentally.
+  - [ ] **Proactive pre-declaration guidance when reading is strong.** Currently
+    the agent discovers declaration requirements only by hitting the gate — it
+    calls `meta_declare_solution`, the gate fires a block message listing
+    unmet prerequisites (branch_cards, hypothesis_next_steps, coverage checks,
+    etc.), and the agent spends one or more extra iterations satisfying them.
+    When the decoded text is already highly readable (e.g. `meta_attest_reading_comprehensibility`
+    score ≥ 8, or `score_panel` dict_rate > 0.85), the loop could instead
+    inject a targeted "before you declare, make sure you have done X, Y, Z"
+    message proactively — either as a system-injected harness turn or as
+    enriched tool-result context — so the agent arrives at declaration with
+    prerequisites already met rather than learning them reactively. This would
+    collapse the typical solve+overhead pattern (solve at iter N, three gate
+    bounce iterations, declare at iter N+3) into a single clean declaration
+    turn, saving meaningful cost and iteration count on every solved run.
 
 ## Long-Horizon Cipher Capability Roadmap
 
