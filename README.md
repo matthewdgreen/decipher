@@ -583,8 +583,10 @@ Useful options:
 ### LLM provider and model selection
 
 Pass `--model` to choose a model; the provider is inferred from the name
-prefix. Pass `--provider` explicitly if needed. See [API key setup](#api-key-setup)
-for defaults, key locations, and the full provider table.
+prefix (`claude-` → Anthropic, `gpt-`/`o1`/`o3`/`o4` → OpenAI, `gemini-` →
+Gemini, `provider/model` → OpenRouter). Pass `--provider` explicitly if
+needed. See [API key setup](#api-key-setup) for key locations and the full
+provider table.
 
 ```bash
 # Anthropic
@@ -596,11 +598,26 @@ decipher crack -f cipher.txt --agentic --model gpt-5.4
 # Gemini
 decipher crack -f cipher.txt --agentic --model gemini-3-flash-preview
 
+# OpenRouter — provider inferred from the "/" in the model name
+decipher crack -f cipher.txt --agentic --model meta-llama/llama-3.3-70b-instruct
+decipher crack -f cipher.txt --agentic --model deepseek/deepseek-chat
+decipher crack -f cipher.txt --agentic --model qwen/qwen3-30b-a3b
+
 # Ollama (local — no API key required; Ollama must be running)
 decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
-Recommended for historical manuscript analysis: `gpt-5.4` though `claude-sonnet-4-6` works as well.
+Recommended for historical manuscript analysis: `claude-sonnet-4-6`. OpenRouter
+models offer cost savings (5–40× cheaper per token) at some quality trade-off.
+
+> **OpenRouter tool-calling note:** Not all OpenRouter models reliably emit
+> structured tool calls. Models confirmed working: `meta-llama/llama-3.3-70b-instruct`,
+> `meta-llama/llama-4-maverick`, `deepseek/deepseek-chat`,
+> `qwen/qwen3-30b-a3b`, `mistralai/mistral-small-3.2-24b-instruct`.
+> **Do not use `deepseek/deepseek-r1` or `deepseek/deepseek-r1-0528`**: R1
+> embeds tool calls as Markdown text blocks instead of structured response
+> fields, causing the agent loop to exit after one iteration with zero tool
+> calls. Use `deepseek/deepseek-chat` (V3) instead.
 
 > **Ollama note:** The agentic solver relies heavily on structured tool
 > calling. You must use a model with documented tool-use support (e.g.
@@ -635,7 +652,7 @@ Agentic runs support four display modes via `--display`:
 
 ### API key setup
 
-Agentic mode supports three providers. You only need a key for the provider
+Agentic mode supports five providers. You only need a key for the provider
 you intend to use.
 
 | Provider | `--provider` value | Environment variable(s) | Default model |
@@ -643,12 +660,15 @@ you intend to use.
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
+| OpenRouter | `openrouter` or `or` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct` |
 | Ollama (local) | `ollama` | *(none — no key required)* | `qwen3:14b` |
 
-The provider is inferred automatically from a recognized model name prefix
-(`claude-` → Anthropic, `gpt-`/`o1`/`o3`/`o4` → OpenAI, `gemini-` →
-Gemini). Ollama model names have no standard prefix, so pass
-`--provider ollama` explicitly.
+The provider is inferred automatically: `claude-` → Anthropic,
+`gpt-`/`o1`/`o3`/`o4` → OpenAI, `gemini-` → Gemini, `provider/name` →
+OpenRouter. Ollama model names have no standard prefix; pass
+`--provider ollama` explicitly. If no `--provider` or `--model` is given,
+the first provider with a configured key is used (anthropic → openai →
+gemini → openrouter → ollama).
 
 **Four ways to supply a key** (tried in this order):
 
@@ -657,6 +677,7 @@ Gemini). Ollama model names have no standard prefix, so pass
    export ANTHROPIC_API_KEY=sk-ant-...
    export OPENAI_API_KEY=sk-...
    export GEMINI_API_KEY=...
+   export OPENROUTER_API_KEY=sk-or-...
    ```
 
 2. `.env` file in the repo root or working directory:
@@ -668,10 +689,15 @@ Gemini). Ollama model names have no standard prefix, so pass
    directory):
    ```bash
    echo "sk-ant-..." > .decipher_keys/anthropic_api_key
+   echo "sk-or-..."  > .decipher_keys/openrouter_api_key
    ```
 
 4. macOS Keychain — service `decipher`, accounts `anthropic_api_key`,
-   `openai_api_key`, `gemini_api_key`.
+   `openai_api_key`, `gemini_api_key`, `openrouter_api_key`.
+
+Run `decipher doctor` to verify which providers are configured and which
+models are known. Run `decipher doctor --refresh-pricing` to pull fresh
+OpenRouter pricing (cached for 24 h at `~/.config/decipher/openrouter_pricing.json`).
 
 `--no-automated-preflight` suppresses the default no-LLM preflight pass before
 an agentic run (the preflight is generally cheap and useful).

@@ -40,6 +40,8 @@ src/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
     tools_v2.py           — V2: 78 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
+    model_provider.py     — Provider-neutral model interface: Anthropic, OpenAI, Gemini,
+                            Ollama, OpenRouter adapters + live pricing fetch
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
     __init__.py           — Branch and Workspace classes for v2 agent
@@ -273,15 +275,58 @@ Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
 **Recommended for V2**: `claude-sonnet-4-6` — Best results on historical manuscript analysis
 **Default**: `claude-opus-4-7` — Configurable via `--model` flag
 
-### Model Notes
-- **Claude Sonnet 4.6**: Strong performance on S-token sequences and Latin/German manuscript analysis
-- **Claude Opus 4.7**: More conservative with historical encoded text; use Sonnet 4.6 for decipherment
-- **Preprocessing**: S-token normalization (letter substitution) improves API compatibility across models
+### Supported Providers
+
+Five providers are wired through `src/agent/model_provider.py`:
+
+| Provider | Flag | Key location | Notes |
+|---|---|---|---|
+| `anthropic` | `--provider anthropic` | `ANTHROPIC_API_KEY` / keychain `anthropic_api_key` | Best quality; default |
+| `openai` | `--provider openai` | `OPENAI_API_KEY` / keychain `openai_api_key` | GPT-5.x |
+| `gemini` | `--provider gemini` | `GEMINI_API_KEY` / keychain `gemini_api_key` | Gemini 3.x |
+| `ollama` | `--provider ollama` | None (local) | No API key; needs `ollama serve` |
+| `openrouter` | `--provider openrouter` or `--provider or` | `OPENROUTER_API_KEY` / `.decipher_keys/openrouter_api_key` | 300+ models |
+
+Provider is auto-detected in preference order: anthropic → openai → gemini → openrouter → ollama.
+Any model ID containing `/` is inferred as OpenRouter (e.g. `--model meta-llama/llama-3.3-70b-instruct`).
+
+### Anthropic Models
+- **Claude Sonnet 4.6**: Strong performance on S-token sequences and Latin/German manuscript analysis. Recommended.
+- **Claude Opus 4.7**: More conservative with historical encoded text; use Sonnet 4.6 for decipherment.
+
+### OpenRouter Models — Tool-Calling Compatibility
+
+OpenRouter proxies 300+ models through an OpenAI-compatible API. **Reliability of structured
+tool calls varies widely by model.** Tested as of May 2026:
+
+| Model | Tool calling | Notes |
+|---|---|---|
+| `meta-llama/llama-3.3-70b-instruct` | ✅ Reliable | Good default; $0.10/$0.32 per M |
+| `meta-llama/llama-4-maverick` | ✅ Reliable | $0.15/$0.60 per M |
+| `deepseek/deepseek-v3-0324` / `deepseek-chat` | ✅ Reliable | V3 chat model; ~$0.20-0.28 in / ~$0.77-0.89 out per M |
+| `qwen/qwen3-30b-a3b` | ✅ Reliable | MoE; cheap at $0.09/$0.45 per M |
+| `mistralai/mistral-small-3.2-24b-instruct` | ✅ Reliable | $0.075/$0.20 per M |
+| `deepseek/deepseek-r1` | ❌ **Broken** | See note below |
+| `deepseek/deepseek-r1-0528` | ❌ **Broken** | Same issue |
+
+**DeepSeek-R1 tool-calling failure** (confirmed May 2026, artifact `cafa0b5e3363`):
+R1 is a *reasoning* model fine-tuned for chain-of-thought, not agentic tool loops.
+When given OpenAI-format tool definitions it outputs the tool call as a Markdown JSON code
+block inside text rather than in the structured `tool_calls` response field. The agent loop
+finds zero `tool_use` blocks, fires `no_tool_calls` on iteration 1, and exits immediately.
+The model's *reasoning* is correct (it names the right tool and right arguments), but the
+output format is wrong. There is also visible thinking-token bleed into the output text.
+This is not fixable by prompt engineering — use DeepSeek-V3 (`deepseek/deepseek-chat`) instead.
+
+### Pricing
+Cost estimation is live for OpenRouter: `estimate_provider_cost()` fetches
+`https://openrouter.ai/api/v1/models` on first use (no auth required), caches to
+`~/.config/decipher/openrouter_pricing.json` for 24 hours.
+Run `decipher doctor --refresh-pricing` to force a refresh and see a diff.
+Anthropic/OpenAI/Gemini pricing is hardcoded in `_PRICING` and updated with code releases.
 
 ### Configuration
 Models configurable via `--model` CLI flag.
-API key stored in macOS Keychain under service `decipher`, account `anthropic_api_key`.
-Also reads `ANTHROPIC_API_KEY` env var.
 
 ### Performance
 Sonnet 4.6 on `synth_en_250nb_s4`: exact match in 7 iterations after reliability and segmentation fixes.
