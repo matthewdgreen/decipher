@@ -4,18 +4,35 @@
 Usage:
     python scripts/inspect_artifact.py artifacts/foo/bar.json
     python scripts/inspect_artifact.py artifacts/foo/bar.json --analyze      # LLM narrative
-    python scripts/inspect_artifact.py artifacts/foo/bar.json --analyze --model claude-haiku-4-5
+    python scripts/inspect_artifact.py artifacts/foo/bar.json --analyze --provider openai --model gpt-5.4
     python scripts/inspect_artifact.py artifacts/*.json                       # batch
 """
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
-from collections import Counter, defaultdict
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+SRC_ROOT = REPO_ROOT / "src"
+sys.path.insert(0, str(SRC_ROOT))
+sys.path.insert(0, str(REPO_ROOT))
+
+from agent.model_provider import (  # noqa: E402
+    ModelResponse,
+    ModelProviderError,
+    ModelUsage,
+    TextBlock,
+    default_model_for_provider,
+    estimate_provider_cost,
+    infer_provider_from_model,
+    make_model_provider,
+)
+from artifact.analyzer import analyze_artifact, summarize_findings  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +159,15 @@ def _gate_hit(result: dict | None) -> str | None:
 
 def _is_search_tool(name: str) -> bool:
     return name.startswith("search_")
+
+
+def _result_dict_from_call(call: dict[str, Any]) -> dict[str, Any]:
+    result = call.get("result")
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, str):
+        return _parse_result(result)
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +308,8 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
     gate_counts: Counter = Counter()
     search_results: list[dict] = []
     final_scores: dict = {}
+    tool_calls = artifact.get("tool_calls", [])
+    findings = summarize_findings(analyze_artifact(artifact))
 
     for entry in timeline:
         for tc in entry.get("tools", []):
@@ -323,26 +351,120 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
                     "quad": s.get("quadgram_loglik_per_gram"),
                 }
 
+    tool_call_counts = Counter(str(call.get("tool_name") or "") for call in tool_calls)
+    failed_tool_calls = [
+        {
+            "iteration": call.get("iteration"),
+            "tool": call.get("tool_name"),
+            "status": _result_dict_from_call(call).get("status"),
+            "error": _result_dict_from_call(call).get("error")
+            or _result_dict_from_call(call).get("message")
+            or str(call.get("result") or "")[:240],
+            "arguments": _trim_obj(call.get("arguments") or {}, 700),
+        }
+        for call in tool_calls
+        if _tool_call_failed(call)
+    ][:18]
+    branch_scores = _branch_score_summary(artifact)
+    preflight = _automated_preflight_summary(artifact)
+    cipher_hypotheses = _trim_obj(artifact.get("cipher_hypotheses") or [], 2200)
+    repair_agenda = _trim_obj(artifact.get("repair_agenda") or [], 2200)
+    final_decryption = (
+        artifact.get("decryption")
+        or artifact.get("final_decryption")
+        or artifact.get("best_decryption")
+        or ""
+    )
+    final_summary = artifact.get("final_summary") or artifact.get("solution_summary") or ""
+
     return {
         "model": artifact.get("model"),
+        "provider": artifact.get("provider"),
+        "test_id": artifact.get("test_id"),
+        "status": artifact.get("status"),
         "cipher_system": artifact.get("cipher_system"),
         "language": artifact.get("language"),
         "char_accuracy": artifact.get("char_accuracy"),
         "word_accuracy": artifact.get("word_accuracy"),
+        "score_meaning": "char_accuracy and word_accuracy are post-hoc comparisons to known benchmark plaintext when ground truth exists; they are not intrinsic solver confidence.",
         "iterations_used": artifact.get("iterations_used"),
         "declared": artifact.get("declared_solution") is not None,
+        "solution": _trim_obj(artifact.get("solution") or artifact.get("declared_solution") or {}, 1600),
         "best_branch": artifact.get("best_branch"),
         "tool_counts": dict(tool_counts.most_common(20)),
+        "artifact_tool_counts": dict(tool_call_counts.most_common(40)),
         "gate_hits": dict(gate_counts),
+        "analyzer_findings": findings,
+        "failed_tool_calls": failed_tool_calls,
+        "branch_scores": branch_scores,
+        "automated_preflight": preflight,
+        "cipher_hypotheses": cipher_hypotheses,
+        "repair_agenda": repair_agenda,
         "search_results": search_results,
         "final_scores": final_scores,
         "initial_fingerprint": _extract_fingerprint(artifact),
+        "final_summary": str(final_summary)[:2400],
+        "final_decryption_preview": str(final_decryption)[:2000],
+        "final_decryption_tail": str(final_decryption)[-900:] if final_decryption else "",
         "reasoning_snippets": [
             e.get("reasoning", "")[:200]
             for e in timeline
             if e.get("reasoning")
         ][:6],
+        "timeline": _trim_obj(timeline, 8000),
     }
+
+
+def _tool_call_failed(call: dict[str, Any]) -> bool:
+    result = _result_dict_from_call(call)
+    status = str(result.get("status") or "").lower()
+    if status in {"error", "failed", "rejected"}:
+        return True
+    if result.get("error") or result.get("exception"):
+        return True
+    raw = str(call.get("result") or "")
+    return "traceback" in raw.lower() or "error:" in raw.lower()
+
+
+def _branch_score_summary(artifact: dict[str, Any]) -> list[dict[str, Any]]:
+    branches = artifact.get("branches") or artifact.get("branch_scores") or []
+    rows = []
+    for branch in branches:
+        if not isinstance(branch, dict):
+            continue
+        rows.append({
+            "name": branch.get("name") or branch.get("branch"),
+            "char_accuracy": branch.get("char_accuracy"),
+            "word_accuracy": branch.get("word_accuracy"),
+            "mapped_count": branch.get("mapped_count"),
+            "tags": branch.get("tags"),
+            "metadata": _trim_obj(branch.get("metadata") or {}, 800),
+            "preview": str(branch.get("decryption") or branch.get("preview") or "")[:700],
+        })
+    rows.sort(key=lambda item: float(item.get("char_accuracy") or 0.0), reverse=True)
+    return rows[:16]
+
+
+def _automated_preflight_summary(artifact: dict[str, Any]) -> dict[str, Any]:
+    preflight = artifact.get("automated_preflight")
+    if not isinstance(preflight, dict):
+        return {}
+    return {
+        "status": preflight.get("status"),
+        "solver": preflight.get("solver"),
+        "branch": preflight.get("branch"),
+        "scores": _trim_obj(preflight.get("scores") or {}, 1000),
+        "quality": _trim_obj(preflight.get("quality") or {}, 1000),
+        "metadata": _trim_obj(preflight.get("metadata") or {}, 1200),
+        "decryption_preview": str(preflight.get("decryption") or "")[:900],
+    }
+
+
+def _trim_obj(value: Any, limit: int) -> Any:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    if len(text) <= limit:
+        return value
+    return {"_truncated_json": text[:limit] + "..."}
 
 
 def _extract_fingerprint(artifact: dict) -> str:
@@ -363,54 +485,132 @@ def _extract_fingerprint(artifact: dict) -> str:
 # LLM narrative analysis
 # ---------------------------------------------------------------------------
 
-def _call_llm(summary: dict, model: str) -> str:
+@dataclass
+class LLMAnalysisResult:
+    provider: str
+    model: str
+    text: str
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    estimated_cost_usd: float
+
+
+def _call_llm(
+    summary: dict,
+    *,
+    provider: str | None,
+    model: str | None,
+    max_tokens: int,
+    analysis_mode: str,
+) -> LLMAnalysisResult:
+    resolved_provider = infer_provider_from_model(model, provider)
+    resolved_model = model or default_model_for_provider(resolved_provider)
     try:
-        import anthropic
-    except ImportError:
-        return "(anthropic package not available — run `pip install anthropic`)"
+        from cli import _probe_api_key  # type: ignore
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        # Try the project's own key-loading chain (env → key file → keychain)
-        try:
-            _here = Path(__file__).resolve().parent.parent / "src"
-            sys.path.insert(0, str(_here))
-            from cli import get_api_key  # type: ignore
-            api_key = get_api_key("anthropic")
-        except Exception:
-            pass
-    if not api_key:
-        return "(No ANTHROPIC_API_KEY found — set env var or configure keychain)"
+        api_key = "" if resolved_provider == "ollama" else _probe_api_key(resolved_provider)
+        if not api_key and resolved_provider != "ollama":
+            return LLMAnalysisResult(
+                provider=resolved_provider,
+                model=resolved_model,
+                text=(
+                    f"(LLM analysis failed: no API key configured for provider "
+                    f"{resolved_provider!r})"
+                ),
+                input_tokens=0,
+                output_tokens=0,
+                cache_read_tokens=0,
+                estimated_cost_usd=0.0,
+            )
+        client = make_model_provider(
+            provider=resolved_provider,
+            api_key=api_key,
+            model=resolved_model,
+        )
+        response = client.send(
+            messages=[{"role": "user", "content": _analysis_prompt(summary, analysis_mode)}],
+            system=_analysis_system_prompt(),
+            max_tokens=max_tokens,
+        )
+    except (ModelProviderError, Exception) as exc:  # noqa: BLE001
+        return LLMAnalysisResult(
+            provider=resolved_provider,
+            model=resolved_model,
+            text=f"(LLM analysis failed: {exc})",
+            input_tokens=0,
+            output_tokens=0,
+            cache_read_tokens=0,
+            estimated_cost_usd=0.0,
+        )
 
-    client = anthropic.Anthropic(api_key=api_key)
-    prompt = (
-        "You are an expert cryptanalyst reviewing an automated cipher-solving agent run. "
-        "Here is a compact summary of the run:\n\n"
-        f"```json\n{json.dumps(summary, indent=2, ensure_ascii=False)}\n```\n\n"
-        "In 150–200 words, identify:\n"
-        "1. The primary failure mode (or confirm success)\n"
-        "2. The earliest decision point where the run went wrong (if it failed)\n"
-        "3. One concrete fix that would most improve future runs\n"
-        "Be specific about tool names, iteration numbers, and score values. "
-        "Do not repeat obvious facts; focus on diagnosis."
+    text = "\n".join(
+        block.text for block in response.content if isinstance(block, TextBlock)
+    ).strip()
+    usage = response.usage
+    cost = estimate_provider_cost(
+        resolved_provider,
+        resolved_model,
+        usage.input_tokens,
+        usage.output_tokens,
+        usage.cache_read_input_tokens,
+    )
+    return LLMAnalysisResult(
+        provider=resolved_provider,
+        model=resolved_model,
+        text=text or "(empty response)",
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        cache_read_tokens=usage.cache_read_input_tokens,
+        estimated_cost_usd=cost,
     )
 
-    try:
-        msg = client.messages.create(
-            model=model,
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        return msg.content[0].text if msg.content else "(empty response)"
-    except Exception as exc:
-        return f"(LLM call failed: {exc})"
+
+def _analysis_system_prompt() -> str:
+    return (
+        "You are a senior cryptanalysis engineering reviewer. Your job is to "
+        "diagnose Decipher agent artifacts. Be concrete, skeptical, and useful. "
+        "Never treat post-hoc ground-truth scores as evidence the agent had at "
+        "runtime; use them only to grade the completed run."
+    )
+
+
+def _analysis_prompt(summary: dict[str, Any], analysis_mode: str) -> str:
+    detail = (
+        "Give a detailed report with sections: Verdict, What happened, Earliest "
+        "bad decision, Tool-use diagnosis, Scoring/branch diagnosis, What the "
+        "agent should have done, and Tooling improvements."
+        if analysis_mode == "deep"
+        else "Give a concise but specific report with sections: Verdict, Failure/success mode, Earliest decision point, and Best tooling improvement."
+    )
+    return (
+        "Review this Decipher artifact summary. The JSON includes post-hoc "
+        "benchmark scores, tool timeline, non-LLM analyzer findings, branch "
+        "scores, automated preflight, failed tool calls, repair agenda, and "
+        "decryption previews.\n\n"
+        f"{detail}\n\n"
+        "Requirements:\n"
+        "- Distinguish runtime-visible evidence from post-hoc ground-truth grading.\n"
+        "- Name specific tools and iterations when possible.\n"
+        "- Call out wasted iterations, wrong cipher-family searches, premature declarations, bad basin repair, blocked tools, and missed high-value tools.\n"
+        "- Suggest concrete changes to prompts, tools, scoring, gates, or search budgets.\n"
+        "- If the run succeeded, still identify fragility and how to make success more reliable.\n\n"
+        f"```json\n{json.dumps(summary, indent=2, ensure_ascii=False, default=str)}\n```"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def inspect_one(path: Path, analyze: bool, llm_model: str) -> None:
+def inspect_one(
+    path: Path,
+    analyze: bool,
+    provider: str | None,
+    llm_model: str | None,
+    max_tokens: int,
+    analysis_mode: str,
+) -> None:
     artifact = load(path)
     timeline = build_timeline(artifact)
 
@@ -426,8 +626,29 @@ def inspect_one(path: Path, analyze: bool, llm_model: str) -> None:
     if analyze:
         summary = build_llm_summary(artifact, timeline)
         print("─" * 70)
-        print(f"LLM analysis ({llm_model}):")
-        print(_call_llm(summary, llm_model))
+        resolved_provider = infer_provider_from_model(llm_model, provider)
+        resolved_model = llm_model or default_model_for_provider(resolved_provider)
+        print(
+            f"Performing LLM analysis ({resolved_provider}/{resolved_model})... "
+            "This may take a moment.",
+            flush=True,
+        )
+        result = _call_llm(
+            summary,
+            provider=provider,
+            model=llm_model,
+            max_tokens=max_tokens,
+            analysis_mode=analysis_mode,
+        )
+        print(f"LLM analysis ({result.provider}/{result.model}):")
+        print(result.text)
+        print()
+        print(
+            "LLM usage: "
+            f"input={result.input_tokens} output={result.output_tokens} "
+            f"cache_read={result.cache_read_tokens} "
+            f"estimated_cost=${result.estimated_cost_usd:.4f}"
+        )
         print()
 
 
@@ -443,8 +664,25 @@ def main() -> None:
     )
     parser.add_argument(
         "--model", "-m",
-        default="claude-haiku-4-5",
-        help="LLM model for --analyze (default: claude-haiku-4-5).",
+        default=None,
+        help="LLM model for --analyze. Defaults to the provider default.",
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help="LLM provider for --analyze: anthropic, openai, gemini, openrouter, or ollama.",
+    )
+    parser.add_argument(
+        "--analysis-mode",
+        choices=("standard", "deep"),
+        default="standard",
+        help="Depth of LLM artifact analysis prompt.",
+    )
+    parser.add_argument(
+        "--analysis-max-tokens",
+        type=int,
+        default=900,
+        help="Maximum output tokens for LLM analysis.",
     )
     args = parser.parse_args()
 
@@ -456,7 +694,14 @@ def main() -> None:
         print(f"\n{'━'*70}")
         print(f"  {path}")
         print(f"{'━'*70}")
-        inspect_one(path, args.analyze, args.model)
+        inspect_one(
+            path,
+            args.analyze,
+            args.provider,
+            args.model,
+            args.analysis_max_tokens,
+            args.analysis_mode,
+        )
 
 
 if __name__ == "__main__":
