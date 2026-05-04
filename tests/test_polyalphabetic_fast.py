@@ -287,6 +287,33 @@ def test_python_and_fast_turning_mask_route_match():
     assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
 
 
+def test_python_and_fast_turning_mask_route_turn_offset_match():
+    pipeline = TransformPipeline(
+        steps=(TransformStep("TurningMaskRoute", {
+            "blockSize": 6,
+            "pattern": "top_left_quadrant",
+            "route": "columns_down",
+            "direction": "cw",
+            "turnOffset": 1,
+        }),),
+    )
+    tokens = list(range(72))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "turning_mask_offset",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
+
+
 def test_python_and_fast_block_route_match():
     pipeline = TransformPipeline(
         steps=(TransformStep("BlockRoute", {
@@ -328,6 +355,32 @@ def test_python_and_fast_block_route_reverse_block_order_match():
         [
             {
                 "candidate_id": "block_route_reverse",
+                "pipeline": pipeline.to_raw(),
+            }
+        ],
+        threads=1,
+    )
+
+    assert results[0]["valid"] is True
+    assert results[0]["position_order_preview"] == expected_order[: len(results[0]["position_order_preview"])]
+
+
+def test_python_and_fast_block_route_order_offset_match():
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 4,
+            "columns": 5,
+            "route": "columns_down",
+            "orderOffset": 5,
+        }),),
+    )
+    tokens = list(range(96))
+    expected_order = apply_transform_pipeline(tokens, pipeline).tokens
+    results = score_transform_candidates_fast_batch(
+        tokens,
+        [
+            {
+                "candidate_id": "block_route_offset",
                 "pipeline": pipeline.to_raw(),
             }
         ],
@@ -729,6 +782,45 @@ def test_pure_transposition_screen_recovers_turning_mask_route_candidate():
     assert result["candidate_plan"]["include_turning_mask_routes"] is True
 
 
+def test_pure_transposition_screen_recovers_turning_mask_route_turn_offset_candidate():
+    base_plaintext = (
+        "OFFSETGRILLESTARTSITSROTATIONFROMADIFFERENTQUADRANT"
+        "BUTSTILLREADSEACHBLOCKTHROUGHTHESAMETURNINGMASK"
+    )
+    plaintext = (base_plaintext * 2)[:144]
+    pipeline = TransformPipeline(
+        steps=(TransformStep("TurningMaskRoute", {
+            "blockSize": 6,
+            "pattern": "top_left_quadrant",
+            "route": "rows_boustrophedon",
+            "direction": "cw",
+            "turnOffset": 1,
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    turning_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "turning_mask_top_left_quadrant"
+        and candidate["params"]["blockSize"] == 6
+        and candidate["params"]["route"] == "rows_boustrophedon"
+        and candidate["params"]["turnOffset"] == 1
+        and candidate["plaintext"] == plaintext
+    ]
+    assert turning_hits
+
+
 def test_pure_transposition_screen_recovers_block_route_candidate():
     base_plaintext = (
         "SMALLGROUPSOFLETTERSSTAYTOGETHERWHILETHEGROUPSTHEMSELVES"
@@ -800,6 +892,45 @@ def test_pure_transposition_screen_recovers_block_route_reverse_block_order_cand
         and candidate["params"]["blockSize"] == 4
         and candidate["params"]["columns"] == 9
         and candidate["params"]["blockOrder"] == "reverse"
+        and candidate["plaintext"] == plaintext
+    ]
+    assert block_hits
+
+
+def test_pure_transposition_screen_recovers_block_route_order_offset_candidate():
+    base_plaintext = (
+        "OFFSETBLOCKROUTESMOVETHESTARTINGBLOCKAROUNDTHEGRIDWHILE"
+        "LEAVINGEACHSMALLGROUPINLOCALREADINGORDER"
+    )
+    plaintext = (base_plaintext * 2)[:144]
+    pipeline = TransformPipeline(
+        steps=(TransformStep("BlockRoute", {
+            "blockSize": 4,
+            "columns": 9,
+            "route": "columns_down",
+            "blockOrder": "normal",
+            "orderOffset": 9,
+        }),),
+    )
+    cipher = _inverse_pipeline_cipher(plaintext, pipeline)
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+
+    result = screen_pure_transposition(
+        ct,
+        language="en",
+        profile="medium",
+        top_n=20,
+        include_transmatrix=False,
+        threads=2,
+    )
+
+    block_hits = [
+        candidate
+        for candidate in result["top_candidates"]
+        if candidate["family"] == "block_route_columns_down_normal"
+        and candidate["params"]["blockSize"] == 4
+        and candidate["params"]["columns"] == 9
+        and candidate["params"]["orderOffset"] == 9
         and candidate["plaintext"] == plaintext
     ]
     assert block_hits

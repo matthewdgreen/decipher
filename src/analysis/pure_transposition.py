@@ -853,16 +853,18 @@ def _turning_mask_route_candidate(
     pattern = str(params["pattern"])
     route = str(params.get("route") or "rows")
     direction = str(params.get("direction") or "cw")
+    turn_offset = int(params.get("turnOffset") or 0)
     pipeline = TransformPipeline(
         steps=(TransformStep("TurningMaskRoute", {
             "blockSize": block_size,
             "pattern": pattern,
             "route": route,
             "direction": direction,
+            "turnOffset": turn_offset,
         }),),
     )
     return TransformCandidate(
-        candidate_id=f"tg_{ordinal:05d}_{block_size}_{pattern}_{route}_{direction}",
+        candidate_id=f"tg_{ordinal:05d}_{block_size}_{pattern}_{route}_{direction}_{turn_offset}",
         family=f"turning_mask_{pattern}",
         params=dict(params),
         pipeline=pipeline,
@@ -890,17 +892,20 @@ def _turning_mask_route_params(token_count: int, profile: str) -> list[dict[str,
         else ("rows",)
     )
     directions = ("cw", "ccw") if profile_key == "wide" else ("cw",)
+    turn_offsets = (0, 1, 2, 3) if profile_key == "wide" else (0, 1) if profile_key == "medium" else (0,)
     out: list[dict[str, Any]] = []
     for block_size in sorted(block_sizes):
         for pattern in patterns:
             for route in routes:
                 for direction in directions:
-                    out.append({
-                        "blockSize": block_size,
-                        "pattern": pattern,
-                        "route": route,
-                        "direction": direction,
-                    })
+                    for turn_offset in turn_offsets:
+                        out.append({
+                            "blockSize": block_size,
+                            "pattern": pattern,
+                            "route": route,
+                            "direction": direction,
+                            "turnOffset": turn_offset,
+                        })
     return out
 
 
@@ -913,16 +918,18 @@ def _block_route_candidate(
     columns = int(params["columns"])
     route = str(params["route"])
     block_order = str(params.get("blockOrder") or "normal")
+    order_offset = int(params.get("orderOffset") or 0)
     pipeline = TransformPipeline(
         steps=(TransformStep("BlockRoute", {
             "blockSize": block_size,
             "columns": columns,
             "route": route,
             "blockOrder": block_order,
+            "orderOffset": order_offset,
         }),),
     )
     return TransformCandidate(
-        candidate_id=f"br_{ordinal:05d}_{block_size}_{columns}_{route}_{block_order}",
+        candidate_id=f"br_{ordinal:05d}_{block_size}_{columns}_{route}_{block_order}_{order_offset}",
         family=f"block_route_{route}_{block_order}",
         params=dict(params),
         pipeline=pipeline,
@@ -967,10 +974,29 @@ def _block_route_params(token_count: int, profile: str) -> list[dict[str, Any]]:
             rows = block_count // columns
             if rows <= 0:
                 continue
+            usable_blocks = rows * columns
+            offsets = {0}
+            if profile_key != "small":
+                offsets.update({1, columns, max(1, usable_blocks // 2)})
+                if profile_key == "wide":
+                    offsets.update({max(1, columns * 2), max(1, usable_blocks // 3)})
             for route in routes:
-                out.append({"blockSize": block_size, "columns": columns, "route": route, "blockOrder": "normal"})
-                if profile_key != "small":
-                    out.append({"blockSize": block_size, "columns": columns, "route": route, "blockOrder": "reverse"})
+                for order_offset in sorted(offset for offset in offsets if 0 <= offset < usable_blocks):
+                    out.append({
+                        "blockSize": block_size,
+                        "columns": columns,
+                        "route": route,
+                        "blockOrder": "normal",
+                        "orderOffset": order_offset,
+                    })
+                    if profile_key != "small":
+                        out.append({
+                            "blockSize": block_size,
+                            "columns": columns,
+                            "route": route,
+                            "blockOrder": "reverse",
+                            "orderOffset": order_offset,
+                        })
     return out
 
 

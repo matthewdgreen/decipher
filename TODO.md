@@ -453,14 +453,20 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       matching Python/Rust semantics and bounded `turning_mask_*` candidates.
       `synth_en_144ptnb_turning_mask_s45` is a known-good repeated 6x6 block
       turning-mask row; this is still constrained and square-block based, not
-      a full open-ended grille search.
+      a full open-ended grille search. `TurningMaskRoute` now also supports
+      cyclic `turnOffset` orientation starts, and
+      `synth_en_144ptnb_turning_mask_offset_s49` is the corresponding
+      known-good shifted-orientation row.
       The latest block-route slice adds `BlockRoute`, with matching
       Python/Rust semantics and bounded `block_route_*` candidates.
       `synth_en_144ptnb_block_route_s46` is a known-good row where contiguous
       chunks remain locally ordered while the chunk order is routed through a
       grid. `BlockRoute` now also supports `blockOrder=reverse`, and
       `synth_en_144ptnb_block_route_reverse_s47` is a known-good row where
-      each moved block is locally reversed.
+      each moved block is locally reversed. The next block-route slice adds
+      cyclic `orderOffset` support, and
+      `synth_en_144ptnb_block_route_offset_s48` is a known-good row for a
+      shifted block-order route.
     - [ ] Expand the pure-transposition ladder further with route+rotation
       composites beyond the bounded route+rotate+reverse slice, richer
       turning-grille/mask families, and additional varied-length no-boundary
@@ -488,6 +494,11 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       `clean_or_canonical`, `minor_local_damage`,
       `readable_with_local_scars`, and wrong-family-like basins among
       candidates that are all nominally readable.
+    - [x] Add a beginning/end cleanliness signal for no-boundary transform
+      finalists. `validation.edge` now records first/last segmented words,
+      prefix/suffix pseudo-character fractions, and a boundary damage score.
+      This helps pure-transposition selection prefer canonical candidates over
+      cyclic mid-word rotations that contain many valid word islands.
   - Scale the new wide structural transform-search layer from the current
     cap-aware 600k-candidate generator toward practical historical Z340-scale
     sweeps: stream/report hundreds of thousands of candidates, avoid
@@ -537,10 +548,38 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       callbacks, so pure-transposition direct scoring, transform+homophonic
       Rust batch probes, confirmation reruns, and future K3-compatible screens
       all return one normalized finalist-menu shape.
-    - [ ] Continue tightening the interface by moving more of the Rust batch
-      request construction and confirmation payload normalization out of
-      `automated.runner` once the current artifact shape has been validated on
-      Z340/K3 frontier runs.
+    - [x] Extract the first Rust batch-payload normalization helper.
+      `analysis.transform_homophonic_batch` now owns stable transform
+      pipeline dedupe, confirmation seed-offset policy, and confirmation
+      batch payload/metadata construction for transform+homophonic probes.
+      Z340 rank smoke still reaches 96.2% after the extraction.
+    - [x] Move Rust batch-result and confirmation record shaping into the
+      same helper. `analysis.transform_homophonic_batch` now normalizes
+      successful/failed rank rows, missing-pipeline confirmation records, and
+      successful/failed confirmation rows. Z340 rank smoke still reaches 96.2%
+      after this extraction.
+    - [x] Move the shared Rust batch request/call wrapper into the helper.
+      `build_zenith_transform_batch_request` and
+      `run_zenith_transform_batch` now own the common request shape for both
+      rank and confirmation probes. The runner still supplies model path,
+      plaintext alphabet, and budget policy; Z340 rank smoke remains 96.2%.
+    - [x] Add a shared Rust batch context object for transform+homophonic
+      probes. `ZenithTransformBatchContext` now packages model path,
+      plaintext ID/letter mapping, budget iterations/seeds, and thread count
+      once per rank/confirmation run; Z340 rank smoke remains 96.2%.
+    - [x] Move Rust rank-batch result normalization behind the helper while
+      keeping scoring policy in the runner. `normalize_rust_rank_batch_results`
+      now owns completed/failed row normalization and accepts runner-supplied
+      plaintext quality, mutation penalty, and selection-score callbacks; Z340
+      rank smoke remains 96.2%.
+    - [x] Move the full Rust rank-probe lifecycle behind one helper.
+      `run_zenith_transform_rank_batch` now owns rank candidate dedupe, request
+      construction, Rust batch execution, elapsed-time attachment, and result
+      normalization. The runner still supplies model/budget context and
+      scoring policy; Z340 rank smoke remains 96.2%.
+    - [ ] Continue tightening the interface by moving higher-level Rust batch
+      orchestration out of `automated.runner`: model/budget setup,
+      shared scoring-policy packaging, and probe policy selection.
     - Architecture cleanup target: one Rust-backed evaluation API should
       handle pure-transposition direct scoring, transform+homophonic finalist
       validation, and future K3-style extensions without forking candidate

@@ -1040,6 +1040,8 @@ def test_pure_transposition_ladder_suite_loads():
         "synth_en_144ptnb_turning_mask_s45",
         "synth_en_144ptnb_block_route_s46",
         "synth_en_144ptnb_block_route_reverse_s47",
+        "synth_en_144ptnb_block_route_offset_s48",
+        "synth_en_144ptnb_turning_mask_offset_s49",
     ]
     assert all(case.synthetic_spec is not None for case in cases)
     assert all(case.synthetic_spec.transposition_only for case in cases if case.synthetic_spec)
@@ -1074,6 +1076,10 @@ def test_pure_transposition_ladder_suite_loads():
     assert cases[15].synthetic_spec.transform_pipeline["steps"][0]["data"]["blockSize"] == 4
     assert cases[16].synthetic_spec.transform_pipeline["steps"][0]["name"] == "BlockRoute"
     assert cases[16].synthetic_spec.transform_pipeline["steps"][0]["data"]["blockOrder"] == "reverse"
+    assert cases[17].synthetic_spec.transform_pipeline["steps"][0]["name"] == "BlockRoute"
+    assert cases[17].synthetic_spec.transform_pipeline["steps"][0]["data"]["orderOffset"] == 9
+    assert cases[18].synthetic_spec.transform_pipeline["steps"][0]["name"] == "TurningMaskRoute"
+    assert cases[18].synthetic_spec.transform_pipeline["steps"][0]["data"]["turnOffset"] == 1
 
 
 def test_hidden_transform_frontier_case_withholds_pipeline_from_solver(tmp_path):

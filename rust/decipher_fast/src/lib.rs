@@ -1812,11 +1812,14 @@ fn turning_mask_route_fast(
     let pattern = fast_string(data, &["pattern"], "top_left_quadrant").to_lowercase();
     let route = fast_string(data, &["route"], "rows").to_lowercase();
     let direction = fast_string(data, &["direction"], "cw").to_lowercase();
-    let turns: [usize; 4] = if matches!(direction.as_str(), "cw" | "clockwise" | "right") {
+    let base_turns: [usize; 4] = if matches!(direction.as_str(), "cw" | "clockwise" | "right") {
         [0, 1, 2, 3]
     } else {
         [0, 3, 2, 1]
     };
+    let turn_offset = fast_int(data, "turnOffset", fast_int(data, "turn_offset", fast_int(data, "offset", 0)));
+    let offset = turn_offset.rem_euclid(4) as usize;
+    let turns: [usize; 4] = base_turns.map(|turn| (turn + offset) % 4);
     let block_order = turning_mask_block_order(size, &pattern, &route, &turns)?;
     if !is_permutation(&block_order, block_len) {
         return Err("TurningMaskRoute did not produce a block permutation".to_string());
@@ -1923,13 +1926,18 @@ fn block_route_fast(
     if positions.len() != rows * columns {
         return Err(format!("block route {route:?} did not cover the grid"));
     }
-    let block_order: Vec<usize> = positions
+    let mut block_order: Vec<usize> = positions
         .into_iter()
         .map(|(row, col)| row * columns + col)
         .filter(|idx| *idx < usable_blocks)
         .collect();
     if !is_permutation(&block_order, usable_blocks) {
         return Err("BlockRoute did not produce a block permutation".to_string());
+    }
+    let order_offset = fast_int(data, "orderOffset", fast_int(data, "order_offset", fast_int(data, "offset", 0)));
+    if !block_order.is_empty() && order_offset != 0 {
+        let shift = order_offset.rem_euclid(block_order.len() as i64) as usize;
+        block_order.rotate_left(shift);
     }
     let mut new_tokens = Vec::with_capacity(tokens.len());
     let mut new_locked = Vec::with_capacity(tokens.len());

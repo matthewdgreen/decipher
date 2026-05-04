@@ -47,6 +47,8 @@ src/
     segment.py            — Rank-aware no-boundary word segmentation
     transform_evaluation.py — Shared transform finalist-menu validation,
                             scoring adjustment, and sorting helpers
+    transform_homophonic_batch.py — Rust batch payload helpers for
+                            transform+homophonic finalist probes
     zenith_solver.py      — Zenith-parity SA for homophonic ciphers: exact entropy score,
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
@@ -482,7 +484,18 @@ Vigenere-family metadata through the automated runner. Current scope:
   optionally run confirmation callbacks, apply labels/gates, final-sort,
   select, diagnose, and return a normalized artifact shape. The expensive
   probe engines still differ by cipher family, but downstream finalist
-  reporting and agent review now use the same menu structure.
+  reporting and agent review now use the same menu structure. Rust
+  transform+homophonic rank/confirmation payload construction is factored
+  into `analysis.transform_homophonic_batch`, along with rank-row and
+  confirmation-record shaping, so `automated.runner` no longer owns candidate
+  dedupe, rank-batch row normalization, confirmation batch-id/seed-offset
+  mechanics, or the low-level Rust batch artifact row formats. The runner
+  still supplies the actual quality/selection scoring callbacks. Rank probes
+  now call one helper for dedupe, request construction, Rust execution, and
+  row normalization. The same helper also owns the common
+  `ZenithTransformBatchContext` / `ZenithTransformBatchRequest` shapes and
+  Rust batch call wrapper; the runner still chooses model path, plaintext
+  alphabet, budget policy, and candidate scoring policy.
 
 Kryptos status:
 - K1/K2/K3 are imported in `../cipher_benchmark` as solved calibration records.
@@ -501,7 +514,9 @@ Kryptos status:
   diagonal route reads, split-grid routes, spiral/rail/boustrophedon routes,
   route+repair composites including route+rotate+reverse, shifted spiral
   routes, border/checkerboard mask routes, repeated-block turning-mask routes,
-  block-level route transpositions with optional local block reversal,
+  turning-mask routes with shifted starting orientations, block-level route
+  transpositions with optional local block reversal and cyclic block-order
+  offsets,
   short/long no-boundary calibration rows, and non-Kryptos TransMatrix.
 - Agentic runs can invoke that same screen through
   `search_pure_transposition`. Pure-transposition searches now create
@@ -512,7 +527,8 @@ Kryptos status:
   ranks as readable transform branches with decoded-text metadata. Pure
   finalist menus now include `analysis.finalist_validation` evidence:
   strict continuous word hits, segmentation cost/rate, pseudo-word burden,
-  n-gram scores, and a `validated_selection_score` rerank. Mixed
+  edge cleanliness for beginnings/endings, n-gram scores, and a
+  `validated_selection_score` rerank. Mixed
   transform+homophonic finalist previews carry the same validation block as
   supporting evidence.
 - K1/K2 can now be represented explicitly as Quagmire III cases for

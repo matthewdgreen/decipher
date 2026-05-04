@@ -35,8 +35,15 @@ from analysis.transform_evaluation import (
     validate_finalist_menu,
 )
 from analysis.transform_homophonic_batch import (
+    build_zenith_transform_batch_request,
+    build_zenith_transform_batch_context,
     build_confirmation_batch_payload,
-    dedupe_transform_batch_candidates,
+    failed_confirmation_record,
+    missing_pipeline_confirmation_record,
+    run_zenith_transform_rank_batch,
+    successful_confirmation_record,
+    run_zenith_transform_batch,
+    ZenithTransformRankScoringPolicy,
 )
 from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from analysis.transform_search import inspect_transform_suspicion, screen_transform_candidates
@@ -1335,94 +1342,36 @@ def _rank_transform_candidates_rust_batch(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Evaluate transform finalists with the Rust transform+Zenith batch kernel."""
 
-    from analysis.zenith_fast import zenith_transform_candidates_batch_fast
-
     bin_path = _zenith_native_model_path(language)
     if bin_path is None:
         raise FileNotFoundError(
             f"zenith_native Rust transform ranking requires an ngram5 model for language={language!r}"
         )
-    pt_alpha = _plaintext_alphabet(language)
-    plaintext_ids = list(range(pt_alpha.size))
-    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
     budget_params = _homophonic_budget_params(
         budget,
         len(cipher_text.tokens) < 600,
         search_profile=_homophonic_search_profile(),
     )
-    skipped: list[dict[str, Any]] = []
-    payload_candidates, metadata_by_id = dedupe_transform_batch_candidates(raw_candidates)
 
     threads = _transform_rank_threads()
-    started = time.time()
-    batch = zenith_transform_candidates_batch_fast(
-        tokens=list(cipher_text.tokens),
-        candidates=payload_candidates,
-        plaintext_ids=plaintext_ids,
-        id_to_letter=id_to_letter,
-        model_path=bin_path,
-        epochs=budget_params["epochs"],
-        sampler_iterations=budget_params["sampler_iterations"],
-        seeds=[int(seed) for seed in budget_params["seeds"]],
-        top_n=3,
+    pt_alpha = _plaintext_alphabet(language)
+    batch_context = build_zenith_transform_batch_context(
+        plaintext_symbols=[pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)],
+        model_path=str(bin_path),
+        budget_params=budget_params,
         threads=threads,
     )
-    ranked: list[dict[str, Any]] = []
-    for row in batch.get("results", []):
-        candidate_id = str(row.get("candidate_id"))
-        candidate = metadata_by_id.get(candidate_id, {})
-        if row.get("status") != "completed":
-            skipped.append({
-                "candidate_id": candidate.get("candidate_id", candidate_id),
-                "family": candidate.get("family") or row.get("family"),
-                "pipeline": candidate.get("pipeline"),
-                "reason": row.get("reason") or "rust_batch_candidate_failed",
-            })
-            continue
-        decryption = str(row.get("decryption") or "")
-        anneal_score = _float_or_none(row.get("normalized_score"))
-        quality_score = _plaintext_quality_score(decryption, language)
-        mutation_penalty = _transform_mutation_penalty(candidate)
-        selection_score = _transform_selection_score(
-            anneal_score=anneal_score,
-            quality_score=quality_score,
-            structural_score=candidate.get("score"),
-            mutation_penalty=mutation_penalty,
-        )
-        ranked.append({
-            "candidate_id": candidate.get("candidate_id", candidate_id),
-            "family": candidate.get("family") or row.get("family"),
-            "provenance": candidate.get("provenance"),
-            "params": candidate.get("params"),
-            "pipeline": candidate.get("pipeline"),
-            "status": "completed",
-            "solver": "zenith_native",
-            "engine": "rust_batch",
-            "anneal_score": anneal_score,
-            "plaintext_quality_score": round(quality_score, 6),
-            "local_mutation_penalty": mutation_penalty,
-            "selection_score": round(selection_score, 6),
-            "elapsed_seconds": round(float(row.get("elapsed_seconds") or 0.0), 3),
-            "decryption_preview": decryption[:500],
-            "decryption": decryption,
-            "key": {str(k): int(v) for k, v in dict(row.get("key") or {}).items()},
-            "structural_score": candidate.get("score"),
-            "structural_delta_vs_identity": candidate.get("delta_vs_identity"),
-            "matrix_rank_score": (candidate.get("metrics") or {}).get("matrix_rank_score"),
-            "best_period": (candidate.get("metrics") or {}).get("best_period"),
-            "inverse_best_period": (candidate.get("metrics") or {}).get("inverse_best_period"),
-            "rust_batch": {
-                "best_seed": row.get("best_seed"),
-                "attempts": row.get("attempts") or [],
-                "token_order_hash": row.get("token_order_hash"),
-                "candidate_elapsed_seconds": row.get("elapsed_seconds"),
-                "batch_elapsed_seconds": batch.get("elapsed_seconds"),
-                "threads": batch.get("threads"),
-                "seed_count": batch.get("seed_count"),
-                "total_elapsed_seconds": round(time.time() - started, 3),
-            },
-        })
-    return ranked, skipped
+    return run_zenith_transform_rank_batch(
+        tokens=list(cipher_text.tokens),
+        context=batch_context,
+        top_n=3,
+        raw_candidates=raw_candidates,
+        scoring_policy=ZenithTransformRankScoringPolicy(
+            quality_score_fn=lambda text: _plaintext_quality_score(text, language),
+            mutation_penalty_fn=_transform_mutation_penalty,
+            selection_score_fn=_transform_selection_score,
+        ),
+    )
 
 
 def _validate_transform_finalists(ranked: list[dict[str, Any]], *, language: str) -> dict[str, Any]:
@@ -1747,11 +1696,6 @@ def _confirm_transform_finalists_rust_batch(
 ) -> dict[str, Any]:
     """Confirm transform finalists using the Rust transform+Zenith batch kernel."""
 
-    from analysis.zenith_fast import zenith_transform_candidates_batch_fast
-
-    pt_alpha = _plaintext_alphabet(language)
-    plaintext_ids = list(range(pt_alpha.size))
-    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in plaintext_ids}
     bin_path = _zenith_native_model_path(language)
     if bin_path is None:
         raise FileNotFoundError(
@@ -1761,6 +1705,13 @@ def _confirm_transform_finalists_rust_batch(
         budget,
         len(cipher_text.tokens) < 600,
         search_profile=_homophonic_search_profile(),
+    )
+    pt_alpha = _plaintext_alphabet(language)
+    batch_context = build_zenith_transform_batch_context(
+        plaintext_symbols=[pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)],
+        model_path=str(bin_path),
+        budget_params=budget_params,
+        threads=_transform_rank_threads(),
     )
     confirmed: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -1781,39 +1732,32 @@ def _confirm_transform_finalists_rust_batch(
             item = missing["item"]
             original_id = str(missing["original_id"])
             seed_offset = int(missing["seed_offset"])
-            item["confirmation"] = {
-                "status": "error",
-                "seed_offset": seed_offset,
-                "error": missing["error"],
-            }
-            item["confirmed_selection_score"] = (
+            fallback_score = (
                 _float_or_none(item.get("validated_selection_score"))
                 or _float_or_none(item.get("selection_score"))
                 or float("-inf")
-            ) - 0.12
+            )
+            confirmation, skipped_record, confirmed_score = missing_pipeline_confirmation_record(
+                item=item,
+                seed_offset=seed_offset,
+                reason=reason,
+                error=str(missing["error"]),
+                fallback_score=fallback_score,
+            )
+            item["confirmation"] = confirmation
+            item["confirmed_selection_score"] = confirmed_score
             confirmed_ids.add(original_id)
-            skipped.append({
-                "candidate_id": item.get("candidate_id"),
-                "family": item.get("family"),
-                "seed_offset": seed_offset,
-                "confirmation_reason": reason,
-                "reason": item["confirmation"]["error"],
-            })
+            skipped.append(skipped_record)
 
         if not payload_candidates:
             return
-        batch = zenith_transform_candidates_batch_fast(
+        batch_request = build_zenith_transform_batch_request(
             tokens=list(cipher_text.tokens),
             candidates=payload_candidates,
-            plaintext_ids=plaintext_ids,
-            id_to_letter=id_to_letter,
-            model_path=bin_path,
-            epochs=budget_params["epochs"],
-            sampler_iterations=budget_params["sampler_iterations"],
-            seeds=[int(seed) for seed in budget_params["seeds"]],
+            context=batch_context,
             top_n=1,
-            threads=_transform_rank_threads(),
         )
+        batch = run_zenith_transform_batch(batch_request)
         for row in batch.get("results", []):
             batch_id = str(row.get("candidate_id"))
             meta = metadata[batch_id]
@@ -1822,25 +1766,22 @@ def _confirm_transform_finalists_rust_batch(
             seed_offset = meta.seed_offset
             confirmation_reason = meta.reason
             if row.get("status") != "completed":
-                item["confirmation"] = {
-                    "status": "error",
-                    "seed_offset": seed_offset,
-                    "error": row.get("reason") or "rust_batch_candidate_failed",
-                    "engine": "rust_batch",
-                }
-                item["confirmed_selection_score"] = (
+                fallback_score = (
                     _float_or_none(item.get("validated_selection_score"))
                     or _float_or_none(item.get("selection_score"))
                     or float("-inf")
-                ) - 0.12
+                )
+                confirmation, skipped_record, confirmed_score = failed_confirmation_record(
+                    row=row,
+                    item=item,
+                    seed_offset=seed_offset,
+                    reason=confirmation_reason,
+                    fallback_score=fallback_score,
+                )
+                item["confirmation"] = confirmation
+                item["confirmed_selection_score"] = confirmed_score
                 confirmed_ids.add(original_id)
-                skipped.append({
-                    "candidate_id": item.get("candidate_id"),
-                    "family": item.get("family"),
-                    "seed_offset": seed_offset,
-                    "confirmation_reason": confirmation_reason,
-                    "reason": item["confirmation"]["error"],
-                })
+                skipped.append(skipped_record)
                 continue
             decryption = str(row.get("decryption") or "")
             anneal_score = _float_or_none(row.get("normalized_score"))
@@ -1859,61 +1800,22 @@ def _confirm_transform_finalists_rust_batch(
             )
             primary_text = str(item.get("decryption") or "")
             distance = _plaintext_distance_ratio(primary_text, decryption)
-            stability_score = max(0.0, 1.0 - distance)
-            confirmation_delta = (
-                confirmation_selection - primary_score
-                if math.isfinite(primary_score) else None
+            confirmation, confirmed_score, confirmed_record = successful_confirmation_record(
+                row=row,
+                item=item,
+                seed_offset=seed_offset,
+                reason=confirmation_reason,
+                budget=budget,
+                anneal_score=anneal_score,
+                quality_score=quality_score,
+                selection_score=confirmation_selection,
+                primary_score=primary_score,
+                distance=distance,
             )
-            penalty = 0.08 * (1.0 - stability_score)
-            reasons: list[str] = []
-            if confirmation_delta is not None and confirmation_delta < -0.08:
-                penalty += 0.08
-                reasons.append("confirmation_selection_dropped")
-            if stability_score < 0.55:
-                penalty += 0.05
-                reasons.append("confirmation_plaintext_unstable")
-            confirmed_score = (
-                min(primary_score, confirmation_selection)
-                if math.isfinite(primary_score) else confirmation_selection
-            )
-            confirmed_score -= penalty
-            confirmation = {
-                "status": "completed",
-                "solver": "zenith_native",
-                "engine": "rust_batch",
-                "seed_offset": seed_offset,
-                "best_seed": row.get("best_seed"),
-                "confirmation_reason": confirmation_reason,
-                "budget": budget,
-                "anneal_score": anneal_score,
-                "plaintext_quality_score": round(quality_score, 6),
-                "selection_score": round(confirmation_selection, 6),
-                "selection_delta_vs_primary": (
-                    round(confirmation_delta, 6)
-                    if confirmation_delta is not None else None
-                ),
-                "plaintext_distance_ratio": round(distance, 6),
-                "stability_score": round(stability_score, 6),
-                "confirmation_penalty": round(penalty, 6),
-                "confirmation_reasons": reasons,
-                "elapsed_seconds": round(float(row.get("elapsed_seconds") or 0.0), 3),
-                "decryption_preview": decryption[:500],
-                "key": {str(k): int(v) for k, v in dict(row.get("key") or {}).items()},
-            }
             item["confirmation"] = confirmation
-            item["confirmed_selection_score"] = round(confirmed_score, 6)
+            item["confirmed_selection_score"] = confirmed_score
             confirmed_ids.add(original_id)
-            confirmed.append({
-                "candidate_id": item.get("candidate_id"),
-                "family": item.get("family"),
-                "seed_offset": seed_offset,
-                "confirmation_reason": confirmation_reason,
-                "selection_score": confirmation["selection_score"],
-                "selection_delta_vs_primary": confirmation["selection_delta_vs_primary"],
-                "stability_score": confirmation["stability_score"],
-                "confirmed_selection_score": item["confirmed_selection_score"],
-                "reasons": reasons,
-            })
+            confirmed.append(confirmed_record)
 
     run_confirmation_batch(finalists, reason="initial_finalist", start_index=0)
     best_confirmed = max(

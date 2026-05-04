@@ -76,12 +76,20 @@ def validate_plaintext_finalist(
         strict_char_coverage=strict["char_coverage"],
         strict_word_hit_score=strict_score,
     )
+    edge = _edge_evidence(
+        letters=letters,
+        segmented_words=segmented.words,
+        word_set=word_set,
+        freq_rank=freq_rank,
+    )
     validation_score = (
         1.55 * strict_score
         + 0.80 * segmented.dict_rate
         + 0.65 * segmentation_quality
+        + 0.45 * edge["edge_score"]
         - 0.40 * pseudo_fraction
         - 0.35 * integrity["damage_score"]
+        - 0.55 * edge["boundary_damage_score"]
     )
     label = _validation_label(validation_score, strict_score, segmented.dict_rate, pseudo_fraction)
     recommendation = _recommendation(label)
@@ -103,6 +111,7 @@ def validate_plaintext_finalist(
         "strict_word_hits": strict["hits"][:20],
         "strict_word_hit_char_coverage": round(strict["char_coverage"], 4),
         "integrity": integrity,
+        "edge": edge,
         "validation_score": round(validation_score, 5),
         "validation_label": label,
         "recommendation": recommendation,
@@ -242,6 +251,68 @@ def _integrity_evidence(
         "singleton_pseudo_count": singleton_count,
         "interpretation": _integrity_interpretation(integrity_label),
     }
+
+
+def _edge_evidence(
+    *,
+    letters: str,
+    segmented_words: list[str],
+    word_set: set[str],
+    freq_rank: dict[str, int] | None,
+) -> dict[str, Any]:
+    """Score whether a finalist has plausible beginning/end boundaries.
+
+    Pure transposition screens can produce cyclically shifted readable basins:
+    they contain many valid word islands but begin mid-word. This lightweight
+    signal gives the validator a way to prefer a clean canonical edge when the
+    main language-model scores are otherwise nearly tied.
+    """
+
+    if not letters or not segmented_words:
+        return {
+            "edge_score": 0.0,
+            "boundary_damage_score": 1.0,
+            "starts_with_dictionary_word": False,
+            "ends_with_dictionary_word": False,
+        }
+    window = min(160, len(letters))
+    prefix = segment_text(letters[:window], word_set, freq_rank=freq_rank)
+    suffix = segment_text(letters[-window:], word_set, freq_rank=freq_rank)
+    prefix_pseudo_char_fraction = _pseudo_char_fraction(prefix.pseudo_words, window)
+    suffix_pseudo_char_fraction = _pseudo_char_fraction(suffix.pseudo_words, window)
+    first_word = segmented_words[0]
+    last_word = segmented_words[-1]
+    starts_clean = first_word in word_set
+    ends_clean = last_word in word_set
+    edge_score = (
+        0.35 * float(starts_clean)
+        + 0.25 * float(ends_clean)
+        + 0.20 * (1.0 - prefix_pseudo_char_fraction)
+        + 0.20 * (1.0 - suffix_pseudo_char_fraction)
+    )
+    boundary_damage = min(
+        1.0,
+        0.45 * float(not starts_clean)
+        + 0.25 * float(not ends_clean)
+        + 0.20 * prefix_pseudo_char_fraction
+        + 0.10 * suffix_pseudo_char_fraction,
+    )
+    return {
+        "edge_score": round(edge_score, 4),
+        "boundary_damage_score": round(boundary_damage, 4),
+        "starts_with_dictionary_word": starts_clean,
+        "ends_with_dictionary_word": ends_clean,
+        "first_segment": first_word,
+        "last_segment": last_word,
+        "prefix_pseudo_char_fraction": round(prefix_pseudo_char_fraction, 4),
+        "suffix_pseudo_char_fraction": round(suffix_pseudo_char_fraction, 4),
+        "prefix_segmented_preview": prefix.segmented[:120],
+        "suffix_segmented_preview": suffix.segmented[-120:],
+    }
+
+
+def _pseudo_char_fraction(pseudo_words: list[str], denominator: int) -> float:
+    return min(1.0, sum(len(word) for word in pseudo_words) / max(1, denominator))
 
 
 def _integrity_label(

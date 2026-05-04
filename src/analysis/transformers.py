@@ -510,7 +510,9 @@ def _turning_mask_route(
     pattern = str(data.get("pattern") or "top_left_quadrant").lower()
     route = str(data.get("route") or "rows").lower()
     direction = str(data.get("direction") or "cw").lower()
-    turns = (0, 1, 2, 3) if direction in {"cw", "clockwise", "right"} else (0, 3, 2, 1)
+    turn_offset = int(data.get("turnOffset") or data.get("turn_offset") or data.get("offset") or 0)
+    base_turns = (0, 1, 2, 3) if direction in {"cw", "clockwise", "right"} else (0, 3, 2, 1)
+    turns = tuple((turn + turn_offset) % 4 for turn in base_turns)
     block_order = _turning_mask_block_order(size, pattern, route, turns)
     if sorted(block_order) != list(range(block_len)):
         raise ValueError("TurningMaskRoute did not produce a block permutation")
@@ -553,6 +555,10 @@ def _block_route(
     block_order = [row * columns + col for row, col in positions if row * columns + col < usable_blocks]
     if sorted(block_order) != list(range(usable_blocks)):
         raise ValueError("BlockRoute did not produce a block permutation")
+    order_offset = int(data.get("orderOffset") or data.get("order_offset") or data.get("offset") or 0)
+    if block_order and order_offset:
+        shift = order_offset % len(block_order)
+        block_order = block_order[shift:] + block_order[:shift]
     new_tokens: list[int] = []
     new_locked: list[bool] = []
     for block_index in block_order:
