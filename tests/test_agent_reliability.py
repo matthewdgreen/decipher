@@ -4426,3 +4426,365 @@ def test_act_swap_decoded_auto_reverts_worsening_swap(monkeypatch):
     assert out["status"] == "reverted"
     assert out["score_delta"]["verdict"] == "worse"
     assert ex.workspace.apply_key("main") == "BD"
+
+
+# ---------------------------------------------------------------------------
+# meta_attest_reading_comprehensibility — Problem 1 fix
+# ---------------------------------------------------------------------------
+
+def test_attest_reading_comprehensibility_records_strong_attestation():
+    """score>=8 with valid excerpt is accepted and unlocks declaration."""
+    # Use a branch with decoded_text long enough to have a 20-char excerpt
+    raw = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 4
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE", "QUICK", "BROWN"},
+        word_list=["THE", "QUICK", "BROWN"],
+        pattern_dict={},
+    )
+    branch = ex.workspace.get_branch("main")
+    # Set a decoded_text with enough letters to extract an excerpt
+    branch.metadata["decoded_text"] = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG"
+
+    out = ex._tool_meta_attest_reading_comprehensibility({
+        "branch": "main",
+        "comprehensibility_score": 9,
+        "verbatim_excerpt": "QUICK BROWN FOX JUMPS OVER",   # 22 letters
+        "reading_notes": "Clearly natural English sentence.",
+    })
+
+    assert out["status"] == "recorded"
+    assert out["strong_attestation"] is True
+    assert ex._reading_attestations["main"]["comprehensibility_score"] == 9
+
+
+def test_attest_reading_comprehensibility_rejects_short_excerpt():
+    """Excerpts with fewer than 20 alphabetic chars are rejected."""
+    raw = "ABCDE"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set=set(),
+        word_list=[],
+        pattern_dict={},
+    )
+    ex.workspace.get_branch("main").metadata["decoded_text"] = "ABCDE ABCDE ABCDE"
+
+    out = ex._tool_meta_attest_reading_comprehensibility({
+        "branch": "main",
+        "comprehensibility_score": 9,
+        "verbatim_excerpt": "ABC",
+    })
+
+    assert out["status"] == "rejected"
+    assert out["reason"] == "excerpt_too_short"
+
+
+def test_attest_reading_comprehensibility_rejects_fabricated_excerpt():
+    """An excerpt that doesn't appear in the decoded text is rejected."""
+    raw = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set=set(),
+        word_list=[],
+        pattern_dict={},
+    )
+    ex.workspace.get_branch("main").metadata["decoded_text"] = (
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    )
+
+    out = ex._tool_meta_attest_reading_comprehensibility({
+        "branch": "main",
+        "comprehensibility_score": 10,
+        # fabricated: these letters don't appear in order in the decoded text
+        "verbatim_excerpt": "ZZZZZZZZZZZZZZZZZZZZZZZZZZ",
+    })
+
+    assert out["status"] == "rejected"
+    assert out["reason"] == "excerpt_not_found"
+
+
+def test_attest_reading_comprehensibility_weak_score_does_not_bypass_gate():
+    """score < 8 is recorded but does NOT bypass the family-coverage gate."""
+    raw = "ABCDEFGHIJKLMNOPQRSTUVWXYZ" * 3
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set=set(),
+        word_list=[],
+        pattern_dict={},
+    )
+    branch = ex.workspace.get_branch("main")
+    branch.metadata["decoded_text"] = "THE QUICK BROWN FOX JUMPS OVER LAZY DOG"
+
+    out = ex._tool_meta_attest_reading_comprehensibility({
+        "branch": "main",
+        "comprehensibility_score": 6,
+        "verbatim_excerpt": "THE QUICK BROWN FOX JUMPS",
+    })
+    assert out["status"] == "recorded"
+    assert out["strong_attestation"] is False
+    assert not ex._has_strong_reading_attestation("main")
+
+
+def test_family_coverage_gate_bypassed_by_strong_attestation():
+    """A strong attestation (score>=8) bypasses the family_coverage_pending gate."""
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[{
+            "record_id": "kryptos_k2",
+            "layer": "standard",
+            "label": "Standard cipher metadata",
+            "contains_cipher_type_hint": True,
+            "text": "K2 is a keyed Vigenere-style polyalphabetic cipher.",
+        }],
+        target_record_ids=["kryptos_k2"],
+    )
+    # Create the hypothesis branch so the coverage gate would normally fire
+    hyp = ex.workspace.fork("hyp_keyed", from_branch="main")
+    hyp.metadata.update({
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "context_supported_mode": True,
+        "mode_status": "active",
+        "evidence_source": "benchmark_context",
+    })
+    ex.workspace.tag("hyp_keyed", "hypothesis")
+
+    # No quagmire search has been run → would normally trigger family_coverage_pending
+    # But we record a strong reading attestation directly on "main"
+    main_branch = ex.workspace.get_branch("main")
+    main_branch.metadata["decoded_text"] = (
+        "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG TODAY"
+    )
+    ex._reading_attestations["main"] = {
+        "branch": "main",
+        "comprehensibility_score": 9,
+        "verbatim_excerpt": "THE QUICK BROWN FOX JUMPS",
+        "iteration": 5,
+    }
+    # _family_coverage_declaration_block should return None (no block)
+    result = ex._family_coverage_declaration_block("main", forced_partial=False)
+    assert result is None
+
+
+def test_family_coverage_gate_mentions_attest_tool_in_suggested_tools():
+    """When family_coverage_pending fires, the error lists meta_attest tool."""
+    ex = _executor_for("ABCABCABCABC", separator=None)
+    ex.benchmark_context = ScopedBenchmarkContext(
+        policy="historical",
+        injected_layers=[{
+            "record_id": "kryptos_k2",
+            "layer": "standard",
+            "label": "Standard cipher metadata",
+            "contains_cipher_type_hint": True,
+            "text": "K2 is a keyed Vigenere-style polyalphabetic cipher.",
+        }],
+        target_record_ids=["kryptos_k2"],
+    )
+    # Create a hypothesis branch with context_supported_mode so the
+    # _context_keyed_tableau_prior fires (agent must declare this explicitly)
+    hyp = ex.workspace.fork("hyp_keyed", from_branch="main")
+    hyp.metadata.update({
+        "cipher_mode": "keyed_tableau_polyalphabetic",
+        "context_supported_mode": True,
+        "mode_status": "active",
+        "evidence_source": "benchmark_context",
+        "hypothesis_notes": "Context says keyed Vigenere.",
+    })
+    ex.workspace.tag("hyp_keyed", "hypothesis")
+    ex.max_iterations = 20
+    ex._current_iteration = 5  # not at limit
+    result = ex._family_coverage_declaration_block("main", forced_partial=False)
+    assert result is not None
+    assert result["reason"] == "family_coverage_pending"
+    assert "meta_attest_reading_comprehensibility" in result["suggested_next_tools"]
+    assert "meta_attest_reading_comprehensibility" in result["note"]
+
+
+# ---------------------------------------------------------------------------
+# coverage_upgrade_of metadata inheritance — Problem 2 fix
+# ---------------------------------------------------------------------------
+
+def test_has_seen_branch_cards_inherits_from_coverage_upgrade_parent():
+    """branch_cards call for parent branch counts for upgrade child."""
+    from artifact.schema import ToolCall
+
+    ex = _executor_for("ABCABCABCABC", separator=None)
+
+    # Create parent quagmire3 branch at iteration 2
+    parent = ex.workspace.fork("quag3_early_1", from_branch="main")
+    parent.metadata["cipher_mode"] = "quagmire3"
+    parent.created_iteration = 2
+
+    # Simulate agent calling workspace_branch_cards for the parent at iteration 4
+    ex.call_log.append(ToolCall(
+        tool_name="workspace_branch_cards",
+        tool_use_id="bc-parent",
+        arguments={"branch": "quag3_early_1"},
+        result="{}",
+        iteration=4,
+    ))
+
+    # Create upgrade branch at iteration 6 (after the branch_cards call)
+    upgrade = ex.workspace.fork("quag3_upgrade_1", from_branch="main")
+    upgrade.metadata["cipher_mode"] = "quagmire3"
+    upgrade.metadata["coverage_upgrade_of"] = "quag3_early_1"
+    upgrade.created_iteration = 6
+
+    # Without fix: would fail because branch_cards was at iter 4 < min_iter 6
+    # With fix: should pass because we use parent's created_iteration = 2
+    assert ex._has_seen_branch_cards("quag3_upgrade_1") is True
+
+
+def test_has_seen_hypothesis_next_steps_inherits_from_coverage_upgrade_parent():
+    """hypothesis_next_steps call for parent counts for upgrade child."""
+    from artifact.schema import ToolCall
+
+    ex = _executor_for("ABCABCABCABC", separator=None)
+
+    parent = ex.workspace.fork("quag3_early_1", from_branch="main")
+    parent.metadata["cipher_mode"] = "quagmire3"
+    parent.created_iteration = 2
+
+    ex.call_log.append(ToolCall(
+        tool_name="workspace_hypothesis_next_steps",
+        tool_use_id="hns-parent",
+        arguments={"branch": "quag3_early_1"},
+        result="{}",
+        iteration=5,
+    ))
+
+    upgrade = ex.workspace.fork("quag3_upgrade_1", from_branch="main")
+    upgrade.metadata["cipher_mode"] = "quagmire3"
+    upgrade.metadata["coverage_upgrade_of"] = "quag3_early_1"
+    upgrade.created_iteration = 7
+
+    assert ex._has_seen_hypothesis_next_steps("quag3_upgrade_1") is True
+
+
+def test_has_seen_branch_cards_no_inherit_without_coverage_upgrade_of():
+    """Without coverage_upgrade_of, original strict min_iteration check applies."""
+    from artifact.schema import ToolCall
+
+    ex = _executor_for("ABCABCABCABC", separator=None)
+
+    branch = ex.workspace.fork("quag3_v2_1", from_branch="main")
+    branch.metadata["cipher_mode"] = "quagmire3"
+    branch.created_iteration = 6  # branch created at iteration 6
+
+    # branch_cards was called at iteration 4 (before branch creation)
+    ex.call_log.append(ToolCall(
+        tool_name="workspace_branch_cards",
+        tool_use_id="bc-before",
+        arguments={"branch": "quag3_v2_1"},
+        result="{}",
+        iteration=4,
+    ))
+
+    # Without coverage_upgrade_of: should still be blocked (call before creation)
+    assert ex._has_seen_branch_cards("quag3_v2_1") is False
+
+
+def test_coverage_upgrade_of_is_set_on_new_branch_when_prior_quag3_exists(monkeypatch):
+    """When a quagmire3 branch exists, new branches get coverage_upgrade_of."""
+    import analysis.polyalphabetic as poly
+
+    ex = _executor_for("ABCABCABC", separator=None)
+
+    # Simulate an existing quagmire3 branch
+    prior = ex.workspace.fork("quag3_early_KEYWORD_CW_1", from_branch="main")
+    prior.metadata["cipher_mode"] = "quagmire3"
+    prior.created_iteration = 3
+
+    # Patch the search to return a fake completed result
+    monkeypatch.setattr(
+        poly,
+        "search_quagmire3_keyword_alphabet",
+        lambda *a, **kw: {
+            "status": "completed",
+            "solver": "python_screen",
+            "top_candidates": [{
+                "score": 0.8,
+                "selection_score": 0.8,
+                "preview": "THE CAT",
+                "plaintext": "THE CAT SAT ON THE MAT",
+                "period": 4,
+                "metadata": {
+                    "alphabet_keyword": "NEWKW",
+                    "cycleword": "NEWCW",
+                    "quagmire_type": "quag3",
+                },
+                "key": "NEWCW",
+                "shifts": [0, 1, 2, 3],
+            }],
+        },
+    )
+
+    result = json.loads(ex.execute("search_quagmire3_keyword_alphabet", {
+        "branch": "main",
+        "engine": "python_screen",
+        "keyword_lengths": [5],
+        "cycleword_lengths": [4],
+        "install_top_n": 1,
+    }))
+
+    installed = result.get("installed_branches", [])
+    assert len(installed) == 1
+    new_branch_name = installed[0]["branch"]
+    new_branch = ex.workspace.get_branch(new_branch_name)
+    assert new_branch.metadata.get("coverage_upgrade_of") == "quag3_early_KEYWORD_CW_1"
+
+
+def test_coverage_upgrade_of_not_set_when_no_prior_quag3_branch(monkeypatch):
+    """If no prior quagmire3 branch exists, coverage_upgrade_of is not set."""
+    import analysis.polyalphabetic as poly
+
+    ex = _executor_for("ABCABCABC", separator=None)
+
+    monkeypatch.setattr(
+        poly,
+        "search_quagmire3_keyword_alphabet",
+        lambda *a, **kw: {
+            "status": "completed",
+            "solver": "python_screen",
+            "top_candidates": [{
+                "score": 0.8,
+                "selection_score": 0.8,
+                "preview": "THE CAT",
+                "plaintext": "THE CAT SAT ON THE MAT",
+                "period": 4,
+                "metadata": {
+                    "alphabet_keyword": "FIRSKW",
+                    "cycleword": "FIRSCW",
+                    "quagmire_type": "quag3",
+                },
+                "key": "FIRSCW",
+                "shifts": [0, 1, 2, 3],
+            }],
+        },
+    )
+
+    result = json.loads(ex.execute("search_quagmire3_keyword_alphabet", {
+        "branch": "main",
+        "engine": "python_screen",
+        "keyword_lengths": [5],
+        "cycleword_lengths": [4],
+        "install_top_n": 1,
+    }))
+
+    installed = result.get("installed_branches", [])
+    assert len(installed) == 1
+    new_branch_name = installed[0]["branch"]
+    new_branch = ex.workspace.get_branch(new_branch_name)
+    assert "coverage_upgrade_of" not in new_branch.metadata

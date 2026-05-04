@@ -1859,6 +1859,58 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             ],
         },
     },
+    {
+        "name": "meta_attest_reading_comprehensibility",
+        "description": (
+            "Record a first-person reading-comprehensibility score for a branch. "
+            "Call this after reading the decoded text end-to-end and judging "
+            "whether it is intelligible prose in the target language. "
+            "A score of 8–10 means the text reads as natural, connected language "
+            "(even if a few words are uncertain). A score below 5 means it is "
+            "garbled or word-island output. "
+            "You MUST supply a verbatim_excerpt: a contiguous sequence of words "
+            "you are quoting directly from the decoded output. The excerpt is "
+            "checked against the branch text as an inflation guard — the call "
+            "fails if the excerpt cannot be found in the decoded text. "
+            "A strong attestation (score >= 8) unlocks declaration even when an "
+            "automated cipher-family coverage check would otherwise block it."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {
+                    "type": "string",
+                    "description": "Branch whose decoded text you are rating.",
+                },
+                "comprehensibility_score": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                    "description": (
+                        "1–10. 8–10 = natural connected prose; 5–7 = partial / "
+                        "mostly intelligible; 1–4 = garbled or word-island output."
+                    ),
+                },
+                "verbatim_excerpt": {
+                    "type": "string",
+                    "description": (
+                        "A contiguous sequence of words quoted verbatim from the "
+                        "decoded branch output (minimum 4 words / 20 characters). "
+                        "Must appear in the decoded text; used to verify the score "
+                        "is not inflated."
+                    ),
+                },
+                "reading_notes": {
+                    "type": "string",
+                    "description": (
+                        "Optional: brief notes on what you read — uncertain words, "
+                        "partial phrases, topic, register, quality observations."
+                    ),
+                },
+            },
+            "required": ["branch", "comprehensibility_score", "verbatim_excerpt"],
+        },
+    },
 ]
 
 
@@ -1919,6 +1971,10 @@ class WorkspaceToolExecutor:
         # they serialize directly into run artifacts and tool results.
         self.repair_agenda: list[dict[str, Any]] = []
         self._next_repair_agenda_id: int = 1
+
+        # Reading-comprehensibility attestations keyed by branch name.
+        # Stored as plain dicts for easy serialization.
+        self._reading_attestations: dict[str, dict[str, Any]] = {}
 
         # In-memory wide-search sessions. These let the agent page through
         # finalist reviews and install selected branches without rerunning an
@@ -4641,8 +4697,19 @@ class WorkspaceToolExecutor:
 
     def _has_seen_branch_cards(self, branch_name: str | None = None) -> bool:
         min_iteration = 0
+        coverage_upgrade_of: str | None = None
         if branch_name and self.workspace.has_branch(branch_name):
-            min_iteration = int(self.workspace.get_branch(branch_name).created_iteration or 0)
+            branch = self.workspace.get_branch(branch_name)
+            coverage_upgrade_of = branch.metadata.get("coverage_upgrade_of") or None
+            if coverage_upgrade_of and self.workspace.has_branch(coverage_upgrade_of):
+                # This branch is a higher-budget upgrade of an earlier branch.
+                # Accept any branch-cards call that happened after the parent
+                # branch was created, even if it referenced the parent by name.
+                min_iteration = int(
+                    self.workspace.get_branch(coverage_upgrade_of).created_iteration or 0
+                )
+            else:
+                min_iteration = int(branch.created_iteration or 0)
         for call in self.call_log:
             if call.tool_name != "workspace_branch_cards":
                 continue
@@ -4650,15 +4717,29 @@ class WorkspaceToolExecutor:
                 continue
             args = call.arguments or {}
             requested_branch = args.get("branch")
-            if branch_name and requested_branch not in {None, "", branch_name}:
+            acceptable_branches: set[str | None] = {None, "", branch_name}
+            if coverage_upgrade_of:
+                acceptable_branches.add(coverage_upgrade_of)
+            if branch_name and requested_branch not in acceptable_branches:
                 continue
             return True
         return False
 
     def _has_seen_hypothesis_next_steps(self, branch_name: str) -> bool:
         min_iteration = 0
+        coverage_upgrade_of: str | None = None
         if self.workspace.has_branch(branch_name):
-            min_iteration = int(self.workspace.get_branch(branch_name).created_iteration or 0)
+            branch = self.workspace.get_branch(branch_name)
+            coverage_upgrade_of = branch.metadata.get("coverage_upgrade_of") or None
+            if coverage_upgrade_of and self.workspace.has_branch(coverage_upgrade_of):
+                # This branch is a higher-budget upgrade of an earlier branch.
+                # Accept any hypothesis_next_steps call that happened after the
+                # parent branch was created, even if it referenced the parent.
+                min_iteration = int(
+                    self.workspace.get_branch(coverage_upgrade_of).created_iteration or 0
+                )
+            else:
+                min_iteration = int(branch.created_iteration or 0)
         for call in self.call_log:
             if call.tool_name != "workspace_hypothesis_next_steps":
                 continue
@@ -4666,7 +4747,10 @@ class WorkspaceToolExecutor:
                 continue
             args = call.arguments or {}
             requested_branch = args.get("branch")
-            if requested_branch not in {None, "", branch_name}:
+            acceptable_branches: set[str | None] = {None, "", branch_name}
+            if coverage_upgrade_of:
+                acceptable_branches.add(coverage_upgrade_of)
+            if requested_branch not in acceptable_branches:
                 continue
             return True
         return False
@@ -4698,6 +4782,11 @@ class WorkspaceToolExecutor:
             ],
         }
 
+    def _has_strong_reading_attestation(self, branch_name: str) -> bool:
+        """Return True if the agent has attested score >= 8 for this branch."""
+        attest = self._reading_attestations.get(branch_name)
+        return attest is not None and int(attest.get("comprehensibility_score", 0)) >= 8
+
     def _family_coverage_declaration_block(
         self,
         branch_name: str,
@@ -4707,6 +4796,11 @@ class WorkspaceToolExecutor:
         if forced_partial:
             return None
         if self.max_iterations is not None and self._current_iteration >= self.max_iterations:
+            return None
+        # A strong first-person reading attestation (score >= 8) is enough
+        # evidence that the text is intelligible English. Skip the automated
+        # family-coverage search requirement when the agent has confirmed it.
+        if self._has_strong_reading_attestation(branch_name):
             return None
 
         branch_reports = []
@@ -4776,11 +4870,17 @@ class WorkspaceToolExecutor:
                 "hypothesis still has required higher-level work pending. "
                 "A bad ordinary Vigenere or word-island branch is not enough "
                 "to stop while keyed-tableau/Quagmire remains untested and "
-                "there is still iteration budget. Take the pending bigger "
-                "swing, then compare branches again."
+                "there is still iteration budget. Two ways to proceed: "
+                "(1) Take the pending bigger swing (search_quagmire3_keyword_alphabet "
+                "at moderate or higher budget), then compare branches again. "
+                "(2) If you have already read the decoded text and it is clear, "
+                "connected prose — call meta_attest_reading_comprehensibility with "
+                "a verbatim excerpt and a score of 8 or higher. A confirmed "
+                "reading bypasses this automated coverage requirement."
             ),
             "suggested_next_tools": [
                 *pending_tools,
+                "meta_attest_reading_comprehensibility",
                 "workspace_hypothesis_next_steps",
                 "workspace_branch_cards",
                 "meta_declare_solution",
@@ -5647,6 +5747,16 @@ class WorkspaceToolExecutor:
             else "diagnostic_only"
         )
 
+        # Find any existing quagmire3 branches that were created before this
+        # search runs. If found, new branches from this (higher-budget) search
+        # are marked as coverage upgrades, which allows the declaration guards
+        # to inherit branch-cards and hypothesis-next-steps reviews made for
+        # the earlier branch rather than requiring a fresh review.
+        existing_quag3_branches = [
+            name for name in self.workspace.branch_names()
+            if self.workspace.get_branch(name).metadata.get("cipher_mode") == "quagmire3"
+        ]
+
         installed: list[dict[str, Any]] = []
         prefix = str(args.get("new_branch_prefix") or "quag3").strip() or "quag3"
         if result.get("status") == "completed" and install_top_n > 0:
@@ -5657,7 +5767,11 @@ class WorkspaceToolExecutor:
                 base_name = f"{prefix}_{alphabet_keyword}_{cycleword}_{idx}"
                 new_name = self._unique_branch_name(base_name)
                 new_branch = self.workspace.fork(new_name, from_branch=branch_name)
+                upgrade_metadata: dict[str, Any] = {}
+                if existing_quag3_branches:
+                    upgrade_metadata["coverage_upgrade_of"] = existing_quag3_branches[0]
                 new_branch.metadata.update({
+                    **upgrade_metadata,
                     "cipher_mode": "quagmire3",
                     "mode_status": "active",
                     "mode_confidence": "medium",
@@ -10060,6 +10174,80 @@ class WorkspaceToolExecutor:
                 "Tool request noted — it will appear in the benchmark report. "
                 "Use run_python as a workaround for this calculation now."
             ),
+        }
+
+    def _tool_meta_attest_reading_comprehensibility(self, args: dict) -> Any:
+        branch = str(args["branch"])
+        score = int(args["comprehensibility_score"])
+        excerpt = str(args.get("verbatim_excerpt") or "").strip()
+        notes = str(args.get("reading_notes") or "")
+
+        if not self.workspace.has_branch(branch):
+            return {"error": f"Branch not found: {branch}"}
+        if not 1 <= score <= 10:
+            return {"error": "comprehensibility_score must be between 1 and 10."}
+
+        # Minimum excerpt length guard: at least 20 characters (letters only)
+        excerpt_letters = "".join(c for c in excerpt.upper() if "A" <= c <= "Z")
+        if len(excerpt_letters) < 20:
+            return {
+                "status": "rejected",
+                "reason": "excerpt_too_short",
+                "note": (
+                    "verbatim_excerpt must contain at least 20 alphabetic characters "
+                    "(letters only). Supply a longer contiguous quote from the "
+                    "decoded text."
+                ),
+            }
+
+        # Verify the excerpt appears in the decoded branch text
+        decoded = self._branch_decoded_text(branch)
+        decoded_letters = "".join(c for c in decoded.upper() if "A" <= c <= "Z")
+        if excerpt_letters not in decoded_letters:
+            return {
+                "status": "rejected",
+                "reason": "excerpt_not_found",
+                "note": (
+                    "The verbatim_excerpt could not be found in the decoded branch "
+                    "text. Quote a contiguous sequence of letters exactly as they "
+                    "appear in the decoded output."
+                ),
+                "excerpt_letters": excerpt_letters[:80],
+                "decoded_sample": decoded_letters[:120],
+            }
+
+        attestation: dict[str, Any] = {
+            "branch": branch,
+            "comprehensibility_score": score,
+            "verbatim_excerpt": excerpt,
+            "excerpt_letters_verified": excerpt_letters[:80],
+            "iteration": self._current_iteration,
+        }
+        if notes:
+            attestation["reading_notes"] = notes
+
+        self._reading_attestations[branch] = attestation
+
+        if score >= 8:
+            return {
+                "status": "recorded",
+                "strong_attestation": True,
+                "note": (
+                    "Strong reading attestation recorded (score ≥ 8). "
+                    "This unlocks declaration even if an automated family-"
+                    "coverage check would otherwise require a broader search. "
+                    "You may now call meta_declare_solution."
+                ),
+                **attestation,
+            }
+        return {
+            "status": "recorded",
+            "strong_attestation": False,
+            "note": (
+                f"Attestation recorded (score={score}). A score of 8 or higher "
+                "is required to bypass the family-coverage declaration gate."
+            ),
+            **attestation,
         }
 
     def _tool_meta_declare_solution(self, args: dict) -> Any:
