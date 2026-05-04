@@ -211,6 +211,24 @@ def test_automated_solver_frontier_suite_loads_current_multifamily_frontier():
     assert by_test["synth_en_120thonb_hidden_route_s16"].raw["decipher_runner_options"]["transform_search"] == "rank"
 
 
+def test_copiale_evidence_packet_loads_compact_track_b_cases():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "copiale_evidence_packet.jsonl"
+
+    cases = load_frontier_suite(suite)
+
+    assert [case.test.test_id for case in cases] == [
+        "copiale_single_B_copiale_p017",
+        "copiale_single_B_copiale_p035",
+        "copiale_single_B_copiale_p052",
+        "copiale_single_B_copiale_p068",
+        "copiale_single_B_copiale_p084",
+    ]
+    assert all(case.synthetic_spec is None for case in cases)
+    assert all(case.test.cipher_system == "copiale" for case in cases)
+    assert all("copiale_evidence" in case.frontier_tags for case in cases)
+    assert all(case.min_char_accuracy_by_solver["decipher-automated"] == 0.0 for case in cases)
+
+
 def test_transform_stress_overnight_suite_loads_broad_synthetic_packet():
     suite = Path(__file__).resolve().parents[1] / "frontier" / "transform_stress_overnight.jsonl"
 

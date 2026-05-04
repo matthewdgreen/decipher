@@ -688,6 +688,13 @@ Additional current read:
   Copiale/German as a separate capability track: stronger German models,
   context-aware modes, nomenclator/codeword behavior, and stricter declaration
   discipline are needed before comparing it to Borg progress.
+- The first Copiale evidence packet now lives at
+  `frontier/copiale_evidence_packet.jsonl` and covers single-page Track B
+  records `p017`, `p035`, `p052`, `p068`, and `p084`. Use
+  `scripts/report_copiale_evidence.py` for ciphertext-only diagnostics before
+  attempting solver repairs; it intentionally reports symbol inventory,
+  distribution flatness, coarse/missing word-boundary pressure, and rare-symbol
+  pressure without consulting plaintext.
 - A no-LLM automated baseline smoke packet for these Milestone 4 cases now
   lives at `frontier/agentic_milestone4_smoke.jsonl`. The opt-in pytest
   command `DECIPHER_RUN_MILESTONE4_SMOKE=1 .venv/bin/python -m pytest

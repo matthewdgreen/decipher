@@ -46,9 +46,10 @@ benchmark issue.
 
 ## Milestone 1: Copiale Evidence Packet
 
-- [ ] Select a compact Copiale packet:
+- [x] Select a compact Copiale packet:
   `copiale_single_B_copiale_p017`, `p035`, `p052`, `p068`, and `p084` if
-  available in the local benchmark checkout.
+  available in the local benchmark checkout. The Decipher-local evidence suite
+  is `frontier/copiale_evidence_packet.jsonl`.
 - [ ] Run automated-only baselines for the packet and store/compare artifacts.
 - [ ] Run agentic baselines without extra manuscript context.
 - [ ] Add an artifact comparison note summarizing:
@@ -61,7 +62,13 @@ benchmark issue.
 
 ## Milestone 2: German Model And Scoring Audit
 
-- [ ] Verify the bundled German corpus/model provenance and normalization.
+- [x] Inventory the currently bundled German resources:
+  `models/ngram5_de.bin` and `models/ngram5_de_500.bin` are redistributable
+  Gutenberg-derived Zenith-format binaries; `resources/dictionaries/german_common.txt`
+  is a 3,057-word support dictionary. This is a starting point, not evidence
+  that the model fits 18th-century Copiale prose.
+- [ ] Verify the bundled German corpus/model provenance and normalization
+  against model metadata during automated runs.
 - [ ] Compare German dictionary scoring, quad scoring, and continuous n-gram
   scoring on known-good German plaintext samples.
 - [ ] Build or select a stronger German continuous model if the current model
@@ -72,10 +79,13 @@ benchmark issue.
 
 ## Milestone 3: Copiale Cipher-System Diagnostics
 
-- [ ] Measure symbol inventory, homophone-family behavior, null candidates,
+- [x] Add a first Copiale-focused diagnostic report that does not require
+  ground truth but can attach post-hoc summary scores when available:
+  `scripts/report_copiale_evidence.py`.
+- [x] Measure first-pass symbol inventory, flatness, rare-symbol pressure, and
+  coarse/missing word-boundary structure per evidence-packet page.
+- [ ] Deepen the report with homophone-family behavior, null candidates,
   repeated-symbol structure, and likely codeword/nomenclator spans per page.
-- [ ] Add a Copiale-focused diagnostic report that does not require ground
-  truth but can be compared against it when available.
 - [ ] Decide whether the automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling

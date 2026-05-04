@@ -124,6 +124,45 @@ transposition+homophonic replay/search, Borg, and Copiale. Some rows include
 `decipher_runner_options` so the suite can exercise row-specific search modes
 such as hidden-transform ranking without applying that cost to every case.
 
+### Copiale Evidence Packet
+
+Compact no-extra-context Copiale/German packet for the generalization track:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/copiale_evidence_packet.jsonl \
+  --solvers decipher \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --homophonic-budget screen \
+  --artifact-dir artifacts/copiale_evidence_packet/automated
+```
+
+The packet covers single-page Track B records `p017`, `p035`, `p052`, `p068`,
+and `p084`. Thresholds are deliberately permissive because this is an evidence
+packet, not a solved-frontier claim. Use it to compare automated baselines,
+agentic no-context runs, and later context-aware Copiale workflows while
+keeping benchmark plaintext confined to post-hoc scoring.
+
+Cipher-side diagnostic report:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_evidence.py \
+  --benchmark-root ../cipher_benchmark/benchmark
+```
+
+Attach completed automated scores after a packet run:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_evidence.py \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --summary-jsonl artifacts/copiale_evidence_packet/automated/summary.jsonl
+```
+
+This report intentionally avoids plaintext. It summarizes symbol inventory,
+distribution flatness, coarse/missing word-boundary pressure, repeated cipher
+words, and rare-symbol pressure before we add Copiale-specific null/codeword
+or nomenclator hypotheses.
+
 ### English Model Comparison Packets
 
 Used to compare continuous English n-gram binaries with identical solver

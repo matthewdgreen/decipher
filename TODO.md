@@ -1439,7 +1439,16 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 - [ ] Add a Copiale/German capability track.
   - Do not treat Copiale as "Borg in German." Current `p068` evidence shows
     scattered German word islands are not enough for declaration.
+  - Current tracking plan: `docs/copiale_generalization_plan.md`.
   - Near-term work:
+    - [x] Add a compact Copiale evidence packet:
+      `frontier/copiale_evidence_packet.jsonl` covers `p017`, `p035`, `p052`,
+      `p068`, and `p084` with deliberately permissive thresholds.
+    - [x] Add a first ciphertext-only diagnostic report:
+      `scripts/report_copiale_evidence.py`. It measures symbol inventory,
+      distribution flatness, rare-symbol pressure, and coarse/missing
+      word-boundary structure; it can attach post-hoc run summaries without
+      using plaintext for diagnosis.
     - Add stronger declaration discipline for Copiale-like no-boundary
       homophonic/nomenclator ciphers: require coherent sentence-level German,
       not just common short words.
@@ -1448,12 +1457,13 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       same-cipher neighboring pages.
     - Improve German continuous n-gram/model support and consider a
       Copiale-specific or 18th-century German model.
-    - Investigate nomenclator/codeword behavior and whether some symbols or
+    - Deepen the diagnostic report to investigate nomenclator/codeword behavior
+      and whether some symbols or
       clusters should be treated as nulls, abbreviations, or multi-letter
       tokens rather than simple letter homophones.
-    - Add a small Copiale-focused artifact packet once the above exists:
-      `p017`, `p035`, `p052`, `p068`, and `p084`, with clean
-      no-extra-context and context-aware modes separated.
+    - Run the Copiale packet in clean no-extra-context and context-aware modes
+      and compare artifacts before adding any stable thresholds to the main
+      frontier suite.
 - [x] Add a full-agent parity smoke suite.
   - [x] Add no-LLM automated baseline packet for the Milestone 4 cases:
     `frontier/agentic_milestone4_smoke.jsonl`.
