@@ -20,7 +20,7 @@ _PRESET_PARAMS: dict[DifficultyPreset, dict] = {
 }
 
 SUPPORTED_LANGUAGES = frozenset({"en", "it", "de", "fr", "la"})
-POLYALPHABETIC_VARIANTS = frozenset({"vigenere", "beaufort", "variant_beaufort", "gronsfeld"})
+POLYALPHABETIC_VARIANTS = frozenset({"vigenere", "beaufort", "variant_beaufort", "gronsfeld", "quagmire3"})
 
 
 @dataclass
@@ -36,6 +36,7 @@ class TestSpec:
     polyalphabetic_variant: str | None = None
     polyalphabetic_key: str | None = None
     polyalphabetic_period: int | None = None
+    polyalphabetic_tableau_keyword: str | None = None
     transform_pipeline: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:

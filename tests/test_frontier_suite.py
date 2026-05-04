@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -23,6 +24,20 @@ assert runner_spec is not None and runner_spec.loader is not None
 frontier_runner = importlib.util.module_from_spec(runner_spec)
 sys.modules[runner_spec.name] = frontier_runner
 runner_spec.loader.exec_module(frontier_runner)
+
+STRESS_GENERATOR_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "scripts"
+    / "generate_transform_stress_suite.py"
+)
+stress_generator_spec = importlib.util.spec_from_file_location(
+    "generate_transform_stress_suite",
+    STRESS_GENERATOR_PATH,
+)
+assert stress_generator_spec is not None and stress_generator_spec.loader is not None
+stress_generator = importlib.util.module_from_spec(stress_generator_spec)
+sys.modules[stress_generator_spec.name] = stress_generator
+stress_generator_spec.loader.exec_module(stress_generator)
 
 
 def test_load_frontier_suite_accepts_benchmark_and_synthetic_cases(tmp_path):
@@ -194,6 +209,42 @@ def test_automated_solver_frontier_suite_loads_current_multifamily_frontier():
     assert "pure_transposition" in by_test["kryptos_k3_transmatrix"].frontier_tags
     assert by_test["synth_en_120thonb_hidden_route_s16"].raw["hide_transform_pipeline_from_solver"] is True
     assert by_test["synth_en_120thonb_hidden_route_s16"].raw["decipher_runner_options"]["transform_search"] == "rank"
+
+
+def test_transform_stress_overnight_suite_loads_broad_synthetic_packet():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "transform_stress_overnight.jsonl"
+
+    cases = load_frontier_suite(suite)
+    family_counts = Counter(case.frontier_tags[1] for case in cases)
+
+    assert len(cases) == 180
+    assert all(case.synthetic_spec is not None for case in cases)
+    assert all("transform_stress_overnight" in case.frontier_tags for case in cases)
+    assert sum(1 for case in cases if case.test.cipher_system == "pure_transposition") == 112
+    assert sum(1 for case in cases if case.test.cipher_system == "transposition_homophonic") == 68
+    assert sum(1 for case in cases if case.raw.get("hide_transform_pipeline_from_solver")) == 144
+    assert sum(
+        1
+        for case in cases
+        if case.raw.get("decipher_runner_options", {}).get("transform_search") == "rank"
+    ) == 32
+    assert len(family_counts) >= 12
+    assert family_counts["matrix_rotate"] >= 20
+    assert family_counts["transmatrix"] >= 20
+    assert family_counts["rail_fence"] >= 20
+
+
+def test_transform_stress_generator_matches_checked_in_suite():
+    suite = Path(__file__).resolve().parents[1] / "frontier" / "transform_stress_overnight.jsonl"
+    checked_in = [
+        json.loads(line)
+        for line in suite.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+    generated = stress_generator.build_cases(max_cases=180)
+
+    assert generated == checked_in
 
 
 def test_evaluate_frontier_rows_applies_thresholds_and_gap_checks():
@@ -1042,6 +1093,10 @@ def test_pure_transposition_ladder_suite_loads():
         "synth_en_144ptnb_block_route_reverse_s47",
         "synth_en_144ptnb_block_route_offset_s48",
         "synth_en_144ptnb_turning_mask_offset_s49",
+        # K3-like entries (~336 chars, TransMatrix)
+        "synth_en_336ptnb_transmatrix_k3a_s50",
+        "synth_en_336ptnb_transmatrix_k3b_s51",
+        "synth_en_336ptnb_transmatrix_k3c_s52",
     ]
     assert all(case.synthetic_spec is not None for case in cases)
     assert all(case.synthetic_spec.transposition_only for case in cases if case.synthetic_spec)

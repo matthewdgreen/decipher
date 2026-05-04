@@ -382,6 +382,11 @@ def _parse_synthetic_spec(data: Any, source: str) -> TestSpec | None:
             if data.get("polyalphabetic_period") is not None
             else None
         ),
+        polyalphabetic_tableau_keyword=(
+            str(data["polyalphabetic_tableau_keyword"])
+            if data.get("polyalphabetic_tableau_keyword") is not None
+            else None
+        ),
         seed=int(data["seed"]) if data.get("seed") is not None else None,
         topic=str(data.get("topic", "general")),
         frequency_style=str(data.get("frequency_style", "normal")),

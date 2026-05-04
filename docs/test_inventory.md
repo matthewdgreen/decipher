@@ -69,6 +69,21 @@ What it checks:
 These are not ordinary unit tests. They are reproducible evaluation runs that
 write artifacts and summaries.
 
+## Evaluation Integrity
+
+Ground truth is grading data, not solving data. Benchmark plaintext, solution
+alignment, char/word accuracy, and branch scores against plaintext must only be
+used after a solver or agent has produced a candidate. They must not influence
+routing, prompt/context construction, declaration gating, branch ranking,
+rescue/retry decisions, repair choices, or tool outputs.
+
+Famous solved ciphers are also a special evaluation hazard. Zodiac, Kryptos,
+Dorabella, and similar public cases remain valuable compatibility fixtures, but
+frontier LLMs may know their plaintexts or common solution methods. Agentic
+capability claims should pair famous cases with non-famous alike-synthetic or
+held-out generated analogs that exercise the same cipher family and workflow
+without public-solution memorization.
+
 ### Agent Model Packet: Borg 0109v
 
 Runs one Borg Latin case across multiple LLM providers/models:
@@ -127,6 +142,40 @@ Also available:
 - `frontier/english_model_eval.jsonl` for a narrower smoke packet.
 - `frontier/english_model_comparison.jsonl` for a broader Zodiac-like packet.
 
+### Pure Transposition Ladder
+
+Synthetic pure-transposition no-boundary packet (all 22 rows, seeds 31–52):
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/pure_transposition_ladder.jsonl \
+  --solvers decipher
+```
+
+K3-like long TransMatrix rows only (three synthetic cases, ~336 chars, seeds 50–52):
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/pure_transposition_ladder.jsonl \
+  --solvers decipher \
+  --tag k3_like
+```
+
+The three K3-like entries use TransMatrix dimensions that tile to 336 characters
+(14×24, 16×21, 12×28) with fresh plaintexts and varying grid aspect ratios.
+They are `shared_hard` rows with a 60% floor, reflecting current TransMatrix
+search breadth for long inputs. The `hide_transform_pipeline_from_solver` flag
+is set so the solver must recover the reading-order permutation blindly.
+
+Individual K3-like row by test ID:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/pure_transposition_ladder.jsonl \
+  --solvers decipher \
+  --test-id synth_en_336ptnb_transmatrix_k3a_s50
+```
+
 ### Transposition/Homophonic Ladder
 
 Synthetic capability ladder for known transform replay:
@@ -155,9 +204,43 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 This is a capability fixture, not raw Z340 discovery: it applies the known
 Zenith transform pipeline before homophonic solving.
 
+### Transform Stress Overnight Suite
+
+Large synthetic packet for broad transform stress testing:
+
+```bash
+DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/transform_stress_overnight.jsonl \
+  --solvers decipher \
+  --allow-generate \
+  --homophonic-budget screen \
+  --artifact-dir artifacts/transform_stress_overnight
+```
+
+The checked-in suite currently contains 180 generated synthetic cases:
+
+- 112 hidden pure-transposition cases scored by the Rust direct transposition
+  screen.
+- 36 known-pipeline transposition+homophonic replay cases.
+- 32 hidden transposition+homophonic candidate-search cases that opt into
+  bounded transform ranking.
+
+Regenerate the packet after changing the transform taxonomy:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/generate_transform_stress_suite.py
+```
+
+This packet is deliberately broader and slower than the frontier suite. Use it
+for overnight sweeps, candidate-family calibration, and stochastic regression
+evidence; do not make it a default commit-time test. The first run may need
+`--allow-generate` to populate `testgen_cache`; later runs can omit that flag
+and stay fully local/no-LLM.
+
 ### Periodic Polyalphabetic Ladder
 
-Synthetic Vigenere-family packet:
+Synthetic Vigenere-family packet (all rows):
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
@@ -165,9 +248,26 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher
 ```
 
-Current rows cover Vigenere, Beaufort, Variant Beaufort, and Gronsfeld. A
-default pytest regression in `tests/test_polyalphabetic.py` runs this packet
-end-to-end from cached local plaintext with no LLM access.
+Current rows cover Vigenere, Beaufort, Variant Beaufort, Gronsfeld, and
+Quagmire III (K2-like). A default pytest regression in
+`tests/test_polyalphabetic.py` runs this packet end-to-end from cached local
+plaintext with no LLM access.
+
+K2-like Quagmire III rows only (three synthetic cases with 8-char cycleword
+and keyed tableau, ~97 chars, seeds 50–52):
+
+```bash
+DECIPHER_KEYED_VIGENERE_MODE=quagmire_search \
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/polyalphabetic_ladder.jsonl \
+  --solvers decipher \
+  --tag k2_like
+```
+
+The `DECIPHER_KEYED_VIGENERE_MODE=quagmire_search` flag activates the
+`search_quagmire3_shotgun_fast` blind solver (cycleword and tableau keyword
+are both unknown). Without this flag the periodic screen runs instead and
+scores partial credit.
 
 Kryptos keyed-Vigenere calibration:
 

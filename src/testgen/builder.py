@@ -5,7 +5,7 @@ import string
 import uuid
 
 from benchmark.loader import BenchmarkTest, TestData
-from analysis.polyalphabetic import encode_plaintext, parse_periodic_key
+from analysis.polyalphabetic import encode_plaintext, encode_quagmire_plaintext, parse_periodic_key
 from analysis.transformers import TransformPipeline, make_inverse_input_for_pipeline
 from testgen.cache import PlaintextCache
 from testgen.plaintext import PlaintextGenerator
@@ -58,14 +58,26 @@ def build_test_case(
         if transform_pipeline is not None and not transform_pipeline.is_empty():
             raise ValueError("polyalphabetic synthetic cases do not yet support transform pipelines")
         variant = spec.polyalphabetic_variant
-        key_text = spec.polyalphabetic_key or _make_periodic_key(
-            rng,
-            variant=variant,
-            period=spec.polyalphabetic_period or 5,
-        )
-        shifts = parse_periodic_key(key=key_text, variant=variant)
         plaintext_continuous = "".join(words)
-        cipher_continuous = encode_plaintext(plaintext_continuous, shifts, variant=variant)
+        if variant == "quagmire3":
+            cycleword = spec.polyalphabetic_key or _make_cycleword(
+                rng, period=spec.polyalphabetic_period or 8
+            )
+            tableau_keyword = spec.polyalphabetic_tableau_keyword or _make_tableau_keyword(rng)
+            cipher_continuous = encode_quagmire_plaintext(
+                plaintext_continuous,
+                cycleword=cycleword,
+                quagmire_type="quag3",
+                alphabet_keyword=tableau_keyword,
+            )
+        else:
+            key_text = spec.polyalphabetic_key or _make_periodic_key(
+                rng,
+                variant=variant,
+                period=spec.polyalphabetic_period or 5,
+            )
+            shifts = parse_periodic_key(key=key_text, variant=variant)
+            cipher_continuous = encode_plaintext(plaintext_continuous, shifts, variant=variant)
         cipher_words = _split_periodic_cipher_words(cipher_continuous, words)
         canonical = _format_canonical(cipher_words, spec.word_boundaries)
         cipher_system = variant
@@ -200,6 +212,21 @@ def _make_periodic_key(rng: random.Random, *, variant: str, period: int) -> str:
     return "".join(rng.choice(letters) for _ in range(period))
 
 
+def _make_cycleword(rng: random.Random, *, period: int) -> str:
+    """Random A-Z cycleword of the given length (no repeated letters, for realism)."""
+    letters = list(string.ascii_uppercase)
+    rng.shuffle(letters)
+    return "".join(letters[:period])
+
+
+def _make_tableau_keyword(rng: random.Random) -> str:
+    """Random A-Z keyword (6–10 letters) for keyed-alphabet Quagmire tableaux."""
+    letters = list(string.ascii_uppercase)
+    rng.shuffle(letters)
+    length = rng.randint(6, 10)
+    return "".join(letters[:length])
+
+
 def _poly_flag(variant: str, word_boundaries: bool) -> str:
     suffix = "wb" if word_boundaries else "nb"
     flags = {
@@ -207,6 +234,7 @@ def _poly_flag(variant: str, word_boundaries: bool) -> str:
         "beaufort": "bf",
         "variant_beaufort": "vbf",
         "gronsfeld": "gr",
+        "quagmire3": "q3",
     }
     return f"{flags.get(variant, 'poly')}{suffix}"
 

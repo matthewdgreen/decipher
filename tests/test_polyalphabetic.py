@@ -817,9 +817,21 @@ def test_polyalphabetic_frontier_ladder_runs_automated_from_cached_plaintext(tmp
         result = runner.run_test(test_data, language=case.synthetic_spec.language)
         rows.append((case.test.test_id, result.solver, result.char_accuracy))
 
-    assert rows == [
+    # Vigenere-family variants are solved exactly by the periodic screen.
+    assert rows[:4] == [
         ("synth_en_120vignb_s21", "periodic_polyalphabetic_screen", 1.0),
         ("synth_en_120bfnb_s22", "periodic_polyalphabetic_screen", 1.0),
         ("synth_en_120vbfnb_s23", "periodic_polyalphabetic_screen", 1.0),
         ("synth_en_120grnb_s24", "periodic_polyalphabetic_screen", 1.0),
     ]
+    # Quagmire III (K2-like) entries are routed through the periodic screen but
+    # the generic chi² solver does not know about keyed alphabets, so accuracy
+    # is partial.  We only assert correct routing and test ID ordering here.
+    q3_ids = [r[0] for r in rows[4:]]
+    q3_solvers = [r[1] for r in rows[4:]]
+    assert q3_ids == [
+        "synth_en_97q3nb_s50",
+        "synth_en_97q3nb_s51",
+        "synth_en_97q3nb_s52",
+    ]
+    assert all(s == "periodic_polyalphabetic_screen" for s in q3_solvers), q3_solvers
