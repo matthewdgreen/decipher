@@ -69,6 +69,8 @@ src/
                             use edit-aware alignment so local drift can resync
   automated/
     runner.py             — Automated-only/no-LLM runner using native solving techniques
+    transform_homophonic_runtime.py — Runtime context/scoring policy helpers
+                            for Rust transform+homophonic probes
   services/
     claude_api.py         — ClaudeAPI: send_message(), estimate_cost(), retry/error helpers
   ocr/
@@ -492,10 +494,17 @@ Vigenere-family metadata through the automated runner. Current scope:
   mechanics, or the low-level Rust batch artifact row formats. The runner
   still supplies the actual quality/selection scoring callbacks. Rank probes
   now call one helper for dedupe, request construction, Rust execution, and
-  row normalization. The same helper also owns the common
+  row normalization; confirmation probes now call one helper for initial and
+  adaptive reruns, unconfirmed penalties, skipped records, and confirmation
+  summary construction. Shared model/budget/thread setup and scoring policy
+  now live in `automated.transform_homophonic_runtime`, so Rust rank and
+  confirmation probes cannot drift in model selection, search budget, thread
+  count, or plaintext quality callbacks. The same runtime module owns the
+  transform+homophonic probe policy and finalist-selection helper. The batch
+  helper also owns the common
   `ZenithTransformBatchContext` / `ZenithTransformBatchRequest` shapes and
-  Rust batch call wrapper; the runner still chooses model path, plaintext
-  alphabet, budget policy, and candidate scoring policy.
+  Rust batch call wrapper; the runner still chooses high-level mode and
+  artifact-level orchestration.
 
 Kryptos status:
 - K1/K2/K3 are imported in `../cipher_benchmark` as solved calibration records.

@@ -12,7 +12,6 @@ import json
 import math
 import os
 import random
-import re
 import time
 import uuid
 from collections import Counter
@@ -35,18 +34,20 @@ from analysis.transform_evaluation import (
     validate_finalist_menu,
 )
 from analysis.transform_homophonic_batch import (
-    build_zenith_transform_batch_request,
-    build_zenith_transform_batch_context,
-    build_confirmation_batch_payload,
-    failed_confirmation_record,
-    missing_pipeline_confirmation_record,
+    run_zenith_transform_confirmation_batches,
     run_zenith_transform_rank_batch,
-    successful_confirmation_record,
-    run_zenith_transform_batch,
-    ZenithTransformRankScoringPolicy,
 )
 from analysis.transformers import TransformPipeline, apply_transform_pipeline
 from analysis.transform_search import inspect_transform_suspicion, screen_transform_candidates
+from automated.transform_homophonic_runtime import (
+    build_transform_homophonic_batch_context,
+    plaintext_quality_score,
+    select_transform_confirmation_finalists,
+    transform_homophonic_scoring_policy,
+    transform_homophonic_probe_policy,
+    transform_mutation_penalty,
+    transform_selection_score,
+)
 from benchmark.loader import TestData, parse_canonical_transcription, resolve_test_language
 from benchmark.scorer import score_decryption
 from models.alphabet import Alphabet
@@ -865,12 +866,12 @@ def _refine_transform_finalist_bakeoff(
                 ground_truth=ground_truth,
             )
             anneal_score = _float_or_none(refined_step.get("anneal_score"))
-            quality_score = _plaintext_quality_score(refined_decryption, language)
+            quality_score = plaintext_quality_score(refined_decryption, language)
             structural_score = _float_or_none(candidate.get("structural_score"))
             if structural_score is None:
                 structural_score = _float_or_none(candidate.get("score"))
-            mutation_penalty = _transform_mutation_penalty(candidate)
-            full_selection_score = _transform_selection_score(
+            mutation_penalty = transform_mutation_penalty(candidate)
+            full_selection_score = transform_selection_score(
                 anneal_score=anneal_score,
                 quality_score=quality_score,
                 structural_score=structural_score,
@@ -1233,9 +1234,9 @@ def _rank_transform_candidates(
                     ground_truth=None,
                 )
                 anneal_score = step.get("anneal_score")
-                quality_score = _plaintext_quality_score(decryption, language)
-                mutation_penalty = _transform_mutation_penalty(candidate)
-                selection_score = _transform_selection_score(
+                quality_score = plaintext_quality_score(decryption, language)
+                mutation_penalty = transform_mutation_penalty(candidate)
+                selection_score = transform_selection_score(
                     anneal_score=anneal_score,
                     quality_score=quality_score,
                     structural_score=candidate.get("score"),
@@ -1342,35 +1343,22 @@ def _rank_transform_candidates_rust_batch(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Evaluate transform finalists with the Rust transform+Zenith batch kernel."""
 
-    bin_path = _zenith_native_model_path(language)
-    if bin_path is None:
-        raise FileNotFoundError(
-            f"zenith_native Rust transform ranking requires an ngram5 model for language={language!r}"
-        )
-    budget_params = _homophonic_budget_params(
-        budget,
-        len(cipher_text.tokens) < 600,
-        search_profile=_homophonic_search_profile(),
+    batch_context = _transform_homophonic_batch_context(
+        cipher_text=cipher_text,
+        language=language,
+        budget=budget,
+        purpose="zenith_native Rust transform ranking",
     )
-
-    threads = _transform_rank_threads()
-    pt_alpha = _plaintext_alphabet(language)
-    batch_context = build_zenith_transform_batch_context(
-        plaintext_symbols=[pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)],
-        model_path=str(bin_path),
-        budget_params=budget_params,
-        threads=threads,
+    probe_policy = transform_homophonic_probe_policy(
+        budget=budget,
+        adaptive_confirmations=0,
     )
     return run_zenith_transform_rank_batch(
         tokens=list(cipher_text.tokens),
         context=batch_context,
-        top_n=3,
+        top_n=probe_policy["rank_top_n"],
         raw_candidates=raw_candidates,
-        scoring_policy=ZenithTransformRankScoringPolicy(
-            quality_score_fn=lambda text: _plaintext_quality_score(text, language),
-            mutation_penalty_fn=_transform_mutation_penalty,
-            selection_score_fn=_transform_selection_score,
-        ),
+        scoring_policy=transform_homophonic_scoring_policy(language),
     )
 
 
@@ -1474,21 +1462,10 @@ def _confirm_transform_finalists(
     pass gives the strongest finalists a fresh probe and ranks by stability.
     """
 
-    finalists = [
-        item for item in ranked
-        if item.get("status") == "completed" and item.get("pipeline")
-    ][:confirm_count]
-    identity = next(
-        (
-            item for item in ranked
-            if item.get("candidate_id") == "000_identity"
-            and item.get("status") == "completed"
-            and item.get("pipeline")
-        ),
-        None,
+    finalists = select_transform_confirmation_finalists(
+        ranked,
+        confirm_count=confirm_count,
     )
-    if identity is not None and all(item.get("candidate_id") != "000_identity" for item in finalists):
-        finalists.append(identity)
     if (
         solver_profile == "zenith_native"
         and _zenith_native_engine() == "rust"
@@ -1530,9 +1507,9 @@ def _confirm_transform_finalists(
                 seed_offset=seed_offset,
             )
             anneal_score = step.get("anneal_score")
-            quality_score = _plaintext_quality_score(decryption, language)
-            mutation_penalty = _transform_mutation_penalty(item)
-            confirmation_selection = _transform_selection_score(
+            quality_score = plaintext_quality_score(decryption, language)
+            mutation_penalty = transform_mutation_penalty(item)
+            confirmation_selection = transform_selection_score(
                 anneal_score=anneal_score,
                 quality_score=quality_score,
                 structural_score=item.get("structural_score"),
@@ -1696,195 +1673,48 @@ def _confirm_transform_finalists_rust_batch(
 ) -> dict[str, Any]:
     """Confirm transform finalists using the Rust transform+Zenith batch kernel."""
 
-    bin_path = _zenith_native_model_path(language)
-    if bin_path is None:
-        raise FileNotFoundError(
-            f"Rust transform confirmation requires an ngram5 model for language={language!r}"
-        )
-    budget_params = _homophonic_budget_params(
-        budget,
-        len(cipher_text.tokens) < 600,
-        search_profile=_homophonic_search_profile(),
+    batch_context = _transform_homophonic_batch_context(
+        cipher_text=cipher_text,
+        language=language,
+        budget=budget,
+        purpose="Rust transform confirmation",
     )
+    probe_policy = transform_homophonic_probe_policy(
+        budget=budget,
+        adaptive_confirmations=adaptive_confirmations,
+    )
+    return run_zenith_transform_confirmation_batches(
+        tokens=list(cipher_text.tokens),
+        ranked=ranked,
+        finalists=finalists,
+        context=batch_context,
+        scoring_policy=transform_homophonic_scoring_policy(language),
+        confirmation_policy=probe_policy["confirmation_policy"],
+        plaintext_distance_fn=_plaintext_distance_ratio,
+    )
+
+
+def _transform_homophonic_batch_context(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    budget: str,
+    purpose: str,
+) -> Any:
+    """Build shared model/budget/thread context for Rust transform+Zenith probes."""
+
     pt_alpha = _plaintext_alphabet(language)
-    batch_context = build_zenith_transform_batch_context(
+    return build_transform_homophonic_batch_context(
+        language=language,
+        token_count=len(cipher_text.tokens),
+        budget=budget,
+        model_path=_zenith_native_model_path(language),
         plaintext_symbols=[pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)],
-        model_path=str(bin_path),
-        budget_params=budget_params,
+        search_profile=_homophonic_search_profile(),
+        budget_params_fn=_homophonic_budget_params,
         threads=_transform_rank_threads(),
+        purpose=purpose,
     )
-    confirmed: list[dict[str, Any]] = []
-    skipped: list[dict[str, Any]] = []
-    confirmed_ids: set[str] = set()
-
-    def run_confirmation_batch(
-        items: list[dict[str, Any]],
-        *,
-        reason: str,
-        start_index: int,
-    ) -> None:
-        payload_candidates, metadata, missing_pipeline = build_confirmation_batch_payload(
-            items,
-            reason=reason,
-            start_index=start_index,
-        )
-        for missing in missing_pipeline:
-            item = missing["item"]
-            original_id = str(missing["original_id"])
-            seed_offset = int(missing["seed_offset"])
-            fallback_score = (
-                _float_or_none(item.get("validated_selection_score"))
-                or _float_or_none(item.get("selection_score"))
-                or float("-inf")
-            )
-            confirmation, skipped_record, confirmed_score = missing_pipeline_confirmation_record(
-                item=item,
-                seed_offset=seed_offset,
-                reason=reason,
-                error=str(missing["error"]),
-                fallback_score=fallback_score,
-            )
-            item["confirmation"] = confirmation
-            item["confirmed_selection_score"] = confirmed_score
-            confirmed_ids.add(original_id)
-            skipped.append(skipped_record)
-
-        if not payload_candidates:
-            return
-        batch_request = build_zenith_transform_batch_request(
-            tokens=list(cipher_text.tokens),
-            candidates=payload_candidates,
-            context=batch_context,
-            top_n=1,
-        )
-        batch = run_zenith_transform_batch(batch_request)
-        for row in batch.get("results", []):
-            batch_id = str(row.get("candidate_id"))
-            meta = metadata[batch_id]
-            item = meta.item
-            original_id = meta.original_id
-            seed_offset = meta.seed_offset
-            confirmation_reason = meta.reason
-            if row.get("status") != "completed":
-                fallback_score = (
-                    _float_or_none(item.get("validated_selection_score"))
-                    or _float_or_none(item.get("selection_score"))
-                    or float("-inf")
-                )
-                confirmation, skipped_record, confirmed_score = failed_confirmation_record(
-                    row=row,
-                    item=item,
-                    seed_offset=seed_offset,
-                    reason=confirmation_reason,
-                    fallback_score=fallback_score,
-                )
-                item["confirmation"] = confirmation
-                item["confirmed_selection_score"] = confirmed_score
-                confirmed_ids.add(original_id)
-                skipped.append(skipped_record)
-                continue
-            decryption = str(row.get("decryption") or "")
-            anneal_score = _float_or_none(row.get("normalized_score"))
-            quality_score = _plaintext_quality_score(decryption, language)
-            mutation_penalty = _transform_mutation_penalty(item)
-            confirmation_selection = _transform_selection_score(
-                anneal_score=anneal_score,
-                quality_score=quality_score,
-                structural_score=item.get("structural_score"),
-                mutation_penalty=mutation_penalty,
-            )
-            primary_score = (
-                _float_or_none(item.get("validated_selection_score"))
-                or _float_or_none(item.get("selection_score"))
-                or float("-inf")
-            )
-            primary_text = str(item.get("decryption") or "")
-            distance = _plaintext_distance_ratio(primary_text, decryption)
-            confirmation, confirmed_score, confirmed_record = successful_confirmation_record(
-                row=row,
-                item=item,
-                seed_offset=seed_offset,
-                reason=confirmation_reason,
-                budget=budget,
-                anneal_score=anneal_score,
-                quality_score=quality_score,
-                selection_score=confirmation_selection,
-                primary_score=primary_score,
-                distance=distance,
-            )
-            item["confirmation"] = confirmation
-            item["confirmed_selection_score"] = confirmed_score
-            confirmed_ids.add(original_id)
-            confirmed.append(confirmed_record)
-
-    run_confirmation_batch(finalists, reason="initial_finalist", start_index=0)
-    best_confirmed = max(
-        (
-            _float_or_none(item.get("confirmed_selection_score")) or float("-inf")
-            for item in ranked
-            if str(item.get("candidate_id")) in confirmed_ids
-        ),
-        default=float("-inf"),
-    )
-    adaptive_margin = 0.04
-    adaptive_items: list[dict[str, Any]] = []
-    max_adaptive_confirmations = max(0, adaptive_confirmations)
-    if max_adaptive_confirmations > 0 and math.isfinite(best_confirmed):
-        for item in ranked:
-            if len(adaptive_items) >= max_adaptive_confirmations:
-                break
-            candidate_id = str(item.get("candidate_id"))
-            if candidate_id in confirmed_ids:
-                continue
-            base_score = (
-                _float_or_none(item.get("validated_selection_score"))
-                or _float_or_none(item.get("selection_score"))
-                or float("-inf")
-            )
-            if base_score < best_confirmed - adaptive_margin:
-                continue
-            adaptive_items.append(item)
-    run_confirmation_batch(
-        adaptive_items,
-        reason="adaptive_near_margin",
-        start_index=len(confirmed_ids),
-    )
-
-    unconfirmed_penalty = 0.12
-    unconfirmed_count = 0
-    for item in ranked:
-        candidate_id = str(item.get("candidate_id"))
-        if candidate_id in confirmed_ids:
-            continue
-        base_score = (
-            _float_or_none(item.get("validated_selection_score"))
-            or _float_or_none(item.get("selection_score"))
-            or float("-inf")
-        )
-        item["confirmation"] = {
-            "status": "not_run",
-            "reason": "outside_confirmation_budget",
-            "unconfirmed_penalty": unconfirmed_penalty,
-        }
-        item["confirmed_selection_score"] = round(base_score - unconfirmed_penalty, 6)
-        unconfirmed_count += 1
-    return {
-        "stage": "independent_seed_confirmation",
-        "engine": "rust_batch",
-        "confirmed_candidate_count": len(confirmed),
-        "adaptive_confirmed_candidate_count": len(adaptive_items),
-        "adaptive_margin": adaptive_margin,
-        "unconfirmed_candidate_count": unconfirmed_count,
-        "unconfirmed_penalty": unconfirmed_penalty,
-        "skipped_candidates": skipped,
-        "confirmed_candidates": confirmed,
-        "policy": (
-            "Stage C reruns the top transform finalists with independent seed "
-            "offsets using the Rust transform+Zenith batch kernel, always "
-            "includes the identity control when available, and rewards "
-            "candidates whose scores and plaintexts are stable across probes."
-        ),
-    }
 
 
 def _transform_final_sort_key(item: dict[str, Any]) -> tuple[bool, bool, float, float, float]:
@@ -2173,32 +2003,6 @@ def _transform_family_gate(candidate: dict[str, Any]) -> dict[str, Any]:
         "required_identity_margin": required_identity_margin,
         "min_stability": min_stability,
     }
-
-
-def _transform_mutation_penalty(candidate: dict[str, Any]) -> float:
-    if candidate.get("provenance") == "local_mutation":
-        return 0.08
-    if candidate.get("provenance") == "program_search":
-        params = candidate.get("params") if isinstance(candidate.get("params"), dict) else {}
-        if params.get("template") in {"banded_ndown_constructed", "route_repair_constructed"}:
-            return 0.0
-        return min(0.12, 0.02 * int(params.get("program_depth") or 1))
-    return 0.0
-
-
-def _transform_selection_score(
-    *,
-    anneal_score: Any,
-    quality_score: float,
-    structural_score: Any,
-    mutation_penalty: float,
-) -> float:
-    return (
-        float(anneal_score or float("-inf"))
-        + quality_score * 0.05
-        + float(structural_score or 0.0) * 0.03
-        - mutation_penalty
-    )
 
 
 def _float_or_none(value: Any) -> float | None:
@@ -2606,30 +2410,6 @@ def _transform_triage_sort_key(candidate: dict[str, Any]) -> tuple[float, float,
         structural,
         nontrivial,
     )
-
-
-def _plaintext_quality_score(text: str, language: str) -> float:
-    """Tiny no-boundary readability signal for transform finalist ranking."""
-
-    cleaned = "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
-    if len(cleaned) < 20:
-        return 0.0
-    if language.lower().startswith("en"):
-        fragments = (
-            "THE", "AND", "ING", "ION", "ENT", "THAT", "WITH", "HER", "HIS",
-            "FOR", "YOU", "NOT", "WAS", "HAVE", "THIS", "ARE",
-        )
-    else:
-        fragments = ("THE", "AND", "ING", "ION", "ENT")
-    fragment_hits = sum(cleaned.count(fragment) for fragment in fragments)
-    fragment_rate = min(1.0, fragment_hits / max(1, len(cleaned) / 18))
-    vowel_rate = sum(1 for ch in cleaned if ch in "AEIOU") / len(cleaned)
-    vowel_score = max(0.0, 1.0 - abs(vowel_rate - 0.38) / 0.25)
-    repeat_penalty = max(
-        (len(match.group(0)) - 2) / len(cleaned)
-        for match in re.finditer(r"([A-Z])\1{2,}", cleaned)
-    ) if re.search(r"([A-Z])\1{2,}", cleaned) else 0.0
-    return max(0.0, fragment_rate * 0.7 + vowel_score * 0.3 - repeat_penalty)
 
 
 def format_automated_preflight_for_llm(

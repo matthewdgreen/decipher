@@ -577,9 +577,27 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       construction, Rust batch execution, elapsed-time attachment, and result
       normalization. The runner still supplies model/budget context and
       scoring policy; Z340 rank smoke remains 96.2%.
-    - [ ] Continue tightening the interface by moving higher-level Rust batch
-      orchestration out of `automated.runner`: model/budget setup,
-      shared scoring-policy packaging, and probe policy selection.
+    - [x] Move Rust confirmation orchestration behind one helper.
+      `run_zenith_transform_confirmation_batches` now owns initial finalist
+      reruns, adaptive near-margin reruns, missing/failed confirmation records,
+      unconfirmed penalties, and the confirmation summary block. The runner
+      still supplies model/budget context plus scoring/distance callbacks; Z340
+      rank smoke remains 96.2%.
+    - [x] Centralize Rust transform+homophonic setup and scoring policy inside
+      the runner. Rank and confirmation now share one model/budget/thread
+      context helper and one scoring-policy helper, so they cannot drift in
+      model selection, search budget, thread count, or plaintext-quality
+      callbacks. Z340 rank smoke remains 96.2%.
+    - [x] Promote Rust transform+homophonic runtime setup/scoring into a
+      non-runner module. `automated.transform_homophonic_runtime` now owns the
+      model/budget/thread context wrapper plus plaintext-quality, mutation
+      penalty, and selection-score policy used by rank and confirmation probes.
+      Z340 rank smoke remains 96.2%.
+    - [x] Final cleanup pass: consolidate remaining probe policy selection
+      knobs and run a broader transform smoke. The runtime module now owns
+      rank-top-N/confirmation policy packaging plus finalist selection with
+      identity control; the transform ladder smoke passed 8/8 with 99.8%
+      average character accuracy, and Z340 rank smoke remains 96.2%.
     - Architecture cleanup target: one Rust-backed evaluation API should
       handle pure-transposition direct scoring, transform+homophonic finalist
       validation, and future K3-style extensions without forking candidate

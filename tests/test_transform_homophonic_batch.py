@@ -17,9 +17,11 @@ from analysis.transform_homophonic_batch import (
     normalize_rust_rank_batch_results,
     rust_rank_candidate_record,
     run_zenith_transform_batch,
+    run_zenith_transform_confirmation_batches,
     run_zenith_transform_rank_batch,
     successful_confirmation_record,
     transform_pipeline_key,
+    ZenithTransformConfirmationPolicy,
     ZenithTransformRankScoringPolicy,
 )
 
@@ -373,3 +375,110 @@ def test_confirmation_record_helpers_shape_success_and_failures():
     assert confirmed_score == -5.008
     assert summary["confirmed_selection_score"] == confirmed_score
     assert summary["reasons"] == []
+
+
+def test_run_zenith_transform_confirmation_batches_mutates_candidates_and_adapts():
+    context = build_zenith_transform_batch_context(
+        plaintext_symbols=["A", "B"],
+        model_path="/tmp/model.bin",
+        budget_params={"epochs": 1, "sampler_iterations": 2, "seeds": [1]},
+        threads=2,
+    )
+    ranked = [
+        {
+            "candidate_id": "top",
+            "family": "route",
+            "pipeline": {"steps": []},
+            "selection_score": -5.0,
+            "validated_selection_score": -4.9,
+            "structural_score": 0.6,
+            "decryption": "AAAA",
+        },
+        {
+            "candidate_id": "missing",
+            "family": "route",
+            "selection_score": -4.95,
+            "validated_selection_score": -4.93,
+        },
+        {
+            "candidate_id": "near",
+            "family": "route",
+            "pipeline": {"steps": [{"name": "Reverse"}]},
+            "selection_score": -4.91,
+            "validated_selection_score": -4.91,
+            "structural_score": 0.4,
+            "decryption": "BBBB",
+        },
+        {
+            "candidate_id": "far",
+            "family": "route",
+            "pipeline": {"steps": [{"name": "Rows"}]},
+            "selection_score": -6.0,
+            "validated_selection_score": -6.0,
+        },
+    ]
+    finalists = [ranked[0], ranked[1]]
+    batch_calls = []
+
+    def fake_runner(**kwargs):
+        batch_calls.append(kwargs)
+        results = []
+        for candidate in kwargs["candidates"]:
+            candidate_id = candidate["candidate_id"]
+            if candidate_id.startswith("top__confirm"):
+                results.append({
+                    "candidate_id": candidate_id,
+                    "status": "completed",
+                    "decryption": "AAAB",
+                    "normalized_score": -5.0,
+                    "best_seed": 1,
+                })
+            elif candidate_id.startswith("near__confirm"):
+                results.append({
+                    "candidate_id": candidate_id,
+                    "status": "completed",
+                    "decryption": "BBBB",
+                    "normalized_score": -4.8,
+                    "best_seed": 2,
+                })
+            else:
+                results.append({
+                    "candidate_id": candidate_id,
+                    "status": "error",
+                    "reason": "unexpected",
+                })
+        return {"results": results, "elapsed_seconds": 1.0, "threads": 2, "seed_count": 1}
+
+    summary = run_zenith_transform_confirmation_batches(
+        tokens=[0, 1, 0, 1],
+        ranked=ranked,
+        finalists=finalists,
+        context=context,
+        scoring_policy=ZenithTransformRankScoringPolicy(
+            quality_score_fn=lambda text: 0.5 if text == "AAAB" else 0.7,
+            mutation_penalty_fn=lambda _candidate: 0.0,
+            selection_score_fn=lambda **kwargs: kwargs["anneal_score"] + kwargs["quality_score"],
+        ),
+        confirmation_policy=ZenithTransformConfirmationPolicy(
+            budget="screen",
+            adaptive_confirmations=1,
+            adaptive_margin=0.2,
+            unconfirmed_penalty=0.12,
+        ),
+        plaintext_distance_fn=lambda left, right: 0.25 if left != right else 0.0,
+        batch_runner=fake_runner,
+    )
+
+    assert len(batch_calls) == 2
+    assert [item["candidate_id"] for item in batch_calls[0]["candidates"]] == ["top__confirm_10000"]
+    assert [item["candidate_id"] for item in batch_calls[1]["candidates"]] == ["near__confirm_12000"]
+    assert ranked[0]["confirmation"]["status"] == "completed"
+    assert ranked[0]["confirmation"]["confirmation_reason"] == "initial_finalist"
+    assert ranked[1]["confirmation"]["status"] == "error"
+    assert ranked[1]["confirmation"]["error"] == "missing transform pipeline"
+    assert ranked[2]["confirmation"]["confirmation_reason"] == "adaptive_near_margin"
+    assert ranked[3]["confirmation"]["status"] == "not_run"
+    assert summary["confirmed_candidate_count"] == 2
+    assert summary["adaptive_confirmed_candidate_count"] == 1
+    assert summary["unconfirmed_candidate_count"] == 1
+    assert summary["skipped_candidates"][0]["candidate_id"] == "missing"
