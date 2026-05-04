@@ -78,9 +78,20 @@ class ClaudeAPI:
             "messages": messages,
         }
         if system:
-            kwargs["system"] = system
+            # Wrap as a content block with ephemeral cache_control so that
+            # Anthropic prompt caching activates on the system prompt.
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
         if tools:
-            kwargs["tools"] = tools
+            # Add ephemeral cache_control to the last tool so that the entire
+            # tool list (including the system prompt above) is eligible for
+            # prompt-cache hits on subsequent turns.
+            cached_tools: list[dict[str, Any]] = list(tools)
+            last = dict(cached_tools[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            cached_tools[-1] = last
+            kwargs["tools"] = cached_tools
         return self._create_with_retry(kwargs)
 
     def _create_with_retry(
@@ -124,9 +135,15 @@ class ClaudeAPI:
             "messages": messages,
         }
         if system:
-            kwargs["system"] = system
+            kwargs["system"] = [
+                {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+            ]
         if tools:
-            kwargs["tools"] = tools
+            cached_tools: list[dict[str, Any]] = list(tools)
+            last = dict(cached_tools[-1])
+            last["cache_control"] = {"type": "ephemeral"}
+            cached_tools[-1] = last
+            kwargs["tools"] = cached_tools
         try:
             with self.client.messages.stream(**kwargs) as stream:
                 for event in stream:

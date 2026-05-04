@@ -1705,12 +1705,33 @@ def _install_automated_preflight_branch(
     automated_preflight: dict[str, Any],
 ) -> None:
     key = automated_preflight.get("key") or {}
-    if not isinstance(key, dict) or not key:
+    decryption = str(automated_preflight.get("decryption") or "").strip()
+    has_key = isinstance(key, dict) and bool(key)
+    has_decryption = bool(decryption)
+    if not has_key and not has_decryption:
         return
     try:
         workspace.fork("automated_preflight", from_branch="main")
-        parsed_key = {int(ct_id): int(pt_id) for ct_id, pt_id in key.items()}
-        workspace.set_full_key("automated_preflight", parsed_key)
+        if has_key:
+            parsed_key = {int(ct_id): int(pt_id) for ct_id, pt_id in key.items()}
+            workspace.set_full_key("automated_preflight", parsed_key)
+        else:
+            # Pure transposition: no substitution key, but we may have a pipeline.
+            # Extract the pipeline from the most recent step's selected candidate.
+            pipeline = None
+            for step in reversed(automated_preflight.get("steps") or []):
+                selected = step.get("selected") or {}
+                if selected.get("pipeline"):
+                    pipeline = selected["pipeline"]
+                    break
+            if pipeline is not None:
+                workspace.apply_transform_pipeline("automated_preflight", pipeline)
+            # Store the decryption string in branch metadata so that
+            # _decoded_text_for_panel and BranchSnapshot.decryption return the
+            # correct plaintext even though the substitution key is empty.
+            if has_decryption:
+                branch = workspace.get_branch("automated_preflight")
+                branch.metadata["decoded_text"] = decryption
         workspace.tag("automated_preflight", "automated_preflight")
         workspace.tag("automated_preflight", "no_llm")
     except Exception:  # noqa: BLE001

@@ -3066,6 +3066,61 @@ def test_automated_preflight_context_and_branch_available_on_first_turn():
     assert "no_llm" in branch.tags
 
 
+def test_pure_transposition_preflight_installs_branch_with_decryption():
+    """Pure transposition returns empty key but a non-empty decryption string.
+    The automated_preflight branch should still be created and carry the
+    decryption text so BranchSnapshot.decryption is non-empty.
+    """
+    # 3-token cipher: CBA — reverse is ABC
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="CBA", alphabet=alpha, separator=None)
+    api = _FakeAPI()
+
+    # Pipeline that reverses the 3 tokens: [2,1,0] → indices [2,1,0]
+    reverse_pipeline = {
+        "steps": [{"name": "Reverse", "data": {"rangeStart": 0, "rangeEnd": 2}}]
+    }
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="unit_transpos",
+        automated_preflight={
+            "enabled": True,
+            "run_mode": "automated_only",
+            "status": "completed",
+            "solver": "pure_transposition_screen_rust",
+            "summary": "Automated native solver preflight: ABC",
+            "key": {},  # pure transposition — no substitution key
+            "decryption": "ABC",
+            "steps": [
+                {
+                    "name": "screen_pure_transposition",
+                    "selected": {"pipeline": reverse_pipeline},
+                }
+            ],
+            "estimated_cost_usd": 0.0,
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+        },
+    )
+
+    branch = next(
+        (b for b in artifact.branches if b.name == "automated_preflight"), None
+    )
+    assert branch is not None, "automated_preflight branch should be installed"
+    assert "no_llm" in branch.tags
+    assert branch.decryption == "ABC", (
+        f"decryption should be 'ABC', got {branch.decryption!r}"
+    )
+    # token_order should reflect the reverse pipeline
+    assert branch.token_order == [2, 1, 0], (
+        f"token_order should be [2,1,0], got {branch.token_order}"
+    )
+
+
 class _ToolThenErrorAPI:
     model = "claude-sonnet-4-6"
 
