@@ -111,10 +111,13 @@ above should also be kept current.
 post-run diagnostic tool, and `--analyze` on agentic CLI runs writes sibling
 `.analyzed.md` reports using that script. When artifacts gain new fields,
 branch metadata, tool result shapes, repair agendas, hypothesis state, or
-failure modes, update the analyzer so it surfaces the useful evidence. If an
-LLM analysis misses an obvious lesson because the prompt packet lacked data,
-fix the analyzer packet and add/adjust tests rather than relying on ad hoc
-manual inspection.
+failure modes, update the analyzer so it surfaces the useful evidence. This
+includes runtime evidence such as `tool_calls[].elapsed_ms`: long search calls
+may be expected, but unexpectedly slow observe/act/inspect/score tools should
+be visible in both the human summary and LLM analysis packet. If an LLM
+analysis misses an obvious lesson because the prompt packet lacked data, fix
+the analyzer packet and add/adjust tests rather than relying on ad hoc manual
+inspection.
 
 ---
 

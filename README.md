@@ -593,10 +593,12 @@ PYTHONPATH=src .venv/bin/python scripts/inspect_artifact.py \
 
 Add `--analyze` to the inspector to ask an LLM to review any saved artifact and
 explain success or failure modes. The analysis packet includes the tool
-timeline, branch scores, failed tool calls, automated preflight, repair agenda,
-non-LLM analyzer findings, and decrypt previews. Reported `char`/`word` scores
-are explicitly post-hoc comparisons to known benchmark plaintext, not
-runtime-visible confidence.
+timeline, per-tool timing from `elapsed_ms`, branch scores, failed tool calls,
+automated preflight, repair agenda, non-LLM analyzer findings, and decrypt
+previews. Reported `char`/`word` scores are explicitly post-hoc comparisons to
+known benchmark plaintext, not runtime-visible confidence. Older artifacts may
+not have nonzero per-tool timing; the inspector will say so when timing is
+unavailable.
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/inspect_artifact.py \

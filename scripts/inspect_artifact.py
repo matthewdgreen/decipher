@@ -161,6 +161,20 @@ def _is_search_tool(name: str) -> bool:
     return name.startswith("search_")
 
 
+_EXPECTED_SLOW_TOOL_PREFIXES = (
+    "search_",
+)
+_EXPECTED_SLOW_TOOL_NAMES = {
+    "run_python",
+}
+_UNEXPECTED_SLOW_THRESHOLD_MS = 5_000
+_SLOW_THRESHOLD_MS = 30_000
+
+
+def _tool_expected_to_take_time(name: str) -> bool:
+    return name in _EXPECTED_SLOW_TOOL_NAMES or name.startswith(_EXPECTED_SLOW_TOOL_PREFIXES)
+
+
 def _result_dict_from_call(call: dict[str, Any]) -> dict[str, Any]:
     result = call.get("result")
     if isinstance(result, dict):
@@ -298,6 +312,126 @@ def format_tool_summary(timeline: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def analyze_tool_timing(artifact: dict[str, Any]) -> dict[str, Any]:
+    """Summarize per-tool elapsed_ms data from the artifact."""
+    calls = artifact.get("tool_calls") or []
+    timed_calls = [
+        call for call in calls
+        if isinstance(call, dict) and int(call.get("elapsed_ms") or 0) > 0
+    ]
+    if not timed_calls:
+        return {
+            "has_timing": False,
+            "message": "No nonzero per-tool elapsed_ms values found; this may be an older artifact.",
+            "total_tool_ms": 0,
+            "slow_tool_calls": [],
+            "unexpected_slow_tool_calls": [],
+            "top_tool_calls": [],
+            "by_tool": [],
+        }
+
+    by_tool: dict[str, dict[str, Any]] = {}
+    slow = []
+    unexpected = []
+    for call in timed_calls:
+        name = str(call.get("tool_name") or "")
+        elapsed_ms = int(call.get("elapsed_ms") or 0)
+        bucket = by_tool.setdefault(name, {"tool": name, "count": 0, "total_ms": 0, "max_ms": 0})
+        bucket["count"] += 1
+        bucket["total_ms"] += elapsed_ms
+        bucket["max_ms"] = max(bucket["max_ms"], elapsed_ms)
+        row = {
+            "iteration": call.get("iteration"),
+            "tool": name,
+            "elapsed_ms": elapsed_ms,
+            "elapsed_seconds": round(elapsed_ms / 1000.0, 3),
+            "expected_slow": _tool_expected_to_take_time(name),
+            "arguments": _trim_obj(call.get("arguments") or {}, 700),
+        }
+        if elapsed_ms >= _SLOW_THRESHOLD_MS:
+            slow.append(row)
+        if (
+            elapsed_ms >= _UNEXPECTED_SLOW_THRESHOLD_MS
+            and not _tool_expected_to_take_time(name)
+        ):
+            unexpected.append(row)
+
+    by_tool_rows = []
+    for row in by_tool.values():
+        by_tool_rows.append({
+            **row,
+            "total_seconds": round(row["total_ms"] / 1000.0, 3),
+            "max_seconds": round(row["max_ms"] / 1000.0, 3),
+            "mean_seconds": round((row["total_ms"] / row["count"]) / 1000.0, 3),
+            "expected_slow": _tool_expected_to_take_time(row["tool"]),
+        })
+    by_tool_rows.sort(key=lambda item: (-item["total_ms"], item["tool"]))
+    top_calls = sorted(
+        [
+            {
+                "iteration": call.get("iteration"),
+                "tool": call.get("tool_name"),
+                "elapsed_ms": int(call.get("elapsed_ms") or 0),
+                "elapsed_seconds": round(int(call.get("elapsed_ms") or 0) / 1000.0, 3),
+                "expected_slow": _tool_expected_to_take_time(str(call.get("tool_name") or "")),
+            }
+            for call in timed_calls
+        ],
+        key=lambda item: -item["elapsed_ms"],
+    )[:12]
+    return {
+        "has_timing": True,
+        "total_tool_ms": sum(int(call.get("elapsed_ms") or 0) for call in timed_calls),
+        "total_tool_seconds": round(
+            sum(int(call.get("elapsed_ms") or 0) for call in timed_calls) / 1000.0,
+            3,
+        ),
+        "timed_call_count": len(timed_calls),
+        "slow_threshold_ms": _SLOW_THRESHOLD_MS,
+        "unexpected_slow_threshold_ms": _UNEXPECTED_SLOW_THRESHOLD_MS,
+        "slow_tool_calls": sorted(slow, key=lambda item: -item["elapsed_ms"])[:12],
+        "unexpected_slow_tool_calls": sorted(unexpected, key=lambda item: -item["elapsed_ms"])[:12],
+        "top_tool_calls": top_calls,
+        "by_tool": by_tool_rows[:18],
+    }
+
+
+def format_timing_summary(timing: dict[str, Any]) -> str:
+    lines = ["Timing:"]
+    if not timing.get("has_timing"):
+        lines.append(f"  {timing.get('message')}")
+        return "\n".join(lines)
+    lines.append(
+        f"  total tool time: {float(timing.get('total_tool_seconds') or 0.0):.1f}s "
+        f"across {timing.get('timed_call_count')} timed calls"
+    )
+    unexpected = timing.get("unexpected_slow_tool_calls") or []
+    if unexpected:
+        lines.append("  Unexpectedly slow small tools:")
+        for row in unexpected[:8]:
+            lines.append(
+                f"    iter {row.get('iteration')}: {row.get('tool')} "
+                f"{float(row.get('elapsed_seconds') or 0.0):.1f}s"
+            )
+    slow = timing.get("slow_tool_calls") or []
+    if slow:
+        lines.append("  Long-running tools:")
+        for row in slow[:8]:
+            expected = "expected" if row.get("expected_slow") else "unexpected"
+            lines.append(
+                f"    iter {row.get('iteration')}: {row.get('tool')} "
+                f"{float(row.get('elapsed_seconds') or 0.0):.1f}s ({expected})"
+            )
+    lines.append("  Top tools by cumulative time:")
+    for row in (timing.get("by_tool") or [])[:8]:
+        marker = "expected-slow" if row.get("expected_slow") else "small"
+        lines.append(
+            f"    {row['tool']}: total={row['total_seconds']:.1f}s "
+            f"max={row['max_seconds']:.1f}s count={row['count']} [{marker}]"
+        )
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Compact machine-readable summary dict for LLM prompt
 # ---------------------------------------------------------------------------
@@ -310,6 +444,7 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
     final_scores: dict = {}
     tool_calls = artifact.get("tool_calls", [])
     findings = summarize_findings(analyze_artifact(artifact))
+    timing = analyze_tool_timing(artifact)
 
     for entry in timeline:
         for tc in entry.get("tools", []):
@@ -396,6 +531,7 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
         "gate_hits": dict(gate_counts),
         "analyzer_findings": findings,
         "failed_tool_calls": failed_tool_calls,
+        "tool_timing": timing,
         "branch_scores": branch_scores,
         "automated_preflight": preflight,
         "cipher_hypotheses": cipher_hypotheses,
@@ -585,14 +721,14 @@ def _analysis_prompt(summary: dict[str, Any], analysis_mode: str) -> str:
     )
     return (
         "Review this Decipher artifact summary. The JSON includes post-hoc "
-        "benchmark scores, tool timeline, non-LLM analyzer findings, branch "
-        "scores, automated preflight, failed tool calls, repair agenda, and "
-        "decryption previews.\n\n"
+        "benchmark scores, tool timeline, per-tool timing, non-LLM analyzer "
+        "findings, branch scores, automated preflight, failed tool calls, "
+        "repair agenda, and decryption previews.\n\n"
         f"{detail}\n\n"
         "Requirements:\n"
         "- Distinguish runtime-visible evidence from post-hoc ground-truth grading.\n"
         "- Name specific tools and iterations when possible.\n"
-        "- Call out wasted iterations, wrong cipher-family searches, premature declarations, bad basin repair, blocked tools, and missed high-value tools.\n"
+        "- Call out wasted iterations, unexpectedly slow small tools, wrong cipher-family searches, premature declarations, bad basin repair, blocked tools, and missed high-value tools.\n"
         "- Suggest concrete changes to prompts, tools, scoring, gates, or search budgets.\n"
         "- If the run succeeded, still identify fragility and how to make success more reliable.\n\n"
         f"```json\n{json.dumps(summary, indent=2, ensure_ascii=False, default=str)}\n```"
@@ -617,6 +753,8 @@ def inspect_one(
     print(format_header(artifact))
     print()
     print(format_tool_summary(timeline))
+    print()
+    print(format_timing_summary(analyze_tool_timing(artifact)))
     print()
     print("─" * 70)
     print("Iteration timeline:")

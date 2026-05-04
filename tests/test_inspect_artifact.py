@@ -33,10 +33,16 @@ def test_llm_summary_includes_analyzer_findings_and_runtime_evidence():
             {"name": "repair", "char_accuracy": 0.20, "word_accuracy": 0.12},
         ],
         "tool_calls": [
-            {"iteration": 1, "tool_name": "search_automated_solver", "result": "{}"},
+            {
+                "iteration": 1,
+                "tool_name": "search_automated_solver",
+                "elapsed_ms": 42_000,
+                "result": "{}",
+            },
             {
                 "iteration": 3,
                 "tool_name": "act_set_mapping",
+                "elapsed_ms": 6_500,
                 "arguments": {"branch": "repair", "cipher_symbol": "P"},
                 "result": {
                     "status": "ok",
@@ -77,6 +83,70 @@ def test_llm_summary_includes_analyzer_findings_and_runtime_evidence():
     assert summary["artifact_tool_counts"]["act_set_mapping"] == 1
     assert summary["branch_scores"][0]["name"] == "repair"
     assert summary["analyzer_findings"]["labels"]["score_overrode_reading"] == 1
+    assert summary["tool_timing"]["has_timing"] is True
+    assert summary["tool_timing"]["unexpected_slow_tool_calls"][0]["tool"] == "act_set_mapping"
+
+
+def test_analyze_tool_timing_flags_unexpected_slow_small_tool():
+    artifact = {
+        "tool_calls": [
+            {
+                "iteration": 1,
+                "tool_name": "search_automated_solver",
+                "elapsed_ms": 45_000,
+                "arguments": {"branch": "auto"},
+            },
+            {
+                "iteration": 2,
+                "tool_name": "observe_branch",
+                "elapsed_ms": 7_250,
+                "arguments": {"branch": "auto"},
+            },
+            {
+                "iteration": 3,
+                "tool_name": "score_panel",
+                "elapsed_ms": 300,
+                "arguments": {"branch": "auto"},
+            },
+        ]
+    }
+
+    timing = inspect_artifact.analyze_tool_timing(artifact)
+    text = inspect_artifact.format_timing_summary(timing)
+
+    assert timing["has_timing"] is True
+    assert timing["total_tool_seconds"] == 52.55
+    assert timing["slow_tool_calls"][0]["tool"] == "search_automated_solver"
+    assert timing["slow_tool_calls"][0]["expected_slow"] is True
+    assert timing["unexpected_slow_tool_calls"] == [
+        {
+            "iteration": 2,
+            "tool": "observe_branch",
+            "elapsed_ms": 7_250,
+            "elapsed_seconds": 7.25,
+            "expected_slow": False,
+            "arguments": {"branch": "auto"},
+        }
+    ]
+    assert "Unexpectedly slow small tools" in text
+    assert "observe_branch 7.2s" in text
+    assert "search_automated_solver" in text
+
+
+def test_analyze_tool_timing_handles_old_artifacts_without_elapsed_data():
+    artifact = {
+        "tool_calls": [
+            {"iteration": 1, "tool_name": "observe_branch", "elapsed_ms": 0},
+            {"iteration": 2, "tool_name": "score_panel"},
+        ]
+    }
+
+    timing = inspect_artifact.analyze_tool_timing(artifact)
+    text = inspect_artifact.format_timing_summary(timing)
+
+    assert timing["has_timing"] is False
+    assert "No nonzero per-tool elapsed_ms" in timing["message"]
+    assert "older artifact" in text
 
 
 def test_call_llm_uses_provider_layer_and_reports_cost(monkeypatch):
