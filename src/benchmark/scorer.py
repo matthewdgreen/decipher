@@ -500,6 +500,7 @@ def format_report(scores: list[ScoreResult]) -> str:
     lines.append("=" * 80)
     lines.append("BENCHMARK RESULTS")
     lines.append("=" * 80)
+    lines.append("Char% and Word% are comparisons to known ground-truth plaintext.")
     lines.append("")
     lines.append(f"{'Test ID':<40} {'Status':<8} {'Char%':>6} {'Word%':>6} {'Agent%':>7}")
     lines.append("-" * 80)

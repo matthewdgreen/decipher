@@ -181,6 +181,7 @@ class TestFormatReport:
         ]
         report = format_report(scores)
         assert "BENCHMARK RESULTS" in report
+        assert "Char% and Word% are comparisons to known ground-truth plaintext." in report
         assert "test_1" in report
         assert "test_2" in report
         assert "AVERAGE" in report

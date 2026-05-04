@@ -311,8 +311,9 @@ class PrettyAgentRenderer:
             self._live.stop()
         else:
             print(
-                f"Status: {result.status}  char={result.char_accuracy:.1%} "
-                f"word={result.word_accuracy:.1%}  artifact={result.artifact_path}",
+                f"Status: {result.status}  comparison to known ground-truth plaintext: "
+                f"char={result.char_accuracy:.1%} word={result.word_accuracy:.1%}  "
+                f"artifact={result.artifact_path}",
                 file=self.stream,
             )
             if result.error_message:
@@ -416,6 +417,7 @@ class PrettyAgentRenderer:
         body = [
             f"Status: {result.status}",
             f"Branch: {getattr(result, 'final_branch', '') or self.state.branch or '-'}",
+            "Comparison to known ground-truth plaintext:",
             f"Char: {result.char_accuracy:.1%}   Word: {result.word_accuracy:.1%}",
             f"Iterations: {result.iterations_used}   Time: {result.elapsed_seconds:.1f}s",
             f"Tokens: {result.total_tokens}   Cost: ${result.estimated_cost_usd:.2f}",

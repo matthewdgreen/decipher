@@ -508,6 +508,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         if not quiet_structured_display:
             print(
                 f"  Status: {result.status}, "
+                f"Comparison to known ground-truth plaintext: "
                 f"Char: {result.char_accuracy:.1%}, "
                 f"Word: {result.word_accuracy:.1%}, "
                 f"Conf: {conf}, "
@@ -529,7 +530,11 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         success_status = "completed" if not agentic else "solved"
         success_label = "completed runs" if not agentic else "declared solutions"
         successful = sum(1 for r in results if r.status == success_status)
-        print(f"AVERAGE: {successful}/{n} {success_label}, char={avg_char:.1%}, word={avg_word:.1%}")
+        print(
+            f"AVERAGE: {successful}/{n} {success_label}, "
+            f"comparison to known ground-truth plaintext: "
+            f"char={avg_char:.1%}, word={avg_word:.1%}"
+        )
 
 
 def cmd_crack(args: argparse.Namespace) -> None:
@@ -882,8 +887,10 @@ def cmd_resume_artifact(args: argparse.Namespace) -> None:
             if artifact.solution else "n/a"
         )
         print(
-            f"\nStatus: {artifact.status}, Char: {result.char_accuracy:.1%}, "
-            f"Word: {result.word_accuracy:.1%}, Conf: {conf}, "
+            f"\nStatus: {artifact.status}, "
+            f"Comparison to known ground-truth plaintext: "
+            f"Char: {result.char_accuracy:.1%}, Word: {result.word_accuracy:.1%}, "
+            f"Conf: {conf}, "
             f"Iter: {iterations}, Time: {result.elapsed_seconds:.1f}s"
         )
         print(f"Artifact: {path}")
@@ -1036,7 +1043,8 @@ def cmd_testgen(args: argparse.Namespace) -> None:
     conf = f"{result.self_confidence:.2f}" if result.self_confidence is not None else "n/a"
     word_str = f"{score.word_accuracy:.1%}" if score.total_words > 1 else "N/A"
     print(f"\nStatus:     {result.status}")
-    print(f"Char:       {score.char_accuracy:.1%}   Word: {word_str}")
+    print("Comparison to known ground-truth plaintext:")
+    print(f"  Char:     {score.char_accuracy:.1%}   Word: {word_str}")
     print(f"Confidence: {conf}   Iterations: {result.iterations_used}   Time: {result.elapsed_seconds:.1f}s")
     print(f"Artifact:   {result.artifact_path}")
     if result.error_message:
