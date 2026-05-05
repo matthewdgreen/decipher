@@ -492,16 +492,18 @@ Tuning environment variables (rarely needed):
 
 ### Periodic polyalphabetic (Vigenère family)
 
-Vigenère, Beaufort, Variant Beaufort, and Gronsfeld ciphers route automatically
-when the cipher's periodic IC peaks at a key length and Kasiski GCDs
-corroborate. No flags are required for blind Vigenère solves:
+Vigenère, Beaufort, Variant Beaufort, Gronsfeld, and Quagmire I–IV ciphers
+route automatically when the cipher's periodic IC peaks at a key length and
+Kasiski GCDs corroborate. No flags are required for blind Vigenère solves:
 
 ```bash
 decipher crack -f cipher.txt --language en
 ```
 
-The automated periodic path also supports known-parameter keyed Vigenère
-calibration records, such as Kryptos K1/K2, using a `PeriodicAlphabetKey`
+**Quagmire 3** is Vigenère with a keyword-scrambled cipher alphabet (the
+tableau rows use a keyed rather than standard A–Z order). Kryptos K1 and K2
+are both Quagmire 3 ciphers. The automated periodic path supports these as
+known-parameter keyed-Vigenère calibration records via a `PeriodicAlphabetKey`
 model. Artifacts label this as `keyed_vigenere_known_replay` so it is clear
 that the run is verifying supplied tableau/key metadata rather than recovering
 an unknown key from ciphertext.
