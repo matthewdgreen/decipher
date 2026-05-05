@@ -640,16 +640,10 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher
 ```
 
-For the main automated frontier suite, external runs default to Zenith only,
-which keeps routine comparisons fast. To include slower external wrappers
-such as `zkdecrypto-lite`, pass the full external config explicitly:
-
-```bash
-PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
-  --suite-file frontier/automated_solver_frontier.jsonl \
-  --solvers external \
-  --external-config external_baselines/local_tools.json
-```
+Both scripts also support `--solvers external` to run third-party solvers
+(Zenith, zkdecrypto-lite) side-by-side. For installation steps, config files,
+and comparison commands see
+[`docs/external_solvers.md`](docs/external_solvers.md).
 
 ## Regression Suite
 
