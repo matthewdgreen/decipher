@@ -93,6 +93,25 @@ Current planning split:
     bounce iterations, declare at iter N+3) into a single clean declaration
     turn, saving meaningful cost and iteration count on every solved run.
 
+## Engineering Cleanup
+
+- [ ] **Retire the legacy homophonic solver path.** `--legacy-homophonic` and
+  the `homophonic_solver="legacy"` branches in `src/cli.py` and
+  `src/automated/runner.py` exist purely for pre-`zenith_native` regression
+  comparisons. `zenith_native` has materially outperformed it on every solved
+  benchmark for a year. Remove the user-facing flag, drop the legacy code path
+  from the runner, keep only any targeted parity tests that still earn their
+  keep, and remove documentation references. After this lands, `zenith_native`
+  becomes the sole homophonic path.
+- [ ] **Unify per-subsystem parallelism env vars under a single global.**
+  Today, `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` controls homophonic anneal seed
+  workers and `DECIPHER_TRANSFORM_RANK_THREADS` controls transform-rank Rust
+  threads. These should collapse to one global env var (e.g.
+  `DECIPHER_PARALLEL_WORKERS`) that every parallel-capable solver path
+  consults, with optional per-subsystem overrides retained as escape hatches
+  for benchmarking. Once unified, the global setting can be documented at the
+  top of the README rather than buried inside cipher-family sections.
+
 ## Long-Horizon Cipher Capability Roadmap
 
 These are major future projects, not active implementation threads. Keep them
@@ -1535,7 +1554,14 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         `--homophonic-refinement null_masks`. It records a
         `search_null_masks` finalist menu in automated artifacts. Next
         step is to run the five-page packet and decide how the agent should
-        inspect/promote these finalists.
+        inspect/promote these finalists. `copiale_nulls` remains a supported
+        compatibility alias for older local commands, but new docs and
+        artifacts should use `null_masks`.
+      - Agent-facing finalist review is now implemented:
+        `search_review_null_mask_finalists`, `act_rate_null_mask_finalist`,
+        and `act_install_null_mask_finalists` let the agent inspect, rate,
+        and install null/codeword mask candidates without rerunning the
+        bakeoff.
     - [x] Add a prototype null-mask search script:
       `scripts/probe_copiale_null_masks.py`. It generates null masks without
       plaintext, reruns `zenith_native` on filtered token streams, and reports
