@@ -133,15 +133,22 @@ benchmark issue.
   solver, generate candidate null/codeword masks, solve filtered streams, rank
   a finalist menu with ground-truth-free language coherence signals, and record
   `search_null_masks` in the artifact. This is deliberately not the default
-  route yet.
+  route yet. `null_masks` is the preferred public name; `copiale_nulls`
+  remains accepted only as a backward-compatible alias from the first
+  Copiale-focused experiments.
 - [ ] Decide whether the default automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling
   - nomenclator/codeword hypotheses
   - segmentation/transcription normalization first
-- [ ] Surface the null-mask finalist menu to the agent in concise branch cards
+- [x] Surface the null-mask finalist menu to the agent in concise branch cards
   so it can compare several German-ish branches instead of inheriting a single
-  brittle automated selection.
+  brittle automated selection. `search_automated_solver` now creates a
+  `null_mask_*` review session when run with
+  `homophonic_refinement=null_masks`; the agent can page candidates with
+  `search_review_null_mask_finalists`, record contextual readability with
+  `act_rate_null_mask_finalist`, and install selected branches with
+  `act_install_null_mask_finalists`.
 
 ## Milestone 4: Agent Workflows For German Manuscripts
 

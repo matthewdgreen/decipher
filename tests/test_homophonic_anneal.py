@@ -545,6 +545,100 @@ def test_search_automated_solver_tool_installs_key_from_automated_runner(monkeyp
     assert len(ex.workspace.get_branch("main").key) == 3
 
 
+def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch):
+    raw = "01 02 03 01 02 03"
+    alphabet = Alphabet(["01", "02", "03"])
+    ct = CipherText(raw=raw, alphabet=alphabet, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="de",
+        word_set={"WENIG", "UND"},
+        word_list=["WENIG", "UND"],
+        pattern_dict={},
+    )
+
+    def finalist(mask, text, validation):
+        return {
+            "status": "completed",
+            "mask": mask,
+            "mask_size": len(mask),
+            "filtered_length": 5,
+            "key": {"0": 22, "1": 4, "2": 13},
+            "decryption": text,
+            "preview": text[:80],
+            "selection_score": -4.2,
+            "validation_score_v2": validation,
+            "confirmed_validation_score_v2": validation + 0.1,
+            "diagnostics": {"dict_rate": 0.62, "segmentation_cost": 12},
+            "quality": {"top_letter_fraction": 0.2, "unique_letters": 12},
+        }
+
+    def fake_run_automated(**kwargs):
+        assert kwargs["homophonic_refinement"] == "null_masks"
+        return SimpleNamespace(
+            status="completed",
+            solver="null_mask_homophonic",
+            elapsed_seconds=2.0,
+            error_message="",
+            artifact={
+                "key": {"0": 22, "1": 4, "2": 13},
+                "steps": [
+                    {"name": "route_automated_solver", "route": "homophonic"},
+                    {"name": "search_homophonic_anneal", "solver": "zenith_native"},
+                    {
+                        "name": "search_null_masks",
+                        "status": "completed",
+                        "candidate_symbols": ["01", "02"],
+                        "baseline_rank": 2,
+                        "mask_count": 3,
+                        "completed_mask_count": 3,
+                        "confirmation": {"enabled": True, "confirmed_mask_count": 2},
+                        "selected": finalist(["01"], "WENIGUND", -3.2),
+                        "top_finalists": [
+                            finalist(["01"], "WENIGUND", -3.2),
+                            finalist([], "EEEEEUND", -3.7),
+                        ],
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr(tools_v2, "run_automated", fake_run_automated)
+
+    out = ex._tool_search_automated_solver({
+        "branch": "main",
+        "homophonic_refinement": "null_masks",
+    })
+
+    session_id = out["null_mask_search_session_id"]
+    assert session_id
+    assert out["null_mask_finalist_review"]["total_finalist_count"] == 2
+    assert ex.workspace.get_branch("main").metadata["decoded_text"] == "WENIGUND"
+
+    rating = ex._tool_act_rate_null_mask_finalist({
+        "search_session_id": session_id,
+        "rank": 1,
+        "readability_score": 3,
+        "label": "partial_clause",
+        "rationale": "Readable German-ish phrase.",
+        "coherent_clause": "wenig und ...",
+    })
+    assert rating["status"] == "ok"
+    assert rating["finalist"]["agent_readability_judgment"]["label"] == "partial_clause"
+
+    installed = ex._tool_act_install_null_mask_finalists({
+        "search_session_id": session_id,
+        "ranks": [1, 2],
+    })
+    assert installed["installed_count"] == 2
+    branch_names = set(ex.workspace.branch_names())
+    assert "main_nullmask_rank1" in branch_names
+    assert "main_nullmask_rank2" in branch_names
+    branch = ex.workspace.get_branch("main_nullmask_rank1")
+    assert branch.metadata["null_mask_finalist"]["mask"] == ["01"]
+    assert branch.metadata["agent_readability_label"] == "partial_clause"
+
+
 def test_search_homophonic_anneal_can_use_zenith_native_profile(monkeypatch):
     raw = "01 02 03 01 02 03"
     alphabet = Alphabet(["01", "02", "03"])

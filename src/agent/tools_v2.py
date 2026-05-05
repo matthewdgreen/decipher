@@ -1118,7 +1118,14 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
                 "homophonic_refinement": {
                     "type": "string",
-                    "enum": ["none", "two_stage", "targeted_repair", "family_repair"],
+                    "enum": [
+                        "none",
+                        "two_stage",
+                        "targeted_repair",
+                        "family_repair",
+                        "null_masks",
+                        "homophonic_nulls",
+                    ],
                     "default": "none",
                 },
                 "homophonic_solver": {
@@ -1137,6 +1144,93 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["branch"],
+        },
+    },
+    {
+        "name": "search_review_null_mask_finalists",
+        "description": (
+            "Review ranked null/codeword mask finalists from a prior "
+            "search_automated_solver(homophonic_refinement='null_masks') session. "
+            "Returns mask IDs, solver scores, stability confirmation, and decoded previews."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "start_rank": {"type": "integer", "default": 1},
+                "count": {"type": "integer", "default": 5},
+                "review_chars": {"type": "integer", "default": 600},
+                "good_score_gap": {
+                    "type": "number",
+                    "default": 0.25,
+                    "description": "Finalists within this validation-score gap of the best are counted as good-score candidates.",
+                },
+            },
+            "required": ["search_session_id"],
+        },
+    },
+    {
+        "name": "act_rate_null_mask_finalist",
+        "description": (
+            "Record the agent's contextual readability judgment for a null-mask "
+            "finalist. Use this before installing/declaring; numeric solver "
+            "scores are supporting evidence, not the final reading judgment."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "rank": {"type": "integer", "description": "1-based finalist rank to rate."},
+                "readability_score": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 4,
+                    "description": "0=garbage 1=word-islands 2=structured islands 3=partial clause 4=mostly coherent.",
+                },
+                "label": {
+                    "type": "string",
+                    "enum": [
+                        "coherent_plaintext",
+                        "partial_clause",
+                        "word_islands_with_some_structure",
+                        "word_islands_only",
+                        "garbage",
+                    ],
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Reading evidence: what it appears to say, or why it is only islands/gibberish.",
+                },
+                "coherent_clause": {
+                    "type": "string",
+                    "description": "Paraphrasable target-language clause if any; empty for word-island/garbage.",
+                },
+            },
+            "required": ["search_session_id", "rank", "readability_score", "label", "rationale"],
+        },
+    },
+    {
+        "name": "act_install_null_mask_finalists",
+        "description": (
+            "Install selected null/codeword mask finalists from a prior "
+            "search_automated_solver null-mask session as readable workspace "
+            "branches without rerunning the bakeoff."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "ranks": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "1-based finalist ranks to install as branches.",
+                },
+                "branch_prefix": {
+                    "type": "string",
+                    "description": "Optional branch prefix. Defaults to <source_branch>_nullmask_rank.",
+                },
+            },
+            "required": ["search_session_id", "ranks"],
         },
     },
     {
@@ -2011,6 +2105,8 @@ class WorkspaceToolExecutor:
         self._next_transform_search_session_id: int = 1
         self._pure_transposition_sessions: dict[str, dict[str, Any]] = {}
         self._next_pure_transposition_session_id: int = 1
+        self._null_mask_sessions: dict[str, dict[str, Any]] = {}
+        self._next_null_mask_session_id: int = 1
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -2504,7 +2600,10 @@ class WorkspaceToolExecutor:
                 {"tool": "score_panel", "purpose": "Use scores as supporting evidence."},
             ],
             "homophonic_substitution": [
-                {"tool": "search_automated_solver", "purpose": "Run the modern no-LLM solver stack first."},
+                {"tool": "search_automated_solver", "purpose": "Run the modern no-LLM solver stack first; use null_masks refinement if shape/basin diagnostics suggest null/codeword risk."},
+                {"tool": "search_review_null_mask_finalists", "purpose": "Compare null/codeword finalist readings when null_masks refinement was used."},
+                {"tool": "act_rate_null_mask_finalist", "purpose": "Record contextual readability before choosing a null-mask branch."},
+                {"tool": "act_install_null_mask_finalists", "purpose": "Install selected null-mask finalists without rerunning the bakeoff."},
                 {"tool": "search_homophonic_anneal", "purpose": "Run focused homophonic annealing if needed."},
                 {"tool": "workspace_branch_cards", "purpose": "Check for coherent clauses, not just word islands."},
                 {"tool": "decode_absent_letter_candidates", "purpose": "Diagnose missing/overused letters before local repair."},
@@ -2649,6 +2748,9 @@ class WorkspaceToolExecutor:
             "homophonic_substitution": {
                 "foreground_tools": [
                     "search_automated_solver",
+                    "search_review_null_mask_finalists",
+                    "act_rate_null_mask_finalist",
+                    "act_install_null_mask_finalists",
                     "search_homophonic_anneal",
                     "decode_letter_stats",
                     "decode_absent_letter_candidates",
@@ -2930,6 +3032,119 @@ class WorkspaceToolExecutor:
                 return True
         return False
 
+    def _null_mask_refinement_tried_for_branch(self, branch_name: str) -> bool:
+        if not self.workspace.has_branch(branch_name):
+            return False
+        branch = self.workspace.get_branch(branch_name)
+        metadata = branch.metadata
+        if isinstance(metadata.get("null_mask_finalist"), dict):
+            return True
+        decoded_source = str(metadata.get("decoded_text_source") or "")
+        if "null_masks" in decoded_source or "null_mask" in decoded_source:
+            return True
+        for session in self._null_mask_sessions.values():
+            if session.get("source_branch") == branch_name:
+                return True
+        for call in self.call_log:
+            if call.tool_name != "search_automated_solver":
+                continue
+            args = call.arguments or {}
+            called_branch = args.get("branch")
+            if called_branch is not None and called_branch != branch_name:
+                continue
+            refinement = str(args.get("homophonic_refinement") or "none")
+            if refinement in {"null_masks", "homophonic_nulls"}:
+                return True
+        return False
+
+    def _null_mask_structural_guidance(self, branch_name: str, mode: str) -> dict[str, Any]:
+        base = {
+            "applies": False,
+            "already_tried": False,
+            "basis": "cipher_shape_and_solver_basin",
+            "not_language_assumption": (
+                "This guidance is based on alphabet/segmentation/basin shape, "
+                "not on the target language. A target language by itself is "
+                "not evidence that null masks are useful."
+            ),
+        }
+        if mode != "homophonic_substitution" or not self.workspace.has_branch(branch_name):
+            return {
+                **base,
+                "reason": "Null-mask bakeoff is only a foreground refinement for homophonic/nomenclator-style branches.",
+            }
+
+        token_count = len(self.workspace.cipher_text.tokens)
+        effective_words = self.workspace.effective_words(branch_name)
+        word_count = max(1, len(effective_words))
+        avg_cipher_word_len = token_count / word_count if token_count else 0.0
+        cipher_alpha_size = self._alpha().size
+        plain_alpha_size = self._pt_alpha().size
+        alphabet_ratio = cipher_alpha_size / plain_alpha_size if plain_alpha_size else 0.0
+        overcomplete_alphabet = (
+            cipher_alpha_size > plain_alpha_size
+            and (cipher_alpha_size - plain_alpha_size >= 4 or alphabet_ratio >= 1.1)
+        )
+        coarse_boundaries = word_count <= 1 or avg_cipher_word_len >= 12.0
+        basin = self._branch_basin_status(branch_name)
+        word_island_basin = basin.get("status") == "word_islands_only"
+        applies = bool(overcomplete_alphabet and (coarse_boundaries or word_island_basin))
+        already_tried = self._null_mask_refinement_tried_for_branch(branch_name)
+
+        reasons: list[str] = []
+        if overcomplete_alphabet:
+            reasons.append(
+                f"cipher alphabet is overcomplete ({cipher_alpha_size} symbols for "
+                f"{plain_alpha_size} plaintext letters)"
+            )
+        if coarse_boundaries:
+            reasons.append(
+                f"word boundaries are absent/coarse ({word_count} groups, "
+                f"avg {avg_cipher_word_len:.1f} cipher tokens per group)"
+            )
+        if word_island_basin:
+            reasons.append("current branch is classified as word-islands-only")
+        if not reasons:
+            reasons.append("no structural null/codeword risk signal is currently strong")
+
+        guidance = {
+            **base,
+            "applies": applies,
+            "already_tried": already_tried,
+            "reason": "; ".join(reasons),
+            "cipher_alphabet_size": cipher_alpha_size,
+            "plaintext_alphabet_size": plain_alpha_size,
+            "alphabet_ratio": round(alphabet_ratio, 3),
+            "word_group_count": word_count,
+            "average_cipher_word_length": round(avg_cipher_word_len, 2),
+            "overcomplete_alphabet": overcomplete_alphabet,
+            "coarse_or_missing_boundaries": coarse_boundaries,
+            "word_island_basin": word_island_basin,
+            "current_basin_status": basin.get("status"),
+        }
+        if applies:
+            guidance.update({
+                "suggested_tool": "search_automated_solver",
+                "suggested_args": {
+                    "branch": branch_name,
+                    "homophonic_budget": "screen",
+                    "homophonic_refinement": "null_masks",
+                    "homophonic_solver": "zenith_native",
+                },
+                "follow_up_tools": [
+                    "search_review_null_mask_finalists",
+                    "act_rate_null_mask_finalist",
+                    "act_install_null_mask_finalists",
+                    "workspace_branch_cards",
+                ],
+                "reading_instruction": (
+                    "After the bakeoff, page through finalists and rate the "
+                    "target-language reading. Do not promote candidates merely "
+                    "because they contain short dictionary islands."
+                ),
+            })
+        return guidance
+
     def _quagmire_budget_class(self, nominal_proposals: int | float | None) -> str:
         if nominal_proposals is None:
             return "unknown"
@@ -3192,6 +3407,22 @@ class WorkspaceToolExecutor:
                     "status": "pending_required",
                 },
             )
+        null_mask_guidance = self._null_mask_structural_guidance(branch_name, mode)
+        if (
+            null_mask_guidance.get("applies")
+            and not null_mask_guidance.get("already_tried")
+            and not required["pending_required_tools"]
+        ):
+            next_step = {
+                "index": None,
+                "tool": "search_automated_solver",
+                "purpose": (
+                    "Structural null/codeword risk is present; run a null-mask "
+                    "bakeoff before local repair or off-family searches."
+                ),
+                "status": "pending_structural_refinement",
+                "suggested_args": null_mask_guidance.get("suggested_args"),
+            }
         return {
             "branch": branch_name,
             "cipher_mode": mode,
@@ -3205,6 +3436,7 @@ class WorkspaceToolExecutor:
             "already_tried_tools": [step["tool"] for step in steps if step["status"] == "tried"],
             "pending_tools": [step["tool"] for step in steps if step["status"] == "pending"],
             "quagmire_budget_guidance": self._quagmire_budget_guidance(mode),
+            "null_mask_guidance": null_mask_guidance,
             **required,
         }
 
@@ -9104,7 +9336,43 @@ class WorkspaceToolExecutor:
             (step for step in steps if step.get("name") != "route_automated_solver"),
             route_step,
         )
-        return {
+        null_mask_step = next(
+            (step for step in steps if step.get("name") == "search_null_masks"),
+            None,
+        )
+        null_mask_session_id: str | None = None
+        null_mask_review: dict[str, Any] | None = None
+        if isinstance(null_mask_step, dict) and null_mask_step.get("status") == "completed":
+            selected = null_mask_step.get("selected")
+            if isinstance(selected, dict) and selected.get("decryption"):
+                branch = self.workspace.get_branch(branch_name)
+                branch.metadata.update({
+                    "decoded_text": str(selected.get("decryption") or ""),
+                    "decoded_text_source": "search_automated_solver:null_masks",
+                    "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
+                    "key_type": "homophonic_with_null_mask",
+                    "null_mask_selected": {
+                        "mask": selected.get("mask") or [],
+                        "validation_score_v2": selected.get("validation_score_v2"),
+                        "confirmed_validation_score_v2": selected.get("confirmed_validation_score_v2"),
+                        "selection_score": selected.get("selection_score"),
+                        "confirmation": selected.get("confirmation"),
+                    },
+                })
+                if "null_mask_finalist" not in branch.tags:
+                    branch.tags.append("null_mask_finalist")
+            null_mask_session_id = self._new_null_mask_session(
+                source_branch=branch_name,
+                result=null_mask_step,
+            )
+            null_mask_review = self._null_mask_finalist_review(
+                session_id=null_mask_session_id,
+                start_rank=1,
+                count=5,
+                review_chars=600,
+                good_score_gap=0.25,
+            )
+        response = {
             "branch": branch_name,
             "status": result.status,
             "solver": result.solver,
@@ -9118,10 +9386,376 @@ class WorkspaceToolExecutor:
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
             "route_step": route_step,
             "primary_step": primary_step,
+            "null_mask_search_session_id": null_mask_session_id,
+            "null_mask_finalist_review": null_mask_review,
             "note": (
                 "This runs the same local automated stack used by the "
                 "no-LLM frontier/parity harness and installs the resulting key "
                 "onto the requested branch."
+            ),
+        }
+        if null_mask_session_id:
+            response["suggested_next_tools"] = [
+                "search_review_null_mask_finalists",
+                "act_rate_null_mask_finalist",
+                "act_install_null_mask_finalists",
+                "workspace_branch_cards",
+            ]
+            response["note"] += (
+                " A null-mask finalist menu is available; review and rate "
+                "several finalists before trusting a single selected mask."
+            )
+        return response
+
+    def _new_null_mask_session(
+        self,
+        *,
+        source_branch: str,
+        result: dict[str, Any],
+    ) -> str:
+        session_id = f"null_mask_{self._next_null_mask_session_id}"
+        self._next_null_mask_session_id += 1
+        self._null_mask_sessions[session_id] = {
+            "source_branch": source_branch,
+            "ranked": list(result.get("top_finalists") or []),
+            "evaluated_rows": list(result.get("evaluated_rows") or []),
+            "candidate_symbols": list(result.get("candidate_symbols") or []),
+            "diagnostics": result.get("diagnostics"),
+            "confirmation": result.get("confirmation"),
+            "baseline_rank": result.get("baseline_rank"),
+            "mask_count": result.get("mask_count"),
+            "completed_mask_count": result.get("completed_mask_count"),
+            "policy": result.get("policy"),
+        }
+        return session_id
+
+    def _null_mask_session(self, session_id: str) -> dict[str, Any] | None:
+        return self._null_mask_sessions.get(str(session_id))
+
+    def _null_mask_score_value(self, candidate: dict[str, Any]) -> float | None:
+        for key in (
+            "confirmed_validation_score_v2",
+            "validation_score_v2",
+            "confirmation_best_validation_score_v2",
+            "selection_score",
+        ):
+            value = candidate.get(key)
+            if value is not None:
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return None
+
+    def _null_mask_candidate_rating(self, candidate: dict[str, Any]) -> dict[str, Any] | None:
+        rating = candidate.get("agent_readability_judgment")
+        return rating if isinstance(rating, dict) else None
+
+    def _null_mask_finalist_review(
+        self,
+        *,
+        session_id: str,
+        start_rank: int,
+        count: int,
+        review_chars: int,
+        good_score_gap: float,
+    ) -> dict[str, Any]:
+        session = self._null_mask_session(session_id)
+        if session is None:
+            return {"error": f"Unknown null-mask search session: {session_id}"}
+        ranked = list(session.get("ranked") or [])
+        if not ranked:
+            return {
+                "search_session_id": session_id,
+                "finalist_review": [],
+                "finalist_review_count": 0,
+                "total_finalist_count": 0,
+            }
+        start_rank = max(1, int(start_rank))
+        count = max(1, min(int(count), 50))
+        review_chars = max(120, min(int(review_chars), 1600))
+        good_score_gap = max(0.0, float(good_score_gap))
+        best_score = self._null_mask_score_value(ranked[0])
+        good_threshold = best_score - good_score_gap if best_score is not None else None
+        good_ranked_finalists = [
+            (rank, candidate)
+            for rank, candidate in enumerate(ranked, start=1)
+            if candidate.get("status") == "completed"
+            and self._null_mask_score_value(candidate) is not None
+            and good_threshold is not None
+            and self._null_mask_score_value(candidate) >= good_threshold
+        ]
+        page_start = start_rank - 1
+        page = ranked[page_start:start_rank - 1 + count]
+        finalist_review: list[dict[str, Any]] = []
+        for offset, candidate in enumerate(page):
+            rank = start_rank + offset
+            score = self._null_mask_score_value(candidate)
+            score_gap = (
+                round(best_score - score, 4)
+                if best_score is not None and score is not None else None
+            )
+            confirmation = candidate.get("confirmation")
+            diagnostics = candidate.get("diagnostics") if isinstance(candidate.get("diagnostics"), dict) else {}
+            quality = candidate.get("quality") if isinstance(candidate.get("quality"), dict) else {}
+            finalist_review.append({
+                "rank": rank,
+                "mask": candidate.get("mask") or [],
+                "mask_size": candidate.get("mask_size"),
+                "status": candidate.get("status"),
+                "filtered_length": candidate.get("filtered_length"),
+                "selection_score": candidate.get("selection_score"),
+                "validation_score_v2": candidate.get("validation_score_v2"),
+                "confirmed_validation_score_v2": candidate.get("confirmed_validation_score_v2"),
+                "score_gap_from_best": score_gap,
+                "confirmation": confirmation,
+                "dict_rate": diagnostics.get("dict_rate"),
+                "segmentation_cost": diagnostics.get("segmentation_cost"),
+                "top_letter_fraction": quality.get("top_letter_fraction"),
+                "unique_letters": quality.get("unique_letters"),
+                "decoded_preview": str(candidate.get("decryption") or candidate.get("preview") or "")[:review_chars],
+                "agent_readability_judgment": self._null_mask_candidate_rating(candidate),
+                "recommended_next": (
+                    "rate_contextual_readability_then_install_if_coherent"
+                    if rank <= 3 else "review_if_top_candidates_are_word_islands"
+                ),
+            })
+        reviewed_ranks = set(range(start_rank, start_rank + len(page)))
+        more_good_after_page = [
+            rank for rank, _candidate in good_ranked_finalists
+            if rank not in reviewed_ranks and rank > start_rank + len(page) - 1
+        ]
+        return {
+            "search_session_id": session_id,
+            "source_branch": session.get("source_branch"),
+            "start_rank": start_rank,
+            "count": count,
+            "finalist_review": finalist_review,
+            "finalist_review_count": len(finalist_review),
+            "total_finalist_count": len(ranked),
+            "has_more_finalists": start_rank + len(page) <= len(ranked),
+            "next_start_rank": (
+                start_rank + len(page)
+                if start_rank + len(page) <= len(ranked) else None
+            ),
+            "good_score_gap": good_score_gap,
+            "good_score_threshold": round(good_threshold, 4) if good_threshold is not None else None,
+            "good_score_finalist_count": len(good_ranked_finalists),
+            "more_good_score_finalists": bool(more_good_after_page),
+            "more_good_score_finalist_count": len(more_good_after_page),
+            "next_good_score_ranks": more_good_after_page[:12],
+            "baseline_rank": session.get("baseline_rank"),
+            "candidate_symbols": session.get("candidate_symbols"),
+            "confirmation_summary": session.get("confirmation"),
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+            "rated_finalist_count": sum(
+                1 for candidate in ranked
+                if self._null_mask_candidate_rating(candidate) is not None
+            ),
+            "review_instruction": (
+                "Read several decoded previews. Treat target-language short "
+                "word islands as insufficient; rate contextual coherence with "
+                "act_rate_null_mask_finalist, then install selected ranks with "
+                "act_install_null_mask_finalists."
+            ),
+        }
+
+    def _mirror_null_mask_rating_to_branches(
+        self,
+        *,
+        session_id: str,
+        rank: int,
+        rating: dict[str, Any],
+    ) -> list[str]:
+        updated: list[str] = []
+        for branch_name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(branch_name)
+            metadata = branch.metadata.get("null_mask_finalist")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("search_session_id") != session_id:
+                continue
+            if int(metadata.get("rank") or -1) != rank:
+                continue
+            metadata["agent_readability_score"] = rating["readability_score"]
+            metadata["agent_readability_label"] = rating["label"]
+            metadata["agent_readability_rationale"] = rating["rationale"]
+            metadata["agent_coherent_clause"] = rating.get("coherent_clause", "")
+            metadata["agent_readability_iteration"] = rating.get("iteration")
+            branch.metadata["agent_readability_score"] = rating["readability_score"]
+            branch.metadata["agent_readability_label"] = rating["label"]
+            branch.metadata["agent_readability_rationale"] = rating["rationale"]
+            updated.append(branch_name)
+        return updated
+
+    def _install_null_mask_finalist_branch(
+        self,
+        *,
+        session: dict[str, Any],
+        session_id: str,
+        rank: int,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        ranked = session.get("ranked") or []
+        if rank < 1 or rank > len(ranked):
+            raise WorkspaceError(f"rank {rank} out of range (1..{len(ranked)})")
+        candidate = ranked[rank - 1]
+        raw_key = candidate.get("key") or {}
+        parsed_key = {int(k): int(v) for k, v in raw_key.items()}
+        source_branch = str(session["source_branch"])
+        branch = self.workspace.fork(branch_name, source_branch)
+        self.workspace.set_full_key(branch_name, parsed_key)
+        if "null_mask_finalist" not in branch.tags:
+            branch.tags.append("null_mask_finalist")
+        rating = self._null_mask_candidate_rating(candidate)
+        branch.metadata.update({
+            "decoded_text": str(candidate.get("decryption") or candidate.get("preview") or ""),
+            "decoded_text_source": "act_install_null_mask_finalists",
+            "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
+            "key_type": "homophonic_with_null_mask",
+            "null_mask_finalist": {
+                "search_session_id": session_id,
+                "rank": rank,
+                "mask": candidate.get("mask") or [],
+                "filtered_length": candidate.get("filtered_length"),
+                "selection_score": candidate.get("selection_score"),
+                "validation_score_v2": candidate.get("validation_score_v2"),
+                "confirmed_validation_score_v2": candidate.get("confirmed_validation_score_v2"),
+                "confirmation_best_validation_score_v2": candidate.get("confirmation_best_validation_score_v2"),
+                "confirmation": candidate.get("confirmation"),
+                "agent_readability_judgment": rating,
+            },
+        })
+        if rating:
+            branch.metadata["agent_readability_score"] = rating.get("readability_score")
+            branch.metadata["agent_readability_label"] = rating.get("label")
+            branch.metadata["agent_readability_rationale"] = rating.get("rationale")
+        return {
+            "branch": branch_name,
+            "rank": rank,
+            "mask": candidate.get("mask") or [],
+            "quick_scores": self._compute_quick_scores(branch_name),
+            "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+            "agent_readability_judgment": rating,
+        }
+
+    def _tool_search_review_null_mask_finalists(self, args: dict) -> Any:
+        return self._null_mask_finalist_review(
+            session_id=str(args["search_session_id"]),
+            start_rank=int(args.get("start_rank", 1)),
+            count=int(args.get("count", 5)),
+            review_chars=int(args.get("review_chars", 600)),
+            good_score_gap=float(args.get("good_score_gap", 0.25)),
+        )
+
+    def _tool_act_rate_null_mask_finalist(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._null_mask_session(session_id)
+        if session is None:
+            return {"error": f"Unknown null-mask search session: {session_id}"}
+        ranked = session.get("ranked") or []
+        rank = int(args["rank"])
+        if rank < 1 or rank > len(ranked):
+            return {
+                "error": f"rank {rank} out of range (1..{len(ranked)})",
+                "search_session_id": session_id,
+            }
+        score = float(args["readability_score"])
+        if score < 0 or score > 4:
+            return {"error": "readability_score must be between 0 and 4"}
+        allowed_labels = {
+            "coherent_plaintext",
+            "partial_clause",
+            "word_islands_with_some_structure",
+            "word_islands_only",
+            "garbage",
+        }
+        label = str(args.get("label") or self._default_transform_label_for_score(score))
+        if label not in allowed_labels:
+            return {
+                "error": f"label must be one of {sorted(allowed_labels)}",
+                "search_session_id": session_id,
+            }
+        rationale = str(args.get("rationale") or "").strip()
+        if not rationale:
+            return {"error": "rationale is required"}
+        coherent_clause = str(args.get("coherent_clause") or "").strip()
+        candidate = ranked[rank - 1]
+        rating = {
+            "readability_score": round(score, 2),
+            "label": label,
+            "rationale": rationale,
+            "coherent_clause": coherent_clause,
+            "iteration": self._current_iteration,
+            "primary_ranking_signal": "agent_contextual_readability",
+        }
+        candidate["agent_readability_judgment"] = rating
+        updated_branches = self._mirror_null_mask_rating_to_branches(
+            session_id=session_id,
+            rank=rank,
+            rating=rating,
+        )
+        review = self._null_mask_finalist_review(
+            session_id=session_id,
+            start_rank=rank,
+            count=1,
+            review_chars=600,
+            good_score_gap=0.25,
+        )
+        return {
+            "status": "ok",
+            "search_session_id": session_id,
+            "rank": rank,
+            "rating": rating,
+            "updated_branches": updated_branches,
+            "finalist": (review.get("finalist_review") or [None])[0],
+            "note": (
+                "Recorded the agent's contextual readability judgment. For "
+                "null/codeword masks this judgment should determine whether "
+                "the finalist is worth installing; numeric validation scores "
+                "are only supporting evidence."
+            ),
+        }
+
+    def _tool_act_install_null_mask_finalists(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._null_mask_session(session_id)
+        if session is None:
+            return {"error": f"Unknown null-mask search session: {session_id}"}
+        ranks = args.get("ranks") or []
+        if not isinstance(ranks, list) or not ranks:
+            return {"error": "ranks must be a non-empty list of 1-based finalist ranks"}
+        source_branch = str(session["source_branch"])
+        prefix = str(args.get("branch_prefix") or f"{source_branch}_nullmask_rank")
+        installed: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for raw_rank in ranks:
+            try:
+                rank = int(raw_rank)
+                branch_name = f"{prefix}{rank}"
+                installed.append(self._install_null_mask_finalist_branch(
+                    session=session,
+                    session_id=session_id,
+                    rank=rank,
+                    branch_name=branch_name,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "rank": raw_rank,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "status": "ok" if installed else "error",
+            "search_session_id": session_id,
+            "installed_count": len(installed),
+            "installed": installed,
+            "errors": errors,
+            "note": (
+                "Installed selected null-mask finalists as branches without "
+                "rerunning the bakeoff. Use workspace_branch_cards and "
+                "decode_show to compare whether the installed text forms "
+                "coherent target-language clauses rather than isolated word islands."
             ),
         }
 

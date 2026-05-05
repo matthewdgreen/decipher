@@ -212,6 +212,89 @@ def test_call_llm_does_not_warn_when_under_token_cap(monkeypatch):
     assert result.output_may_be_truncated is False
 
 
+def test_call_llm_retries_empty_length_response(monkeypatch):
+    class FakeProvider:
+        def __init__(self):
+            self.calls = 0
+
+        def send(self, *, messages, tools=None, system="", max_tokens=4096):
+            self.calls += 1
+            if self.calls == 1:
+                return inspect_artifact.ModelResponse(
+                    content=[],
+                    usage=inspect_artifact.ModelUsage(
+                        input_tokens=100,
+                        output_tokens=max_tokens,
+                    ),
+                    raw=SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")]),
+                )
+            assert "no visible assistant text" in messages[0]["content"]
+            assert "visible markdown only" in system
+            return inspect_artifact.ModelResponse(
+                content=[inspect_artifact.TextBlock(text="## Verdict\nRecovered.")],
+                usage=inspect_artifact.ModelUsage(input_tokens=120, output_tokens=20),
+                raw=SimpleNamespace(choices=[SimpleNamespace(finish_reason="stop")]),
+            )
+
+    provider = FakeProvider()
+
+    import cli
+
+    monkeypatch.setattr(cli, "_probe_api_key", lambda provider: "fake-key")
+    monkeypatch.setattr(
+        inspect_artifact,
+        "make_model_provider",
+        lambda provider, api_key, model: provider_obj,
+    )
+    provider_obj = provider
+
+    result = inspect_artifact._call_llm(
+        {"test_id": "fixture"},
+        provider="openrouter",
+        model="tencent/hy3-preview:free",
+        max_tokens=200,
+        analysis_mode="standard",
+    )
+
+    assert result.attempts == 2
+    assert result.input_tokens == 220
+    assert result.output_tokens == 220
+    assert "first LLM call consumed completion tokens" in result.text
+    assert "## Verdict" in result.text
+    assert result.stop_reason == "stop"
+
+
+def test_call_llm_reports_empty_retry_failure(monkeypatch):
+    class FakeProvider:
+        def send(self, *, messages, tools=None, system="", max_tokens=4096):
+            return inspect_artifact.ModelResponse(
+                content=[],
+                usage=inspect_artifact.ModelUsage(input_tokens=100, output_tokens=max_tokens),
+                raw=SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")]),
+            )
+
+    import cli
+
+    monkeypatch.setattr(cli, "_probe_api_key", lambda provider: "fake-key")
+    monkeypatch.setattr(
+        inspect_artifact,
+        "make_model_provider",
+        lambda provider, api_key, model: FakeProvider(),
+    )
+
+    result = inspect_artifact._call_llm(
+        {"test_id": "fixture"},
+        provider="openrouter",
+        model="tencent/hy3-preview:free",
+        max_tokens=200,
+        analysis_mode="standard",
+    )
+
+    assert result.attempts == 2
+    assert "provider returned no visible assistant text" in result.text
+    assert "Try a larger --analysis-max-tokens" in result.text
+
+
 def test_extract_stop_reason_from_openai_like_response():
     raw = SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")])
 
@@ -224,13 +307,24 @@ def test_cli_artifact_analysis_writes_sibling_markdown(tmp_path, monkeypatch):
 
     class FakeInspector:
         @staticmethod
-        def inspect_one(path, analyze, provider, llm_model, max_tokens, analysis_mode):
+        def inspect_one(
+            path,
+            analyze,
+            provider,
+            llm_model,
+            max_tokens,
+            analysis_mode,
+            timeout_seconds=None,
+            retry_empty_response=True,
+        ):
             assert path == artifact
             assert analyze is True
             assert provider == "openai"
             assert llm_model == "gpt-5.4-mini"
             assert max_tokens == 123
             assert analysis_mode == "deep"
+            assert timeout_seconds == 45
+            assert retry_empty_response is False
             print("Performing LLM analysis (openai/gpt-5.4-mini)...")
             print("diagnosis")
 
@@ -244,6 +338,8 @@ def test_cli_artifact_analysis_writes_sibling_markdown(tmp_path, monkeypatch):
             model="gpt-5.4-mini",
             analysis_max_tokens=123,
             analysis_mode="deep",
+            analysis_timeout=45,
+            analysis_no_empty_retry=True,
         ),
     )
 

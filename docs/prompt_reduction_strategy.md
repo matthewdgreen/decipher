@@ -36,7 +36,7 @@ Measured from a real run (`artifacts/zodiac_408_global_parity/ac10e69b88a6.json`
 
 | Component                            |   Chars   | ≈ Tokens |   %    |
 | ------------------------------------ | --------: | -------: | -----: |
-| **Tool schemas (85 tools)**          |   66,948  |  ~16,700 | **62%** |
+| **Tool schemas (89 tools)**          |   66,948  |  ~16,700 | **62%** |
 | **System prompt** (`get_system_prompt("en")`) | 31,034 | ~7,800 | 29% |
 | User message (this run)              |    9,595  |   ~2,400 |     9% |
 | **Total**                            | ~107,000  |  ~27,000 |        |

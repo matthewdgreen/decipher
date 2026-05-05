@@ -3700,6 +3700,8 @@ def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
     monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_SIZE", "1")
     monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_MASKS", "2")
     monkeypatch.setenv("DECIPHER_NULL_MASK_TOP_N", "3")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_CONFIRM_TOP_N", "2")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_CONFIRM_RERUNS", "1")
 
     def fake_run_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
         key = {0: 13, 1: 4, 2: 8, 3: 13}
@@ -3737,8 +3739,12 @@ def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
 
     assert report["name"] == "search_null_masks"
     assert report["experimental"] is True
+    assert report["confirmation"]["enabled"] is True
+    assert report["confirmation"]["confirmed_mask_count"] >= 1
     assert report["completed_mask_count"] >= 2
     assert report["selected"]["mask"]
+    assert "confirmation" in report["selected"]
+    assert "confirmed_validation_score_v2" in report["selected"]
     assert report["selected"]["decryption"].startswith("WENIGSICH")
     assert report["top_finalists"][0]["validation_score_v2"] >= report["top_finalists"][-1]["validation_score_v2"]
     assert len(report["evaluated_rows"]) == report["evaluated_mask_count"]

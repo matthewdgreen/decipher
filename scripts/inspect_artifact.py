@@ -10,7 +10,9 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -635,6 +637,7 @@ class LLMAnalysisResult:
     estimated_cost_usd: float
     stop_reason: str | None = None
     output_may_be_truncated: bool = False
+    attempts: int = 1
 
 
 def _call_llm(
@@ -644,6 +647,8 @@ def _call_llm(
     model: str | None,
     max_tokens: int,
     analysis_mode: str,
+    timeout_seconds: float | None = None,
+    retry_empty_response: bool = True,
 ) -> LLMAnalysisResult:
     resolved_provider = infer_provider_from_model(model, provider)
     resolved_model = model or default_model_for_provider(resolved_provider)
@@ -666,16 +671,19 @@ def _call_llm(
                 stop_reason=None,
                 output_may_be_truncated=False,
             )
-        client = make_model_provider(
-            provider=resolved_provider,
-            api_key=api_key,
-            model=resolved_model,
-        )
-        response = client.send(
-            messages=[{"role": "user", "content": _analysis_prompt(summary, analysis_mode)}],
-            system=_analysis_system_prompt(),
-            max_tokens=max_tokens,
-        )
+        prompt = _analysis_prompt(summary, analysis_mode)
+        system = _analysis_system_prompt()
+        with _analysis_provider_timeout(resolved_provider, timeout_seconds):
+            client = make_model_provider(
+                provider=resolved_provider,
+                api_key=api_key,
+                model=resolved_model,
+            )
+            response = client.send(
+                messages=[{"role": "user", "content": prompt}],
+                system=system,
+                max_tokens=max_tokens,
+            )
     except (ModelProviderError, Exception) as exc:  # noqa: BLE001
         return LLMAnalysisResult(
             provider=resolved_provider,
@@ -689,15 +697,76 @@ def _call_llm(
             output_may_be_truncated=False,
         )
 
-    text = "\n".join(
-        block.text for block in response.content if isinstance(block, TextBlock)
-    ).strip()
+    text = _visible_response_text(response)
     usage = response.usage
     stop_reason = _extract_stop_reason(response.raw)
     output_may_be_truncated = (
         bool(max_tokens and usage.output_tokens >= max_tokens)
         or str(stop_reason or "").lower() in {"length", "max_tokens", "max_output_tokens"}
     )
+    attempts = 1
+
+    if retry_empty_response and not text and (usage.output_tokens > 0 or output_may_be_truncated):
+        retry_max_tokens = max(max_tokens, min(max_tokens * 2, 8_000))
+        retry_prompt = (
+            f"{prompt}\n\n"
+            "The previous analyzer call returned no visible assistant text even "
+            f"though the provider reported {usage.output_tokens} output tokens"
+            + (f" and stop_reason={stop_reason!r}" if stop_reason else "")
+            + ". For this retry, do not spend tokens on hidden reasoning. "
+            "Return the final markdown analysis immediately, starting with "
+            "`## Verdict`."
+        )
+        try:
+            with _analysis_provider_timeout(resolved_provider, timeout_seconds):
+                retry_response = client.send(
+                    messages=[{"role": "user", "content": retry_prompt}],
+                    system=(
+                        f"{system}\n\n"
+                        "Important for this call: produce visible markdown only. "
+                        "Do not use hidden reasoning or a long preamble."
+                    ),
+                    max_tokens=retry_max_tokens,
+                )
+            retry_text = _visible_response_text(retry_response)
+            retry_usage = retry_response.usage
+            usage = ModelUsage(
+                input_tokens=usage.input_tokens + retry_usage.input_tokens,
+                output_tokens=usage.output_tokens + retry_usage.output_tokens,
+                cache_read_input_tokens=(
+                    usage.cache_read_input_tokens
+                    + retry_usage.cache_read_input_tokens
+                ),
+            )
+            stop_reason = _extract_stop_reason(retry_response.raw) or stop_reason
+            output_may_be_truncated = (
+                bool(retry_max_tokens and retry_usage.output_tokens >= retry_max_tokens)
+                or str(stop_reason or "").lower()
+                in {"length", "max_tokens", "max_output_tokens"}
+            )
+            attempts = 2
+            if retry_text:
+                text = (
+                    "_Analyzer note: the first LLM call consumed completion "
+                    "tokens but returned no visible text, so Decipher retried "
+                    "with a visible-output-only instruction._\n\n"
+                    f"{retry_text}"
+                )
+        except (ModelProviderError, Exception) as exc:  # noqa: BLE001
+            attempts = 2
+            text = (
+                "(LLM analysis failed: first call returned no visible text, "
+                f"and retry failed: {exc})"
+            )
+
+    if not text:
+        text = _empty_llm_response_diagnostic(
+            provider=resolved_provider,
+            model=resolved_model,
+            output_tokens=usage.output_tokens,
+            stop_reason=stop_reason,
+            attempts=attempts,
+        )
     cost = estimate_provider_cost(
         resolved_provider,
         resolved_model,
@@ -715,6 +784,58 @@ def _call_llm(
         estimated_cost_usd=cost,
         stop_reason=stop_reason,
         output_may_be_truncated=output_may_be_truncated,
+        attempts=attempts,
+    )
+
+
+def _visible_response_text(response: ModelResponse) -> str:
+    return "\n".join(
+        block.text for block in response.content if isinstance(block, TextBlock)
+    ).strip()
+
+
+@contextlib.contextmanager
+def _analysis_provider_timeout(provider: str, timeout_seconds: float | None):
+    """Temporarily apply analyzer-specific timeout env vars for adapters."""
+    if not timeout_seconds or timeout_seconds <= 0:
+        yield
+        return
+    env_name = None
+    if provider == "openrouter":
+        env_name = "OPENROUTER_TIMEOUT"
+    elif provider == "ollama":
+        env_name = "OLLAMA_TIMEOUT"
+    if not env_name:
+        yield
+        return
+    old_value = os.environ.get(env_name)
+    os.environ[env_name] = str(timeout_seconds)
+    try:
+        yield
+    finally:
+        if old_value is None:
+            os.environ.pop(env_name, None)
+        else:
+            os.environ[env_name] = old_value
+
+
+def _empty_llm_response_diagnostic(
+    *,
+    provider: str,
+    model: str,
+    output_tokens: int,
+    stop_reason: str | None,
+    attempts: int,
+) -> str:
+    reason = f" stop_reason={stop_reason!r}" if stop_reason else ""
+    return (
+        "(LLM analysis failed: provider returned no visible assistant text "
+        f"after {attempts} attempt(s), while reporting output_tokens="
+        f"{output_tokens}.{reason} This commonly happens with some gateway or "
+        "reasoning-preview models when the completion budget is consumed by "
+        "hidden/provider-specific reasoning before any visible answer is "
+        "emitted. Try a larger --analysis-max-tokens value or a non-reasoning "
+        "model for artifact analysis.)"
     )
 
 
@@ -782,6 +903,8 @@ def inspect_one(
     llm_model: str | None,
     max_tokens: int,
     analysis_mode: str,
+    timeout_seconds: float | None = None,
+    retry_empty_response: bool = True,
 ) -> None:
     artifact = load(path)
     timeline = build_timeline(artifact)
@@ -813,6 +936,8 @@ def inspect_one(
             model=llm_model,
             max_tokens=max_tokens,
             analysis_mode=analysis_mode,
+            timeout_seconds=timeout_seconds,
+            retry_empty_response=retry_empty_response,
         )
         print(f"LLM analysis ({result.provider}/{result.model}):")
         print(result.text)
@@ -822,6 +947,7 @@ def inspect_one(
             f"input={result.input_tokens} output={result.output_tokens} "
             f"cache_read={result.cache_read_tokens} "
             f"estimated_cost=${result.estimated_cost_usd:.4f}"
+            + (f" attempts={result.attempts}" if result.attempts > 1 else "")
             + (f" stop_reason={result.stop_reason}" if result.stop_reason else "")
         )
         if result.output_may_be_truncated:
@@ -868,6 +994,23 @@ def main() -> None:
             "diagnosis ends mid-sentence."
         ),
     )
+    parser.add_argument(
+        "--analysis-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-request timeout in seconds for adapters that expose "
+            "timeouts, currently OpenRouter and Ollama."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-no-empty-retry",
+        action="store_true",
+        help=(
+            "Do not retry when a provider reports output tokens but returns no "
+            "visible text. Useful for slow/free gateway models."
+        ),
+    )
     args = parser.parse_args()
 
     for artifact_path in args.artifacts:
@@ -885,6 +1028,8 @@ def main() -> None:
             args.model,
             args.analysis_max_tokens,
             args.analysis_mode,
+            args.analysis_timeout,
+            not args.analysis_no_empty_retry,
         )
 
 

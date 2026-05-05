@@ -129,7 +129,12 @@ Return a mode-specific diagnostic/solver playbook for one hypothesis branch or
 all active hypothesis branches. The result marks each recommended tool as
 `pending` or `tried` based on this run's tool log and highlights the next
 pending action. It also returns a soft `tool_menu` with always-available,
-foreground, escape, and discouraged tools for the active mode.
+foreground, escape, and discouraged tools for the active mode. For
+homophonic/nomenclator-style branches, it may also return
+`null_mask_guidance` when overcomplete alphabet shape, coarse boundaries, or
+word-island basin evidence makes a null/codeword-mask bakeoff worth trying.
+That recommendation is structural; target language alone is not evidence for
+null masks.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
@@ -390,12 +395,65 @@ homophonic routing) and install the result onto the named branch.
 |-----------|------|-------|
 | `branch` | string | **required** |
 | `homophonic_budget` | string | `full` (default) or `screen` |
-| `homophonic_refinement` | string | `none` (default), `two_stage`, `targeted_repair`, `family_repair` |
+| `homophonic_refinement` | string | `none` (default), `two_stage`, `targeted_repair`, `family_repair`, `null_masks` |
 | `homophonic_solver` | string | `zenith_native` (default) or `legacy` |
 | `override_context_cipher_family` | boolean | deliberate context-family override only |
 | `context_override_rationale` | string | required when overriding exposed benchmark cipher-family context |
 
-*Mirrors the no-LLM automated runner used for frontier/parity evaluation.*
+*Mirrors the no-LLM automated runner used for frontier/parity evaluation. When
+`homophonic_refinement=null_masks`, this tool also creates a null-mask finalist
+review session and returns `null_mask_search_session_id` plus an initial
+`null_mask_finalist_review`.*
+
+---
+
+### `search_review_null_mask_finalists`
+Page through null/codeword mask finalists from a prior
+`search_automated_solver` run with `homophonic_refinement=null_masks`, without
+rerunning the bakeoff.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** — from `search_automated_solver` |
+| `start_rank` | integer | first rank to show (default 1) |
+| `count` | integer | how many finalists to show (default 5) |
+| `review_chars` | integer | max decoded preview chars per finalist (default 600) |
+| `good_score_gap` | number | finalists within this validation-score gap are "good" (default 0.25) |
+
+Use this to compare null/codeword mask candidates by reading quality. Short
+dictionary islands are not enough; look for coherent clauses in the target
+language.
+
+---
+
+### `act_rate_null_mask_finalist`
+Record the agent's contextual readability judgment for a null-mask finalist.
+This judgment is the primary ranking signal; validation and anneal scores are
+supporting evidence only.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** |
+| `rank` | integer | **required** — 1-based finalist rank |
+| `readability_score` | number | **required** — 0 garbage, 1 islands, 2 structured islands, 3 partial clause, 4 mostly coherent |
+| `label` | string | **required** — `coherent_plaintext`, `partial_clause`, `word_islands_with_some_structure`, `word_islands_only`, or `garbage` |
+| `rationale` | string | **required** — quote/paraphrase the reading evidence |
+| `coherent_clause` | string | optional paraphrasable clause |
+
+---
+
+### `act_install_null_mask_finalists`
+Install selected null-mask finalists as workspace branches without rerunning the
+bakeoff.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** |
+| `ranks` | array of int | **required** — 1-based finalist ranks to install |
+| `branch_prefix` | string | optional branch prefix; defaults to `<source_branch>_nullmask_rank` |
+
+Installed branches store the filtered finalist plaintext in branch metadata so
+`decode_show` and `workspace_branch_cards` can read the candidate directly.
 
 ---
 

@@ -1531,6 +1531,59 @@ def test_hypothesis_next_steps_returns_transform_mode_tool_menu():
     assert "act_set_mapping" in menu["discouraged_tools"]
 
 
+def test_hypothesis_next_steps_recommends_null_masks_from_structure_not_language():
+    ex = _homophonic_executor()
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_hom",
+        "cipher_mode": "homophonic_substitution",
+        "rationale": "Large symbol inventory and coarse boundaries suggest homophonic search.",
+    })
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_hom",
+    }))
+
+    report = out["reports"][0]
+    guidance = report["null_mask_guidance"]
+    assert guidance["applies"] is True
+    assert guidance["already_tried"] is False
+    assert guidance["overcomplete_alphabet"] is True
+    assert guidance["coarse_or_missing_boundaries"] is True
+    assert "target language by itself is not evidence" in guidance["not_language_assumption"]
+    assert guidance["suggested_args"]["homophonic_refinement"] == "null_masks"
+    assert report["next_step"]["tool"] == "search_automated_solver"
+    assert report["next_step"]["status"] == "pending_structural_refinement"
+    assert report["next_step"]["suggested_args"]["homophonic_budget"] == "screen"
+
+
+def test_hypothesis_next_steps_does_not_recommend_null_masks_for_german_alone():
+    raw = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="de",
+        word_set={"DER", "DIE", "DAS", "UND"},
+        word_list=["DER", "DIE", "DAS", "UND"],
+        pattern_dict={},
+    )
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_hom",
+        "cipher_mode": "homophonic_substitution",
+        "rationale": "Testing that language alone does not trigger null masks.",
+    })
+
+    out = json.loads(ex.execute("workspace_hypothesis_next_steps", {
+        "branch": "hyp_hom",
+    }))
+
+    guidance = out["reports"][0]["null_mask_guidance"]
+    assert guidance["applies"] is False
+    assert guidance["overcomplete_alphabet"] is False
+    assert guidance["coarse_or_missing_boundaries"] is True
+    assert "target language by itself is not evidence" in guidance["not_language_assumption"]
+
+
 def test_hypothesis_next_steps_returns_quagmire_tool_menu():
     ex = _executor_for("ABCABCABCABC", separator=None)
     ex.execute("workspace_create_hypothesis_branch", {

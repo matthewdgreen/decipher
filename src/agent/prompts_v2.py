@@ -325,6 +325,15 @@ is read-only, but `act_apply_word_repair` may block the mutation. Override \
 that guard only when you can state the coherent clause you are preserving and \
 the repair is deliberately part of that reading.
 
+For homophonic/nomenclator-style branches with an overcomplete symbol \
+alphabet and absent or very coarse word boundaries, nulls or codeword-like \
+symbols may be a structural hypothesis. This is not a language assumption: \
+the target language alone does not make null masks useful. If \
+`workspace_hypothesis_next_steps` returns `null_mask_guidance.applies=true`, \
+call `search_automated_solver` with `homophonic_refinement="null_masks"`, \
+then review, rate, and install finalists with the null-mask finalist tools \
+before drifting into off-family searches or local word repairs.
+
 When you have a genuinely plausible transcription, call `meta_declare_solution` \
 with your chosen branch, a rationale, your own confidence estimate, a brief \
 `reading_summary`, and a `further_iterations_helpful` judgement plus note. If \
@@ -541,8 +550,9 @@ a value below 1.0 is **expected** (homophones), not an error.
 Alphabet size and distribution are diagnostic:
 - Size ≈ 26 (language-appropriate) + IC near language reference → simple \
 substitution.
-- Size > 26 or very flat frequency → **polyalphabetic** (multiple cipher \
-symbols per letter). Copiale (German Masonic) is an example.
+- Size > 26 or very flat frequency can indicate homophonic substitution, \
+nulls/codewords, nomenclator behavior, or a mixed system. Do not assume a \
+single cipher family from alphabet size alone.
 
 ## Homophonic no-boundary caution
 
@@ -589,8 +599,8 @@ WEISS (=weiß).
 EIN, NICHT, DEN, DEM.
 - Common endings: -EN, -ER, -UNG, -LICH, -KEIT, -HEIT, -SCHAFT.
 - Masonic/fraternal vocabulary: BRUDER, MEISTER, LOGE, ORDEN, GRAD.
-- For Copiale-like German homophonic/nomenclator text, scattered German words \
-are not enough. These ciphers can produce many real short words by chance. \
+- For German homophonic/nomenclator text, scattered German words are not \
+enough. These ciphers can produce many real short words by chance. \
 Before declaring, require coherent sentence-level German, not just islands \
 such as DIE, DER, SEIN, RECHT, BESTE, or MEINTEN.
 """,

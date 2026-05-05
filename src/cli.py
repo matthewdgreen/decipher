@@ -42,6 +42,16 @@ _PROVIDER_KEYRING_ACCOUNTS = {
 # Providers that run locally and never need an API key.
 _LOCAL_PROVIDERS = {"ollama"}
 
+HOMOPHONIC_REFINEMENT_CHOICES = [
+    "none",
+    "two_stage",
+    "targeted_repair",
+    "family_repair",
+    "null_masks",
+    "homophonic_nulls",
+    "copiale_nulls",
+]
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -274,6 +284,24 @@ def _add_artifact_analysis_args(parser: argparse.ArgumentParser) -> None:
             "Increase this if the diagnosis ends mid-sentence."
         ),
     )
+    parser.add_argument(
+        "--analysis-timeout",
+        type=float,
+        default=None,
+        help=(
+            "Optional per-request timeout in seconds for automatic artifact "
+            "analysis adapters that expose timeouts, currently OpenRouter and "
+            "Ollama."
+        ),
+    )
+    parser.add_argument(
+        "--analysis-no-empty-retry",
+        action="store_true",
+        help=(
+            "Do not retry automatic artifact analysis when a provider reports "
+            "output tokens but returns no visible text."
+        ),
+    )
 
 
 def _analysis_output_path(artifact_path: str | Path) -> Path:
@@ -319,6 +347,8 @@ def _maybe_write_artifact_analysis(artifact_path: str | Path, args: argparse.Nam
                 llm_model=getattr(args, "model", None),
                 max_tokens=getattr(args, "analysis_max_tokens", 2500),
                 analysis_mode=getattr(args, "analysis_mode", "standard"),
+                timeout_seconds=getattr(args, "analysis_timeout", None),
+                retry_empty_response=not getattr(args, "analysis_no_empty_retry", False),
             )
         output_path.write_text(buffer.getvalue(), encoding="utf-8")
         print(f"Artifact analysis saved: {output_path}", file=sys.stderr)
@@ -1263,7 +1293,7 @@ def main() -> None:
     )
     bench.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
+        choices=HOMOPHONIC_REFINEMENT_CHOICES,
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1379,7 +1409,7 @@ def main() -> None:
     )
     crack.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
+        choices=HOMOPHONIC_REFINEMENT_CHOICES,
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1562,7 +1592,7 @@ def main() -> None:
     )
     tg.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
+        choices=HOMOPHONIC_REFINEMENT_CHOICES,
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )

@@ -794,6 +794,20 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - Detailed plan: `docs/unknown_cipher_agent_plan.md`.
   - Build a classifier/router that ranks cipher hypotheses when cipher-type
     metadata is absent or unreliable.
+  - Add first-class **unknown-language** handling. Records with empty or
+    explicitly unknown `plaintext_language` must not silently fall back to
+    English scoring, English repair assumptions, or English final summaries.
+    Treat language/script uncertainty as an explicit hypothesis dimension:
+    run language-agnostic structural diagnostics first, then test plausible
+    language families only when there is contextual or statistical evidence.
+    Artifacts should record when a solver used a provisional language model,
+    why that language was selected, and how much the result depends on that
+    assumption.
+  - Add agent guidance for unknown-language cases. The agent should avoid
+    "repairing" unknown-script text into familiar-language word islands, should
+    use context materials to distinguish manuscript provenance from plaintext
+    language, and should be able to declare a structural/diagnostic result
+    rather than pretending to have a plaintext decipherment.
   - Search over pipelines such as "transposition -> homophonic",
     "fractionation -> transposition -> substitution", or
     "polyalphabetic -> null removal", and record competing hypotheses in
