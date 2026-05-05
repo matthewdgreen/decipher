@@ -240,6 +240,11 @@ finalist menu. It remains experimental and opt-in; use it to compare top-N
 null/codeword hypotheses before promoting anything into the default automated
 route.
 
+`null_masks` is the canonical refinement name. Older commands that use
+`copiale_nulls` are still accepted as a compatibility alias, but new tests and
+artifacts should use the generic name because the machinery is not
+Copiale-specific.
+
 ### English Model Comparison Packets
 
 Used to compare continuous English n-gram binaries with identical solver
@@ -307,7 +312,7 @@ Use this before claiming progress on Z340-style transform+homophonic cases.
 Known Z340 replay fixture:
 
 ```bash
-DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=8 \
+DECIPHER_PARALLEL_WORKERS=8 \
 DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \

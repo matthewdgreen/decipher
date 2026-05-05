@@ -10,7 +10,7 @@ curated into benchmark records.
 Runnable suite:
 
 ```bash
-DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=8 \
+DECIPHER_PARALLEL_WORKERS=8 \
 DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_parity.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \

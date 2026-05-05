@@ -107,7 +107,13 @@ Current planning split:
   `DECIPHER_PARALLEL_WORKERS` is now the global fallback; both
   `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` and `DECIPHER_TRANSFORM_RANK_THREADS`
   fall back to it when unset and take precedence when set directly. Documented
-  in README under "Parallelism".
+  in README under "Parallelism". All public docs updated to use the new knob.
+- [ ] **Remove the legacy per-subsystem parallelism overrides.**
+  `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` and `DECIPHER_TRANSFORM_RANK_THREADS`
+  are now undocumented escape hatches retained only for short-term benchmarking
+  continuity. Once no active benchmark scripts reference them, remove both from
+  `src/automated/runner.py` (`_homophonic_parallel_seed_workers` and
+  `_transform_rank_threads`) and drop the error-message mentions.
 
 ## Long-Horizon Cipher Capability Roadmap
 

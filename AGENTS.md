@@ -59,7 +59,7 @@ src/
                             un-normalized acceptance, binary model loader (26^5 float32)
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 85 tools across 11 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 89 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
@@ -174,16 +174,13 @@ two opt-in env profiles:
 Both default to `full`. `dev` is for faster local experimentation only and
 should not be used for parity claims; artifacts record both values so runs are
 not silently mixed together.
-For `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`, seed exploration can
-also be parallelized across local CPU cores with
-`DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=<N>`. This is opt-in and preserves the
-same seed set/budget, but it evaluates multiple seeds concurrently instead of
-serially. Use it for faster wall-clock experimentation; artifacts record the
+For `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`, seed exploration is
+parallelized across local CPU cores automatically. The worker count is
+controlled by `DECIPHER_PARALLEL_WORKERS` (global) and defaults to
+`max(1, os.cpu_count() - 1)` capped by the seed count, so modern
+`zenith_native` runs parallelize by default on multi-core machines.
+Set `DECIPHER_PARALLEL_WORKERS=<N>` to override; artifacts record the
 parallel worker count.
-If `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` is not set, the solver now auto-sizes
-to `max(1, os.cpu_count() - 1)` capped by the seed count, so modern
-`zenith_native` runs will usually parallelize by default on multi-core local
-machines.
 There is also an experimental opt-in postprocess for raw no-boundary
 `zenith_native` output:
 - `DECIPHER_HOMOPHONIC_POLISH=1`
@@ -379,7 +376,7 @@ make that asymmetry explicit in reporting.
 ### ✅ **V2 Agentic Framework Completed**
 Successfully implemented state-of-the-art agent-driven cryptanalysis system:
 - **Branching workspace** with fork/merge/compare operations (src/workspace/)
-- **85 specialized tools** across 11 namespaces (src/agent/tools_v2.py)
+- **89 specialized tools** across 11 namespaces (src/agent/tools_v2.py)
 - **Multi-signal scoring** with 6 different metrics (src/analysis/signals.py)
 - **Agent-driven termination** via meta_declare_solution (no rigid phases)
 - **Full observability** via comprehensive run artifacts (src/artifact/schema.py)
@@ -934,11 +931,11 @@ Successfully replaced rigid v1 agent with sophisticated v2 framework:
 ### Core principle: Agent drives, tools assist
 ✅ **Implemented features:**
 1. **Full visibility** — observe/decode/score tools for comprehensive analysis
-2. **Rich tool set** — 49 tools across 10 namespaces (workspace, observe, decode, score, corpus, act, search, repair_agenda, run_python, meta)
+2. **Rich tool set** — 89 tools across 11 namespaces (workspace, observe, decode, score, corpus, act, search, repair_agenda, run_python, meta, benchmark/context)
 3. **Agent freedom** — No phases, agent plans own strategy
 4. **Hypothesis tracking** — Branching workspace preserves exploration history
 
-### Tool Arsenal (49 tools implemented)
+### Tool Arsenal (historical v2 snapshot; see TOOLS.md for current surface)
 ✅ **workspace_* (6 tools)** — fork, list, branch_cards, delete, compare, merge
 ✅ **observe_* (4 tools)** — frequency, isomorph_clusters, ic, homophone_distribution
 ✅ **decode_* (12 tools)** — show, unmapped, heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix, repair_no_boundary, validate_reading_repair, plan_word_repair, plan_word_repair_menu

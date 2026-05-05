@@ -20,7 +20,7 @@ Status:
 Decipher parity baseline:
 
 ```bash
-DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=8 \
+DECIPHER_PARALLEL_WORKERS=8 \
 DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_parity.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
@@ -39,7 +39,7 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 Decipher with proprietary Zenith binary:
 
 ```bash
-DECIPHER_HOMOPHONIC_PARALLEL_SEEDS=8 \
+DECIPHER_PARALLEL_WORKERS=8 \
 DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
