@@ -35,6 +35,9 @@ from agent.model_provider import (  # noqa: E402
 from artifact.analyzer import analyze_artifact, summarize_findings  # noqa: E402
 
 
+DEFAULT_ANALYSIS_MAX_TOKENS = 2_500
+
+
 # ---------------------------------------------------------------------------
 # Data extraction helpers
 # ---------------------------------------------------------------------------
@@ -630,6 +633,8 @@ class LLMAnalysisResult:
     output_tokens: int
     cache_read_tokens: int
     estimated_cost_usd: float
+    stop_reason: str | None = None
+    output_may_be_truncated: bool = False
 
 
 def _call_llm(
@@ -658,6 +663,8 @@ def _call_llm(
                 output_tokens=0,
                 cache_read_tokens=0,
                 estimated_cost_usd=0.0,
+                stop_reason=None,
+                output_may_be_truncated=False,
             )
         client = make_model_provider(
             provider=resolved_provider,
@@ -678,12 +685,19 @@ def _call_llm(
             output_tokens=0,
             cache_read_tokens=0,
             estimated_cost_usd=0.0,
+            stop_reason=None,
+            output_may_be_truncated=False,
         )
 
     text = "\n".join(
         block.text for block in response.content if isinstance(block, TextBlock)
     ).strip()
     usage = response.usage
+    stop_reason = _extract_stop_reason(response.raw)
+    output_may_be_truncated = (
+        bool(max_tokens and usage.output_tokens >= max_tokens)
+        or str(stop_reason or "").lower() in {"length", "max_tokens", "max_output_tokens"}
+    )
     cost = estimate_provider_cost(
         resolved_provider,
         resolved_model,
@@ -699,7 +713,29 @@ def _call_llm(
         output_tokens=usage.output_tokens,
         cache_read_tokens=usage.cache_read_input_tokens,
         estimated_cost_usd=cost,
+        stop_reason=stop_reason,
+        output_may_be_truncated=output_may_be_truncated,
     )
+
+
+def _extract_stop_reason(raw_response: Any) -> str | None:
+    """Best-effort provider-neutral stop reason for LLM analyzer calls."""
+    if raw_response is None:
+        return None
+    stop_reason = getattr(raw_response, "stop_reason", None)
+    if stop_reason:
+        return str(stop_reason)
+    choices = getattr(raw_response, "choices", None) or []
+    if choices:
+        reason = getattr(choices[0], "finish_reason", None)
+        if reason:
+            return str(reason)
+    candidates = getattr(raw_response, "candidates", None) or []
+    if candidates:
+        reason = getattr(candidates[0], "finish_reason", None)
+        if reason:
+            return str(reason)
+    return None
 
 
 def _analysis_system_prompt() -> str:
@@ -786,7 +822,14 @@ def inspect_one(
             f"input={result.input_tokens} output={result.output_tokens} "
             f"cache_read={result.cache_read_tokens} "
             f"estimated_cost=${result.estimated_cost_usd:.4f}"
+            + (f" stop_reason={result.stop_reason}" if result.stop_reason else "")
         )
+        if result.output_may_be_truncated:
+            print(
+                "Warning: LLM analysis may be truncated; output reached the "
+                f"--analysis-max-tokens limit ({max_tokens}). Re-run with a "
+                "larger value, for example --analysis-max-tokens 5000."
+            )
         print()
 
 
@@ -819,8 +862,11 @@ def main() -> None:
     parser.add_argument(
         "--analysis-max-tokens",
         type=int,
-        default=900,
-        help="Maximum output tokens for LLM analysis.",
+        default=DEFAULT_ANALYSIS_MAX_TOKENS,
+        help=(
+            "Maximum output tokens for LLM analysis. Increase this if the "
+            "diagnosis ends mid-sentence."
+        ),
     )
     args = parser.parse_args()
 

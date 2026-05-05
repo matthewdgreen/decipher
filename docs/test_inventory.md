@@ -222,6 +222,24 @@ validation does not pick the post-hoc best mask. Use `--include-all-rows` when
 generating probe JSONL if you want to tune ranking without rerunning the
 expensive solver pass. This is not yet a production automated route.
 
+Opt-in automated Copiale null-mask finalist menu:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
+  --suite-file frontier/copiale_evidence_packet.jsonl \
+  --solvers decipher \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --homophonic-budget screen \
+  --homophonic-refinement copiale_nulls \
+  --artifact-dir artifacts/copiale_evidence_packet/automated_null_masks
+```
+
+This route records a `search_copiale_null_masks` step with candidate symbols,
+evaluated masks, validation components, the selected finalist, and the top
+finalist menu. It remains experimental and opt-in; use it to compare top-N
+null/codeword hypotheses before promoting anything into the default automated
+route.
+
 ### English Model Comparison Packets
 
 Used to compare continuous English n-gram binaries with identical solver

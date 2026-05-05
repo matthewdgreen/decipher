@@ -128,12 +128,20 @@ benchmark issue.
   accuracy without rerunning the native solver. It also reports aggregate
   exact-hit/gap metrics, top-N capture rates, and component-level miss
   analysis.
-- [ ] Decide whether the automated route should use:
+- [x] Add a first opt-in top-N null-mask automated profile. Use
+  `--homophonic-refinement copiale_nulls` to run the baseline homophonic
+  solver, generate candidate null/codeword masks, solve filtered streams, rank
+  a finalist menu with ground-truth-free German coherence signals, and record
+  `search_copiale_null_masks` in the artifact. This is deliberately not the
+  default route yet.
+- [ ] Decide whether the default automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling
   - nomenclator/codeword hypotheses
   - segmentation/transcription normalization first
-- [ ] Surface diagnostic recommendations to the agent in concise branch cards.
+- [ ] Surface the null-mask finalist menu to the agent in concise branch cards
+  so it can compare several German-ish branches instead of inheriting a single
+  brittle automated selection.
 
 ## Milestone 4: Agent Workflows For German Manuscripts
 

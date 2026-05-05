@@ -73,7 +73,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
         default="none",
         help="Optional second-stage local refinement for Decipher automated homophonic runs.",
     )

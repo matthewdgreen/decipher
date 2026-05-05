@@ -612,7 +612,10 @@ PYTHONPATH=src .venv/bin/python scripts/inspect_artifact.py \
 The script prints `Performing LLM analysis...` before the API call and reports
 token usage plus estimated cost when the provider returns usage counters. It
 uses the same API-key locations and provider/model naming rules as agentic
-runs.
+runs. The default analysis output budget is 2,500 tokens; if a report ends
+mid-sentence, re-run with a larger value such as
+`--analysis-max-tokens 5000`. The inspector warns when the model appears to
+hit the configured output cap.
 
 For agentic CLI runs, pass `--analyze` directly to `decipher benchmark`,
 `decipher crack`, `decipher testgen`, or `decipher resume-artifact` to write a

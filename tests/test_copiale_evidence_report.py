@@ -76,7 +76,7 @@ def test_calibrate_against_ground_truth_counts_insertion_symbols():
 
 
 def test_probe_generates_bounded_null_masks():
-    masks = copiale_probe._generate_masks(["A", "B", "C", "D", "E"], max_mask_size=2)
+    masks = copiale_probe.generate_null_masks(["A", "B", "C", "D", "E"], max_mask_size=2)
 
     assert masks[:6] == [(), ("A",), ("B",), ("C",), ("D",), ("E",)]
     assert ("A", "B") in masks

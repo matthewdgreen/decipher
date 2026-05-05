@@ -1531,6 +1531,11 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       whether some symbols or clusters should be treated as nulls,
       abbreviations, or multi-letter tokens rather than simple letter
       homophones. Do not promote a single null mask by default yet.
+      - First implementation is now opt-in as
+        `--homophonic-refinement copiale_nulls`. It records a
+        `search_copiale_null_masks` finalist menu in automated artifacts. Next
+        step is to run the five-page packet and decide how the agent should
+        inspect/promote these finalists.
     - [x] Add a prototype null-mask search script:
       `scripts/probe_copiale_null_masks.py`. It generates null masks without
       plaintext, reruns `zenith_native` on filtered token streams, and reports

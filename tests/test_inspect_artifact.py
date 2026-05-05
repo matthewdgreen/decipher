@@ -181,6 +181,41 @@ def test_call_llm_uses_provider_layer_and_reports_cost(monkeypatch):
     assert result.input_tokens == 1000
     assert result.output_tokens == 200
     assert result.estimated_cost_usd > 0
+    assert result.output_may_be_truncated is True
+
+
+def test_call_llm_does_not_warn_when_under_token_cap(monkeypatch):
+    class FakeProvider:
+        def send(self, *, messages, tools=None, system="", max_tokens=4096):
+            return inspect_artifact.ModelResponse(
+                content=[inspect_artifact.TextBlock(text="diagnosis")],
+                usage=inspect_artifact.ModelUsage(input_tokens=1000, output_tokens=199),
+            )
+
+    import cli
+
+    monkeypatch.setattr(cli, "_probe_api_key", lambda provider: "fake-key")
+    monkeypatch.setattr(
+        inspect_artifact,
+        "make_model_provider",
+        lambda provider, api_key, model: FakeProvider(),
+    )
+
+    result = inspect_artifact._call_llm(
+        {"test_id": "fixture"},
+        provider="openai",
+        model="gpt-5.4-mini",
+        max_tokens=200,
+        analysis_mode="standard",
+    )
+
+    assert result.output_may_be_truncated is False
+
+
+def test_extract_stop_reason_from_openai_like_response():
+    raw = SimpleNamespace(choices=[SimpleNamespace(finish_reason="length")])
+
+    assert inspect_artifact._extract_stop_reason(raw) == "length"
 
 
 def test_cli_artifact_analysis_writes_sibling_markdown(tmp_path, monkeypatch):
