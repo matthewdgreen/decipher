@@ -4689,25 +4689,44 @@ class WorkspaceToolExecutor:
                 branches.append(name)
         reports = [self._hypothesis_next_steps(name) for name in branches]
 
-        # Consume hypothesis_next_steps_required pending prerequisite (if any).
+        # Consume hypothesis_next_steps_required pending prerequisite (if any),
+        # but ONLY if this call actually covers the pending declaring branch.
+        # Calling next_steps for an unrelated branch does not satisfy the gate.
         was_pending = "hypothesis_next_steps_required" in self._pending_declare_prerequisites
         if was_pending:
-            self._pending_declare_prerequisites.discard("hypothesis_next_steps_required")
-            remaining = self._pending_declare_prerequisites
-            if not remaining:
-                chain_note = (
-                    "PREREQUISITE MET — hypothesis_next_steps_required satisfied. "
-                    "All declaration prerequisites are now complete. "
-                    "Your next action must be meta_declare_solution."
-                )
+            pending_branch = self._pending_declare_branch
+            # requested=None/""  means "all hypothesis branches" — accept as covering.
+            # requested=<name>   must match the pending declaring branch.
+            covers_pending = (
+                not requested
+                or requested == pending_branch
+            )
+            if covers_pending:
+                self._pending_declare_prerequisites.discard("hypothesis_next_steps_required")
+                remaining = self._pending_declare_prerequisites
+                if not remaining:
+                    chain_note = (
+                        "PREREQUISITE MET — hypothesis_next_steps_required satisfied. "
+                        "All declaration prerequisites are now complete. "
+                        "Your next action must be meta_declare_solution."
+                    )
+                else:
+                    tools_list = ", ".join(
+                        _PREREQ_FIX_TOOL.get(r, r) for r in remaining
+                    )
+                    chain_note = (
+                        f"Prerequisite met: hypothesis_next_steps_required. "
+                        f"{len(remaining)} still pending: {', '.join(remaining)} "
+                        f"({tools_list}). Then call meta_declare_solution."
+                    )
             else:
-                tools_list = ", ".join(
-                    _PREREQ_FIX_TOOL.get(r, r) for r in remaining
-                )
+                # Wrong branch — do not consume the gate; steer the agent.
                 chain_note = (
-                    f"Prerequisite met: hypothesis_next_steps_required. "
-                    f"{len(remaining)} still pending: {', '.join(remaining)} "
-                    f"({tools_list}). Then call meta_declare_solution."
+                    f"NOTE: The pending declaration is for branch '{pending_branch}', "
+                    f"but this call covered '{requested}'. "
+                    f"To satisfy hypothesis_next_steps_required, call "
+                    f"workspace_hypothesis_next_steps(branch='{pending_branch}') "
+                    f"and then meta_declare_solution."
                 )
         else:
             chain_note = (
@@ -10787,11 +10806,14 @@ class WorkspaceToolExecutor:
             quick_prerequisites.append({
                 "reason": "hypothesis_next_steps_required",
                 "fix_tool": "workspace_hypothesis_next_steps",
+                # Include the declaring branch explicitly so the agent calls the
+                # right branch and not an unrelated hypothesis branch.
+                "fix_tool_args": {"branch": branch},
                 "cipher_mode": hyp_block.get("cipher_mode"),
                 "note": (
-                    "This branch is a cipher-mode hypothesis. Call "
-                    "workspace_hypothesis_next_steps to record the playbook "
-                    "and tried tools."
+                    f"This branch ('{branch}') is a cipher-mode hypothesis. "
+                    f"Call workspace_hypothesis_next_steps(branch='{branch}') "
+                    "to record the playbook and tried tools."
                 ),
             })
 
