@@ -3618,6 +3618,10 @@ def _is_null_mask_refinement(refinement: str) -> bool:
         "null_masks",
         "homophonic_nulls",
         "null_topn",
+        # Backward-compatible aliases from the initial Copiale-specific probe.
+        "copiale_nulls",
+        "copiale_null_masks",
+        "copiale_null_topn",
     }
 
 
@@ -5212,7 +5216,11 @@ def _homophonic_repair_profile() -> str:
 
 
 def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
-    raw = os.environ.get("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS")
+    # Specific override > global override > auto-size from CPU count
+    raw = (
+        os.environ.get("DECIPHER_HOMOPHONIC_PARALLEL_SEEDS")
+        or os.environ.get("DECIPHER_PARALLEL_WORKERS")
+    )
     if raw is None:
         cpu_count = os.cpu_count() or 1
         value = max(1, cpu_count - 1)
@@ -5224,7 +5232,8 @@ def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
         value = int(raw)
     except ValueError as exc:
         raise ValueError(
-            "DECIPHER_HOMOPHONIC_PARALLEL_SEEDS must be an integer >= 1"
+            "DECIPHER_HOMOPHONIC_PARALLEL_SEEDS / DECIPHER_PARALLEL_WORKERS"
+            " must be an integer >= 1"
         ) from exc
     value = max(1, value)
     if seed_count is not None:
@@ -5255,11 +5264,20 @@ def _transform_rank_engine() -> str:
 
 
 def _transform_rank_threads() -> int:
-    raw = os.environ.get("DECIPHER_TRANSFORM_RANK_THREADS", "0").strip() or "0"
+    # Specific override > global override > 0 (let Rayon/OS decide thread count)
+    raw = (
+        os.environ.get("DECIPHER_TRANSFORM_RANK_THREADS")
+        or os.environ.get("DECIPHER_PARALLEL_WORKERS")
+        or "0"
+    )
+    raw = raw.strip() or "0"
     try:
         return max(0, int(raw))
     except ValueError as exc:
-        raise ValueError("DECIPHER_TRANSFORM_RANK_THREADS must be an integer >= 0") from exc
+        raise ValueError(
+            "DECIPHER_TRANSFORM_RANK_THREADS / DECIPHER_PARALLEL_WORKERS"
+            " must be an integer >= 0"
+        ) from exc
 
 
 def _zenith_native_seed_worker(

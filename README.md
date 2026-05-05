@@ -585,6 +585,26 @@ PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
   --transform-search rank
 ```
 
+## Parallelism
+
+Both the homophonic seed-parallel search and the Rust transform-rank engine
+respect a single global worker count:
+
+```bash
+DECIPHER_PARALLEL_WORKERS=8 decipher crack -f cipher.txt --transform-search rank
+```
+
+Per-subsystem overrides take precedence over the global setting:
+
+| Variable | Subsystem | Default |
+|---|---|---|
+| `DECIPHER_PARALLEL_WORKERS` | Global fallback for all subsystems | auto |
+| `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` | Homophonic SA seed workers | `cpu_count − 1` |
+| `DECIPHER_TRANSFORM_RANK_THREADS` | Rust transform-rank threads | `0` (Rayon auto) |
+
+Setting `DECIPHER_PARALLEL_WORKERS=1` is useful for deterministic single-threaded
+profiling or CI runs where reproducible output is more important than speed.
+
 ## Build Language Models
 
 Decipher can build Zenith-compatible binary n-gram models from public-domain

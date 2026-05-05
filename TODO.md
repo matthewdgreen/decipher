@@ -103,14 +103,11 @@ Current planning split:
   from the runner, keep only any targeted parity tests that still earn their
   keep, and remove documentation references. After this lands, `zenith_native`
   becomes the sole homophonic path.
-- [ ] **Unify per-subsystem parallelism env vars under a single global.**
-  Today, `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` controls homophonic anneal seed
-  workers and `DECIPHER_TRANSFORM_RANK_THREADS` controls transform-rank Rust
-  threads. These should collapse to one global env var (e.g.
-  `DECIPHER_PARALLEL_WORKERS`) that every parallel-capable solver path
-  consults, with optional per-subsystem overrides retained as escape hatches
-  for benchmarking. Once unified, the global setting can be documented at the
-  top of the README rather than buried inside cipher-family sections.
+- [x] **Unify per-subsystem parallelism env vars under a single global.**
+  `DECIPHER_PARALLEL_WORKERS` is now the global fallback; both
+  `DECIPHER_HOMOPHONIC_PARALLEL_SEEDS` and `DECIPHER_TRANSFORM_RANK_THREADS`
+  fall back to it when unset and take precedence when set directly. Documented
+  in README under "Parallelism".
 
 ## Long-Horizon Cipher Capability Roadmap
 
