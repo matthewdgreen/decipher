@@ -3673,3 +3673,74 @@ def test_run_homophonic_pool_rerank_can_override_best_anneal_seed(monkeypatch):
     assert step["selection_profile"] == "pool_rerank_v1"
     assert step["selection"]["selected_seed"] == 1
     assert step["selection"]["top_candidates"][0]["preview"].startswith("THERETHERETHERE")
+
+
+def test_copiale_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
+    symbols = ["S001", "S002", "S003", "S004"] * 24
+    cipher_text = parse_canonical_transcription(" ".join(symbols))
+    base_key = {0: 4, 1: 4, 2: 4, 3: 13}
+    base_step = {
+        "quality": {
+            "collapsed": True,
+            "top_letter_fraction": 0.30,
+            "unique_letters": 8,
+            "letter_count": 96,
+            "penalty": 0.0,
+        },
+        "diagnostics": {
+            "dict_rate": 0.2,
+            "letter_count": 96,
+            "segmentation_cost": 500,
+        },
+        "anneal_score": -9.0,
+        "selection_score": -9.0,
+    }
+
+    monkeypatch.setenv("DECIPHER_COPIALE_NULL_CANDIDATE_LIMIT", "4")
+    monkeypatch.setenv("DECIPHER_COPIALE_NULL_MAX_MASK_SIZE", "1")
+    monkeypatch.setenv("DECIPHER_COPIALE_NULL_MAX_MASKS", "2")
+    monkeypatch.setenv("DECIPHER_COPIALE_NULL_TOP_N", "3")
+
+    def fake_run_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+        key = {0: 13, 1: 4, 2: 8, 3: 13}
+        plaintext = "WENIGSICHUNDARBEIT" * 4
+        step = {
+            "quality": {
+                "collapsed": False,
+                "top_letter_fraction": 0.20,
+                "unique_letters": 18,
+                "letter_count": len(plaintext),
+                "penalty": 0.0,
+            },
+            "diagnostics": {
+                "dict_rate": 0.62,
+                "letter_count": len(plaintext),
+                "segmentation_cost": 80,
+            },
+            "anneal_score": -4.0,
+            "selection_score": -4.0,
+        }
+        return "zenith_native", key, plaintext, step
+
+    monkeypatch.setattr(automated_runner, "_run_homophonic", fake_run_homophonic)
+
+    report = automated_runner._run_copiale_null_mask_bakeoff(
+        cipher_text=cipher_text,
+        language="de",
+        budget="screen",
+        solver_profile="zenith_native",
+        base_solver="zenith_native",
+        base_key=base_key,
+        base_decryption="E" * len(symbols),
+        base_step=base_step,
+    )
+
+    assert report["name"] == "search_copiale_null_masks"
+    assert report["experimental"] is True
+    assert report["completed_mask_count"] >= 2
+    assert report["selected"]["mask"]
+    assert report["selected"]["decryption"].startswith("WENIGSICH")
+    assert report["top_finalists"][0]["validation_score_v2"] >= report["top_finalists"][-1]["validation_score_v2"]
+    assert len(report["evaluated_rows"]) == report["evaluated_mask_count"]
+    assert "decryption" not in report["evaluated_rows"][0]
+    assert report["evaluated_rows"][0]["preview"]

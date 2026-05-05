@@ -268,8 +268,11 @@ def _add_artifact_analysis_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--analysis-max-tokens",
         type=int,
-        default=900,
-        help="Maximum output tokens for automatic artifact LLM analysis.",
+        default=2500,
+        help=(
+            "Maximum output tokens for automatic artifact LLM analysis. "
+            "Increase this if the diagnosis ends mid-sentence."
+        ),
     )
 
 
@@ -314,7 +317,7 @@ def _maybe_write_artifact_analysis(artifact_path: str | Path, args: argparse.Nam
                 analyze=True,
                 provider=getattr(args, "provider", None),
                 llm_model=getattr(args, "model", None),
-                max_tokens=getattr(args, "analysis_max_tokens", 900),
+                max_tokens=getattr(args, "analysis_max_tokens", 2500),
                 analysis_mode=getattr(args, "analysis_mode", "standard"),
             )
         output_path.write_text(buffer.getvalue(), encoding="utf-8")
@@ -1260,7 +1263,7 @@ def main() -> None:
     )
     bench.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1376,7 +1379,7 @@ def main() -> None:
     )
     crack.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1559,7 +1562,7 @@ def main() -> None:
     )
     tg.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )

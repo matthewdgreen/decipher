@@ -21,6 +21,12 @@ from typing import Any, Callable
 
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
+from analysis.copiale_nulls import (
+    diagnose_cipher_for_null_candidates,
+    generate_null_masks,
+    null_mask_validation_score_v2,
+    select_null_candidate_symbols,
+)
 from analysis.segment import (
     repair_key_with_dictionary,
     repair_no_boundary_text,
@@ -572,15 +578,40 @@ def run_automated(
         elif routing["route"] == "unsupported_mixed_transposition":
             raise ValueError(routing["reason"])
         elif routing["route"] == "homophonic":
+            base_refinement = (
+                "none"
+                if _is_copiale_null_mask_refinement(homophonic_refinement)
+                else homophonic_refinement
+            )
             solver, key, decryption, step = _run_homophonic(
                 cipher_text,
                 language,
                 budget=homophonic_budget,
-                refinement=homophonic_refinement,
+                refinement=base_refinement,
                 solver_profile=homophonic_solver,
                 ground_truth=ground_truth,
             )
             steps.append(step)
+            if _is_copiale_null_mask_refinement(homophonic_refinement):
+                bakeoff = _run_copiale_null_mask_bakeoff(
+                    cipher_text=cipher_text,
+                    language=language,
+                    budget=homophonic_budget,
+                    solver_profile=homophonic_solver,
+                    base_solver=solver,
+                    base_key=key,
+                    base_decryption=decryption,
+                    base_step=step,
+                )
+                steps.append(bakeoff)
+                winner = bakeoff.get("selected") if isinstance(bakeoff, dict) else None
+                if isinstance(winner, dict) and winner.get("status") == "completed":
+                    solver = "copiale_null_mask_homophonic"
+                    key = {
+                        int(k): int(v)
+                        for k, v in (winner.get("key") or {}).items()
+                    }
+                    decryption = str(winner.get("decryption") or "")
         elif routing["route"] == "pure_transposition":
             solver, key, decryption, step = _run_pure_transposition(
                 cipher_text,
@@ -3582,6 +3613,237 @@ def _run_homophonic(
     return "native_homophonic_anneal", selected_key, selected_plaintext, step
 
 
+def _is_copiale_null_mask_refinement(refinement: str) -> bool:
+    return (refinement or "none").strip().lower() in {
+        "copiale_nulls",
+        "copiale_null_masks",
+        "copiale_null_topn",
+    }
+
+
+def _run_copiale_null_mask_bakeoff(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    budget: str,
+    solver_profile: str,
+    base_solver: str,
+    base_key: dict[int, int],
+    base_decryption: str,
+    base_step: dict[str, Any],
+) -> dict[str, Any]:
+    """Experimental top-N null-mask finalist menu for Copiale-like pages.
+
+    This is opt-in via ``homophonic_refinement=copiale_nulls``. It does not use
+    benchmark plaintext: candidates are generated from ciphertext plus the
+    solver-produced baseline key, and ranked by German readability/collapse
+    signals.
+    """
+    started = time.time()
+    pt_alpha = _plaintext_alphabet(language)
+    id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)}
+    word_list = _word_list(language)
+    candidate_limit = int(os.environ.get("DECIPHER_COPIALE_NULL_CANDIDATE_LIMIT", "18"))
+    max_mask_size = int(os.environ.get("DECIPHER_COPIALE_NULL_MAX_MASK_SIZE", "2"))
+    max_masks = int(os.environ.get("DECIPHER_COPIALE_NULL_MAX_MASKS", "80"))
+    top_n = int(os.environ.get("DECIPHER_COPIALE_NULL_TOP_N", "6"))
+    null_budget = os.environ.get("DECIPHER_COPIALE_NULL_BUDGET", "screen").strip().lower()
+    if null_budget not in {"screen", "full"}:
+        null_budget = "screen"
+
+    base_quality = base_step.get("quality") if isinstance(base_step.get("quality"), dict) else _plaintext_quality(base_decryption, base_key)
+    diagnostics = diagnose_cipher_for_null_candidates(
+        cipher_text,
+        key=base_key,
+        id_to_letter=id_to_letter,
+        quality=base_quality,
+    )
+    candidate_symbols = select_null_candidate_symbols(diagnostics, limit=candidate_limit)
+    masks = generate_null_masks(candidate_symbols, max_mask_size)
+    if max_masks > 0:
+        masks = [()] + masks[1:max_masks + 1]
+
+    rows: list[dict[str, Any]] = []
+
+    def finalist_row(
+        *,
+        mask: tuple[str, ...],
+        filtered_length: int,
+        solver: str,
+        key: dict[int, int],
+        decryption: str,
+        step: dict[str, Any],
+        elapsed_seconds: float,
+    ) -> dict[str, Any]:
+        quality = step.get("quality") if isinstance(step.get("quality"), dict) else _plaintext_quality(decryption, key)
+        row = {
+            "mask": list(mask),
+            "mask_size": len(mask),
+            "filtered_length": filtered_length,
+            "solver": solver,
+            "status": "completed",
+            "anneal_score": step.get("anneal_score"),
+            "selection_score": step.get("selection_score", step.get("anneal_score")),
+            "quality": quality,
+            "diagnostics": step.get("diagnostics")
+            if isinstance(step.get("diagnostics"), dict)
+            else _automated_candidate_diagnostics(
+                decryption,
+                language=language,
+                word_list=word_list,
+            ),
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "preview": decryption[:300],
+            "decryption": decryption,
+            "key": {str(k): v for k, v in key.items()},
+        }
+        validation = null_mask_validation_score_v2(row, original_length=len(cipher_text.tokens))
+        row["validation_score_v2"] = validation["score"]
+        row["validation_components_v2"] = validation["components"]
+        return row
+
+    rows.append(finalist_row(
+        mask=(),
+        filtered_length=len(cipher_text.tokens),
+        solver=base_solver,
+        key=base_key,
+        decryption=base_decryption,
+        step=base_step,
+        elapsed_seconds=0.0,
+    ))
+
+    for index, mask in enumerate(masks[1:], start=1):
+        mask_set = set(mask)
+        filtered_tokens = [
+            token
+            for token in cipher_text.tokens
+            if cipher_text.alphabet.decode([token]) not in mask_set
+        ]
+        if len(filtered_tokens) < 50:
+            rows.append({
+                "mask": list(mask),
+                "mask_size": len(mask),
+                "filtered_length": len(filtered_tokens),
+                "status": "skipped",
+                "reason": "filtered_stream_too_short",
+            })
+            continue
+        candidate_cipher = _cipher_text_from_tokens(
+            filtered_tokens,
+            cipher_text.alphabet,
+            source=f"{cipher_text.source}:copiale_null_mask:{index}",
+        )
+        candidate_started = time.time()
+        try:
+            candidate_solver, candidate_key, candidate_decryption, candidate_step = _run_homophonic(
+                candidate_cipher,
+                language,
+                budget=null_budget,
+                refinement="none",
+                solver_profile=solver_profile,
+                ground_truth=None,
+                seed_offset=index * 100,
+            )
+            rows.append(finalist_row(
+                mask=mask,
+                filtered_length=len(filtered_tokens),
+                solver=candidate_solver,
+                key=candidate_key,
+                decryption=candidate_decryption,
+                step=candidate_step,
+                elapsed_seconds=time.time() - candidate_started,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            rows.append({
+                "mask": list(mask),
+                "mask_size": len(mask),
+                "filtered_length": len(filtered_tokens),
+                "status": "error",
+                "reason": f"{type(exc).__name__}: {exc}",
+                "elapsed_seconds": round(time.time() - candidate_started, 3),
+            })
+
+    completed = [row for row in rows if row.get("status") == "completed"]
+    completed.sort(
+        key=lambda item: (
+            float(item.get("validation_score_v2") or float("-inf")),
+            float(item.get("selection_score") or float("-inf")),
+        ),
+        reverse=True,
+    )
+    selected = completed[0] if completed else None
+    selected_mask = tuple(selected.get("mask") or []) if selected else ()
+    compact_rows = [_compact_copiale_null_row(row) for row in rows]
+    return {
+        "name": "search_copiale_null_masks",
+        "status": "completed" if completed else "error",
+        "experimental": True,
+        "policy": (
+            "Opt-in Copiale null/codeword bakeoff. Candidate masks are "
+            "generated from ciphertext diagnostics and the baseline solver "
+            "key, then ranked by ground-truth-free German coherence signals. "
+            "This is not the default automated route."
+        ),
+        "language": language,
+        "budget": null_budget,
+        "solver_profile": solver_profile,
+        "candidate_limit": candidate_limit,
+        "candidate_symbols": candidate_symbols,
+        "mask_count": len(masks),
+        "evaluated_mask_count": len(rows),
+        "completed_mask_count": len(completed),
+        "max_mask_size": max_mask_size,
+        "max_masks": max_masks,
+        "top_n": top_n,
+        "diagnostics": diagnostics,
+        "selected_mask": list(selected_mask),
+        "selected": selected,
+        "top_finalists": completed[:top_n],
+        "evaluated_rows": compact_rows,
+        "baseline_rank": next(
+            (
+                rank
+                for rank, row in enumerate(completed, start=1)
+                if not row.get("mask")
+            ),
+            None,
+        ),
+        "elapsed_seconds": round(time.time() - started, 3),
+    }
+
+
+def _compact_copiale_null_row(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep every null-mask row inspectable without storing every full decrypt."""
+    compact = {
+        "mask": row.get("mask") or [],
+        "mask_size": row.get("mask_size"),
+        "status": row.get("status"),
+        "filtered_length": row.get("filtered_length"),
+        "validation_score_v2": row.get("validation_score_v2"),
+        "validation_components_v2": row.get("validation_components_v2"),
+        "selection_score": row.get("selection_score"),
+        "anneal_score": row.get("anneal_score"),
+        "elapsed_seconds": row.get("elapsed_seconds"),
+        "preview": str(row.get("preview") or "")[:180],
+        "reason": row.get("reason"),
+    }
+    diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
+    quality = row.get("quality") if isinstance(row.get("quality"), dict) else {}
+    compact["diagnostics"] = {
+        "dict_rate": diagnostics.get("dict_rate"),
+        "segmentation_cost": diagnostics.get("segmentation_cost"),
+        "unique_letters": diagnostics.get("unique_letters"),
+        "top_letter_fraction": diagnostics.get("top_letter_fraction"),
+    }
+    compact["quality"] = {
+        "collapsed": quality.get("collapsed"),
+        "top_letter_fraction": quality.get("top_letter_fraction"),
+        "unique_letters": quality.get("unique_letters"),
+        "penalty": quality.get("penalty"),
+    }
+    return compact
+
+
 def _is_collapsed_plaintext(plaintext: str) -> bool:
     return _plaintext_quality(plaintext, key=None)["collapsed"]
 
@@ -6073,7 +6335,7 @@ def _homophonic_refinement_params(
         }
     raise ValueError(
         f"unsupported homophonic refinement '{refinement}' "
-        "(expected one of: none, two_stage, targeted_repair, family_repair)"
+        "(expected one of: none, two_stage, targeted_repair, family_repair, copiale_nulls)"
     )
 
 
