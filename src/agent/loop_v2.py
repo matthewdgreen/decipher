@@ -755,6 +755,7 @@ def build_workspace_panel(
     run_python_calls: int = 0,
     repair_agenda: list[dict[str, Any]] | None = None,
     gate_hits: list[dict[str, Any]] | None = None,
+    declare_readiness: dict[str, Any] | None = None,
 ) -> str:
     """Render ciphertext + current partial decode(s) for this turn.
 
@@ -881,6 +882,27 @@ def build_workspace_panel(
             f"risk *regression*. Declaration records the CURRENT accuracy; "
             f"chasing perfection and running out of iterations scores ZERO."
         )
+        lines.append("")
+
+    if declare_readiness:
+        # Compact declaration-readiness checklist.  Only shown when a recent
+        # meta_declare_solution was blocked by quick prerequisites so the agent
+        # can see what remains without spending a declare attempt to find out.
+        pending = declare_readiness.get("prerequisites_remaining") or []
+        branch_name = declare_readiness.get("branch") or ""
+        if pending:
+            prereq_str = "  ".join(
+                f"✗ {r}" for r in pending
+            )
+            lines.append(
+                f"📋 **Declare checklist** (`{branch_name}`): {prereq_str} "
+                "— address all, then call `meta_declare_solution` once."
+            )
+        else:
+            lines.append(
+                f"📋 **Declare checklist** (`{branch_name}`): ✓ all prerequisites met "
+                "— call `meta_declare_solution` now."
+            )
         lines.append("")
 
     if gate_hits:
@@ -1563,6 +1585,14 @@ def run_v2(
             run_python_calls = sum(
                 1 for tc in executor.call_log if tc.tool_name == "run_python"
             )
+            declare_readiness = None
+            if executor._pending_declare_branch:
+                declare_readiness = {
+                    "branch": executor._pending_declare_branch,
+                    "prerequisites_remaining": sorted(
+                        executor._pending_declare_prerequisites
+                    ),
+                }
             panel_text = build_workspace_panel(
                 workspace, iteration,
                 language=language, word_set=word_set,
@@ -1573,6 +1603,7 @@ def run_v2(
                 run_python_calls=run_python_calls,
                 repair_agenda=executor.repair_agenda,
                 gate_hits=executor._gate_hits,
+                declare_readiness=declare_readiness,
             )
             tool_results_blocks.append({"type": "text", "text": panel_text})
 

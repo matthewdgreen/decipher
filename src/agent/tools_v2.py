@@ -1928,6 +1928,15 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
 
 
+# Maps declaration prerequisite reason → the tool that satisfies it.
+# Used to generate compact chain-hint notes in gate-fix tools.
+_PREREQ_FIX_TOOL: dict[str, str] = {
+    "branch_cards_required": "workspace_branch_cards",
+    "hypothesis_next_steps_required": "workspace_hypothesis_next_steps",
+    "word_boundary_pass_required": "act_resegment_by_reading",
+}
+
+
 class WorkspaceToolExecutor:
     """Dispatches v2 tool calls against a Workspace + language resources."""
 
@@ -1974,11 +1983,13 @@ class WorkspaceToolExecutor:
         # Identical retries are blocked immediately with an actionable error.
         self._seen_resegment_proposals: dict[tuple[str, str], int] = {}
 
-        # branch_cards_required gate signal: set to the iteration number when
-        # meta_declare_solution is blocked with reason=branch_cards_required.
-        # workspace_branch_cards reads and clears this to add a "gate satisfied"
-        # prompt, steering the agent to call meta_declare_solution immediately.
-        self._branch_cards_gate_fired_at: int | None = None
+        # Pending-declaration prerequisite tracking.
+        # When meta_declare_solution is blocked by quick prerequisites, we record
+        # which ones are still unmet so that each gate-fix tool can emit a
+        # "N remaining → call declare" chain hint rather than leaving the agent
+        # to discover gates sequentially.
+        self._pending_declare_prerequisites: set[str] = set()
+        self._pending_declare_branch: str | None = None
 
         # Tool capability requests (meta_request_tool calls)
         self.tool_requests: list[dict] = []
@@ -4677,16 +4688,40 @@ class WorkspaceToolExecutor:
                     continue
                 branches.append(name)
         reports = [self._hypothesis_next_steps(name) for name in branches]
-        return {
-            "status": "ok",
-            "branches": branches,
-            "reports": reports,
-            "note": (
+
+        # Consume hypothesis_next_steps_required pending prerequisite (if any).
+        was_pending = "hypothesis_next_steps_required" in self._pending_declare_prerequisites
+        if was_pending:
+            self._pending_declare_prerequisites.discard("hypothesis_next_steps_required")
+            remaining = self._pending_declare_prerequisites
+            if not remaining:
+                chain_note = (
+                    "PREREQUISITE MET — hypothesis_next_steps_required satisfied. "
+                    "All declaration prerequisites are now complete. "
+                    "Your next action must be meta_declare_solution."
+                )
+            else:
+                tools_list = ", ".join(
+                    _PREREQ_FIX_TOOL.get(r, r) for r in remaining
+                )
+                chain_note = (
+                    f"Prerequisite met: hypothesis_next_steps_required. "
+                    f"{len(remaining)} still pending: {', '.join(remaining)} "
+                    f"({tools_list}). Then call meta_declare_solution."
+                )
+        else:
+            chain_note = (
                 "Use `next_step` as the default move unless your reading of "
                 "the decoded text gives a stronger reason. If the playbook is "
                 "exhausted and the text is incoherent, reject or pause the "
                 "hypothesis instead of doing local repairs."
-            ),
+            )
+
+        return {
+            "status": "ok",
+            "branches": branches,
+            "reports": reports,
+            "note": chain_note,
         }
 
     def _select_best_fork_source(self, prefer_branch: str | None = None) -> str:
@@ -4722,19 +4757,29 @@ class WorkspaceToolExecutor:
         else:
             cards = [self._branch_card(name) for name in self.workspace.branch_names()]
 
-        # If this call is satisfying a branch_cards_required gate on
-        # meta_declare_solution, tell the agent explicitly what to do next
-        # so it does not drift into further inspection.
-        gate_satisfied = self._branch_cards_gate_fired_at is not None
-        self._branch_cards_gate_fired_at = None  # consume the signal
-
-        if gate_satisfied:
-            note = (
-                "GATE SATISFIED — you called workspace_branch_cards to satisfy "
-                "the branch_cards_required prerequisite on meta_declare_solution. "
-                "Your next action must be meta_declare_solution with your chosen "
-                "branch. Do not call any other tool first."
-            )
+        # Consume the branch_cards_required pending prerequisite (if any) and
+        # emit a chain hint so the agent knows exactly what still needs doing.
+        was_pending = "branch_cards_required" in self._pending_declare_prerequisites
+        if was_pending:
+            self._pending_declare_prerequisites.discard("branch_cards_required")
+            remaining = self._pending_declare_prerequisites
+            if not remaining:
+                note = (
+                    "PREREQUISITE MET — branch_cards_required satisfied. "
+                    "All declaration prerequisites are now complete. "
+                    "Your next action must be meta_declare_solution. "
+                    "Do not call any other tool first."
+                )
+            else:
+                tools_list = ", ".join(
+                    _PREREQ_FIX_TOOL.get(r, r) for r in remaining
+                )
+                note = (
+                    f"Prerequisite met: branch_cards_required. "
+                    f"{len(remaining)} still pending: {', '.join(remaining)}. "
+                    f"Address remaining ({tools_list}), "
+                    "then call meta_declare_solution."
+                )
         else:
             note = (
                 "Use these cards before declaration: compare readability, "
@@ -4749,7 +4794,8 @@ class WorkspaceToolExecutor:
             )
         return {
             "status": "ok",
-            "gate_satisfied": gate_satisfied,
+            "gate_satisfied": was_pending,
+            "prerequisites_remaining": sorted(self._pending_declare_prerequisites),
             "cards": cards,
             "note": note,
         }
@@ -4845,6 +4891,17 @@ class WorkspaceToolExecutor:
         """Return True if the agent has attested score >= 8 for this branch."""
         attest = self._reading_attestations.get(branch_name)
         return attest is not None and int(attest.get("comprehensibility_score", 0)) >= 8
+
+    def _is_finalize_phase(self, branch_name: str) -> bool:
+        """Return True when a branch is ready to declare — high attest score recorded.
+
+        A branch enters finalize phase once the agent has recorded a reading
+        comprehensibility score ≥ 7 via meta_attest_reading_comprehensibility.
+        In finalize phase, heavy search/repair tools are discouraged: the key
+        has been found and additional search is low-value regression risk.
+        """
+        attest = self._reading_attestations.get(branch_name)
+        return attest is not None and int(attest.get("comprehensibility_score", 0)) >= 7
 
     def _family_coverage_declaration_block(
         self,
@@ -8092,6 +8149,34 @@ class WorkspaceToolExecutor:
             return {"error": str(exc), **validation}
         after = self._compute_quick_scores(branch)
         after_preview = self._decoded_preview(branch, max_words=80)
+
+        # Consume word_boundary_pass_required pending prerequisite (if any).
+        was_pending = "word_boundary_pass_required" in self._pending_declare_prerequisites
+        if was_pending:
+            self._pending_declare_prerequisites.discard("word_boundary_pass_required")
+            remaining = self._pending_declare_prerequisites
+            if not remaining:
+                boundary_note = (
+                    "PREREQUISITE MET — word_boundary_pass_required satisfied. "
+                    "All declaration prerequisites are now complete. "
+                    "Your next action must be meta_declare_solution."
+                )
+            else:
+                tools_list = ", ".join(
+                    _PREREQ_FIX_TOOL.get(r, r) for r in remaining
+                )
+                boundary_note = (
+                    f"Prerequisite met: word_boundary_pass_required. "
+                    f"{len(remaining)} still pending: {', '.join(remaining)} "
+                    f"({tools_list}). Then call meta_declare_solution."
+                )
+        else:
+            boundary_note = (
+                "Applied word-boundary overlay only. The branch key and decoded "
+                "characters were unchanged; only the reading's word segmentation "
+                "changed."
+            )
+
         return {
             "status": "ok",
             "branch": branch,
@@ -8103,11 +8188,7 @@ class WorkspaceToolExecutor:
             "score_delta": self._reading_score_delta(before, after),
             "decoded_preview_before": before_preview,
             "decoded_preview": after_preview,
-            "note": (
-                "Applied word-boundary overlay only. The branch key and decoded "
-                "characters were unchanged; only the reading's word segmentation "
-                "changed."
-            ),
+            "note": boundary_note,
         }
 
     def _tool_act_resegment_from_reading_repair(self, args: dict) -> Any:
@@ -8577,6 +8658,24 @@ class WorkspaceToolExecutor:
         ws = self.workspace
         branch = ws.get_branch(branch_name)
 
+        # Finalize-phase guard: once a branch has a comprehensibility score ≥ 7,
+        # running hill_climb risks overwriting a correct key with a locally-better
+        # but wrong one.  Require an explicit justification to proceed.
+        if self._is_finalize_phase(branch_name) and not args.get("justification"):
+            return {
+                "status": "blocked",
+                "reason": "finalize_phase",
+                "branch": branch_name,
+                "note": (
+                    "This branch is in finalize phase (comprehensibility score ≥ 7 "
+                    "recorded). Running hill_climb on a readable branch risks "
+                    "overwriting the correct key. Prefer meta_declare_solution. "
+                    "If further search is genuinely needed, re-call with "
+                    "justification=<reason>."
+                ),
+                "suggested_next_tools": ["meta_declare_solution"],
+            }
+
         import random as _random
         pt_size = ws.plaintext_alphabet.size
         all_ct_ids = sorted(set(ws.cipher_text.tokens))
@@ -8632,6 +8731,24 @@ class WorkspaceToolExecutor:
         score_fn_name = args.get("score_fn", "combined")
         ws = self.workspace
         branch = ws.get_branch(branch_name)
+
+        # Finalize-phase guard (same as hill_climb): a readable branch should be
+        # declared, not re-annealed.  A wrong restart key can destroy a correct solution.
+        if self._is_finalize_phase(branch_name) and not args.get("justification"):
+            return {
+                "status": "blocked",
+                "reason": "finalize_phase",
+                "branch": branch_name,
+                "note": (
+                    "This branch is in finalize phase (comprehensibility score ≥ 7 "
+                    "recorded). Re-annealing a readable branch risks overwriting "
+                    "the correct key with a random-restart artifact. "
+                    "Prefer meta_declare_solution. "
+                    "If further search is genuinely needed, re-call with "
+                    "justification=<reason>."
+                ),
+                "suggested_next_tools": ["meta_declare_solution"],
+            }
 
         import random as _random
         pt_alpha = ws.plaintext_alphabet
@@ -10649,40 +10766,92 @@ class WorkspaceToolExecutor:
                     "meta_declare_solution",
                 ],
             }
+        # --- Quick-prerequisite batch: evaluate all three together and report
+        # all unmet ones in a single response.  This replaces the old sequential
+        # cascade (branch_cards → hypothesis_next_steps → word_boundary) which
+        # forced the agent to discover each gate one at a time.
+        quick_prerequisites: list[dict[str, Any]] = []
+
         if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards(branch):
-            self._branch_cards_gate_fired_at = self._current_iteration
+            quick_prerequisites.append({
+                "reason": "branch_cards_required",
+                "fix_tool": "workspace_branch_cards",
+                "note": (
+                    "Multiple branches exist. Call workspace_branch_cards to "
+                    "compare readable excerpts and internal scores."
+                ),
+            })
+
+        hyp_block = self._hypothesis_declaration_block(branch)
+        if hyp_block is not None:
+            quick_prerequisites.append({
+                "reason": "hypothesis_next_steps_required",
+                "fix_tool": "workspace_hypothesis_next_steps",
+                "cipher_mode": hyp_block.get("cipher_mode"),
+                "note": (
+                    "This branch is a cipher-mode hypothesis. Call "
+                    "workspace_hypothesis_next_steps to record the playbook "
+                    "and tried tools."
+                ),
+            })
+
+        wb_block = self._word_boundary_declaration_block(
+            branch,
+            confidence=confidence,
+            forced_partial=forced_partial,
+        )
+        if wb_block is not None:
+            quick_prerequisites.append({
+                "reason": "word_boundary_pass_required",
+                "fix_tool": "act_resegment_by_reading",
+                "decoded_stream_preview": wb_block.get("decoded_stream_preview"),
+                "note": (
+                    "No word-boundary overlay on a no-boundary cipher. "
+                    "Call act_resegment_by_reading with your proposed reading."
+                ),
+            })
+
+        if quick_prerequisites:
+            self._pending_declare_prerequisites = {p["reason"] for p in quick_prerequisites}
+            self._pending_declare_branch = branch
+            count = len(quick_prerequisites)
+            primary_reason = (
+                quick_prerequisites[0]["reason"]
+                if count == 1
+                else "prerequisites_required"
+            )
+            if count == 1:
+                action_note = (
+                    f"{quick_prerequisites[0]['note']} "
+                    "Then call meta_declare_solution."
+                )
+            else:
+                tools_list = ", ".join(p["fix_tool"] for p in quick_prerequisites)
+                action_note = (
+                    f"{count} prerequisites unmet. Address ALL of them "
+                    f"({tools_list}), then call meta_declare_solution ONCE — "
+                    "do not re-call it after each individual fix."
+                )
             return {
                 "status": "blocked",
                 "accepted": False,
                 "branch": branch,
-                "reason": "branch_cards_required",
-                "note": (
-                    "Multiple branches exist, or this branch was created after "
-                    "the last branch-card review. Call workspace_branch_cards "
-                    "now, then call meta_declare_solution IMMEDIATELY — do not "
-                    "call any other tool between them."
+                "reason": primary_reason,
+                "preconditions": quick_prerequisites,
+                "preconditions_unmet": count,
+                "note": action_note,
+                "suggested_next_tools": (
+                    [p["fix_tool"] for p in quick_prerequisites]
+                    + ["meta_declare_solution"]
                 ),
-                "suggested_next_tools": [
-                    "workspace_branch_cards",
-                    "meta_declare_solution",
-                ],
             }
-        hypothesis_block = self._hypothesis_declaration_block(branch)
-        if hypothesis_block is not None:
-            return hypothesis_block
+
         family_coverage_block = self._family_coverage_declaration_block(
             branch,
             forced_partial=forced_partial,
         )
         if family_coverage_block is not None:
             return family_coverage_block
-        word_boundary_block = self._word_boundary_declaration_block(
-            branch,
-            confidence=confidence,
-            forced_partial=forced_partial,
-        )
-        if word_boundary_block is not None:
-            return word_boundary_block
         if self._should_guard_declaration_for_reading_workflow(branch, rationale):
             return {
                 "status": "blocked",
