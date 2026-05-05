@@ -230,11 +230,11 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers decipher \
   --benchmark-root ../cipher_benchmark/benchmark \
   --homophonic-budget screen \
-  --homophonic-refinement copiale_nulls \
+  --homophonic-refinement null_masks \
   --artifact-dir artifacts/copiale_evidence_packet/automated_null_masks
 ```
 
-This route records a `search_copiale_null_masks` step with candidate symbols,
+This route records a `search_null_masks` step with candidate symbols,
 evaluated masks, validation components, the selected finalist, and the top
 finalist menu. It remains experimental and opt-in; use it to compare top-N
 null/codeword hypotheses before promoting anything into the default automated

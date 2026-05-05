@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
-from analysis.copiale_nulls import (
+from analysis.homophonic_nulls import (
     format_validation_components,
     generate_null_masks,
     german_coherence_score,

@@ -1532,8 +1532,8 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       abbreviations, or multi-letter tokens rather than simple letter
       homophones. Do not promote a single null mask by default yet.
       - First implementation is now opt-in as
-        `--homophonic-refinement copiale_nulls`. It records a
-        `search_copiale_null_masks` finalist menu in automated artifacts. Next
+        `--homophonic-refinement null_masks`. It records a
+        `search_null_masks` finalist menu in automated artifacts. Next
         step is to run the five-page packet and decide how the agent should
         inspect/promote these finalists.
     - [x] Add a prototype null-mask search script:

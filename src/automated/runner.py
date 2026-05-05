@@ -21,7 +21,7 @@ from typing import Any, Callable
 
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
-from analysis.copiale_nulls import (
+from analysis.homophonic_nulls import (
     diagnose_cipher_for_null_candidates,
     generate_null_masks,
     null_mask_validation_score_v2,
@@ -580,7 +580,7 @@ def run_automated(
         elif routing["route"] == "homophonic":
             base_refinement = (
                 "none"
-                if _is_copiale_null_mask_refinement(homophonic_refinement)
+                if _is_null_mask_refinement(homophonic_refinement)
                 else homophonic_refinement
             )
             solver, key, decryption, step = _run_homophonic(
@@ -592,8 +592,8 @@ def run_automated(
                 ground_truth=ground_truth,
             )
             steps.append(step)
-            if _is_copiale_null_mask_refinement(homophonic_refinement):
-                bakeoff = _run_copiale_null_mask_bakeoff(
+            if _is_null_mask_refinement(homophonic_refinement):
+                bakeoff = _run_null_mask_bakeoff(
                     cipher_text=cipher_text,
                     language=language,
                     budget=homophonic_budget,
@@ -606,7 +606,7 @@ def run_automated(
                 steps.append(bakeoff)
                 winner = bakeoff.get("selected") if isinstance(bakeoff, dict) else None
                 if isinstance(winner, dict) and winner.get("status") == "completed":
-                    solver = "copiale_null_mask_homophonic"
+                    solver = "null_mask_homophonic"
                     key = {
                         int(k): int(v)
                         for k, v in (winner.get("key") or {}).items()
@@ -3613,15 +3613,15 @@ def _run_homophonic(
     return "native_homophonic_anneal", selected_key, selected_plaintext, step
 
 
-def _is_copiale_null_mask_refinement(refinement: str) -> bool:
+def _is_null_mask_refinement(refinement: str) -> bool:
     return (refinement or "none").strip().lower() in {
-        "copiale_nulls",
-        "copiale_null_masks",
-        "copiale_null_topn",
+        "null_masks",
+        "homophonic_nulls",
+        "null_topn",
     }
 
 
-def _run_copiale_null_mask_bakeoff(
+def _run_null_mask_bakeoff(
     *,
     cipher_text: CipherText,
     language: str,
@@ -3632,22 +3632,24 @@ def _run_copiale_null_mask_bakeoff(
     base_decryption: str,
     base_step: dict[str, Any],
 ) -> dict[str, Any]:
-    """Experimental top-N null-mask finalist menu for Copiale-like pages.
+    """Experimental top-N null-mask finalist menu for homophonic ciphers.
 
-    This is opt-in via ``homophonic_refinement=copiale_nulls``. It does not use
+    This is opt-in via ``homophonic_refinement=null_masks``. It does not use
     benchmark plaintext: candidates are generated from ciphertext plus the
-    solver-produced baseline key, and ranked by German readability/collapse
+    solver-produced baseline key, and ranked by language readability/collapse
     signals.
     """
     started = time.time()
     pt_alpha = _plaintext_alphabet(language)
     id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)}
     word_list = _word_list(language)
-    candidate_limit = int(os.environ.get("DECIPHER_COPIALE_NULL_CANDIDATE_LIMIT", "18"))
-    max_mask_size = int(os.environ.get("DECIPHER_COPIALE_NULL_MAX_MASK_SIZE", "2"))
-    max_masks = int(os.environ.get("DECIPHER_COPIALE_NULL_MAX_MASKS", "80"))
-    top_n = int(os.environ.get("DECIPHER_COPIALE_NULL_TOP_N", "6"))
-    null_budget = os.environ.get("DECIPHER_COPIALE_NULL_BUDGET", "screen").strip().lower()
+    candidate_limit = int(os.environ.get("DECIPHER_NULL_MASK_CANDIDATE_LIMIT", "18"))
+    max_mask_size = int(os.environ.get("DECIPHER_NULL_MASK_MAX_SIZE", "2"))
+    max_masks = int(os.environ.get("DECIPHER_NULL_MASK_MAX_MASKS", "80"))
+    top_n = int(os.environ.get("DECIPHER_NULL_MASK_TOP_N", "6"))
+    confirm_top_n = int(os.environ.get("DECIPHER_NULL_MASK_CONFIRM_TOP_N", "3"))
+    confirm_reruns = int(os.environ.get("DECIPHER_NULL_MASK_CONFIRM_RERUNS", "2"))
+    null_budget = os.environ.get("DECIPHER_NULL_MASK_BUDGET", "screen").strip().lower()
     if null_budget not in {"screen", "full"}:
         null_budget = "screen"
 
@@ -3702,6 +3704,69 @@ def _run_copiale_null_mask_bakeoff(
         row["validation_components_v2"] = validation["components"]
         return row
 
+    def solve_mask(
+        mask: tuple[str, ...],
+        *,
+        index: int,
+        seed_offset: int,
+        source: str,
+    ) -> dict[str, Any]:
+        mask_set = set(mask)
+        filtered_tokens = [
+            token
+            for token in cipher_text.tokens
+            if cipher_text.alphabet.decode([token]) not in mask_set
+        ]
+        if len(filtered_tokens) < 50:
+            return {
+                "mask": list(mask),
+                "mask_size": len(mask),
+                "filtered_length": len(filtered_tokens),
+                "status": "skipped",
+                "source": source,
+                "seed_offset": seed_offset,
+                "reason": "filtered_stream_too_short",
+            }
+        candidate_cipher = _cipher_text_from_tokens(
+            filtered_tokens,
+            cipher_text.alphabet,
+            source=f"{cipher_text.source}:null_mask:{source}:{index}",
+        )
+        candidate_started = time.time()
+        try:
+            candidate_solver, candidate_key, candidate_decryption, candidate_step = _run_homophonic(
+                candidate_cipher,
+                language,
+                budget=null_budget,
+                refinement="none",
+                solver_profile=solver_profile,
+                ground_truth=None,
+                seed_offset=seed_offset,
+            )
+            row = finalist_row(
+                mask=mask,
+                filtered_length=len(filtered_tokens),
+                solver=candidate_solver,
+                key=candidate_key,
+                decryption=candidate_decryption,
+                step=candidate_step,
+                elapsed_seconds=time.time() - candidate_started,
+            )
+            row["source"] = source
+            row["seed_offset"] = seed_offset
+            return row
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "mask": list(mask),
+                "mask_size": len(mask),
+                "filtered_length": len(filtered_tokens),
+                "status": "error",
+                "source": source,
+                "seed_offset": seed_offset,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "elapsed_seconds": round(time.time() - candidate_started, 3),
+            }
+
     rows.append(finalist_row(
         mask=(),
         filtered_length=len(cipher_text.tokens),
@@ -3713,55 +3778,12 @@ def _run_copiale_null_mask_bakeoff(
     ))
 
     for index, mask in enumerate(masks[1:], start=1):
-        mask_set = set(mask)
-        filtered_tokens = [
-            token
-            for token in cipher_text.tokens
-            if cipher_text.alphabet.decode([token]) not in mask_set
-        ]
-        if len(filtered_tokens) < 50:
-            rows.append({
-                "mask": list(mask),
-                "mask_size": len(mask),
-                "filtered_length": len(filtered_tokens),
-                "status": "skipped",
-                "reason": "filtered_stream_too_short",
-            })
-            continue
-        candidate_cipher = _cipher_text_from_tokens(
-            filtered_tokens,
-            cipher_text.alphabet,
-            source=f"{cipher_text.source}:copiale_null_mask:{index}",
-        )
-        candidate_started = time.time()
-        try:
-            candidate_solver, candidate_key, candidate_decryption, candidate_step = _run_homophonic(
-                candidate_cipher,
-                language,
-                budget=null_budget,
-                refinement="none",
-                solver_profile=solver_profile,
-                ground_truth=None,
-                seed_offset=index * 100,
-            )
-            rows.append(finalist_row(
-                mask=mask,
-                filtered_length=len(filtered_tokens),
-                solver=candidate_solver,
-                key=candidate_key,
-                decryption=candidate_decryption,
-                step=candidate_step,
-                elapsed_seconds=time.time() - candidate_started,
-            ))
-        except Exception as exc:  # noqa: BLE001
-            rows.append({
-                "mask": list(mask),
-                "mask_size": len(mask),
-                "filtered_length": len(filtered_tokens),
-                "status": "error",
-                "reason": f"{type(exc).__name__}: {exc}",
-                "elapsed_seconds": round(time.time() - candidate_started, 3),
-            })
+        rows.append(solve_mask(
+            mask,
+            index=index,
+            seed_offset=index * 100,
+            source="initial",
+        ))
 
     completed = [row for row in rows if row.get("status") == "completed"]
     completed.sort(
@@ -3771,18 +3793,68 @@ def _run_copiale_null_mask_bakeoff(
         ),
         reverse=True,
     )
+    confirmation_report: dict[str, Any] = {
+        "enabled": confirm_top_n > 0 and confirm_reruns > 0,
+        "top_n": confirm_top_n,
+        "reruns_per_mask": confirm_reruns,
+        "confirmed_mask_count": 0,
+        "policy": (
+            "Stage B reruns the top null-mask finalists with independent seed "
+            "offsets, then selects by mean validation score with best-score "
+            "and stability tie breakers."
+        ),
+    }
+    if completed and confirmation_report["enabled"]:
+        confirmed = []
+        for rank, row in enumerate(completed[:confirm_top_n], start=1):
+            mask = tuple(row.get("mask") or [])
+            probe_rows = []
+            for probe_index in range(1, confirm_reruns + 1):
+                seed_offset = 10_000 + rank * 1_000 + probe_index * 100
+                probe = solve_mask(
+                    mask,
+                    index=rank * 100 + probe_index,
+                    seed_offset=seed_offset,
+                    source="confirmation",
+                )
+                probe_rows.append(probe)
+            completed_probes = [
+                probe for probe in probe_rows
+                if probe.get("status") == "completed"
+            ]
+            _attach_null_mask_confirmation(row, completed_probes)
+            confirmed.append({
+                "mask": row.get("mask") or [],
+                "initial_rank": rank,
+                "initial_validation_score_v2": row.get("validation_score_v2"),
+                "confirmed_validation_score_v2": row.get("confirmed_validation_score_v2"),
+                "confirmation": row.get("confirmation"),
+                "best_preview": row.get("preview"),
+            })
+        confirmation_report.update({
+            "confirmed_mask_count": len(confirmed),
+            "confirmed_finalists": confirmed,
+        })
+        completed.sort(
+            key=lambda item: (
+                float(item.get("confirmed_validation_score_v2", item.get("validation_score_v2")) or float("-inf")),
+                float(item.get("confirmation_best_validation_score_v2", item.get("validation_score_v2")) or float("-inf")),
+                float(item.get("selection_score") or float("-inf")),
+            ),
+            reverse=True,
+        )
     selected = completed[0] if completed else None
     selected_mask = tuple(selected.get("mask") or []) if selected else ()
-    compact_rows = [_compact_copiale_null_row(row) for row in rows]
+    compact_rows = [_compact_null_mask_row(row) for row in rows]
     return {
-        "name": "search_copiale_null_masks",
+        "name": "search_null_masks",
         "status": "completed" if completed else "error",
         "experimental": True,
         "policy": (
-            "Opt-in Copiale null/codeword bakeoff. Candidate masks are "
-            "generated from ciphertext diagnostics and the baseline solver "
-            "key, then ranked by ground-truth-free German coherence signals. "
-            "This is not the default automated route."
+            "Opt-in null/codeword bakeoff for homophonic ciphers. Candidate "
+            "masks are generated from ciphertext diagnostics and the baseline "
+            "solver key, then ranked by ground-truth-free language coherence "
+            "signals. This is not the default automated route."
         ),
         "language": language,
         "budget": null_budget,
@@ -3795,6 +3867,7 @@ def _run_copiale_null_mask_bakeoff(
         "max_mask_size": max_mask_size,
         "max_masks": max_masks,
         "top_n": top_n,
+        "confirmation": confirmation_report,
         "diagnostics": diagnostics,
         "selected_mask": list(selected_mask),
         "selected": selected,
@@ -3812,7 +3885,7 @@ def _run_copiale_null_mask_bakeoff(
     }
 
 
-def _compact_copiale_null_row(row: dict[str, Any]) -> dict[str, Any]:
+def _compact_null_mask_row(row: dict[str, Any]) -> dict[str, Any]:
     """Keep every null-mask row inspectable without storing every full decrypt."""
     compact = {
         "mask": row.get("mask") or [],
@@ -3842,6 +3915,62 @@ def _compact_copiale_null_row(row: dict[str, Any]) -> dict[str, Any]:
         "penalty": quality.get("penalty"),
     }
     return compact
+
+
+def _attach_null_mask_confirmation(
+    row: dict[str, Any],
+    probe_rows: list[dict[str, Any]],
+) -> None:
+    """Attach independent-rerun confirmation stats to one null-mask finalist."""
+    candidates = [row] + probe_rows
+    completed = [
+        candidate for candidate in candidates
+        if candidate.get("status") == "completed"
+        and candidate.get("validation_score_v2") is not None
+    ]
+    if not completed:
+        row["confirmation"] = {
+            "status": "no_completed_confirmation_runs",
+            "probe_count": len(probe_rows),
+        }
+        return
+    scores = [float(candidate["validation_score_v2"]) for candidate in completed]
+    mean_score = sum(scores) / len(scores)
+    variance = sum((score - mean_score) ** 2 for score in scores) / len(scores)
+    stddev = math.sqrt(variance)
+    best = max(completed, key=lambda item: float(item.get("validation_score_v2") or float("-inf")))
+    worst_score = min(scores)
+    stability_score = 1.0 / (1.0 + stddev)
+    confirmed_score = mean_score + min(0.12, stability_score * 0.04)
+
+    # Keep the mask-level decision robust, but use the best confirmed basin as
+    # the representative decrypt/key if this mask wins.
+    for field in (
+        "solver",
+        "anneal_score",
+        "selection_score",
+        "quality",
+        "diagnostics",
+        "preview",
+        "decryption",
+        "key",
+    ):
+        if field in best:
+            row[field] = best[field]
+    row["confirmed_validation_score_v2"] = round(confirmed_score, 6)
+    row["confirmation_best_validation_score_v2"] = round(float(best["validation_score_v2"]), 6)
+    row["confirmation"] = {
+        "status": "completed",
+        "probe_count": len(probe_rows),
+        "completed_probe_count": len(completed) - 1,
+        "mean_validation_score_v2": round(mean_score, 6),
+        "best_validation_score_v2": round(float(best["validation_score_v2"]), 6),
+        "worst_validation_score_v2": round(worst_score, 6),
+        "stddev_validation_score_v2": round(stddev, 6),
+        "stability_score": round(stability_score, 6),
+        "confirmed_validation_score_v2": row["confirmed_validation_score_v2"],
+        "runs": [_compact_null_mask_row(candidate) for candidate in completed],
+    }
 
 
 def _is_collapsed_plaintext(plaintext: str) -> bool:
@@ -6335,7 +6464,7 @@ def _homophonic_refinement_params(
         }
     raise ValueError(
         f"unsupported homophonic refinement '{refinement}' "
-        "(expected one of: none, two_stage, targeted_repair, family_repair, copiale_nulls)"
+        "(expected one of: none, two_stage, targeted_repair, family_repair, null_masks)"
     )
 
 

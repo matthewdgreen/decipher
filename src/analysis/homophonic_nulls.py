@@ -1,9 +1,10 @@
-"""Copiale null/codeword candidate helpers.
+"""Null/codeword candidate helpers for homophonic ciphers.
 
-These routines are ground-truth-free. They generate candidate null masks and
-rank solver-produced finalists using German-ish readability and collapse
-signals. Benchmark plaintext may be used by callers only after candidates have
-already been produced, for calibration/reporting.
+These routines are ground-truth-free. They identify symbols that are likely
+nulls, abbreviation markers, or codewords rather than letter homophones,
+generate candidate null masks, and rank solver-produced finalists using
+readability and collapse signals. Benchmark plaintext may be used by callers
+only after candidates have already been produced, for calibration/reporting.
 """
 from __future__ import annotations
 
@@ -101,7 +102,7 @@ def generate_null_masks(candidates: list[str], max_mask_size: int) -> list[tuple
 
 
 def null_mask_validation_score(row: dict[str, Any], original_length: int) -> dict[str, Any]:
-    """No-ground-truth finalist score for Copiale null-mask probes."""
+    """No-ground-truth finalist score for homophonic null-mask probes."""
     diagnostics = row.get("diagnostics") or {}
     quality = row.get("quality") or {}
     selection_score = float(row.get("selection_score") or 0.0)
@@ -136,7 +137,7 @@ def null_mask_validation_score(row: dict[str, Any], original_length: int) -> dic
 
 
 def null_mask_validation_score_v2(row: dict[str, Any], original_length: int) -> dict[str, Any]:
-    """Stricter no-ground-truth finalist score for Copiale null-mask probes."""
+    """Stricter no-ground-truth finalist score for homophonic null-mask probes."""
     diagnostics = row.get("diagnostics") or {}
     quality = row.get("quality") or {}
     selection_score = float(row.get("selection_score") or 0.0)

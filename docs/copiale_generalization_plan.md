@@ -129,11 +129,11 @@ benchmark issue.
   exact-hit/gap metrics, top-N capture rates, and component-level miss
   analysis.
 - [x] Add a first opt-in top-N null-mask automated profile. Use
-  `--homophonic-refinement copiale_nulls` to run the baseline homophonic
+  `--homophonic-refinement null_masks` to run the baseline homophonic
   solver, generate candidate null/codeword masks, solve filtered streams, rank
-  a finalist menu with ground-truth-free German coherence signals, and record
-  `search_copiale_null_masks` in the artifact. This is deliberately not the
-  default route yet.
+  a finalist menu with ground-truth-free language coherence signals, and record
+  `search_null_masks` in the artifact. This is deliberately not the default
+  route yet.
 - [ ] Decide whether the default automated route should use:
   - plain homophonic substitution
   - homophonic plus null handling

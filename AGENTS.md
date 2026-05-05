@@ -16,10 +16,10 @@ Licensing note:
 - Decipher is now GPLv3-licensed.
 - `src/analysis/zenith_solver.py` is derived from the Zenith project by
   beldenge and must retain explicit attribution in code comments and docs.
-- `src/analysis/copiale_nulls.py` holds ground-truth-free Copiale
-  null/codeword candidate generation and finalist validation helpers shared by
-  calibration scripts and the opt-in automated `copiale_nulls` homophonic
-  refinement profile.
+- `src/analysis/homophonic_nulls.py` holds ground-truth-free null/codeword
+  candidate generation and finalist validation helpers for homophonic ciphers.
+  Shared by calibration scripts and the opt-in automated `null_masks`
+  homophonic refinement profile.
 - The original Zenith English binary model is still not redistributed in this
   repo. Current understanding is that BNC itself is probably not the blocking
   issue; the remaining redistribution uncertainty is primarily the Blog
@@ -47,8 +47,8 @@ src/
     polyalphabetic.py     — Vigenere/Beaufort/Gronsfeld solvers, keyed
                             Vigenere/Quagmire replay/search, and experimental
                             shared-tableau mutation search
-    copiale_nulls.py      — Copiale null/codeword candidate generation and
-                            ground-truth-free German finalist validation
+    homophonic_nulls.py   — Null/codeword candidate generation and
+                            ground-truth-free language finalist validation
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
     transform_evaluation.py — Shared transform finalist-menu validation,

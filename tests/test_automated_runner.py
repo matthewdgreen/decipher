@@ -3675,7 +3675,7 @@ def test_run_homophonic_pool_rerank_can_override_best_anneal_seed(monkeypatch):
     assert step["selection"]["top_candidates"][0]["preview"].startswith("THERETHERETHERE")
 
 
-def test_copiale_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
+def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
     symbols = ["S001", "S002", "S003", "S004"] * 24
     cipher_text = parse_canonical_transcription(" ".join(symbols))
     base_key = {0: 4, 1: 4, 2: 4, 3: 13}
@@ -3696,10 +3696,10 @@ def test_copiale_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch)
         "selection_score": -9.0,
     }
 
-    monkeypatch.setenv("DECIPHER_COPIALE_NULL_CANDIDATE_LIMIT", "4")
-    monkeypatch.setenv("DECIPHER_COPIALE_NULL_MAX_MASK_SIZE", "1")
-    monkeypatch.setenv("DECIPHER_COPIALE_NULL_MAX_MASKS", "2")
-    monkeypatch.setenv("DECIPHER_COPIALE_NULL_TOP_N", "3")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_CANDIDATE_LIMIT", "4")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_SIZE", "1")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_MASKS", "2")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_TOP_N", "3")
 
     def fake_run_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
         key = {0: 13, 1: 4, 2: 8, 3: 13}
@@ -3724,7 +3724,7 @@ def test_copiale_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch)
 
     monkeypatch.setattr(automated_runner, "_run_homophonic", fake_run_homophonic)
 
-    report = automated_runner._run_copiale_null_mask_bakeoff(
+    report = automated_runner._run_null_mask_bakeoff(
         cipher_text=cipher_text,
         language="de",
         budget="screen",
@@ -3735,7 +3735,7 @@ def test_copiale_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch)
         base_step=base_step,
     )
 
-    assert report["name"] == "search_copiale_null_masks"
+    assert report["name"] == "search_null_masks"
     assert report["experimental"] is True
     assert report["completed_mask_count"] >= 2
     assert report["selected"]["mask"]

@@ -1263,7 +1263,7 @@ def main() -> None:
     )
     bench.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1379,7 +1379,7 @@ def main() -> None:
     )
     crack.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
@@ -1562,7 +1562,7 @@ def main() -> None:
     )
     tg.add_argument(
         "--homophonic-refinement",
-        choices=["none", "two_stage", "targeted_repair", "family_repair", "copiale_nulls"],
+        choices=["none", "two_stage", "targeted_repair", "family_repair", "null_masks"],
         default="none",
         help="Optional second-stage local refinement for automated homophonic runs.",
     )
