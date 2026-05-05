@@ -275,7 +275,7 @@ def format_header(artifact: dict) -> str:
     iters = artifact.get("iterations_used") or "?"
     char_acc = artifact.get("char_accuracy")
     word_acc = artifact.get("word_accuracy")
-    declared = artifact.get("declared_solution") is not None
+    declared = (artifact.get("solution") or artifact.get("declared_solution")) is not None
     best_branch = artifact.get("best_branch") or "?"
 
     lines.append("=" * 70)
@@ -526,7 +526,7 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
         "word_accuracy": artifact.get("word_accuracy"),
         "score_meaning": "char_accuracy and word_accuracy are post-hoc comparisons to known benchmark plaintext when ground truth exists; they are not intrinsic solver confidence.",
         "iterations_used": artifact.get("iterations_used"),
-        "declared": artifact.get("declared_solution") is not None,
+        "declared": (artifact.get("solution") or artifact.get("declared_solution")) is not None,
         "solution": _trim_obj(artifact.get("solution") or artifact.get("declared_solution") or {}, 1600),
         "best_branch": artifact.get("best_branch"),
         "tool_counts": dict(tool_counts.most_common(20)),
