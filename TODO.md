@@ -123,6 +123,18 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 
 - [ ] Build a complete cross-tool cipher-family inventory.
   - Starting point: `docs/automated_tool_comparison.md`.
+  - AZdecrypt's bundled example corpus is cataloged in
+    `docs/azdecrypt_example_catalog.md`; use it as the first concrete source
+    of missing named challenge cases and calibration families.
+  - Initial AZdecrypt-backed future-family list to carry into the inventory:
+    bigram/digraph substitution, higher-order homophonic substitution,
+    homophonic cycle-structure variants, substitution with defects/noise,
+    substitution plus nomenclator/codebook elements, substitution plus
+    transposition, pure transposition breadth cases, substitution plus
+    polyalphabetic layers, substitution plus Trithemius/progressive shifts,
+    substitution plus Vigenere, vowel substitution, fractionated Morse,
+    Alberti-style polyalphabetic ciphers, periodic nulls, and mixed
+    null/transposition/substitution systems such as Langrenus.
   - Inventory every cipher family advertised by major reference tools
     including AZdecrypt, CryptoCrack, CrypTool, dCode, Boxentriq, Ciphey,
     quipqiup, Zenith, and zkdecrypto-lite.
@@ -140,6 +152,12 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 - [ ] Build dCode/Boxentriq-quality unknown-cipher diagnosis.
   - Treat this as the next major implementation track after Copiale/German
     null/nomenclator work reaches a stable checkpoint.
+  - Include Beale 1/3 as a diagnosis-only numeric/book-cipher case study.
+    Detailed plan: `docs/beale_statistical_fingerprinting.md`. Decipher should
+    eventually reproduce the main statistical analyses from Wase 2021
+    ("Benford's law in the Beale ciphers"), Campanelli 2023 ("A statistical
+    cryptanalysis of the Beale ciphers"), and Gillogly 1980 ("The Beale Cipher:
+    a dissenting opinion"), even if it cannot solve Beale 1 or 3.
   - Produce a first-pass ranked diagnosis report for unknown inputs, not just
     scattered observations. The report should include confidence, evidence,
     counterevidence, recommended next tools, and families not yet tested.
@@ -148,7 +166,11 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - Add statistical panels for alphabet shape, symbol count, IC/periodicity,
     n-gram language fit, word-boundary pressure, fractionation/coordinate
     signals, transposition-likelihood signals, null/noise hints, and
-    polygraphic structure.
+    polygraphic structure. For numeric/codebook candidates, add first/last
+    digit distributions, Benford/epsilon-Benford deviation, repeated numeric
+    n-grams, monotone/consecutive runs, modulo/gap structure, required key-text
+    length, front-loading, and book-cipher plausibility under word-position,
+    character-position, and skip/every-Nth-word hypotheses.
   - Feed the same structured diagnosis into agent hypothesis branches so the
     agent can choose a cipher family deliberately, switch families when the
     evidence changes, and leave a clear coverage trail in artifacts.
@@ -195,6 +217,11 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 
 - [ ] Periodic polyalphabetic ciphers.
   - Detailed plan: `docs/polyalphabetic_capability_plan.md`.
+  - AZdecrypt has concrete examples under `Ciphers/Substitution +
+    polyalphabetic`, `Ciphers/Substitution + vigenère`,
+    `Ciphers/Substitution + trithemius`, `Ciphers/Vigenère`, and
+    `Ciphers/Various/smokie (Alberti).txt`. Use these as curation candidates
+    once the mode-specific solver/tool menus are mature.
   - First slice implemented: A-Z Vigenere-family screen, explicit automated
     metadata route for Vigenere/Beaufort/Gronsfeld-style cases, and agent
     tools for cipher-ID observation, periodic-IC inspection, mode-hypothesis
@@ -423,6 +450,9 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - Cover Bifid, Trifid, ADFGX/ADFGVX-style families, fractionated Morse, and
     related systems where substitution, coordinate encoding, and transposition
     interact.
+  - AZdecrypt has candidate examples in `Ciphers/Various`, including
+    `Fractioned morse example.txt`, `D'Agapeyeff Polybius.txt`, and
+    `D'Agapeyeff Polybius Merged.txt`.
   - Design intermediate representations that preserve fractionated symbols and
     grid coordinates, not just plaintext letters.
   - Add Polybius/fractionation detection to the unknown-cipher preflight:
@@ -438,32 +468,65 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     Polybius-only, Polybius plus simple transposition, Bifid/Trifid-style
     period sweeps, and ADFGX/ADFGVX coordinate alphabets. Keep these as
     bounded diagnostic screens until we have calibrated fixtures.
-  - Curate D'Agapeyeff as a qualitative/unsolved fractionation challenge once
-    provenance and transcription format are nailed down. Include both the raw
-    numeric-pair transcription and any Polybius-normalized variants, clearly
-    labeled as alternate hypotheses rather than ground truth.
+  - [x] Curate D'Agapeyeff as a qualitative/unsolved fractionation challenge.
+    `../cipher_benchmark` now includes `dagapeyeff_cipher` in the unsolved
+    `famous_short` source. The target preserves the public five-digit grouping;
+    the AZdecrypt two-digit-pair view and related Polybius worked-example files
+    are labeled as hypothesis/context material rather than ground truth.
 - [ ] Nomenclators and codebook-cipher hybrids.
   - Support mixed alphabets where some symbols map to letters, syllables,
     words, names, nulls, or common phrases.
   - Add tools for codeword clustering, repeated-code detection, partial
     codebook induction, and context-assisted expansion.
+  - AZdecrypt has concrete examples under `Ciphers/Substitution +
+    nomenclator`, including the CrypTool example and daikon bigram
+    nomenclator examples. These should become early calibration rows for
+    codeword/logogram handling after Copiale-specific work stabilizes.
 - [ ] Digraphic and polygraphic substitution.
   - Add Playfair, Two-square/Four-square, Hill-like classical variants, and
     broader polygraphic substitution diagnostics.
   - Include digram-grid hypothesis tools and language-model scoring over
     decoded digraph streams.
+  - AZdecrypt has a `Ciphers/Bigram substitution` folder with Klaus Schmeh
+    bigram challenges and Navy test problems. Treat these as the first
+    concrete import packet for digraphic/polygraphic support.
+- [ ] Higher-order homophonic substitution.
+  - Extend diagnostics and solvers beyond first-order homophonic assumptions
+    to handle symbols or states whose plaintext effect depends on local order,
+    previous symbols, or paired emissions.
+  - AZdecrypt has candidate examples under `Ciphers/Higher-order homophonic`,
+    including Jarlve second-order cases and a doranchak 8-letter plaintext
+    example. Use them as reference stress cases once first-order homophonic
+    regressions are stable.
+- [ ] Homophonic cycle-structure variants.
+  - Add diagnostics for perfect cycles, anti-cycles, randomized cycles,
+    palindromic cycles, odd/even cycles, top/bottom cycles, shortened cycles,
+    and other Zodiac-like homophone scheduling patterns.
+  - AZdecrypt has a dedicated `Ciphers/Homophonic substitution cycle types`
+    corpus. These examples are especially useful for diagnosis and synthetic
+    generator design, even if they are not all worth importing as named
+    benchmark records.
 - [ ] Nulls, errors, and noisy-transcription support.
   - Treat null insertion, skipped symbols, OCR/transcription uncertainty,
     scribal errors, and inconsistent symbol normalization as first-class search
     dimensions.
   - Add artifact reporting that distinguishes cryptanalytic uncertainty from
     source/transcription uncertainty.
+  - AZdecrypt has relevant examples under `Ciphers/Substitution + defects`,
+    `Ciphers/Substitution + transposition/Nulls and skips`, and
+    `Ciphers/Various/Largo (periodic nulls) *.txt`. Use these as fixtures for
+    separating cryptanalytic failure from source/noise failure.
 - [ ] Geometric route and grille transpositions.
   - Add route families beyond the current simple grid reads: diagonals,
     knight/chain routes, spirals with offsets, masks/grilles, turning grilles,
     split-grid transforms, and region-wise routes.
   - Keep route candidates provenance-rich and inspectable, since these searches
     can explode combinatorially.
+  - AZdecrypt has broad examples under `Ciphers/Transposition` and
+    `Ciphers/Substitution + transposition`, including Klaus DCT challenges,
+    Feynman 1, Jarlve/Largo/smokie route families, and Z340-style mixed
+    cases. These should become the main external-example source for pure and
+    mixed transposition breadth tests.
   - [x] Add Kryptos K3 as the next pure-transposition milestone.
     `../cipher_benchmark` now includes `kryptos_k3` plus the
     `kryptos_k3_transmatrix` split row. Decipher's Rust fast module implements

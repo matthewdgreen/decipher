@@ -50,6 +50,9 @@ This plan is the router and orchestration layer.
   promotion, homophonic solving, and branch review.
 - Future child plans should cover fractionation, nomenclators, polygraphic
   substitution, null/noise support, and geometric route/grille systems.
+- Numeric-code and book-cipher diagnosis should be treated as a first-class
+  child track; Beale 1/3 are the initial unsolved benchmark examples for this
+  track. See `docs/beale_statistical_fingerprinting.md`.
 
 The mode registry, branch metadata, artifact shape, and tool-gating rules
 should be shared across these plans rather than redefined separately.
@@ -101,6 +104,7 @@ Initial mode registry:
 - `polygraphic_substitution`
 - `fractionation_transposition`
 - `nomenclator_codebook`
+- `numeric_book_cipher`
 - `nulls_or_noisy_transcription`
 
 Each mode should declare:
@@ -181,6 +185,18 @@ Preflight should compute and record:
   - doubled-digraph rate
   - even token count
   - pair structure hints
+- Numeric/codebook evidence:
+  - numeric token range and repeated-token profile
+  - first-digit and last-digit distributions
+  - Benford/epsilon-Benford deviation
+  - repeated numeric n-grams
+  - monotone and consecutive numeric runs
+  - modulo/gap structure
+  - required key-text length under word-position and character-position
+    hypotheses
+  - front-loading against a hypothetical key text
+  - known-reference comparison when a related solved numeric/book cipher is
+    explicitly available as non-target context
 - Transform/order evidence:
   - whether language-like symbol statistics are present but adjacency looks
     poor
@@ -220,6 +236,12 @@ Core tools:
 - `observe_transform_suspicion`
   - Current transform/order suspicion, including known grid dimensions when
     available.
+- `observe_numeric_code_statistics`
+  - Numeric-token distribution, Benford-style tests, repeated numeric n-grams,
+    run structure, and book-cipher plausibility.
+- `observe_book_cipher_requirements`
+  - Required key-text length and candidate key-text family constraints under
+    word-position, character-position, and skip/every-Nth-word hypotheses.
 - `observe_digraph_structure`
   - Doubled digraphs, pair constraints, Playfair/polygraphic hints.
 - `observe_null_noise_suspicion`
