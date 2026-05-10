@@ -150,6 +150,30 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     every classical family in this inventory or clearly mark why it is
     deferred, unsupported, or intended as a plugin.
 - [ ] Build dCode/Boxentriq-quality unknown-cipher diagnosis.
+  - Detailed investigator-mode plan:
+    `docs/unknown_cipher_investigator_mode.md`. This is the higher-level
+    research workflow for serious unknown/unsolved cases: evidence notebook,
+    hypothesis board, experiment queue, creative theory pass, and final
+    research note. Research notes should be reusable future input: resumed
+    runs should load prior notes, avoid repeating failed experiments, accept
+    human suggestions as testable hypotheses, and continue the investigation
+    from the highest-value untested experiment. It complements
+    `docs/unknown_cipher_agent_plan.md`, which covers mode routing, branch
+    metadata, and tool/menu mechanics.
+  - Explore a future live/presentation mode for serious unsolved-cipher work:
+    hypothesis board, evidence notebook, experiment queue, candidate decodes,
+    tool activity, research-note draft, and a direct chat channel where human
+    suggestions are recorded into the investigator state rather than lost in
+    transient conversation.
+  - Add bad-basin and budget guards based on the Feynman #2 minimal-context
+    run (`2ff2c634eaa4`): English-like but incoherent text should trigger a
+    transform/order/null/segmentation/custom-mechanism diagnostic fork, not
+    broad Quagmire spending or local repair. Broad periodic/Quagmire searches
+    should require strong cheap periodic evidence or an actually readable
+    cheap-search candidate. Endgame declaration should compare all branches,
+    including automated preflight candidates, and prefer an explicit
+    unsolved/research-note declaration over stale fallback branches when no
+    readable clause exists.
   - Treat this as the next major implementation track after Copiale/German
     null/nomenclator work reaches a stable checkpoint.
   - Include Beale 1/3 as a diagnosis-only numeric/book-cipher case study.

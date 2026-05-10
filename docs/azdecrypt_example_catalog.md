@@ -64,7 +64,7 @@ Decipher's main benchmark currently emphasizes:
 | `Transposition/Kryptos 3.txt` | Covered as `kryptos_k3`. | Pure-transposition calibration. |
 | `Unsolved/Kryptos 4*.txt` | Present in unsolved benchmark area according to benchmark docs. | Verify split/record names before running. |
 | `Unsolved/Scorpio 5.txt` | Adjacent to current Scorpion S5 import, but naming/transcription should be cross-checked. | AZdecrypt calls it "Scorpio"; our benchmark uses Scorpion. |
-| `Unsolved/Dorabella.txt` | Present in Decipher docs/qualitative packet, not obviously a benchmark manifest record. | Candidate for proper unsolved benchmark import. |
+| `Unsolved/Dorabella.txt` | Imported in unsolved benchmark as `dorabella_cipher`. | Uses AZdecrypt letter-surrogate transcription; not a final glyph ontology. |
 | `Substitution/The Gold Bug.txt` | Covered indirectly through Zenith/tool parity fixtures. | Exact AZdecrypt file not necessarily imported. |
 
 ## Missing Unsolved / Disputed Examples Worth Considering
@@ -77,22 +77,22 @@ large enough to analyze, or directly exercise solver gaps.
 | 1 | `Unsolved/D'Agapeyeff.txt` | 392 nonspace chars | Classic unresolved numeric cipher; AZdecrypt also ships Polybius-derived variants in `Various`. Good for fractionation/Polybius TODOs. | Imported in `../cipher_benchmark` as `dagapeyeff_cipher`; diagnostic only. |
 | 1 | `Unsolved/Beale 1.txt` and `Unsolved/Beale 3.txt` | 1336 / 1505 nonspace tokens | Famous book/numeric cipher material; good for codebook/nomenclator/unknown-cipher diagnosis. | Not currently solved; import as qualitative/unsolved. |
 | 1 | `Unsolved/Feynman 2.txt` and `Unsolved/Feynman 3.txt` | 261 / 231 chars | Compact famous alphabetic challenges with strong claimed solutions. Good for unknown-cipher hypothesis discipline and calibration caveats. | Imported in `../cipher_benchmark` main benchmark as `solved_probable`; claimed plaintext and method metadata are stored, but solution-bearing details stay out of blind/standard context. |
-| 1 | `Unsolved/DCT Reloaded 3.txt` | 1100 chars | German double-columnar/transposition-style challenge with explicit keyword length hints. | Good target for pure-transposition breadth and agent context use. |
-| 1 | `Unsolved/Ricky McCormick page 1/2.txt` | 406 / 425 nonspace chars | Real-world ambiguous notation, likely not a standard substitution. Good for unknown-language/noisy-symbol diagnostics. | Not currently a solve target; useful qualitative stress test. |
-| 1 | `Unsolved/Blitz cipher page 7/8.txt` | 470 / 159 chars | Historical symbolic manuscript material; good OCR/transcription/unknown-family target. | Needs curated transcription/context first. |
+| 1 | `Unsolved/DCT Reloaded 3.txt` | 1100 chars | German double-columnar/transposition-style challenge with explicit keyword length hints. | Imported in `../cipher_benchmark` as `dct_reloaded_3`; good target for pure-transposition breadth and agent context use. |
+| 1 | `Unsolved/Ricky McCormick page 1/2.txt` | 406 / 425 nonspace chars | Real-world ambiguous notation, likely not a standard substitution. Good for unknown-language/noisy-symbol diagnostics. | Imported in `../cipher_benchmark` as `ricky_mccormick_note_1/2`; qualitative stress tests. |
+| 1 | `Unsolved/Blitz cipher page 7/8.txt` | 470 / 159 chars | Historical symbolic manuscript material; good OCR/transcription/unknown-family target. | Imported in `../cipher_benchmark` as `blitz_cipher_p7/p8`; rights/transcription certainty remain caveats. |
 | 2 | `Unsolved/Copenhagen cryptogram.txt` | 101 chars | Short classic challenge; useful as "too short, be honest" diagnostic. | Current agents should likely avoid overclaiming. |
 | 2 | `Unsolved/Helen Fouché Gaines.txt` | 125 chars | Short challenge with cryptanalytic-history flavor. | Import after provenance check. |
 | 2 | `Unsolved/IKLP long.txt` / `IKLP short.txt` | 358 / 19 chars | Good for testing extremely short/long contrast and declaration restraint. | Diagnostics only. |
-| 2 | `Unsolved/Lawrence Public Library Cryptogram part 1/2.txt` | 451 / 395 chars | Two related pages could test associated-record context tools. | Good agentic context exercise. |
+| 2 | `Unsolved/Lawrence Public Library Cryptogram part 1/2.txt` | 451 / 395 chars | Two related pages could test associated-record context tools. | Imported in `../cipher_benchmark` as `lawrence_public_library_cryptogram_p1/p2`; good agentic context exercise. |
 | 2 | `Unsolved/Moustier St Martin.txt` and `Moustier Virgin.txt` | 76 / 80 chars | Short symbolic/historical examples. | Needs provenance; likely diagnostic only. |
-| 2 | `Unsolved/Nick Pelling challenge 2-7.txt` | 222-354 chars | Challenge set from the historical-cipher community; multiple related items. | Good for benchmark context/related-records. |
-| 2 | `Unsolved/Paul Rubin.txt` | 459 chars | Medium alphabetic challenge. | Could be an early unknown-cipher run. |
+| 2 | `Unsolved/Nick Pelling challenge 2-7.txt` | 222-354 chars | Challenge set from the historical-cipher community; multiple related items. | Imported in `../cipher_benchmark` as hold-for-review placeholders; exact source pages still need verification. |
+| 2 | `Unsolved/Paul Rubin.txt` | 459 chars | Medium mixed-stream challenge. | Imported in `../cipher_benchmark` as `paul_rubin_cipher`; useful early unknown-cipher run. |
 | 2 | `Unsolved/Powers cryptogram.txt` | 96 chars | Short real/disputed challenge. | Diagnostics only. |
-| 2 | `Unsolved/Taman Shud.txt` | 44 chars | Famous but extremely short; likely not solvable by normal ciphers. | Useful for "no overclaiming" tests. |
+| 2 | `Unsolved/Taman Shud.txt` | 44 chars | Famous but extremely short; likely not solvable by normal ciphers. | Imported in `../cipher_benchmark` as `taman_shud_code`; useful for "no overclaiming" tests. |
 | 3 | `Unsolved/1916 train station robbery cryptogram.txt` | 94 chars | Short historical case. | Import only if provenance is easy. |
 | 3 | `Unsolved/GUN WA 1889.txt` | 77 chars | Short challenge. | Low solving leverage. |
 | 3 | `Unsolved/Allen Benjy 2010 challenge.txt` | 708 chars | Longer challenge with unknown provenance/status. | Potentially useful after source check. |
-| 3 | `Unsolved/Glurk (Beale 3 emulation challenge).txt` | 1591 chars | Synthetic/emulation challenge; likely good for codebook/book-cipher tooling. | Useful, but separate from real historical claims. |
+| 3 | `Unsolved/Glurk (Beale 3 emulation challenge).txt` | 1591 chars | Synthetic/emulation challenge; likely good for codebook/book-cipher tooling. | Imported in `../cipher_benchmark` as `glurk_beale3_emulation`; explicitly marked synthetic/placeholder. |
 
 ## Missing Solved / Calibration Examples Worth Importing
 
@@ -113,10 +113,12 @@ useful for honest capability testing.
 
 ## Suggested Import Order
 
-1. **Curate missing famous unsolved records**: Dorabella as a proper benchmark
-   record, K4 split verification, and Ricky McCormick pages. D'Agapeyeff and
-   Beale 1/3 are already seeded in the unsolved area; Feynman 2/3 are seeded
-   as main-benchmark `solved_probable` calibration records.
+1. **Curate missing famous unsolved records**: K4 split verification and any
+   remaining short famous records worth no-overclaim testing. D'Agapeyeff,
+   Beale 1/3, Dorabella, Taman Shud, Ricky McCormick pages, DCT Reloaded 3,
+   Lawrence Public Library, Blitz pages 7/8, Nick Pelling 2-7, Paul Rubin, and
+   Glurk are already seeded in the unsolved area; Feynman 2/3 are seeded as
+   main-benchmark `solved_probable` calibration records.
    Mark all unsolved rows as qualitative/no-ground-truth unless a reliable
    accepted plaintext exists.
 2. **Curate pure-transposition calibrations**: Feynman 1, Klaus DCT challenges,
@@ -146,9 +148,20 @@ After light curation, the highest-value AZdecrypt-derived targets would be:
 - D'Agapeyeff: fractionation/Polybius and unknown-cipher diagnosis. Imported
   as `dagapeyeff_cipher` in the unsolved benchmark area.
 - DCT Reloaded 3: German transposition with explicit keyword-length context.
+  Imported as `dct_reloaded_3` in the unsolved benchmark area.
 - Feynman 2/3: compact alphabetic solved-probable tests for agent hypothesis
   discipline and context-control calibration. Imported as `feynman_2` and
   `feynman_3` in the main benchmark.
 - Beale 1/3: book/numeric/codebook hypothesis workflow.
 - Ricky McCormick pages: unknown notation/noisy real-world text, likely
-  qualitative only.
+  qualitative only. Imported as `ricky_mccormick_note_1/2` in the unsolved
+  benchmark area.
+- Lawrence Public Library cryptogram: related-page unknown/book/substitution
+  candidate. Imported as `lawrence_public_library_cryptogram_p1/p2`.
+- Blitz Cipher pages 7/8: symbolic unknown-family pages with provisional
+  transcription caveats. Imported as `blitz_cipher_p7/p8`.
+- Dorabella and Taman Shud: imported as famous short/no-overclaim diagnostics.
+- Nick Pelling challenges 2-7: imported as related numeric challenge
+  placeholders.
+- Paul Rubin: imported as a mixed-stream unknown-cipher diagnostic.
+- Glurk: imported as a synthetic Beale-emulation/codebook-style placeholder.
