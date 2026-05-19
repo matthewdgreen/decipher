@@ -19,7 +19,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.probe_copiale_null_masks import null_mask_validation_score, null_mask_validation_score_v2
+from scripts.probe_copiale_null_masks import (
+    attach_null_mask_ensemble_scores,
+    format_validation_components,
+    null_mask_rank_key,
+    null_mask_validation_score,
+    null_mask_validation_score_v2,
+)
+from automated.runner import _automated_candidate_diagnostics
+from analysis.dictionary import get_dictionary_path, load_word_set
 
 
 def main() -> None:
@@ -51,20 +59,37 @@ def load_probe_jsonl(path: Path) -> list[dict[str, Any]]:
 def summarize_probe_payload(payload: dict[str, Any]) -> dict[str, Any]:
     rows = _candidate_rows(payload)
     original_length = max((int(row.get("filtered_length") or 0) for row in rows), default=0)
+    language = str(payload.get("language") or "de")
     for row in rows:
+        _backfill_language_diagnostics(row, language=language)
         if "validation_score" not in row:
-            validation = null_mask_validation_score(row, original_length=original_length)
+            validation = null_mask_validation_score(
+                row,
+                original_length=original_length,
+                language=language,
+            )
             row["validation_score"] = validation["score"]
             row["validation_components"] = validation["components"]
-        validation_v2 = null_mask_validation_score_v2(row, original_length=original_length)
+        validation_v2 = null_mask_validation_score_v2(
+            row,
+            original_length=original_length,
+            language=language,
+        )
         row["validation_score_v2"] = validation_v2["score"]
         row["validation_components_v2"] = validation_v2["components"]
+    attach_null_mask_ensemble_scores(
+        rows,
+        original_length=original_length,
+        language=language,
+    )
 
     rows_by_selection = sorted(rows, key=lambda item: (-float(item.get("selection_score") or 0.0), -float(item.get("char_accuracy") or 0.0)))
     rows_by_validation = sorted(rows, key=lambda item: (-float(item.get("validation_score_v2") or 0.0), -float(item.get("char_accuracy") or 0.0)))
+    rows_by_ensemble = sorted(rows, key=null_mask_rank_key, reverse=True)
     rows_by_char = sorted(rows, key=lambda item: (-float(item.get("char_accuracy") or 0.0), -float(item.get("selection_score") or 0.0)))
     best_selection = rows_by_selection[0] if rows_by_selection else None
     best_validation = rows_by_validation[0] if rows_by_validation else None
+    best_ensemble = rows_by_ensemble[0] if rows_by_ensemble else None
     best_char = rows_by_char[0] if rows_by_char else None
 
     return {
@@ -74,17 +99,55 @@ def summarize_probe_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "has_all_rows": bool(payload.get("all_rows")),
         "best_by_selection": best_selection,
         "best_by_validation": best_validation,
+        "best_by_ensemble": best_ensemble,
         "best_by_char_accuracy": best_char,
         "char_best_selection_rank": _rank_of(rows_by_selection, best_char),
         "char_best_validation_rank": _rank_of(rows_by_validation, best_char),
+        "char_best_ensemble_rank": _rank_of(rows_by_ensemble, best_char),
         "validation_best_char_gap": _char_gap(best_validation, best_char),
+        "ensemble_best_char_gap": _char_gap(best_ensemble, best_char),
         "selection_best_char_gap": _char_gap(best_selection, best_char),
         "capture_by_validation_top_n": _capture_by_top_n(rows_by_validation, best_char, ns=(1, 3, 5, 8, 10)),
+        "capture_by_ensemble_top_n": _capture_by_top_n(rows_by_ensemble, best_char, ns=(1, 3, 5, 8, 10)),
         "capture_by_selection_top_n": _capture_by_top_n(rows_by_selection, best_char, ns=(1, 3, 5, 8, 10)),
         "top_by_validation": rows_by_validation,
+        "top_by_ensemble": rows_by_ensemble,
         "top_by_selection": rows_by_selection,
         "top_by_char_accuracy": rows_by_char,
     }
+
+
+def _backfill_language_diagnostics(row: dict[str, Any], *, language: str) -> None:
+    """Fill newly added scorer diagnostics from saved full candidate text.
+
+    Older probe JSONL rows may have ``validation_text`` but lack newer
+    diagnostics such as content-word quality. Recompute only missing fields so
+    reports can compare new scorer versions without rerunning the expensive
+    null-mask search.
+    """
+    diagnostics = row.get("diagnostics")
+    if not isinstance(diagnostics, dict):
+        diagnostics = {}
+        row["diagnostics"] = diagnostics
+    if diagnostics.get("dictionary_content_word_count") is not None:
+        return
+    text = str(row.get("validation_text") or row.get("decryption") or "")
+    if not text:
+        return
+    path = get_dictionary_path(language)
+    if not path:
+        return
+    word_set = load_word_set(path)
+    if not word_set:
+        return
+    recomputed = _automated_candidate_diagnostics(
+        text,
+        language=language,
+        word_list=sorted(word_set),
+        binary_model_path=None,
+    )
+    for key, value in recomputed.items():
+        diagnostics.setdefault(key, value)
 
 
 def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
@@ -110,21 +173,24 @@ def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
         "",
         "## Tests",
         "",
-        "| Test | Masks | Rows | Best selection | Best validation v2 | Best char | Char-best rank by validation | Validation char gap | Top-N capture |",
-        "|---|---:|---:|---|---|---|---:|---:|---|",
+        "| Test | Masks | Rows | Best selection | Best validation v2 | Best ensemble | Best char | Char-best rank by validation/ensemble | Validation/ensemble gap | Top-N capture |",
+        "|---|---:|---:|---|---|---|---|---:|---:|---|",
     ]
     for report in reports:
         lines.append(
-            "| {test} | {masks} | {rows}{row_note} | {sel} | {val} | {char} | {rank} | {gap} | {capture} |".format(
+            "| {test} | {masks} | {rows}{row_note} | {sel} | {val} | {ens} | {char} | {rank}/{ens_rank} | {gap}/{ens_gap} | {capture} |".format(
                 test=report["test_id"],
                 masks=report["mask_count"],
                 rows=report["stored_rows"],
                 row_note="" if report["has_all_rows"] else "*",
                 sel=_format_row(report["best_by_selection"], score_name="selection_score"),
                 val=_format_row(report["best_by_validation"], score_name="validation_score_v2"),
+                ens=_format_row(report["best_by_ensemble"], score_name="ensemble_score_v1"),
                 char=_format_row(report["best_by_char_accuracy"], score_name="char_accuracy"),
                 rank=report["char_best_validation_rank"] or "",
+                ens_rank=report["char_best_ensemble_rank"] or "",
                 gap=_format_percent(report["validation_best_char_gap"]),
+                ens_gap=_format_percent(report["ensemble_best_char_gap"]),
                 capture=_format_capture(report["capture_by_validation_top_n"]),
             )
         )
@@ -138,24 +204,60 @@ def render_markdown(reports: list[dict[str, Any]], *, top: int = 8) -> str:
             "",
             f"## {report['test_id']}",
             "",
-            "| Rank | Mask | Validation v2 | Selection | Char | Dict | Top letter | Preview |",
-            "|---:|---|---:|---:|---:|---:|---:|---|",
+            "| Rank | Mask | Validation v2 | Ensemble | Selection | Char | Dict | Content | Lattice | Pseudo | Binary | Shape | Island | Preview |",
+            "|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ])
         for rank, row in enumerate(report["top_by_validation"][:top], start=1):
             diagnostics = row.get("diagnostics") or {}
-            quality = row.get("quality") or {}
+            components = row.get("validation_components_v2") or {}
             lines.append(
-                "| {rank} | {mask} | {val:.3f} | {sel:.3f} | {char} | {dict_rate:.3f} | {top_letter:.3f} | {preview} |".format(
+                "| {rank} | {mask} | {val:.3f} | {ensemble:.3f} | {sel:.3f} | {char} | {dict_rate:.3f} | {content:.3f} | {lattice:.3f} | {pseudo:.3f} | {binary:.3f} | {shape:.3f} | {island:.3f} | {preview} |".format(
                     rank=rank,
                     mask=_mask_label(row),
                     val=float(row.get("validation_score_v2") or 0.0),
+                    ensemble=float(row.get("ensemble_score_v1") or 0.0),
                     sel=float(row.get("selection_score") or 0.0),
                     char=_format_percent(row.get("char_accuracy")),
                     dict_rate=float(diagnostics.get("dict_rate") or 0.0),
-                    top_letter=float(quality.get("top_letter_fraction") or 0.0),
+                    content=float(components.get("content_word_quality") or 0.0),
+                    lattice=float(components.get("word_lattice_quality") or 0.0),
+                    pseudo=float(diagnostics.get("pseudo_word_fraction") or 0.0),
+                    binary=float(components.get("binary_ngram_fit") or 0.0),
+                    shape=float(
+                        components.get("language_shape")
+                        if components.get("language_shape") is not None
+                        else components.get("german_shape") or 0.0
+                    ),
+                    island=(
+                        abs(float(components.get("repetition_penalty") or 0.0))
+                        + abs(float(components.get("template_island_penalty") or 0.0))
+                        + abs(float(components.get("function_overuse_penalty") or 0.0))
+                    ),
                     preview=str(row.get("preview") or "")[:80],
                 )
             )
+        if report["top_by_validation"]:
+            lines.extend([
+                "",
+                "Top scalar-validation components:",
+            ])
+            for rank, row in enumerate(report["top_by_validation"][: min(3, top)], start=1):
+                lines.append(
+                    f"- {rank}. `{_mask_label(row)}`: "
+                    f"{format_validation_components(row.get('validation_components_v2') or {})}"
+                )
+        if report["top_by_ensemble"]:
+            lines.extend([
+                "",
+                "Top ensemble-only calibration ranks:",
+            ])
+            for rank, row in enumerate(report["top_by_ensemble"][: min(5, top)], start=1):
+                lines.append(
+                    f"- {rank}. `{_mask_label(row)}`: "
+                    f"ensemble={float(row.get('ensemble_score_v1') or 0.0):+.3f}, "
+                    f"validation_v2={float(row.get('validation_score_v2') or 0.0):+.3f}, "
+                    f"char={_format_percent(row.get('char_accuracy'))}"
+                )
         miss_lines = _validation_miss_lines(report)
         if miss_lines:
             lines.extend([

@@ -21,13 +21,13 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT))
 
 from analysis.homophonic_nulls import (
+    attach_null_mask_ensemble_scores,
     format_validation_components,
     generate_null_masks,
-    german_coherence_score,
-    german_fragment_score,
+    null_mask_language_quality_rank_key,
+    null_mask_rank_key,
     null_mask_validation_score,
     null_mask_validation_score_v2,
-    repetitive_word_island_penalty,
     select_null_candidate_symbols,
 )
 from analysis.dictionary import get_dictionary_path, load_word_set, score_plaintext
@@ -196,6 +196,7 @@ def run_probe(
             best.plaintext,
             language="de",
             word_list=word_list,
+            binary_model_path=Path(model_path),
         )
         score = score_decryption(
             test_id,
@@ -212,9 +213,10 @@ def run_probe(
                 "selection_score": selection_score,
                 "quality": quality,
                 "diagnostics": diagnostics,
-                "preview": best.plaintext[:120],
+                "preview": best.plaintext,
             },
             original_length=len(cipher.tokens),
+            language="de",
         )
         validation_v2 = null_mask_validation_score_v2(
             {
@@ -223,9 +225,10 @@ def run_probe(
                 "selection_score": selection_score,
                 "quality": quality,
                 "diagnostics": diagnostics,
-                "preview": best.plaintext[:120],
+                "preview": best.plaintext,
             },
             original_length=len(cipher.tokens),
+            language="de",
         )
         row = {
             "mask": list(mask),
@@ -243,6 +246,8 @@ def run_probe(
             "diagnostics": diagnostics,
             "preview": best.plaintext[:120],
         }
+        if include_all_rows:
+            row["validation_text"] = best.plaintext
         rows.append(row)
         print(
             f"[{idx:>3}/{len(masks)}] mask={','.join(mask) or '(none)'} "
@@ -250,11 +255,20 @@ def run_probe(
             f"word={score.word_accuracy:.1%} sel={selection_score:.3f} "
             f"val2={validation_v2['score']:.3f} "
             f"dict={diagnostics.get('dict_rate', 0.0):.3f} "
+            f"content={diagnostics.get('dictionary_content_word_fraction', 0.0):.3f} "
             f"top={quality.get('top_letter_fraction', 0.0):.3f}"
         )
 
+    attach_null_mask_ensemble_scores(rows, original_length=len(cipher.tokens), language="de")
     rows_by_selection = sorted(rows, key=lambda item: (-item["selection_score"], -item["char_accuracy"]))
-    rows_by_validation = sorted(rows, key=lambda item: (-item["validation_score_v2"], -item["char_accuracy"]))
+    rows_by_validation = sorted(
+        rows,
+        key=lambda item: (
+            -float(item.get("validation_score_v2") or float("-inf")),
+            -float(item.get("selection_score") or float("-inf")),
+        ),
+    )
+    rows_by_ensemble = sorted(rows, key=null_mask_rank_key, reverse=True)
     rows_by_char = sorted(rows, key=lambda item: (-item["char_accuracy"], -item["selection_score"]))
     print()
     print(f"Elapsed: {time.time() - t0:.1f}s")
@@ -266,13 +280,25 @@ def run_probe(
             f"len={row['filtered_length']} preview={row['preview']}"
         )
     print()
-    print("Top by null-mask validation score (no ground truth):")
+    print("Top by scalar null-mask validation score (no ground truth):")
     for row in rows_by_validation[: top]:
         print(
-            f"  val2={row['validation_score_v2']:.3f} sel={row['selection_score']:.3f} "
+            f"  val2={row['validation_score_v2']:.3f} "
+            f"ens={row.get('ensemble_score_v1', 0.0):.3f} "
+            f"sel={row['selection_score']:.3f} "
             f"char={row['char_accuracy']:.1%} word={row['word_accuracy']:.1%} "
             f"mask={','.join(row['mask']) or '(none)'} "
             f"components={format_validation_components(row['validation_components_v2'])} "
+            f"preview={row['preview']}"
+        )
+    print()
+    print("Top by ensemble calibration score (no ground truth; supporting view):")
+    for row in rows_by_ensemble[: top]:
+        print(
+            f"  ens={row.get('ensemble_score_v1', 0.0):.3f} "
+            f"val2={row['validation_score_v2']:.3f} sel={row['selection_score']:.3f} "
+            f"char={row['char_accuracy']:.1%} word={row['word_accuracy']:.1%} "
+            f"mask={','.join(row['mask']) or '(none)'} "
             f"preview={row['preview']}"
         )
     print()
@@ -286,6 +312,7 @@ def run_probe(
         )
     payload = {
         "test_id": test_id,
+        "language": "de",
         "candidate_symbols": candidates,
         "mask_count": len(masks),
         "seeds": seeds,
@@ -294,9 +321,11 @@ def run_probe(
         "elapsed_seconds": round(time.time() - t0, 3),
         "best_by_selection": rows_by_selection[0] if rows_by_selection else None,
         "best_by_validation": rows_by_validation[0] if rows_by_validation else None,
+        "best_by_ensemble": rows_by_ensemble[0] if rows_by_ensemble else None,
         "best_by_char_accuracy": rows_by_char[0] if rows_by_char else None,
         "top_by_selection": rows_by_selection[:top],
         "top_by_validation": rows_by_validation[:top],
+        "top_by_ensemble": rows_by_ensemble[:top],
         "top_by_char_accuracy": rows_by_char[:top],
     }
     if include_all_rows:

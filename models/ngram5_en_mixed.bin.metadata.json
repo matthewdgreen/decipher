@@ -3,12 +3,23 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_en_mixed.bin",
-  "sha256": "315266e8c17e855fa32c54d3c50023c9272e4e5e2635bf0daa2f7837d7db2bb3",
+  "sha256": "6016954f7beef22e3fdd6b43d0ec1e68455311e735eaa6c81b5d566d0698b398",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,
-  "build_timestamp_utc": "2026-04-24T04:13:33.479360+00:00",
+  "build_timestamp_utc": "2026-05-17T21:06:51.042956+00:00",
   "builder_version": 1,
   "sources": [
+    {
+      "name": "bnc",
+      "language": "en",
+      "license": "Licensed local BNC source; derived models only",
+      "redistributable": false,
+      "derived_products_redistributable": true,
+      "text_files": 4061,
+      "source_path": "corpus_data/en/bnc_source",
+      "attribution": "British National Corpus (licensed local copy).",
+      "licensing_note": "Corpus text is not redistributed. This source is used to build derived statistical models only."
+    },
     {
       "name": "gutenberg",
       "language": "en",
@@ -37,9 +48,9 @@
     }
   ],
   "corpus_stats": {
-    "raw_files": 9832,
-    "normalized_characters": 275984926,
-    "distinct_seen_5grams": 1675463
+    "raw_files": 13895,
+    "normalized_characters": 729879668,
+    "distinct_seen_5grams": 2372448
   },
   "normalization": {
     "lowercase": true,

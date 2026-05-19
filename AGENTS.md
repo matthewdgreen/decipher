@@ -19,7 +19,26 @@ Licensing note:
 - `src/analysis/homophonic_nulls.py` holds ground-truth-free null/codeword
   candidate generation and finalist validation helpers for homophonic ciphers.
   Shared by calibration scripts and the opt-in automated `null_masks`
-  homophonic refinement profile.
+  homophonic refinement profile. The automated null-mask route may also run
+  a consensus-polish pass that freezes mappings agreed on by top finalist
+  keys and reruns only disputed symbols; this consensus is solver-derived and
+  must remain independent of benchmark plaintext. It can also optionally load
+  a saved `LinearLanguageQualityModel` with
+  `DECIPHER_NULL_MASK_LANGUAGE_QUALITY_MODEL` and
+  `DECIPHER_NULL_MASK_RANKER=language_quality`; this is a ground-truth-free
+  runtime ranker, but first-generation models are calibration aids rather than
+  default Copiale evidence.
+  The default automated null-mask profile is now the broad Copiale-style
+  `wide` profile: it expands candidate/mask breadth, keeps a larger menu, and
+  keeps a cross-ranker validation/LQ/ensemble finalist portfolio while
+  still keeping benchmark plaintext out of candidate generation and selection.
+  Use `DECIPHER_NULL_MASK_PROFILE=narrow` for quick reference/debug runs that
+  intentionally reproduce the older compact search envelope.
+  The expensive per-mask homophonic solves now batch through the mandatory
+  Rust fast module by default (`DECIPHER_NULL_MASK_ENGINE=rust_batch`, threads
+  controlled by `DECIPHER_NULL_MASK_THREADS` with the usual parallel-worker
+  fallbacks). Python still owns candidate generation, validation/ranking, and
+  artifacts, so the ground-truth firewall remains at the orchestration layer.
 - The original Zenith English binary model is still not redistributed in this
   repo. Current understanding is that BNC itself is probably not the blocking
   issue; the remaining redistribution uncertainty is primarily the Blog
@@ -47,6 +66,11 @@ src/
     polyalphabetic.py     — Vigenere/Beaufort/Gronsfeld solvers, keyed
                             Vigenere/Quagmire replay/search, and experimental
                             shared-tableau mutation search
+    language_scoring.py   — Extensible language-profile signals for damaged
+                            no-boundary plaintext ranking: coherence/shape,
+                            word-lattice quality, content-word quality,
+                            repetition, function-word overuse, and the
+                            transparent trainable fast-scorer scaffold
     homophonic_nulls.py   — Null/codeword candidate generation and
                             ground-truth-free language finalist validation
     signals.py            — Multi-signal scoring panel (6 metrics)
@@ -528,6 +552,12 @@ Vigenere-family metadata through the automated runner. Current scope:
   record its `candidate_plan` metadata. Keep older Python implementations as
   reference/regression paths, not as feature-parity obligations for new
   Rust-scale search work.
+- The Rust fast-kernel module also owns the hot loop for automated
+  homophonic null/codeword mask evaluation. `zenith_null_mask_candidates_batch`
+  loads the Zenith model once, applies many candidate token masks, and runs
+  the filtered homophonic solves across a Rayon pool. Use
+  `DECIPHER_NULL_MASK_ENGINE=python_reference` only for reference debugging;
+  it is not the production path for broad Copiale-style screens.
 - Transform finalist menus now share a Python-side evaluation skeleton in
   `analysis.transform_evaluation`. Pure-transposition direct-score candidates
   and transform+homophonic solver finalists both flow through

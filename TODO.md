@@ -93,6 +93,34 @@ Current planning split:
     bounce iterations, declare at iter N+3) into a single clean declaration
     turn, saving meaningful cost and iteration count on every solved run.
 
+## Candidate Scoring Architecture
+
+- [ ] Build a shared candidate-quality scoring layer used by every solver
+  family, not just Copiale/null-mask experiments. The current
+  `LinearLanguageQualityModel` may or may not become the best scorer, but the
+  architecture should let any future fast language-quality model attach the
+  same feature packet, raw score, calibrated score, model id, and component
+  explanation to candidates from homophonic, null/codeword, transform,
+  transposition, polyalphabetic, and automated-preflight routes.
+  - Planning note: the non-LLM pairwise ranker roadmap now lives in
+    `docs/non_llm_candidate_ranker_plan.md`. The first concrete data path
+    supports global repair probe menus via
+    `scripts/train_language_quality_scorer.py --global-repair-json` and
+    `scripts/report_language_candidate_ranker.py --global-repair-json`.
+  - Add a common API such as `score_candidate_text(text, language,
+    solver_evidence, model_path=None, context=None)` that returns both
+    portable language-quality features and solver-family metadata.
+  - Keep solver-native scores separate from language-quality scores:
+    solver-native scores say whether the search objective was optimized;
+    language-quality scores say whether the resulting text looks like real
+    damaged language.
+  - Make finalist menus, branch cards, artifact rows, and agent tools consume
+    the same candidate-quality packet so a better scorer can be enabled
+    broadly without rewriting every solver route.
+  - Preserve the ground-truth firewall: training/calibration reports may use
+    labels after the fact, but runtime scoring must consume only candidate
+    text, solver evidence, and permitted context.
+
 ## Engineering Cleanup
 
 - [ ] **Retire the legacy homophonic solver path.** `--legacy-homophonic` and
@@ -1641,19 +1669,386 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       - `scripts/probe_copiale_null_masks.py` now reports a transparent
         no-ground-truth validation score. The current v2 score reduces raw
         anneal-selection weight and adds stricter German coherence,
-        letter-diversity, top-letter, and repetition controls. On the full-row
-        five-page packet it captures the post-hoc best mask within the top-3
-        validation finalists on `5/5` pages, but exact top-1 selection is still
-        only `1/5`.
+        letter-diversity, top-letter, binary-model fit, German-shape, and
+        repetition/overuse controls. On the original full-row five-page packet
+        it captures the post-hoc best mask within the top-3 validation
+        finalists on `5/5` pages, but exact top-1 selection is still only
+        `1/5`.
+      - Candidate selection now blends solver-key homophone-family pressure
+        with rare/localized ciphertext anchors, so a noisy baseline cannot hide
+        plausible null/codeword pairs below the candidate cap. This repaired a
+        p068 reachability miss: focused probing now includes rare pairs such
+        as `S090,S091` and found a `59.4%` post-hoc candidate in validation
+        top-5. The remaining p068 problem is not reachability but
+        ground-truth-free readability ranking.
+      - p068 promotion testing exposed a second reachability issue: the
+        production diagnostic helper only returned the top 12 rare/localized
+        null candidates, excluding one-off `S075` even though focused probes
+        showed it was useful. The helper now retains up to 32 diagnostic
+        candidates before the production selector applies its separate budget.
+      - The production null-mask path now has a bounded beam extension stage
+        (`DECIPHER_NULL_MASK_BEAM*`). After the initial mask screen, it extends
+        the best masks with additional candidate symbols so size-3 hypotheses
+        can be tested without enumerating every triple.
+      - The production null-mask path now also has a bounded top-k
+        neighborhood stage (`DECIPHER_NULL_MASK_NEIGHBORHOOD*`). After the
+        initial/beam scalar-validation ranking, it tries add/remove/swap
+        neighbors around the strongest masks. This is meant for p068-like
+        cases where ranks 1-3 are close and the useful basin may differ by one
+        null/codeword symbol. The generator now prioritizes removals and
+        same-size swaps before larger expansions, so pair-level alternatives
+        are not crowded out by triples.
+      - The production null-mask path now has a consensus-polish stage
+        (`DECIPHER_NULL_MASK_CONSENSUS_*`). It takes the strongest
+        scalar-validation finalists, freezes only cipher-symbol mappings that
+        those finalist keys agree on, and reruns same-mask candidates with
+        disputed symbols left mutable. This is ground-truth-free and is meant
+        to correct a strong basin rather than restart from scratch.
+      - Scoring has been split into a reusable language-profile subsystem
+        (`src/analysis/language_scoring.py`). German/Copiale is the first
+        concrete profile, but the null-mask validator now consumes generic
+        language coherence/shape/function-overuse signals so English, Latin,
+        French, and Italian profiles can be added without rewriting the
+        homophonic/null-mask workflow.
+      - Added a reusable `word_lattice_quality` score derived from
+        segmentation diagnostics rather than German fragments. This gives the
+        scorer a portable way to reward candidates that segment with fewer
+        pseudo-words and lower lattice cost.
+      - Added an ensemble/pairwise finalist ranker (`ensemble_score_v1`) for
+        null-mask candidates. It compares candidates across lattice quality,
+        damage controls, binary n-gram fit, diversity, top-letter control,
+        dictionary rate, language content, and solver selection. Language
+        fragment/coherence evidence is capped so a German-ish word-island
+        basin cannot dominate every other signal. Keep it as a calibration
+        ranker for now; production automated selection defaults to scalar v2
+        unless `DECIPHER_NULL_MASK_RANKER=ensemble` is explicitly set.
+      - Saved null-mask probe rows now include full `validation_text` when
+        `--include-all-rows` is used, so report reranking matches the live
+        probe scorer rather than recomputing from a 120-character preview.
+      - Segmentation diagnostics now include pseudo-word fraction, short-word
+        fraction, and long-pseudo-word fraction, and the validator includes a
+        mild `segmentation_shape` penalty for pseudo-word glue.
+      - The automated confirmation stage is now metadata-only for selection.
+        Confirmation means were too noisy: they could demote good initial
+        finalists when one rerun landed in a worse basin. Focused p084 reruns
+        remain around `64.0%`; focused p068 automated single-winner selection
+        remains weak (`47.7%` latest), so p068 is the next ranking/agent-review
+        calibration page rather than an automated success.
+      - The automated null-mask path now keeps a broader menu alive by
+        default (`DECIPHER_NULL_MASK_TOP_N=12`) and promotes the initial top
+        finalists through a second-stage stronger solve
+        (`DECIPHER_NULL_MASK_PROMOTE_TOP_N`, `DECIPHER_NULL_MASK_PROMOTE_RERUNS`,
+        `DECIPHER_NULL_MASK_PROMOTE_BUDGET`). Promotion can change the
+        selected representative basin; confirmation remains supporting
+        stability metadata only. This is intended to help p068-like cases
+        where the first-pass scorer sees several close damaged-German basins.
+        The default promotion width is now 12, matching the finalist menu,
+        after p068 showed that stronger basins can sit near ranks 8-12.
+        Promotion adoption now requires a material validation gain
+        (`DECIPHER_NULL_MASK_PROMOTE_ADOPTION_MARGIN`, default `0.08`) so a
+        noisy same-mask rerun does not overwrite the original representative
+        basin for microscopic score gains.
+      - [x] Add the first hand-scored language-quality pass as a general
+        subsystem, not a Copiale-only heuristic. Candidate diagnostics now
+        include content-word evidence (`dictionary_content_word_count`,
+        long-content hits, and content-character fraction), and scalar v2
+        null-mask validation includes `content_word_quality` alongside
+        dictionary, word-lattice, language-shape, binary n-gram, repetition,
+        and damage-control features. German is the first calibrated profile;
+        future language work should add profile stop words, anchors, and
+        corpus-derived word/phrase features without changing the solver loop.
+      - [x] Add a first template/word-island penalty. The scorer now separates
+        "many content-looking dictionary hits" from "coherent damaged text" by
+        penalizing the combination of repeated fragments, high content-word
+        pressure, and pseudo-word glue. This demotes some p068 word-island
+        basins while keeping the post-hoc best basin in the top scalar
+        validation cluster.
       - `scripts/report_copiale_null_probe.py` can summarize and rerank saved
         probe JSONL cheaply. Use `--include-all-rows` on the probe when doing
         scorer-tuning runs so validation changes do not require rerunning all
-        null-mask candidates. The report now includes aggregate exact-hit/gap
-        metrics, top-N capture rates, and component-level miss analysis.
+        null-mask solves; older compact JSONL rows cannot fully exercise new
+        diagnostics such as content-word quality because they do not include
+        the full candidate text.
+    - [ ] Build a reusable language-quality scorer calibration subsystem.
+      - This should be broader than Copiale: sample real corpora by language
+        and period, generate cipher-family-specific degraded/bad-basin
+        candidates, and train or tune a transparent ranker to distinguish
+        readable damaged plaintext from word-island soup.
+      - First scaffold is in place:
+        `src/analysis/language_scoring.py` now exposes bounded feature vectors
+        plus a tiny ridge-regression `LinearLanguageQualityModel`, and
+        `scripts/train_language_quality_scorer.py` can train/report a JSON
+        model from solved artifacts, probe JSONL rows, and positive corpus
+        text. This is an offline calibration tool; using a model trained on a
+        target case for that same target is diagnostic only, not a valid
+        frontier claim.
+      - Initial p068-only smoke training produced a valid model/report but did
+        not fully solve the rank-1 vs rank-8 judgment problem. The next real
+        experiment should train across all five Copiale evidence pages plus
+        period-appropriate German positives, then evaluate held-out by page.
+      - First held-out p068 experiment is now runnable with
+        `scripts/train_language_quality_scorer.py --holdout-group
+        copiale_single_B_copiale_p068 --leave-one-group-out`. Training on the
+        other Copiale pages without synthetic negatives put the p068 best
+        candidate in the held-out top 3, which is promising enough for a
+        concrete calibration test. A first synthetic-negative experiment was
+        too blunt: it reduced fragment-soup confidence but also demoted the
+        true p068 strong basin, so synthetic negatives need a more realistic
+        bad-basin generator before becoming part of the default test.
+      - The automated null-mask route can now load a saved scorer with
+        `DECIPHER_NULL_MASK_LANGUAGE_QUALITY_MODEL=<model.json>` and use
+        `DECIPHER_NULL_MASK_RANKER=language_quality`. This ranker blends the
+        trained raw score with existing scalar validation and ensemble
+        diagnostics; the trained score is deliberately a small pressure rather
+        than the primary decision signal because the first p068 smoke showed
+        overconfident word-island saturation. Initial p068 automated smokes
+        landed around 53-55% char accuracy, so this is useful instrumentation
+        but not yet a default improvement over the stronger hand-built
+        validator/neighborhood runs.
+      - Candidate-only training is the first variant to produce a live p068
+        improvement. Use `--candidate-only` to exclude clean ground-truth and
+        positive-corpus rows and train only on solver/probe finalist menus.
+        A held-out p068 candidate-only model trained on other Copiale finalist
+        menus selected the `S003,S021,S030` consensus-polish basin in a live
+        automated run, reaching `59.0%` char accuracy. This is still not a
+        solved Copiale route, but it proves the trained-ranker path can alter
+        selection in the right direction.
+      - Breadth testing is now the strongest Copiale signal. The
+        `scripts/run_copiale_breadth_experiment.py` harness compares
+        validation, ensemble, and language-quality finalist menus and reports
+        post-hoc top-N capture. A four-page wide run found substantially
+        stronger basins (`p052` 77.8%, `p068` 64.4%, `p084` 74.2%). The
+        automated route now defaults enabled null-mask searches to
+        `DECIPHER_NULL_MASK_PROFILE=wide`, applying the broad
+        candidate/beam/neighborhood settings and keeping a cross-ranker
+        finalist portfolio. Use `DECIPHER_NULL_MASK_PROFILE=narrow` for quick
+        reference/debug runs. Near-tied LQ candidates
+        are bucketed at 0.01 before validation/ensemble tie-breaks, after p052
+        showed a 0.0009 LQ difference could otherwise override a clearly
+        better validation/ensemble basin.
+        Experimental ranker-specific neighborhood/consensus generation is
+        available through `DECIPHER_NULL_MASK_NEIGHBORHOOD_MULTI_VIEW=1` and
+        `DECIPHER_NULL_MASK_CONSENSUS_MULTI_VIEW=1`, but it is not the default:
+        the first p068 check was slower and worse (`59.4%` vs the default
+        wide-profile `61.5%`). The current lesson is that the external breadth
+        harness is still the safer way to compare independent ranker menus,
+        while the single-run `wide` profile should stay conservative until
+        multi-view stochastic basin handling is better understood.
+      - Added `scripts/report_copiale_breadth_diagnostics.py` to compare the
+        LQ/validation/ensemble picks against the post-hoc best generated
+        candidate and report feature/contribution deltas. The first four-page
+        diagnostic showed p052 was being pushed toward a worse one-symbol mask
+        mainly by `deletion_control` and surface `language_shape`, not by a
+        better damaged-language reading. As a result,
+        `scripts/run_copiale_breadth_experiment.py` now trains held-out LQ
+        models with `--feature-set text_only` by default so mask/deletion
+        metadata cannot dominate readability. A live p052 wide-profile smoke
+        with the text-only model selected the intended `S005,S015`
+        consensus-polish basin at `76.8%` char accuracy, close to the `77.8%`
+        best basin found by the breadth harness.
+        A fresh four-page wide rerun with the text-only default confirmed the
+        p052 improvement in the actual selected candidates: validation,
+        ensemble, and language-quality runs selected `77.8%`, `77.1%`, and
+        `77.8%` p052 basins respectively. The raw LQ-rank-only table still
+        prefers a weaker `S008` p052 candidate, so the current win comes from
+        blending LQ with validation/ensemble evidence rather than trusting the
+        trained model alone. p068 remained hard (`61.1%` selected by
+        validation/LQ), and p084 surfaced a new best generated basin at
+        `76.9%` but selected `74.0%`.
+      - Pairwise candidate-ranking calibration is now available. Use
+        `scripts/report_language_candidate_ranker.py` to mine finalist menus,
+        train a same-format `LinearLanguageQualityModel` with
+        `--objective pairwise`, and report leave-one-page-out top-1/top-3/top-5
+        capture without running new solves. First calibration on 341 Copiale
+        finalist examples across five pages wrote
+        `artifacts/language_quality/copiale_candidate_pairwise_calibration/`.
+        It captured the p068 best candidate at rank 1 and p084 at rank 3, but
+        missed p017/p035/p052 at ranks 13/13/9. Treat this as strong evidence
+        that the training objective is now pointed at the right task, but the
+        feature set or training mix is still not robust enough to become the
+        default selector.
+      - Next scorer step: diagnose the p017/p035/p052 pairwise misses by
+        comparing top-predicted vs top-labeled feature deltas, then add
+        features for content-word dispersion, repeated short-fragment
+        concentration, stopword/content rhythm, and per-window binary n-gram
+        stability. Keep this general by language profile; do not add
+        page-specific or plaintext-specific Copiale cribs.
+      - Feature-delta miss reporting is now in
+        `scripts/report_language_candidate_ranker.py`, and the scorer has
+        first-pass general features for language-evidence dispersion,
+        function/content balance, and short-fragment concentration control.
+        The first all-feature rerun worsened (`top-3` capture `1/5`), showing
+        that extra features alone do not fix the ranking problem. A text-only
+        pairwise run is more promising: top-3/top-5 capture `4/5`, with
+        p017/p052/p068/p084 captured and p035 still badly missed at rank 28.
+        This suggests the language signal is real, but p035 exposes a specific
+        failure where the model overvalues a clean segmentation with zero
+        content-word quality over a damaged but more correct content-bearing
+        candidate.
+      - Added `content_lattice_consistency`, a general feature that penalizes
+        clean-looking dictionary lattices unsupported by content-word evidence.
+        The first broad rerun exposed an important modeling issue: the
+        unconstrained linear pairwise ranker can assign negative weights to
+        features that are semantically "higher is better" because the Copiale
+        finalist menus are small and collinear. `--nonnegative-weights` is now
+        available for pairwise scorer training/reporting. On a 401-example
+        broad Copiale finalist set with `--feature-set text_only`, the
+        non-negative pairwise model improved mean best-label rank from `11.4`
+        to `5.8` and top-1/top-3/top-5 captures from `0/1/4` to `2/3/4`.
+        Remaining hard miss: p035 still ranks the best label around `20`,
+        suggesting we need either stronger page-agnostic content/rhythm
+        features or more diverse calibration menus before this becomes the
+        default selector.
+      - Added two first-pass rhythm/content features:
+        `content_rhythm_control` and `language_window_stability`. These remain
+        language-profile driven and do not use page-specific cribs. On the same
+        401-example broad Copiale finalist set with non-negative text-only
+        pairwise training, the rhythm model improved mean best-label rank from
+        `5.8` to `5.4` and top-1/top-3/top-5 captures from `2/3/4` to `3/3/4`.
+        It selected the best p052, p068, and p084 candidates exactly in
+        leave-one-page-out calibration, kept p017 in the top 5, and still
+        missed p035 at about rank `20`. This is incremental evidence that
+        corpus/rhythm features help, but p035 still needs either broader
+        calibration menus or a stronger content-order signal.
+      - Live held-out ranker sweep:
+        `artifacts/copiale_candidate_ranker_sweep/rhythm_nonnegative/`.
+        The language-quality selector improved p052 (`69.8% -> 71.7%`) and
+        p068 (`57.9% -> 59.8%`), but slightly hurt p017 (`74.8% -> 74.7%`),
+        p035 (`76.7% -> 76.1%`), and p084 (`64.9% -> 64.2%`). Net result:
+        the trained ranker is directionally useful for the hard pages but not
+        ready to replace scalar validation as the default. Next candidate:
+        use language-quality as a tie-break/adoption pressure only when it
+        differs materially, rather than making it the selector outright.
+      - Runtime checkpoint: broad null-mask screening now uses the Rust fast
+        module by default (`DECIPHER_NULL_MASK_ENGINE=rust_batch`) while Python
+        retains candidate generation and ground-truth-free ranking. This
+        removed the pathological process-pool overhead from language-quality
+        and neighborhood runs. Promotion/confirmation remain Python-side
+        reference calls for now; port those next only if a deeper profile makes
+        them the new bottleneck.
+      - Rich p068 breadth checkpoint: with Rust batch active, a wider p068
+        profile (`candidate_limit=32`, `max_masks=320`, beam 120,
+        neighborhood 160, consensus top 8) evaluated 439 mask candidates in
+        about 68 seconds and selected the consensus-polish `S009,S090` basin,
+        reaching `64.6%` post-hoc character accuracy. The same profile with a
+        held-out candidate-only language-quality model selected the same basin
+        in about 75 seconds, so the trained ranker is compatible with this
+        stronger profile but not yet a demonstrated improvement over scalar
+        validation.
+      - Agentic p068 checkpoint: GPT-5.4 with the rich null-mask profile
+        reviewed the null-mask finalist menu and rated five finalists as
+        German word-island basins rather than coherent prose, then correctly
+        declared unsolved at `64.6%` post-hoc character accuracy. This is a
+        healthier agent behavior than premature declaration, but it highlights
+        the remaining need for a solver-side model that can move from a strong
+        damaged basin to a coherent Copiale/nomenclator reading.
+      - Adaptive null-mask escalation is now implemented behind
+        `DECIPHER_NULL_MASK_ADAPTIVE=1`. It runs the normal menu first, then
+        appends a broader Rust-batch mask/beam/neighborhood/consensus screen
+        only when ground-truth-free signals look weak: low scalar validation,
+        high pseudo-word damage, collapsed plaintext shape, wide consensus
+        mutable set, or near-tie finalist menu. First five-page smoke:
+        preserved p017/p035 at baseline (`74.7%`, `76.1%`), improved p068 and
+        p084 over baseline (`60.5%`, `66.8%`), but missed the stronger always-
+        rich p052/p068 basins; average `69.6%` vs baseline `68.4%` and
+        always-rich `71.0%`. Next tuning task: make adaptive escalation either
+        replay the rich candidate plan more faithfully or use a safer
+        selection policy that keeps the baseline representative unless the
+        adaptive representative wins by a robust candidate-quality margin.
+      - Adaptive bridge-pair tuning added a bounded long-range pair stage:
+        strong anchor symbols are paired with the broader candidate list, then
+        bridge masks get one independent restart and the best bridge rows can
+        be consensus-polished. This specifically targets pairs that the local
+        mask generator can miss, such as p068-like late rare symbols paired
+        with early high-pressure symbols. First focused smokes:
+        p052 recovered to `74.0%` (near always-rich `74.1%`), while p068
+        remained variable at `60.4%` rather than the best observed `64.6%`.
+        The remaining p068 gap is now stochastic basin selection/stability,
+        not simple candidate reachability.
+      - Breadth/selection checkpoint: a four-page wide text-only sweep found
+        stronger generated basins than the ordinary profile on several pages
+        (`p052` about `77.8%`, `p068` about `64.4%`, `p084` about `76.9%` in
+        the best observed pool). This is evidence that the current `~77%`
+        ceiling is not a hard brute-force ceiling, but simply making the same
+        search wider is likely to show diminishing returns unless we also add
+        smarter null/codeword hypotheses, more stable reruns, and post-basin
+        correction. A runtime-equivalent report sort now uses the same
+        rounded LQ tie-break as the solver. For p068, changing the LQ
+        near-tie break to use a validation+ensemble blend selected the known
+        stronger `S008,S030` basin live (`64.4%`) without changing p017/p052
+        on the existing pool. p084 remains unsolved by rank tweaks: the
+        scorer can generate/see stronger candidates, but current validation
+        and LQ signals still prefer a nearby `~74%` basin. Treat p084 as the
+        next scorer/correction target, not as a simple tie-break bug.
+      - Added `scripts/report_copiale_mask_stability.py` to group completed
+        breadth candidates by null/codeword mask and report how often each
+        mask lands in distinct basins. First focused reports show p068's
+        `S008,S030` family is stronger but higher-variance than `S005,S071`;
+        the LQ tie-break now selects its best consensus-polish representative.
+        For p084, a prior wide run produced the stronger `S038,S062` basin
+        (`76.9%`) only twice, while the `S038,S104` family was much more
+        stable around `74%`. The fresh four-page rerun did not generate
+        `S038,S062` at all, so p084's next issue is reachability/stability of
+        promising neighboring masks rather than simply choosing among a stable
+        finalist set.
+      - Multi-page selector robustness checkpoint: `scripts/report_copiale_selector_robustness.py`
+        now compares balanced vs. anti-fragment robust selection across saved
+        multi-page artifacts using post-hoc labels only. The current evidence
+        says the robust score should stay scoped to portfolio
+        refinement/local-repair selection: it improved two local-repair
+        artifacts from `76.5%` to `79.2%` and the refinement artifact from
+        `76.9%` to `78.5%`, but it regressed one raw four-page elite menu
+        from `80.1%` to `78.6%`. Keep the broad elite recall stage on the
+        balanced page score, then use the robust anti-fragment score after
+        repair/refinement has produced a smaller finalist set.
+      - Added `scripts/report_copiale_breadth_curve.py` for cheap breadth
+        saturation checks from a single broad artifact. On the p084 slightly
+        wider run, the best saved finalist improved from about `63.4%` at
+        prefix 25, to `71.3%` by prefix 50, to `71.8%` by prefix 300, and then
+        jumped to `77.4%` at evaluated index 411. No further improvement was
+        seen through the saved 800+ row frontier. This supports a practical
+        current interpretation of "modest breadth": hundreds of evaluated
+        masks/neighborhood rows are still useful for p084, but beyond the
+        first strong neighborhood basin the bottleneck shifts back to
+        selection/repair. The report is conservative because compact
+        `evaluated_rows` from older artifacts lack full decryptions. New
+        null-mask artifacts now carry durable `candidate_id` and
+        `evaluated_index` fields on evaluated rows and top finalists, and
+        `DECIPHER_NULL_MASK_STORE_EVALUATED_TEXT=1` can store full evaluated
+        text for intentionally heavy diagnostics. The breadth-curve report
+        prefers those explicit IDs/indices and falls back to the older
+        row-signature join for legacy artifacts; use `--progress` and
+        `--max-finalists-per-artifact` for broad-directory smoke checks.
+      - Added `scripts/report_copiale_repair_agenda.py` as the first
+        basin-to-repair handoff. It reads completed null-mask artifacts,
+        compares top runtime finalists without ground truth, reports stable
+        and disputed key assignments, and names damaged-looking plaintext
+        windows where disputed symbols occur. Next repair work should turn
+        this agenda into targeted local search: try alternate mappings/null
+        status for high-impact disputed symbols, consider multiletter/codeword
+        interpretations for symbols repeatedly implicated in damaged windows,
+        and keep changes ranked by language-quality/validation signals rather
+        than benchmark plaintext.
+      - Initial feature families: character/binary n-gram fit, dictionary and
+        content-word quality, word-lattice/segmentation quality, function-word
+        balance, repetition/overuse penalties, word length/content-function
+        rhythm, and wrong-language indicators.
+      - Produce calibration reports that measure top-1/top-k capture of
+        post-hoc best candidates without letting ground truth influence solver
+        workflow. Keep component explanations available for the agent and for
+        human debugging.
+      - Later optional layer: run a slower LLM/neural judge only on a small
+        finalist set, with token/cost accounting and careful prompts that ask
+        for damaged-text plausibility rather than confident translation.
+      - Continue expanding `scripts/report_copiale_null_probe.py` into a
+        general scorer-calibration report. It already includes aggregate
+        exact-hit/gap metrics, top-N capture rates, and component-level miss
+        analysis for null-mask candidates.
     - Build a top-N null-aware homophonic search profile and then evaluate
       whether some symbols or clusters should be treated as nulls,
       abbreviations, or multi-letter tokens rather than simple letter
-      homophones. Do not promote a single null mask by default yet.
+      homophones. Keep multiple promoted finalists inspectable rather than
+      collapsing too early to a single null-mask hypothesis.
       - First implementation is now opt-in as
         `--homophonic-refinement null_masks`. It records a
         `search_null_masks` finalist menu in automated artifacts. Next

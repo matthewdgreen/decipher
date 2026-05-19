@@ -111,3 +111,55 @@ def zenith_transform_candidates_batch_fast(
             int(max(0, threads)),
         )
     )
+
+
+def zenith_null_mask_candidates_batch_fast(
+    *,
+    tokens: list[int],
+    candidates: list[dict[str, Any]],
+    plaintext_ids: list[int],
+    id_to_letter: dict[int, str],
+    model_path: str | Path,
+    epochs: int,
+    sampler_iterations: int,
+    seeds: list[int],
+    t_start: float = 0.012,
+    t_end: float = 0.006,
+    top_n: int = 1,
+    threads: int = 0,
+) -> dict[str, Any]:
+    """Evaluate null-mask candidates with one Rust model load and thread pool."""
+
+    fast = require_fast()
+    normalized_candidates: list[dict[str, Any]] = []
+    for index, candidate in enumerate(candidates):
+        normalized_candidates.append({
+            "candidate_id": str(candidate.get("candidate_id", index)),
+            "source": str(candidate.get("source", "unknown")),
+            "seed_offset": int(candidate.get("seed_offset", 0)),
+            "mask_tokens": [int(token) for token in candidate.get("mask_tokens", [])],
+            "initial_key": {
+                int(k): int(v)
+                for k, v in dict(candidate.get("initial_key") or {}).items()
+            },
+            "fixed_cipher_ids": [
+                int(sid)
+                for sid in candidate.get("fixed_cipher_ids", [])
+            ],
+        })
+    return dict(
+        fast.zenith_null_mask_candidates_batch(
+            str(Path(model_path).expanduser().resolve()),
+            [int(token) for token in tokens],
+            normalized_candidates,
+            [int(pid) for pid in plaintext_ids],
+            {int(k): str(v) for k, v in id_to_letter.items()},
+            int(max(1, epochs)),
+            int(max(1, sampler_iterations)),
+            float(t_start),
+            float(t_end),
+            [int(seed) for seed in seeds],
+            int(max(1, top_n)),
+            int(max(0, threads)),
+        )
+    )

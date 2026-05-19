@@ -2331,7 +2331,7 @@ def test_run_homophonic_zenith_native_can_parallelize_across_seeds(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "letter_count": len(plaintext),
             "unique_letters": len(set(plaintext)),
             "top_letter_fraction": 0.2,
@@ -2556,7 +2556,7 @@ def test_run_homophonic_zenith_native_can_adopt_polished_plaintext(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "letter_count": len(plaintext),
             "unique_letters": len(set(plaintext)),
             "top_letter_fraction": 0.2,
@@ -2570,7 +2570,7 @@ def test_run_homophonic_zenith_native_can_adopt_polished_plaintext(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_maybe_polish_zenith_native_plaintext",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "enabled": True,
             "applied": True,
             "mode": "segment_one_edit_local",
@@ -2598,6 +2598,32 @@ def test_run_homophonic_zenith_native_can_adopt_polished_plaintext(monkeypatch):
     assert text == "THERE CAT"
     assert step["postprocess"]["applied"] is True
     assert step["diagnostics"]["dict_rate"] == 1.0
+    assert step["model_metadata"]["path"] == "fake-model.bin"
+
+
+def test_zenith_native_model_metadata_reads_sidecar(tmp_path):
+    model = tmp_path / "ngram5_de.bin"
+    model.write_bytes(b"fake")
+    (tmp_path / "ngram5_de.bin.metadata.json").write_text(
+        json.dumps({
+            "language": "de",
+            "order": 5,
+            "format": "zenith_binary_v1",
+            "output_file": "ngram5_de.bin",
+            "sha256": "abc123",
+            "sources": [{"name": "gutenberg", "text_files": 1}],
+            "normalization": {"strip_non_alpha": True},
+            "redistribution_status": "redistributable",
+        }),
+        encoding="utf-8",
+    )
+
+    automated_runner._zenith_native_model_metadata.cache_clear()
+    metadata = automated_runner._zenith_native_model_metadata(str(model))
+
+    assert metadata["language"] == "de"
+    assert metadata["sha256"] == "abc123"
+    assert metadata["sources"][0]["name"] == "gutenberg"
 
 
 def test_run_homophonic_two_stage_refinement_adopts_only_better_candidate(monkeypatch):
@@ -2636,7 +2662,7 @@ def test_run_homophonic_two_stage_refinement_adopts_only_better_candidate(monkey
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {"dict_rate": 1.0, "segmented_preview": plaintext},
+        lambda plaintext, language, word_list, **_kwargs: {"dict_rate": 1.0, "segmented_preview": plaintext},
     )
 
     def fake_quality(plaintext, key):
@@ -2708,7 +2734,7 @@ def test_run_homophonic_targeted_repair_freezes_non_suspicious_symbols(monkeypat
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {"dict_rate": 1.0, "segmented_preview": plaintext},
+        lambda plaintext, language, word_list, **_kwargs: {"dict_rate": 1.0, "segmented_preview": plaintext},
     )
     monkeypatch.setattr(
         automated_runner,
@@ -2773,7 +2799,7 @@ def test_run_homophonic_family_repair_skips_unreadable_candidates(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.2,
             "segmentation_cost": 80.0,
             "letter_count": max(1, len(plaintext)),
@@ -2952,7 +2978,7 @@ def test_run_homophonic_family_repair_requires_epsilon_to_adopt(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.9,
             "segmentation_cost": 24.0,
             "letter_count": 8,
@@ -3204,7 +3230,7 @@ def test_run_homophonic_family_repair_can_select_non_primary_elite(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.9,
             "segmentation_cost": 24.0,
             "letter_count": 8,
@@ -3320,7 +3346,7 @@ def test_run_homophonic_dev_repair_profile_limits_elite_pool(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.9,
             "segmentation_cost": 24.0,
             "letter_count": 8,
@@ -3422,7 +3448,7 @@ def test_run_homophonic_dev_repair_profile_screens_weak_branches(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.9,
             "segmentation_cost": 24.0,
             "letter_count": 8,
@@ -3533,7 +3559,7 @@ def test_run_homophonic_dev_search_profile_reduces_seed_budget(monkeypatch):
     monkeypatch.setattr(
         automated_runner,
         "_automated_candidate_diagnostics",
-        lambda plaintext, language, word_list: {
+        lambda plaintext, language, word_list, **_kwargs: {
             "dict_rate": 0.9,
             "segmentation_cost": 24.0,
             "letter_count": 8,
@@ -3700,10 +3726,25 @@ def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
     monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_SIZE", "1")
     monkeypatch.setenv("DECIPHER_NULL_MASK_MAX_MASKS", "2")
     monkeypatch.setenv("DECIPHER_NULL_MASK_TOP_N", "3")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_PROMOTE_TOP_N", "0")
     monkeypatch.setenv("DECIPHER_NULL_MASK_CONFIRM_TOP_N", "2")
     monkeypatch.setenv("DECIPHER_NULL_MASK_CONFIRM_RERUNS", "1")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_NEIGHBORHOOD_TOP_N", "2")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_NEIGHBORHOOD_MAX_MASKS", "8")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_CONSENSUS_MIN_FIXED", "2")
+    monkeypatch.setenv("DECIPHER_NULL_MASK_CONSENSUS_TOP_N", "3")
 
-    def fake_run_homophonic(cipher_text, language, budget, refinement, solver_profile, ground_truth, seed_offset=0):
+    def fake_run_homophonic(
+        cipher_text,
+        language,
+        budget,
+        refinement,
+        solver_profile,
+        ground_truth,
+        seed_offset=0,
+        initial_key=None,
+        fixed_cipher_ids=None,
+    ):
         key = {0: 13, 1: 4, 2: 8, 3: 13}
         plaintext = "WENIGSICHUNDARBEIT" * 4
         step = {
@@ -3741,12 +3782,325 @@ def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
     assert report["experimental"] is True
     assert report["confirmation"]["enabled"] is True
     assert report["confirmation"]["confirmed_mask_count"] >= 1
+    assert report["beam"]["enabled"] is True
+    assert report["beam"]["generated_mask_count"] >= 1
+    assert report["neighborhood"]["enabled"] is True
+    assert report["neighborhood"]["generated_mask_count"] >= 1
+    assert report["consensus_polish"]["fixed_symbol_count"] >= 2
+    assert report["consensus_polish"]["reason"] in {"consensus_ready", "wide_mutable_set", "no_mutable_symbols"}
     assert report["completed_mask_count"] >= 2
     assert report["selected"]["mask"]
     assert "confirmation" in report["selected"]
     assert "confirmed_validation_score_v2" in report["selected"]
+    assert "ensemble_score_v1" in report["selected"]
     assert report["selected"]["decryption"].startswith("WENIGSICH")
-    assert report["top_finalists"][0]["validation_score_v2"] >= report["top_finalists"][-1]["validation_score_v2"]
+    assert report["top_finalists"][0]["ensemble_score_v1"] >= report["top_finalists"][-1]["ensemble_score_v1"]
     assert len(report["evaluated_rows"]) == report["evaluated_mask_count"]
     assert "decryption" not in report["evaluated_rows"][0]
+    assert report["evaluated_rows"][0]["candidate_id"] == "000_identity"
+    assert report["evaluated_rows"][0]["evaluated_index"] == 0
+    assert report["top_finalists"][0]["candidate_id"]
+    assert report["top_finalists"][0]["evaluated_index"] is not None
     assert report["evaluated_rows"][0]["preview"]
+
+
+def test_compact_null_mask_row_can_keep_opt_in_validation_text():
+    compact = automated_runner._compact_null_mask_row(
+        {
+            "candidate_id": "initial:000001",
+            "evaluated_index": 1,
+            "mask": ["S001"],
+            "status": "completed",
+            "decryption": "WENIGSICH",
+            "preview": "WENIGSICH",
+        },
+        include_validation_text=True,
+    )
+
+    assert compact["candidate_id"] == "initial:000001"
+    assert compact["evaluated_index"] == 1
+    assert compact["validation_text"] == "WENIGSICH"
+
+
+def test_null_mask_consensus_polish_plan_keeps_disputed_symbols_mutable():
+    cipher_text = parse_canonical_transcription(
+        " ".join(["S001", "S002", "S003", "S004", "S005", "S006"] * 10)
+    )
+    rows = [
+        {
+            "status": "completed",
+            "mask": [],
+            "key": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 5},
+        },
+        {
+            "status": "completed",
+            "mask": [],
+            "key": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 6},
+        },
+        {
+            "status": "completed",
+            "mask": [],
+            "key": {"0": 0, "1": 1, "2": 2, "3": 3, "4": 4, "5": 7},
+        },
+    ]
+
+    plan = automated_runner._null_mask_consensus_polish_plan(
+        rows,
+        cipher_text=cipher_text,
+        min_agreement=0.75,
+        min_fixed_symbols=4,
+        target_max_mutable_symbols=4,
+    )
+
+    assert plan["enabled"] is True
+    assert plan["fixed_cipher_ids"] == {0, 1, 2, 3, 4}
+    assert 5 not in plan["anchor_key"]
+    assert plan["report"]["mutable_symbols_sample"] == ["S006"]
+
+
+def test_null_mask_neighborhood_prefers_swaps_before_expansions():
+    seen_masks = {("S001", "S002")}
+
+    masks = automated_runner._null_mask_neighborhood_masks(
+        [{"mask": ["S001", "S002"]}],
+        candidate_symbols=["S003", "S004", "S005"],
+        seen_masks=seen_masks,
+        max_size=3,
+        max_masks=6,
+    )
+
+    assert masks[:6] == [
+        ("S002",),
+        ("S001",),
+        ("S002", "S003"),
+        ("S001", "S003"),
+        ("S002", "S004"),
+        ("S001", "S004"),
+    ]
+
+
+def test_null_mask_adaptive_decision_uses_ground_truth_free_damage_signals():
+    strong = [{
+        "mask": ["S001"],
+        "validation_score_v2": 1.2,
+        "ensemble_score_v1": 3.0,
+        "quality": {"collapsed": False, "top_letter_fraction": 0.18},
+        "diagnostics": {"pseudo_word_fraction": 0.2},
+        "validation_components_v2": {},
+        "source": "consensus_polish",
+    }]
+    assert automated_runner._null_mask_adaptive_decision(
+        strong,
+        consensus_report={"reason": "consensus_ready"},
+        min_validation_score=0.75,
+        near_tie_margin=0.05,
+    )["triggered"] is False
+
+    weak = [
+        {
+            "mask": ["S002"],
+            "validation_score_v2": 0.5,
+            "ensemble_score_v1": 2.2,
+            "quality": {"collapsed": True, "top_letter_fraction": 0.25},
+            "diagnostics": {"pseudo_word_fraction": 0.44},
+            "validation_components_v2": {"repetition_penalty": -0.8},
+            "source": "initial",
+        },
+        {
+            "mask": ["S003"],
+            "validation_score_v2": 0.48,
+            "quality": {"collapsed": True},
+            "diagnostics": {"pseudo_word_fraction": 0.4},
+            "validation_components_v2": {},
+            "source": "beam",
+        },
+    ]
+    decision = automated_runner._null_mask_adaptive_decision(
+        weak,
+        consensus_report={"reason": "wide_mutable_set"},
+        min_validation_score=0.75,
+        near_tie_margin=0.05,
+    )
+    assert decision["triggered"] is True
+    assert "low_validation_score" in decision["reasons"]
+    assert "wide_consensus_mutable_set" in decision["reasons"]
+    assert "near_tie_finalist_menu" in decision["reasons"]
+
+
+def test_null_mask_bridge_pair_masks_adds_long_range_pairs():
+    seen_masks = {("S001", "S002")}
+
+    masks = automated_runner._null_mask_bridge_pair_masks(
+        [{"mask": ["S002", "S004"]}],
+        candidate_symbols=["S001", "S002", "S003", "S004", "S009"],
+        anchor_symbols=["S001", "S002"],
+        seen_masks=seen_masks,
+        max_masks=6,
+    )
+
+    assert ("S001", "S009") in masks
+    assert ("S002", "S009") in masks
+    assert ("S001", "S002") not in masks
+
+
+def test_null_mask_stability_uses_robust_rank_but_keeps_best_basin():
+    row = {
+        "status": "completed",
+        "mask": ["S001"],
+        "validation_score_v2": 0.90,
+        "selection_score": -7.0,
+        "source": "adaptive_consensus_polish",
+        "decryption": "GOOD",
+        "key": {"0": 1},
+    }
+    probes = [
+        {
+            "status": "completed",
+            "mask": ["S001"],
+            "validation_score_v2": 0.30,
+            "selection_score": -8.0,
+            "source": "adaptive_stability",
+            "decryption": "BAD",
+            "key": {"0": 2},
+        },
+        {
+            "status": "completed",
+            "mask": ["S001"],
+            "validation_score_v2": 0.40,
+            "selection_score": -7.5,
+            "source": "adaptive_stability",
+            "decryption": "WEAK",
+            "key": {"0": 3},
+        },
+    ]
+
+    automated_runner._attach_null_mask_stability(row, probes)
+
+    assert row["decryption"] == "GOOD"
+    assert row["validation_score_v2"] == 0.90
+    assert row["rank_validation_score_v2"] < row["validation_score_v2"]
+    assert row["adaptive_stability_best_validation_score_v2"] == 0.90
+    assert row["stability"]["completed_probe_count"] == 2
+    assert automated_runner._null_mask_rank_validation_score(row) == row["rank_validation_score_v2"]
+
+
+def test_null_mask_ranker_portfolio_keeps_cross_ranker_masks():
+    rows = [
+        {
+            "mask": ["V"],
+            "validation_score_v2": 1.0,
+            "ensemble_score_v1": 0.2,
+            "language_quality_rank_score": 0.1,
+        },
+        {
+            "mask": ["L"],
+            "validation_score_v2": 0.1,
+            "ensemble_score_v1": 0.3,
+            "language_quality_rank_score": 1.0,
+        },
+        {
+            "mask": ["E"],
+            "validation_score_v2": 0.2,
+            "ensemble_score_v1": 1.0,
+            "language_quality_rank_score": 0.2,
+        },
+        {
+            "mask": ["V"],
+            "validation_score_v2": 0.9,
+            "ensemble_score_v1": 0.9,
+            "language_quality_rank_score": 0.9,
+        },
+    ]
+
+    portfolio = automated_runner._null_mask_ranker_portfolio(
+        rows,
+        limit=3,
+        rankers=["validation", "language_quality", "ensemble"],
+        language_quality_enabled=True,
+    )
+
+    assert [row["mask"] for row in portfolio] == [["V"], ["L"], ["E"]]
+
+
+def test_null_mask_ranker_portfolio_skips_language_quality_when_unavailable():
+    rows = [
+        {
+            "mask": ["V"],
+            "validation_score_v2": 1.0,
+            "ensemble_score_v1": 0.2,
+            "language_quality_rank_score": 0.1,
+        },
+        {
+            "mask": ["L"],
+            "validation_score_v2": 0.1,
+            "ensemble_score_v1": 0.3,
+            "language_quality_rank_score": 1.0,
+        },
+        {
+            "mask": ["E"],
+            "validation_score_v2": 0.2,
+            "ensemble_score_v1": 1.0,
+            "language_quality_rank_score": 0.2,
+        },
+    ]
+
+    portfolio = automated_runner._null_mask_ranker_portfolio(
+        rows,
+        limit=2,
+        rankers=["validation", "language_quality", "ensemble"],
+        language_quality_enabled=False,
+    )
+
+    assert [row["mask"] for row in portfolio] == [["V"], ["E"]]
+
+
+def test_null_mask_promotion_requires_material_validation_gain(monkeypatch):
+    monkeypatch.setenv("DECIPHER_NULL_MASK_PROMOTE_ADOPTION_MARGIN", "0.08")
+    row = {
+        "status": "completed",
+        "mask": ["S001"],
+        "validation_score_v2": 0.10,
+        "source": "initial",
+        "decryption": "INITIAL",
+        "key": {"0": 1},
+    }
+    probe = {
+        "status": "completed",
+        "mask": ["S001"],
+        "validation_score_v2": 0.12,
+        "source": "promotion",
+        "decryption": "PROMOTED",
+        "key": {"0": 2},
+    }
+
+    automated_runner._attach_null_mask_promotion(row, [probe])
+
+    assert row["decryption"] == "INITIAL"
+    assert row["promotion"]["adopted_promotion"] is False
+    assert row["promotion"]["best_probe_validation_score_v2"] == 0.12
+
+
+def test_null_mask_promotion_adopts_material_validation_gain(monkeypatch):
+    monkeypatch.setenv("DECIPHER_NULL_MASK_PROMOTE_ADOPTION_MARGIN", "0.08")
+    row = {
+        "status": "completed",
+        "mask": ["S001"],
+        "validation_score_v2": 0.10,
+        "source": "initial",
+        "decryption": "INITIAL",
+        "key": {"0": 1},
+    }
+    probe = {
+        "status": "completed",
+        "mask": ["S001"],
+        "validation_score_v2": 0.25,
+        "source": "promotion",
+        "decryption": "PROMOTED",
+        "key": {"0": 2},
+    }
+
+    automated_runner._attach_null_mask_promotion(row, [probe])
+
+    assert row["decryption"] == "PROMOTED"
+    assert row["promotion"]["adopted_promotion"] is True
+    assert row["promotion"]["representative_source"] == "promotion"

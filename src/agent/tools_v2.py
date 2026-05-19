@@ -1151,15 +1151,16 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "description": (
             "Review ranked null/codeword mask finalists from a prior "
             "search_automated_solver(homophonic_refinement='null_masks') session. "
-            "Returns mask IDs, solver scores, stability confirmation, and decoded previews."
+            "Returns scalar-validation ranks, supporting ensemble scores, "
+            "stability confirmation, language-quality diagnostics, and decoded previews."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "search_session_id": {"type": "string"},
                 "start_rank": {"type": "integer", "default": 1},
-                "count": {"type": "integer", "default": 5},
-                "review_chars": {"type": "integer", "default": 600},
+                "count": {"type": "integer", "default": 8},
+                "review_chars": {"type": "integer", "default": 900},
                 "good_score_gap": {
                     "type": "number",
                     "default": 0.25,
@@ -9356,6 +9357,7 @@ class WorkspaceToolExecutor:
                         "validation_score_v2": selected.get("validation_score_v2"),
                         "confirmed_validation_score_v2": selected.get("confirmed_validation_score_v2"),
                         "selection_score": selected.get("selection_score"),
+                        "consensus_polish": selected.get("consensus_polish"),
                         "confirmation": selected.get("confirmation"),
                     },
                 })
@@ -9368,8 +9370,8 @@ class WorkspaceToolExecutor:
             null_mask_review = self._null_mask_finalist_review(
                 session_id=null_mask_session_id,
                 start_rank=1,
-                count=5,
-                review_chars=600,
+                count=8,
+                review_chars=900,
                 good_score_gap=0.25,
             )
         response = {
@@ -9403,7 +9405,8 @@ class WorkspaceToolExecutor:
             ]
             response["note"] += (
                 " A null-mask finalist menu is available; review and rate "
-                "several finalists before trusting a single selected mask."
+                "at least the top scalar-validation finalists before trusting "
+                "a single selected mask. Ensemble scores are calibration-only."
             )
         return response
 
@@ -9422,9 +9425,13 @@ class WorkspaceToolExecutor:
             "candidate_symbols": list(result.get("candidate_symbols") or []),
             "diagnostics": result.get("diagnostics"),
             "confirmation": result.get("confirmation"),
+            "consensus_polish": result.get("consensus_polish"),
             "baseline_rank": result.get("baseline_rank"),
             "mask_count": result.get("mask_count"),
             "completed_mask_count": result.get("completed_mask_count"),
+            "ranker": result.get("ranker") or "validation",
+            "primary_numeric_ranker": "validation_score_v2",
+            "supporting_numeric_rankers": ["ensemble_score_v1", "selection_score"],
             "policy": result.get("policy"),
         }
         return session_id
@@ -9434,9 +9441,10 @@ class WorkspaceToolExecutor:
 
     def _null_mask_score_value(self, candidate: dict[str, Any]) -> float | None:
         for key in (
-            "confirmed_validation_score_v2",
             "validation_score_v2",
+            "promoted_validation_score_v2",
             "confirmation_best_validation_score_v2",
+            "confirmed_validation_score_v2",
             "selection_score",
         ):
             value = candidate.get(key)
@@ -9505,19 +9513,47 @@ class WorkspaceToolExecutor:
                 "status": candidate.get("status"),
                 "filtered_length": candidate.get("filtered_length"),
                 "selection_score": candidate.get("selection_score"),
+                "ensemble_score_v1": candidate.get("ensemble_score_v1"),
+                "ensemble_vote_rate_v1": candidate.get("ensemble_vote_rate_v1"),
+                "ensemble_features_v1": candidate.get("ensemble_features_v1"),
+                "ensemble_score_role": (
+                    "supporting_calibration_only; do not prefer this over "
+                    "scalar validation or your contextual reading"
+                ),
                 "validation_score_v2": candidate.get("validation_score_v2"),
+                "validation_score_role": (
+                    "primary numeric ranker for this menu; still ground-truth-free "
+                    "and must be checked by reading"
+                ),
                 "confirmed_validation_score_v2": candidate.get("confirmed_validation_score_v2"),
+                "promoted_validation_score_v2": candidate.get("promoted_validation_score_v2"),
                 "score_gap_from_best": score_gap,
+                "promotion": candidate.get("promotion"),
+                "consensus_polish": candidate.get("consensus_polish"),
                 "confirmation": confirmation,
                 "dict_rate": diagnostics.get("dict_rate"),
                 "segmentation_cost": diagnostics.get("segmentation_cost"),
+                "segmented_word_count": diagnostics.get("segmented_word_count"),
+                "pseudo_word_count": diagnostics.get("pseudo_word_count"),
+                "pseudo_word_fraction": diagnostics.get("pseudo_word_fraction"),
+                "short_word_fraction": diagnostics.get("short_word_fraction"),
+                "long_pseudo_word_fraction": diagnostics.get("long_pseudo_word_fraction"),
+                "dictionary_content_word_count": diagnostics.get("dictionary_content_word_count"),
+                "dictionary_long_content_word_count": diagnostics.get("dictionary_long_content_word_count"),
+                "dictionary_content_word_fraction": diagnostics.get("dictionary_content_word_fraction"),
+                "dictionary_content_char_fraction": diagnostics.get("dictionary_content_char_fraction"),
+                "dictionary_content_sample": diagnostics.get("dictionary_content_sample"),
+                "dictionary_long_content_sample": diagnostics.get("dictionary_long_content_sample"),
+                "binary_ngram_mean_log_prob": diagnostics.get("binary_ngram_mean_log_prob"),
+                "validation_components_v2": candidate.get("validation_components_v2"),
                 "top_letter_fraction": quality.get("top_letter_fraction"),
                 "unique_letters": quality.get("unique_letters"),
+                "segmented_preview": str(diagnostics.get("segmented_preview") or "")[:review_chars],
                 "decoded_preview": str(candidate.get("decryption") or candidate.get("preview") or "")[:review_chars],
                 "agent_readability_judgment": self._null_mask_candidate_rating(candidate),
                 "recommended_next": (
                     "rate_contextual_readability_then_install_if_coherent"
-                    if rank <= 3 else "review_if_top_candidates_are_word_islands"
+                    if rank <= 8 else "review_if_top_candidates_are_word_islands"
                 ),
             })
         reviewed_ranks = set(range(start_rank, start_rank + len(page)))
@@ -9547,17 +9583,34 @@ class WorkspaceToolExecutor:
             "baseline_rank": session.get("baseline_rank"),
             "candidate_symbols": session.get("candidate_symbols"),
             "confirmation_summary": session.get("confirmation"),
-            "primary_ranking_signal": "agent_contextual_readability",
-            "numeric_scores_role": "supporting_evidence",
+            "consensus_polish_summary": session.get("consensus_polish"),
+            "menu_order": "scalar_validation_score_v2",
+            "primary_numeric_ranker": session.get("primary_numeric_ranker") or "validation_score_v2",
+            "supporting_numeric_rankers": session.get("supporting_numeric_rankers") or ["ensemble_score_v1", "selection_score"],
+            "automated_ranker": session.get("ranker"),
+            "primary_ranking_signal": "agent_contextual_readability_after_scalar_validation_screen",
+            "numeric_scores_role": (
+                "scalar validation is the primary numeric menu order; ensemble "
+                "is calibration/supporting only. All numeric ranks are "
+                "ground-truth-free and can prefer nearby damaged basins over "
+                "the best readable basin. Consensus-polish candidates mean "
+                "the automated solver reran a finalist with agreed mappings "
+                "frozen and disputed symbols mutable; they still require "
+                "reading review."
+            ),
             "rated_finalist_count": sum(
                 1 for candidate in ranked
                 if self._null_mask_candidate_rating(candidate) is not None
             ),
             "review_instruction": (
-                "Read several decoded previews. Treat target-language short "
-                "word islands as insufficient; rate contextual coherence with "
-                "act_rate_null_mask_finalist, then install selected ranks with "
-                "act_install_null_mask_finalists."
+                "Read and rate at least the top 3 scalar-validation finalists "
+                "before installing or declaring; prefer top 5-8 if the previews "
+                "are all damaged or score gaps are small. Treat target-language "
+                "short word islands as insufficient; rate contextual coherence "
+                "with act_rate_null_mask_finalist, then install multiple "
+                "plausible scalar ranks with act_install_null_mask_finalists "
+                "if the numeric scores are close. Do not use ensemble rank by "
+                "itself to choose a branch."
             ),
         }
 
@@ -9644,8 +9697,8 @@ class WorkspaceToolExecutor:
         return self._null_mask_finalist_review(
             session_id=str(args["search_session_id"]),
             start_rank=int(args.get("start_rank", 1)),
-            count=int(args.get("count", 5)),
-            review_chars=int(args.get("review_chars", 600)),
+            count=int(args.get("count", 8)),
+            review_chars=int(args.get("review_chars", 900)),
             good_score_gap=float(args.get("good_score_gap", 0.25)),
         )
 

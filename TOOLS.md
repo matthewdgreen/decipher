@@ -416,13 +416,24 @@ rerunning the bakeoff.
 |-----------|------|-------|
 | `search_session_id` | string | **required** — from `search_automated_solver` |
 | `start_rank` | integer | first rank to show (default 1) |
-| `count` | integer | how many finalists to show (default 5) |
-| `review_chars` | integer | max decoded preview chars per finalist (default 600) |
+| `count` | integer | how many finalists to show (default 8) |
+| `review_chars` | integer | max decoded preview chars per finalist (default 900) |
 | `good_score_gap` | number | finalists within this validation-score gap are "good" (default 0.25) |
 
-Use this to compare null/codeword mask candidates by reading quality. Short
-dictionary islands are not enough; look for coherent clauses in the target
-language.
+Use this to compare null/codeword mask candidates by reading quality. The menu
+is ordered by scalar `validation_score_v2`, which is the primary numeric ranker.
+`ensemble_score_v1` is a supporting calibration signal only; do not choose a
+branch from ensemble rank alone. Short dictionary islands are not enough; look
+for coherent clauses in the target language. The review includes solver
+validation scores, promotion/confirmation metadata, segmentation-shape
+diagnostics, binary n-gram fit, content-word quality, and segmented previews.
+Inspect and rate at least the top 3 scalar-validation finalists before
+installing or declaring; use the top 5-8 when scores are close or all previews
+look damaged. Automated null-mask runs may include a bounded neighborhood
+stage that tries add/remove/swap variants around strong masks before this menu
+is assembled, followed by a consensus-polish stage that freezes only mappings
+the strongest finalist keys agree on and reruns local corrections with the
+remaining symbols mutable.
 
 ---
 

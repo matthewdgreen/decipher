@@ -8,13 +8,15 @@ artifact marked ``run_mode: automated_only``.
 from __future__ import annotations
 
 import concurrent.futures
+import functools
+import hashlib
 import json
 import math
 import os
 import random
 import time
 import uuid
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -22,11 +24,15 @@ from typing import Any, Callable
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
 from analysis.homophonic_nulls import (
+    attach_null_mask_ensemble_scores,
     diagnose_cipher_for_null_candidates,
     generate_null_masks,
+    null_mask_language_quality_rank_key,
+    null_mask_rank_key,
     null_mask_validation_score_v2,
     select_null_candidate_symbols,
 )
+from analysis.language_scoring import LinearLanguageQualityModel, content_word_metrics
 from analysis.segment import (
     repair_key_with_dictionary,
     repair_no_boundary_text,
@@ -2060,6 +2066,20 @@ def _float_or_none(value: Any) -> float | None:
         return None
 
 
+def _load_language_quality_model(path_raw: str, *, language: str) -> LinearLanguageQualityModel | None:
+    if not path_raw:
+        return None
+    path = Path(path_raw).expanduser()
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    model = LinearLanguageQualityModel.load(path)
+    if model.language != language:
+        raise ValueError(
+            f"language quality model language {model.language!r} does not match run language {language!r}"
+        )
+    return model
+
+
 def _two_stage_transform_rank_candidates(
     screen: dict[str, Any],
     *,
@@ -3180,6 +3200,8 @@ def _run_homophonic(
     solver_profile: str = "zenith_native",
     ground_truth: str | None = None,
     seed_offset: int = 0,
+    initial_key: dict[int, int] | None = None,
+    fixed_cipher_ids: set[int] | None = None,
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     pt_alpha = _plaintext_alphabet(language)
     plaintext_ids = list(range(pt_alpha.size))
@@ -3214,6 +3236,7 @@ def _run_homophonic(
     move_profile = _homophonic_move_profile()
     aggregated_candidates: list[dict[str, Any]] = []
     score_profile = _homophonic_score_profile(solver_profile)
+    bin_path = _zenith_native_model_path(language)
 
     # Dispatch to the Zenith-parity solver when score_profile == "zenith_native"
     if score_profile == "zenith_native":
@@ -3229,6 +3252,8 @@ def _run_homophonic(
             short_homophonic=short_homophonic,
             budget_params=budget_params,
             started=started,
+            initial_key=initial_key,
+            fixed_cipher_ids=fixed_cipher_ids,
         )
 
     score_config = _homophonic_score_config(score_profile, short_homophonic)
@@ -3250,6 +3275,8 @@ def _run_homophonic(
             id_to_letter=id_to_letter,
             letter_to_id=letter_to_id,
             model=model,
+            initial_key=initial_key,
+            fixed_cipher_ids=fixed_cipher_ids,
             epochs=epochs,
             sampler_iterations=sampler_iterations,
             distribution_weight=score_weights["distribution_weight"],
@@ -3268,6 +3295,11 @@ def _run_homophonic(
             language=language,
             word_list=word_list,
         )
+        if "binary_ngram_mean_log_prob" not in diagnostics:
+            binary_score = _zenith_text_mean_log_prob(candidate.plaintext, bin_path)
+            if binary_score is not None:
+                diagnostics["binary_ngram_mean_log_prob"] = round(binary_score, 6)
+                diagnostics["binary_ngram_model_source"] = str(bin_path)
         selection_score = _score_homophonic_candidate_for_selection(
             candidate.normalized_score,
             quality,
@@ -3540,6 +3572,8 @@ def _run_homophonic(
         "budget_params": budget_params,
         "homophonic_refinement": refinement,
         "seed_offset": seed_offset,
+        "initial_key_provided": initial_key is not None,
+        "fixed_cipher_ids_count": len(fixed_cipher_ids or set()),
         "selection_profile": selection_profile,
         "early_stop_enabled": use_early_stop,
         "search_profile": search_profile,
@@ -3645,17 +3679,110 @@ def _run_null_mask_bakeoff(
     """
     started = time.time()
     pt_alpha = _plaintext_alphabet(language)
+    plaintext_ids = list(range(pt_alpha.size))
     id_to_letter = {i: pt_alpha.symbol_for(i).upper() for i in range(pt_alpha.size)}
     word_list = _word_list(language)
-    candidate_limit = int(os.environ.get("DECIPHER_NULL_MASK_CANDIDATE_LIMIT", "18"))
-    max_mask_size = int(os.environ.get("DECIPHER_NULL_MASK_MAX_SIZE", "2"))
-    max_masks = int(os.environ.get("DECIPHER_NULL_MASK_MAX_MASKS", "80"))
-    top_n = int(os.environ.get("DECIPHER_NULL_MASK_TOP_N", "6"))
-    confirm_top_n = int(os.environ.get("DECIPHER_NULL_MASK_CONFIRM_TOP_N", "3"))
-    confirm_reruns = int(os.environ.get("DECIPHER_NULL_MASK_CONFIRM_RERUNS", "2"))
+    profile = os.environ.get("DECIPHER_NULL_MASK_PROFILE", "wide").strip().lower()
+    if profile in {"default", "standard"}:
+        profile = "wide"
+    if profile not in {"narrow", "wide"}:
+        profile = "wide"
+
+    def profile_default(name: str, narrow: str, wide: str) -> str:
+        return os.environ.get(name, narrow if profile == "narrow" else wide)
+
+    candidate_limit = int(profile_default("DECIPHER_NULL_MASK_CANDIDATE_LIMIT", "24", "48"))
+    max_mask_size = int(profile_default("DECIPHER_NULL_MASK_MAX_SIZE", "2", "3"))
+    max_masks = int(profile_default("DECIPHER_NULL_MASK_MAX_MASKS", "140", "1500"))
+    beam_enabled = os.environ.get("DECIPHER_NULL_MASK_BEAM", "1").strip().lower() not in {"0", "false", "no"}
+    beam_width = int(profile_default("DECIPHER_NULL_MASK_BEAM_WIDTH", "10", "36"))
+    beam_max_size = int(profile_default("DECIPHER_NULL_MASK_BEAM_MAX_SIZE", "3", "3"))
+    beam_max_masks = int(profile_default("DECIPHER_NULL_MASK_BEAM_MAX_MASKS", "60", "500"))
+    neighborhood_enabled = os.environ.get("DECIPHER_NULL_MASK_NEIGHBORHOOD", "1").strip().lower() not in {"0", "false", "no"}
+    neighborhood_top_n = int(profile_default("DECIPHER_NULL_MASK_NEIGHBORHOOD_TOP_N", "5", "24"))
+    neighborhood_max_size = int(
+        profile_default(
+            "DECIPHER_NULL_MASK_NEIGHBORHOOD_MAX_SIZE",
+            str(max(beam_max_size, max_mask_size + 1)),
+            "3",
+        )
+    )
+    neighborhood_max_masks = int(profile_default("DECIPHER_NULL_MASK_NEIGHBORHOOD_MAX_MASKS", "80", "500"))
+    neighborhood_multi_view = _env_bool("DECIPHER_NULL_MASK_NEIGHBORHOOD_MULTI_VIEW", False)
+    consensus_enabled = os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_POLISH", "1").strip().lower() not in {"0", "false", "no"}
+    consensus_top_n = int(os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_TOP_N", "5"))
+    consensus_min_agreement = float(os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_MIN_AGREEMENT", "0.75"))
+    consensus_min_fixed = int(os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_MIN_FIXED", "8"))
+    consensus_max_mutable = int(os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_MAX_MUTABLE", "24"))
+    consensus_budget = os.environ.get("DECIPHER_NULL_MASK_CONSENSUS_BUDGET", "screen").strip().lower()
+    if consensus_budget not in {"screen", "full"}:
+        consensus_budget = "screen"
+    consensus_multi_view = _env_bool("DECIPHER_NULL_MASK_CONSENSUS_MULTI_VIEW", False)
+    adaptive_enabled = _env_bool("DECIPHER_NULL_MASK_ADAPTIVE", False)
+    adaptive_min_validation = float(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_MIN_VALIDATION", "0.75"))
+    adaptive_near_tie_margin = float(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_NEAR_TIE_MARGIN", "0.05"))
+    adaptive_candidate_limit = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_CANDIDATE_LIMIT", "32"))
+    adaptive_max_mask_size = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_MAX_SIZE", "2"))
+    adaptive_max_masks = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_MAX_MASKS", "320"))
+    adaptive_beam_width = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BEAM_WIDTH", "16"))
+    adaptive_beam_max_size = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BEAM_MAX_SIZE", "3"))
+    adaptive_beam_max_masks = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BEAM_MAX_MASKS", "120"))
+    adaptive_bridge_anchor_count = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BRIDGE_ANCHOR_COUNT", "10"))
+    adaptive_bridge_top_rows = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BRIDGE_TOP_ROWS", "8"))
+    adaptive_bridge_max_masks = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BRIDGE_MAX_MASKS", "160"))
+    adaptive_bridge_restarts = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BRIDGE_RESTARTS", "1"))
+    adaptive_bridge_consensus_max_masks = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_BRIDGE_CONSENSUS_MAX_MASKS", "16"))
+    adaptive_neighborhood_top_n = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_NEIGHBORHOOD_TOP_N", "10"))
+    adaptive_neighborhood_max_size = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_NEIGHBORHOOD_MAX_SIZE", "3"))
+    adaptive_neighborhood_max_masks = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_NEIGHBORHOOD_MAX_MASKS", "160"))
+    adaptive_consensus_top_n = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_CONSENSUS_TOP_N", "8"))
+    adaptive_consensus_budget = os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_CONSENSUS_BUDGET", "screen").strip().lower()
+    if adaptive_consensus_budget not in {"screen", "full"}:
+        adaptive_consensus_budget = "screen"
+    adaptive_stability_top_n = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_STABILITY_TOP_N", "6"))
+    adaptive_stability_restarts = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_STABILITY_RESTARTS", "2"))
+    adaptive_stability_waves = int(os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_STABILITY_WAVES", "2"))
+    adaptive_stability_budget = os.environ.get("DECIPHER_NULL_MASK_ADAPTIVE_STABILITY_BUDGET", "screen").strip().lower()
+    if adaptive_stability_budget not in {"screen", "full"}:
+        adaptive_stability_budget = "screen"
+    language_quality_model_path_raw = os.environ.get("DECIPHER_NULL_MASK_LANGUAGE_QUALITY_MODEL", "").strip()
+    language_quality_model = _load_language_quality_model(language_quality_model_path_raw, language=language)
+    ranker = os.environ.get("DECIPHER_NULL_MASK_RANKER", "validation").strip().lower()
+    if ranker not in {"validation", "ensemble", "language_quality"}:
+        ranker = "validation"
+    if ranker == "language_quality" and language_quality_model is None:
+        ranker = "validation"
+    top_n = int(profile_default("DECIPHER_NULL_MASK_TOP_N", "12", "100"))
+    promote_top_n = int(profile_default("DECIPHER_NULL_MASK_PROMOTE_TOP_N", "12", "0"))
+    promote_reruns = int(profile_default("DECIPHER_NULL_MASK_PROMOTE_RERUNS", "1", "0"))
+    promote_budget = profile_default("DECIPHER_NULL_MASK_PROMOTE_BUDGET", "full", "full").strip().lower()
+    if promote_budget not in {"screen", "full"}:
+        promote_budget = "full"
+    confirm_top_n = int(profile_default("DECIPHER_NULL_MASK_CONFIRM_TOP_N", "3", "0"))
+    confirm_reruns = int(profile_default("DECIPHER_NULL_MASK_CONFIRM_RERUNS", "2", "0"))
+    portfolio_top_n = int(profile_default("DECIPHER_NULL_MASK_PORTFOLIO_TOP_N", "0", "10"))
+    portfolio_rankers = [
+        item.strip().lower()
+        for item in profile_default(
+            "DECIPHER_NULL_MASK_PORTFOLIO_RANKERS",
+            "validation,ensemble,language_quality",
+            "validation,language_quality,ensemble",
+        ).split(",")
+        if item.strip()
+    ]
+    portfolio_rankers = [
+        item for item in portfolio_rankers
+        if item in {"validation", "ensemble", "language_quality"}
+    ]
     null_budget = os.environ.get("DECIPHER_NULL_MASK_BUDGET", "screen").strip().lower()
     if null_budget not in {"screen", "full"}:
         null_budget = "screen"
+    null_engine = os.environ.get("DECIPHER_NULL_MASK_ENGINE", "rust_batch").strip().lower()
+    if null_engine not in {"rust_batch", "python_reference"}:
+        null_engine = "rust_batch"
+    null_threads = _null_mask_batch_threads()
+    binary_model_path = _zenith_native_model_path(language)
+    store_evaluated_text = _env_bool("DECIPHER_NULL_MASK_STORE_EVALUATED_TEXT", False)
 
     base_quality = base_step.get("quality") if isinstance(base_step.get("quality"), dict) else _plaintext_quality(base_decryption, base_key)
     diagnostics = diagnose_cipher_for_null_candidates(
@@ -3682,6 +3809,21 @@ def _run_null_mask_bakeoff(
         elapsed_seconds: float,
     ) -> dict[str, Any]:
         quality = step.get("quality") if isinstance(step.get("quality"), dict) else _plaintext_quality(decryption, key)
+        diagnostics = (
+            dict(step.get("diagnostics"))
+            if isinstance(step.get("diagnostics"), dict)
+            else _automated_candidate_diagnostics(
+                decryption,
+                language=language,
+                word_list=word_list,
+                binary_model_path=binary_model_path,
+            )
+        )
+        if "binary_ngram_mean_log_prob" not in diagnostics:
+            binary_score = _zenith_text_mean_log_prob(decryption, binary_model_path)
+            if binary_score is not None:
+                diagnostics["binary_ngram_mean_log_prob"] = round(binary_score, 6)
+                diagnostics["binary_ngram_model_source"] = str(binary_model_path)
         row = {
             "mask": list(mask),
             "mask_size": len(mask),
@@ -3691,22 +3833,25 @@ def _run_null_mask_bakeoff(
             "anneal_score": step.get("anneal_score"),
             "selection_score": step.get("selection_score", step.get("anneal_score")),
             "quality": quality,
-            "diagnostics": step.get("diagnostics")
-            if isinstance(step.get("diagnostics"), dict)
-            else _automated_candidate_diagnostics(
-                decryption,
-                language=language,
-                word_list=word_list,
-            ),
+            "diagnostics": diagnostics,
             "elapsed_seconds": round(elapsed_seconds, 3),
             "preview": decryption[:300],
             "decryption": decryption,
             "key": {str(k): v for k, v in key.items()},
         }
-        validation = null_mask_validation_score_v2(row, original_length=len(cipher_text.tokens))
+        validation = null_mask_validation_score_v2(
+            row,
+            original_length=len(cipher_text.tokens),
+            language=language,
+        )
         row["validation_score_v2"] = validation["score"]
         row["validation_components_v2"] = validation["components"]
         return row
+
+    def candidate_id(source: str, index: int) -> str:
+        if source == "baseline" and index == 0:
+            return "000_identity"
+        return f"{source}:{index:06d}"
 
     def solve_mask(
         mask: tuple[str, ...],
@@ -3714,8 +3859,20 @@ def _run_null_mask_bakeoff(
         index: int,
         seed_offset: int,
         source: str,
+        run_budget: str | None = None,
+        initial_key: dict[int, int] | None = None,
+        fixed_cipher_ids: set[int] | None = None,
+        polish_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         mask_set = set(mask)
+        masked_token_ids = {
+            cipher_text.alphabet.id_for(symbol)
+            for symbol in mask_set
+            if cipher_text.alphabet.has_symbol(symbol)
+        }
+        effective_fixed_cipher_ids = (
+            set(fixed_cipher_ids or set()) - masked_token_ids
+        )
         filtered_tokens = [
             token
             for token in cipher_text.tokens
@@ -3723,6 +3880,8 @@ def _run_null_mask_bakeoff(
         ]
         if len(filtered_tokens) < 50:
             return {
+                "candidate_id": candidate_id(source, index),
+                "evaluated_index": index,
                 "mask": list(mask),
                 "mask_size": len(mask),
                 "filtered_length": len(filtered_tokens),
@@ -3741,11 +3900,13 @@ def _run_null_mask_bakeoff(
             candidate_solver, candidate_key, candidate_decryption, candidate_step = _run_homophonic(
                 candidate_cipher,
                 language,
-                budget=null_budget,
+                budget=run_budget or null_budget,
                 refinement="none",
                 solver_profile=solver_profile,
                 ground_truth=None,
                 seed_offset=seed_offset,
+                initial_key=initial_key,
+                fixed_cipher_ids=effective_fixed_cipher_ids or None,
             )
             row = finalist_row(
                 mask=mask,
@@ -3757,10 +3918,21 @@ def _run_null_mask_bakeoff(
                 elapsed_seconds=time.time() - candidate_started,
             )
             row["source"] = source
+            row["candidate_id"] = candidate_id(source, index)
+            row["evaluated_index"] = index
             row["seed_offset"] = seed_offset
+            row["budget"] = run_budget or null_budget
+            if polish_metadata:
+                row["consensus_polish"] = {
+                    **polish_metadata,
+                    "effective_fixed_symbol_count": len(effective_fixed_cipher_ids),
+                    "masked_fixed_symbol_count": len(set(fixed_cipher_ids or set()) & masked_token_ids),
+                }
             return row
         except Exception as exc:  # noqa: BLE001
             return {
+                "candidate_id": candidate_id(source, index),
+                "evaluated_index": index,
                 "mask": list(mask),
                 "mask_size": len(mask),
                 "filtered_length": len(filtered_tokens),
@@ -3771,7 +3943,178 @@ def _run_null_mask_bakeoff(
                 "elapsed_seconds": round(time.time() - candidate_started, 3),
             }
 
-    rows.append(finalist_row(
+    def solve_mask_batch(
+        jobs: list[dict[str, Any]],
+        *,
+        default_budget: str,
+    ) -> list[dict[str, Any]]:
+        if (
+            null_engine != "rust_batch"
+            or solver_profile != "zenith_native"
+            or binary_model_path is None
+        ):
+            return [
+                solve_mask(
+                    tuple(job["mask"]),
+                    index=int(job["index"]),
+                    seed_offset=int(job["seed_offset"]),
+                    source=str(job["source"]),
+                    run_budget=job.get("run_budget") or default_budget,
+                    initial_key=job.get("initial_key"),
+                    fixed_cipher_ids=job.get("fixed_cipher_ids"),
+                    polish_metadata=job.get("polish_metadata"),
+                )
+                for job in jobs
+            ]
+        ready_jobs: list[dict[str, Any]] = []
+        rows_by_position: dict[int, dict[str, Any]] = {}
+        for position, job in enumerate(jobs):
+            mask = tuple(job["mask"])
+            mask_set = set(mask)
+            masked_token_ids = {
+                cipher_text.alphabet.id_for(symbol)
+                for symbol in mask_set
+                if cipher_text.alphabet.has_symbol(symbol)
+            }
+            filtered_length = sum(
+                1
+                for token in cipher_text.tokens
+                if token not in masked_token_ids
+            )
+            if filtered_length < 50:
+                rows_by_position[position] = {
+                    "candidate_id": candidate_id(str(job["source"]), int(job["index"])),
+                    "evaluated_index": int(job["index"]),
+                    "mask": list(mask),
+                    "mask_size": len(mask),
+                    "filtered_length": filtered_length,
+                    "status": "skipped",
+                    "source": job["source"],
+                    "seed_offset": job["seed_offset"],
+                    "reason": "filtered_stream_too_short",
+                }
+                continue
+            ready_job = dict(job)
+            ready_job["position"] = position
+            ready_job["mask_token_ids"] = sorted(masked_token_ids)
+            ready_job["filtered_length"] = filtered_length
+            ready_job["short_homophonic"] = filtered_length < 600
+            ready_job["run_budget"] = job.get("run_budget") or default_budget
+            ready_jobs.append(ready_job)
+        grouped: dict[tuple[str, bool], list[dict[str, Any]]] = {}
+        for job in ready_jobs:
+            grouped.setdefault(
+                (str(job["run_budget"]), bool(job["short_homophonic"])),
+                [],
+            ).append(job)
+        for (run_budget, short_homophonic), group in grouped.items():
+            budget_params = _homophonic_budget_params(
+                run_budget,
+                short_homophonic,
+                search_profile=_homophonic_search_profile(),
+            )
+            try:
+                from analysis.zenith_fast import zenith_null_mask_candidates_batch_fast
+
+                batch = zenith_null_mask_candidates_batch_fast(
+                    tokens=list(cipher_text.tokens),
+                    candidates=[
+                        {
+                            "candidate_id": str(job["index"]),
+                            "source": str(job["source"]),
+                            "seed_offset": int(job["seed_offset"]),
+                            "mask_tokens": job["mask_token_ids"],
+                            "initial_key": {
+                                int(k): int(v)
+                                for k, v in (job.get("initial_key") or {}).items()
+                            },
+                            "fixed_cipher_ids": [
+                                int(sid)
+                                for sid in sorted(job.get("fixed_cipher_ids") or set())
+                            ],
+                        }
+                        for job in group
+                    ],
+                    plaintext_ids=plaintext_ids,
+                    id_to_letter=id_to_letter,
+                    model_path=binary_model_path,
+                    epochs=int(budget_params["epochs"]),
+                    sampler_iterations=int(budget_params["sampler_iterations"]),
+                    seeds=[int(seed) for seed in budget_params["seeds"]],
+                    top_n=1,
+                    threads=null_threads,
+                )
+            except Exception as exc:  # noqa: BLE001
+                for job in group:
+                    rows_by_position[job["position"]] = {
+                        "candidate_id": candidate_id(str(job["source"]), int(job["index"])),
+                        "evaluated_index": int(job["index"]),
+                        "mask": list(job["mask"]),
+                        "mask_size": len(job["mask"]),
+                        "filtered_length": job["filtered_length"],
+                        "status": "error",
+                        "source": job["source"],
+                        "seed_offset": job["seed_offset"],
+                        "reason": f"rust_batch_failed:{type(exc).__name__}: {exc}",
+                        "elapsed_seconds": 0.0,
+                    }
+                continue
+            for job, result in zip(group, batch.get("results") or []):
+                mask = tuple(job["mask"])
+                if result.get("status") != "completed":
+                    rows_by_position[job["position"]] = {
+                        "candidate_id": candidate_id(str(job["source"]), int(job["index"])),
+                        "evaluated_index": int(job["index"]),
+                        "mask": list(mask),
+                        "mask_size": len(mask),
+                        "filtered_length": result.get("filtered_length", job["filtered_length"]),
+                        "status": result.get("status", "error"),
+                        "source": job["source"],
+                        "seed_offset": job["seed_offset"],
+                        "reason": result.get("reason"),
+                        "elapsed_seconds": round(float(result.get("elapsed_seconds") or 0.0), 3),
+                    }
+                    continue
+                candidate_step = {
+                    "anneal_score": result.get("normalized_score", result.get("score")),
+                    "selection_score": result.get("normalized_score", result.get("score")),
+                }
+                row = finalist_row(
+                    mask=mask,
+                    filtered_length=int(result.get("filtered_length") or job["filtered_length"]),
+                    solver="zenith_native",
+                    key={int(k): int(v) for k, v in dict(result.get("key") or {}).items()},
+                    decryption=str(result.get("decryption") or result.get("plaintext") or ""),
+                    step=candidate_step,
+                    elapsed_seconds=float(result.get("elapsed_seconds") or 0.0),
+                )
+                row["source"] = job["source"]
+                row["candidate_id"] = candidate_id(str(job["source"]), int(job["index"]))
+                row["evaluated_index"] = int(job["index"])
+                row["seed_offset"] = job["seed_offset"]
+                row["budget"] = run_budget
+                row["engine"] = "rust_batch"
+                row["best_seed"] = result.get("best_seed")
+                row["batch_threads"] = batch.get("threads")
+                row["accepted_moves"] = result.get("accepted_moves")
+                row["improved_moves"] = result.get("improved_moves")
+                row["attempts"] = result.get("attempts") or []
+                if job.get("polish_metadata"):
+                    masked_token_ids = set(job["mask_token_ids"])
+                    fixed_cipher_ids = set(job.get("fixed_cipher_ids") or set())
+                    row["consensus_polish"] = {
+                        **job["polish_metadata"],
+                        "effective_fixed_symbol_count": len(fixed_cipher_ids - masked_token_ids),
+                        "masked_fixed_symbol_count": len(fixed_cipher_ids & masked_token_ids),
+                    }
+                rows_by_position[job["position"]] = row
+        return [
+            rows_by_position[position]
+            for position in range(len(jobs))
+            if position in rows_by_position
+        ]
+
+    baseline_row = finalist_row(
         mask=(),
         filtered_length=len(cipher_text.tokens),
         solver=base_solver,
@@ -3779,24 +4122,737 @@ def _run_null_mask_bakeoff(
         decryption=base_decryption,
         step=base_step,
         elapsed_seconds=0.0,
-    ))
-
-    for index, mask in enumerate(masks[1:], start=1):
-        rows.append(solve_mask(
-            mask,
-            index=index,
-            seed_offset=index * 100,
-            source="initial",
-        ))
-
-    completed = [row for row in rows if row.get("status") == "completed"]
-    completed.sort(
-        key=lambda item: (
-            float(item.get("validation_score_v2") or float("-inf")),
-            float(item.get("selection_score") or float("-inf")),
-        ),
-        reverse=True,
     )
+    baseline_row["source"] = "baseline"
+    baseline_row["candidate_id"] = candidate_id("baseline", 0)
+    baseline_row["evaluated_index"] = 0
+    baseline_row["seed_offset"] = 0
+    baseline_row["budget"] = null_budget
+    rows.append(baseline_row)
+
+    initial_jobs = [
+        {
+            "mask": mask,
+            "index": index,
+            "seed_offset": index * 100,
+            "source": "initial",
+        }
+        for index, mask in enumerate(masks[1:], start=1)
+    ]
+    rows.extend(solve_mask_batch(initial_jobs, default_budget=null_budget))
+
+    def sort_completed_list(completed_rows: list[dict[str, Any]]) -> None:
+        attach_null_mask_ensemble_scores(
+            completed_rows,
+            original_length=len(cipher_text.tokens),
+            language=language,
+            language_quality_model=language_quality_model,
+        )
+        if ranker == "language_quality":
+            completed_rows.sort(key=null_mask_language_quality_rank_key, reverse=True)
+        elif ranker == "ensemble":
+            completed_rows.sort(key=null_mask_rank_key, reverse=True)
+        else:
+            completed_rows.sort(
+                key=lambda item: (
+                    _null_mask_rank_validation_score(item),
+                    float(item.get("selection_score") or float("-inf")),
+                ),
+                reverse=True,
+            )
+
+    def ranked_completed_rows() -> list[dict[str, Any]]:
+        completed_rows = [row for row in rows if row.get("status") == "completed"]
+        sort_completed_list(completed_rows)
+        return completed_rows
+
+    def portfolio_rows(completed_rows: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+        if portfolio_top_n <= 0:
+            return completed_rows[:limit]
+        return _null_mask_ranker_portfolio(
+            completed_rows,
+            limit=limit,
+            rankers=portfolio_rankers,
+            language_quality_enabled=language_quality_model is not None,
+        )
+
+    def usable_ranker_views() -> list[str]:
+        ranker_views = [
+            item for item in portfolio_rankers
+            if item in {"validation", "ensemble"}
+            or (item == "language_quality" and language_quality_model is not None)
+        ]
+        return ranker_views or ["validation"]
+
+    completed = ranked_completed_rows()
+    finalist_portfolio_report: dict[str, Any] = {
+        "enabled": portfolio_top_n > 0,
+        "top_n": portfolio_top_n,
+        "rankers": portfolio_rankers,
+        "selected_count": 0,
+        "policy": (
+            "When enabled, second-stage promotion draws from a round-robin "
+            "portfolio of validation, language-quality, and ensemble finalist "
+            "views instead of a single scalar ranking. This keeps rougher but "
+            "structurally promising basins alive for deeper reruns."
+        ),
+    }
+    beam_report: dict[str, Any] = {
+        "enabled": beam_enabled and beam_max_size > max_mask_size and beam_width > 0 and beam_max_masks > 0,
+        "width": beam_width,
+        "max_size": beam_max_size,
+        "max_masks": beam_max_masks,
+        "generated_mask_count": 0,
+        "completed_mask_count": 0,
+        "policy": (
+            "Stage A2 extends the best initial masks with additional candidate "
+            "symbols, giving p068-like cases a bounded path to size-3 masks "
+            "without enumerating every combination."
+        ),
+    }
+    if completed and beam_report["enabled"]:
+        seen_masks = {tuple(sorted(row.get("mask") or [])) for row in rows}
+        beam_masks: list[tuple[str, ...]] = []
+        extension_symbols = list(candidate_symbols)
+        beam_source_rows = portfolio_rows(completed, limit=beam_width)
+        for row in beam_source_rows:
+            base = tuple(row.get("mask") or [])
+            if not base or len(base) >= beam_max_size:
+                continue
+            for symbol in extension_symbols:
+                if symbol in base:
+                    continue
+                expanded = tuple(sorted((*base, symbol)))
+                if expanded in seen_masks:
+                    continue
+                seen_masks.add(expanded)
+                beam_masks.append(expanded)
+                if len(beam_masks) >= beam_max_masks:
+                    break
+            if len(beam_masks) >= beam_max_masks:
+                break
+        beam_jobs = [
+            {
+                "mask": mask,
+                "index": 50_000 + index,
+                "seed_offset": 50_000 + index * 100,
+                "source": "beam",
+            }
+            for index, mask in enumerate(beam_masks, start=1)
+        ]
+        rows.extend(solve_mask_batch(beam_jobs, default_budget=null_budget))
+        completed = ranked_completed_rows()
+        beam_report.update({
+            "generated_mask_count": len(beam_masks),
+            "completed_mask_count": sum(
+                1 for row in rows
+                if row.get("source") == "beam" and row.get("status") == "completed"
+            ),
+            "source_masks": [
+                row.get("mask") or [] for row in beam_source_rows[:12]
+            ],
+            "top_masks": [list(mask) for mask in beam_masks[:12]],
+        })
+    neighborhood_report: dict[str, Any] = {
+        "enabled": neighborhood_enabled and neighborhood_top_n > 0 and neighborhood_max_masks > 0,
+        "top_n": neighborhood_top_n,
+        "max_size": neighborhood_max_size,
+        "max_masks": neighborhood_max_masks,
+        "multi_view_enabled": neighborhood_multi_view,
+        "generated_mask_count": 0,
+        "completed_mask_count": 0,
+        "policy": (
+            "Stage A3 explores add/remove/swap neighbors around strong finalist "
+            "masks. In the wide profile, each ranker view gets its own "
+            "neighborhood so stochastic basins are not lost when a different "
+            "ranker happens to generate the same mask first."
+        ),
+    }
+    if completed and neighborhood_report["enabled"]:
+        neighborhood_jobs: list[dict[str, Any]] = []
+        neighborhood_view_reports: list[dict[str, Any]] = []
+        if neighborhood_multi_view:
+            base_seen_masks = {tuple(sorted(row.get("mask") or [])) for row in rows}
+            for view_index, ranker_view in enumerate(usable_ranker_views()):
+                view_rows = sorted(
+                    completed,
+                    key=lambda row, ranker_view=ranker_view: _null_mask_ranker_sort_key(row, ranker_view),
+                    reverse=True,
+                )
+                neighborhood_source_rows = _null_mask_unique_rows_by_mask(
+                    view_rows,
+                    limit=neighborhood_top_n,
+                )
+                view_seen_masks = set(base_seen_masks)
+                neighborhood_masks = _null_mask_neighborhood_masks(
+                    neighborhood_source_rows,
+                    candidate_symbols=candidate_symbols,
+                    seen_masks=view_seen_masks,
+                    max_size=neighborhood_max_size,
+                    max_masks=neighborhood_max_masks,
+                )
+                for index, mask in enumerate(neighborhood_masks, start=1):
+                    neighborhood_jobs.append({
+                        "mask": mask,
+                        "index": 70_000 + view_index * 10_000 + index,
+                        "seed_offset": 70_000 + index * 100,
+                        "source": f"neighborhood_{ranker_view}",
+                    })
+                neighborhood_view_reports.append({
+                    "ranker_view": ranker_view,
+                    "source_masks": [
+                        row.get("mask") or []
+                        for row in neighborhood_source_rows[:12]
+                    ],
+                    "generated_mask_count": len(neighborhood_masks),
+                    "top_masks": [list(mask) for mask in neighborhood_masks[:12]],
+                })
+        else:
+            seen_masks = {tuple(sorted(row.get("mask") or [])) for row in rows}
+            neighborhood_source_rows = portfolio_rows(completed, limit=neighborhood_top_n)
+            neighborhood_masks = _null_mask_neighborhood_masks(
+                neighborhood_source_rows,
+                candidate_symbols=candidate_symbols,
+                seen_masks=seen_masks,
+                max_size=neighborhood_max_size,
+                max_masks=neighborhood_max_masks,
+            )
+            neighborhood_jobs = [
+                {
+                    "mask": mask,
+                    "index": 70_000 + index,
+                    "seed_offset": 70_000 + index * 100,
+                    "source": "neighborhood",
+                }
+                for index, mask in enumerate(neighborhood_masks, start=1)
+            ]
+            neighborhood_view_reports.append({
+                "ranker_view": "portfolio",
+                "source_masks": [
+                    row.get("mask") or [] for row in neighborhood_source_rows[:12]
+                ],
+                "generated_mask_count": len(neighborhood_masks),
+                "top_masks": [list(mask) for mask in neighborhood_masks[:12]],
+            })
+        rows.extend(solve_mask_batch(neighborhood_jobs, default_budget=null_budget))
+        completed = ranked_completed_rows()
+        neighborhood_report.update({
+            "generated_mask_count": len(neighborhood_jobs),
+            "completed_mask_count": sum(
+                1 for row in rows
+                if str(row.get("source") or "").startswith("neighborhood")
+                and row.get("status") == "completed"
+            ),
+            "views": neighborhood_view_reports,
+            "source_masks": neighborhood_view_reports[0]["source_masks"] if neighborhood_view_reports else [],
+            "top_masks": neighborhood_view_reports[0]["top_masks"] if neighborhood_view_reports else [],
+        })
+    consensus_report: dict[str, Any] = {
+        "enabled": consensus_enabled and consensus_top_n > 1,
+        "top_n": consensus_top_n,
+        "min_agreement": consensus_min_agreement,
+        "min_fixed_symbols": consensus_min_fixed,
+        "target_max_mutable_symbols": consensus_max_mutable,
+        "budget": consensus_budget,
+        "multi_view_enabled": consensus_multi_view,
+        "generated_run_count": 0,
+        "completed_run_count": 0,
+        "policy": (
+            "Stage A4 derives a consensus key from strong finalist views, freezes "
+            "mappings they agree on, and reruns the same masks with only disputed "
+            "symbols free to move. In the wide profile, validation, language-quality, "
+            "and ensemble views are polished separately so one ranker does not erase "
+            "a promising basin found by another. The consensus is computed from "
+            "solver-produced finalist keys only; benchmark plaintext is not used."
+        ),
+    }
+    if completed and consensus_report["enabled"]:
+        consensus_rankers = usable_ranker_views()
+        plan_records: list[tuple[str, dict[str, Any]]] = []
+        if consensus_multi_view:
+            for ranker_view in consensus_rankers:
+                view_rows = sorted(
+                    completed,
+                    key=lambda row, ranker_view=ranker_view: _null_mask_ranker_sort_key(row, ranker_view),
+                    reverse=True,
+                )
+                consensus_source_rows = _null_mask_unique_rows_by_mask(
+                    view_rows,
+                    limit=consensus_top_n,
+                )
+                plan_records.append((
+                    ranker_view,
+                    _null_mask_consensus_polish_plan(
+                        consensus_source_rows,
+                        cipher_text=cipher_text,
+                        min_agreement=consensus_min_agreement,
+                        min_fixed_symbols=consensus_min_fixed,
+                        target_max_mutable_symbols=consensus_max_mutable,
+                    ),
+                ))
+        else:
+            consensus_source_rows = portfolio_rows(completed, limit=consensus_top_n)
+            plan_records.append((
+                "portfolio",
+                _null_mask_consensus_polish_plan(
+                    consensus_source_rows,
+                    cipher_text=cipher_text,
+                    min_agreement=consensus_min_agreement,
+                    min_fixed_symbols=consensus_min_fixed,
+                    target_max_mutable_symbols=consensus_max_mutable,
+                ),
+            ))
+
+        consensus_rows: list[dict[str, Any]] = []
+        view_reports: list[dict[str, Any]] = []
+        for view_index, (ranker_view, plan) in enumerate(plan_records):
+            view_report = {
+                **plan["report"],
+                "ranker_view": ranker_view,
+                "source_masks": [
+                    row.get("mask") or []
+                    for row in plan["source_rows"][:consensus_top_n]
+                ],
+                "generated_run_count": 0,
+                "completed_run_count": 0,
+                "polished_masks": [],
+            }
+            if plan["enabled"]:
+                consensus_jobs = []
+                for rank, row in enumerate(plan["source_rows"], start=1):
+                    mask = tuple(row.get("mask") or [])
+                    row_key = {
+                        int(k): int(v)
+                        for k, v in (row.get("key") or {}).items()
+                    }
+                    initial_key = dict(row_key)
+                    initial_key.update(plan["anchor_key"])
+                    polish_metadata = {
+                        **plan["row_metadata"],
+                        "ranker_view": ranker_view,
+                        "consensus_view_index": view_index,
+                    }
+                    consensus_jobs.append({
+                        "mask": mask,
+                        "index": 90_000 + view_index * 1_000 + rank,
+                        "seed_offset": 90_000 + view_index * 10_000 + rank * 100,
+                        "source": (
+                            "consensus_polish"
+                            if not consensus_multi_view
+                            else f"consensus_polish_{ranker_view}"
+                        ),
+                        "run_budget": consensus_budget,
+                        "initial_key": initial_key,
+                        "fixed_cipher_ids": set(plan["fixed_cipher_ids"]),
+                        "polish_metadata": polish_metadata,
+                    })
+                view_rows = solve_mask_batch(consensus_jobs, default_budget=consensus_budget)
+                consensus_rows.extend(view_rows)
+                rows.extend(view_rows)
+                view_report.update({
+                    "generated_run_count": len(view_rows),
+                    "completed_run_count": sum(
+                        1 for row in view_rows
+                        if row.get("status") == "completed"
+                    ),
+                    "polished_masks": [row.get("mask") or [] for row in view_rows],
+                })
+            view_reports.append(view_report)
+        if consensus_rows:
+            completed = ranked_completed_rows()
+        if consensus_multi_view:
+            consensus_report.update({
+                "views": view_reports,
+                "generated_run_count": len(consensus_rows),
+                "completed_run_count": sum(
+                    1 for row in consensus_rows
+                    if row.get("status") == "completed"
+                ),
+                "polished_masks": [row.get("mask") or [] for row in consensus_rows],
+                "enabled_view_count": sum(1 for report in view_reports if report.get("enabled")),
+            })
+        elif view_reports:
+            consensus_report.update(view_reports[0])
+    adaptive_report: dict[str, Any] = {
+        "enabled": adaptive_enabled,
+        "triggered": False,
+        "min_validation_score": adaptive_min_validation,
+        "near_tie_margin": adaptive_near_tie_margin,
+        "candidate_limit": adaptive_candidate_limit,
+        "max_size": adaptive_max_mask_size,
+        "max_masks": adaptive_max_masks,
+        "beam_width": adaptive_beam_width,
+        "beam_max_size": adaptive_beam_max_size,
+        "beam_max_masks": adaptive_beam_max_masks,
+        "bridge_anchor_count": adaptive_bridge_anchor_count,
+        "bridge_top_rows": adaptive_bridge_top_rows,
+        "bridge_max_masks": adaptive_bridge_max_masks,
+        "bridge_restarts": adaptive_bridge_restarts,
+        "bridge_consensus_max_masks": adaptive_bridge_consensus_max_masks,
+        "neighborhood_top_n": adaptive_neighborhood_top_n,
+        "neighborhood_max_size": adaptive_neighborhood_max_size,
+        "neighborhood_max_masks": adaptive_neighborhood_max_masks,
+        "consensus_top_n": adaptive_consensus_top_n,
+        "consensus_budget": adaptive_consensus_budget,
+        "stability_top_n": adaptive_stability_top_n,
+        "stability_restarts": adaptive_stability_restarts,
+        "stability_waves": adaptive_stability_waves,
+        "stability_budget": adaptive_stability_budget,
+        "decision": None,
+        "generated_mask_count": 0,
+        "completed_mask_count": 0,
+        "policy": (
+            "Optional baseline-then-escalate policy. The normal null-mask "
+            "menu is ranked first; if ground-truth-free damage/confidence "
+            "signals look weak, Decipher appends a wider mask/beam/"
+            "neighborhood/consensus screen and ranks all candidates together."
+        ),
+    }
+    if adaptive_enabled:
+        decision = _null_mask_adaptive_decision(
+            completed,
+            consensus_report=consensus_report,
+            min_validation_score=adaptive_min_validation,
+            near_tie_margin=adaptive_near_tie_margin,
+        )
+        adaptive_report["decision"] = decision
+        if decision.get("triggered"):
+            adaptive_report["triggered"] = True
+            seen_masks = {tuple(sorted(row.get("mask") or [])) for row in rows}
+            adaptive_symbols = select_null_candidate_symbols(
+                diagnostics,
+                limit=adaptive_candidate_limit,
+            )
+            adaptive_masks = generate_null_masks(adaptive_symbols, adaptive_max_mask_size)
+            if adaptive_max_masks > 0:
+                adaptive_masks = [()] + adaptive_masks[1:adaptive_max_masks + 1]
+            adaptive_initial_masks = [
+                tuple(mask)
+                for mask in adaptive_masks[1:]
+                if tuple(sorted(mask)) not in seen_masks
+            ]
+            for mask in adaptive_initial_masks:
+                seen_masks.add(tuple(sorted(mask)))
+            adaptive_initial_jobs = [
+                {
+                    "mask": mask,
+                    "index": 100_000 + index,
+                    "seed_offset": 100_000 + index * 100,
+                    "source": "adaptive_initial",
+                }
+                for index, mask in enumerate(adaptive_initial_masks, start=1)
+            ]
+            adaptive_rows = solve_mask_batch(adaptive_initial_jobs, default_budget=null_budget)
+            rows.extend(adaptive_rows)
+            completed = ranked_completed_rows()
+
+            adaptive_bridge_masks = _null_mask_bridge_pair_masks(
+                completed[:adaptive_bridge_top_rows],
+                candidate_symbols=adaptive_symbols,
+                anchor_symbols=candidate_symbols[:adaptive_bridge_anchor_count],
+                seen_masks=seen_masks,
+                max_masks=adaptive_bridge_max_masks,
+            )
+            adaptive_bridge_jobs = [
+                {
+                    "mask": mask,
+                    "index": 105_000 + index,
+                    "seed_offset": 105_000 + index * 100,
+                    "source": "adaptive_bridge",
+                }
+                for index, mask in enumerate(adaptive_bridge_masks, start=1)
+            ]
+            for restart in range(1, max(0, adaptive_bridge_restarts) + 1):
+                adaptive_bridge_jobs.extend(
+                    {
+                        "mask": mask,
+                        "index": 105_000 + restart * 10_000 + index,
+                        "seed_offset": 105_000 + restart * 100_000 + index * 100,
+                        "source": "adaptive_bridge_restart",
+                    }
+                    for index, mask in enumerate(adaptive_bridge_masks, start=1)
+                )
+            adaptive_bridge_rows = solve_mask_batch(
+                adaptive_bridge_jobs,
+                default_budget=null_budget,
+            )
+            rows.extend(adaptive_bridge_rows)
+            completed = ranked_completed_rows()
+
+            adaptive_beam_masks: list[tuple[str, ...]] = []
+            if adaptive_beam_width > 0 and adaptive_beam_max_masks > 0:
+                for row in completed[:adaptive_beam_width]:
+                    base = tuple(row.get("mask") or [])
+                    if not base or len(base) >= adaptive_beam_max_size:
+                        continue
+                    for symbol in adaptive_symbols:
+                        if symbol in base:
+                            continue
+                        expanded = tuple(sorted((*base, symbol)))
+                        if expanded in seen_masks:
+                            continue
+                        seen_masks.add(expanded)
+                        adaptive_beam_masks.append(expanded)
+                        if len(adaptive_beam_masks) >= adaptive_beam_max_masks:
+                            break
+                    if len(adaptive_beam_masks) >= adaptive_beam_max_masks:
+                        break
+            adaptive_beam_jobs = [
+                {
+                    "mask": mask,
+                    "index": 110_000 + index,
+                    "seed_offset": 110_000 + index * 100,
+                    "source": "adaptive_beam",
+                }
+                for index, mask in enumerate(adaptive_beam_masks, start=1)
+            ]
+            adaptive_beam_rows = solve_mask_batch(adaptive_beam_jobs, default_budget=null_budget)
+            rows.extend(adaptive_beam_rows)
+            completed = ranked_completed_rows()
+
+            adaptive_neighborhood_masks: list[tuple[str, ...]] = []
+            if adaptive_neighborhood_top_n > 0 and adaptive_neighborhood_max_masks > 0:
+                adaptive_neighborhood_masks = _null_mask_neighborhood_masks(
+                    completed[:adaptive_neighborhood_top_n],
+                    candidate_symbols=adaptive_symbols,
+                    seen_masks=seen_masks,
+                    max_size=adaptive_neighborhood_max_size,
+                    max_masks=adaptive_neighborhood_max_masks,
+                )
+            adaptive_neighborhood_jobs = [
+                {
+                    "mask": mask,
+                    "index": 120_000 + index,
+                    "seed_offset": 120_000 + index * 100,
+                    "source": "adaptive_neighborhood",
+                }
+                for index, mask in enumerate(adaptive_neighborhood_masks, start=1)
+            ]
+            adaptive_neighborhood_rows = solve_mask_batch(
+                adaptive_neighborhood_jobs,
+                default_budget=null_budget,
+            )
+            rows.extend(adaptive_neighborhood_rows)
+            completed = ranked_completed_rows()
+
+            adaptive_consensus_rows: list[dict[str, Any]] = []
+            adaptive_consensus_report: dict[str, Any] | None = None
+            if adaptive_consensus_top_n > 1:
+                adaptive_plan = _null_mask_consensus_polish_plan(
+                    completed[:adaptive_consensus_top_n],
+                    cipher_text=cipher_text,
+                    min_agreement=consensus_min_agreement,
+                    min_fixed_symbols=consensus_min_fixed,
+                    target_max_mutable_symbols=consensus_max_mutable,
+                )
+                adaptive_consensus_report = adaptive_plan["report"]
+                if adaptive_plan["enabled"]:
+                    adaptive_consensus_jobs = []
+                    consensus_seen_masks: set[tuple[str, ...]] = set()
+                    for rank, row in enumerate(adaptive_plan["source_rows"], start=1):
+                        mask = tuple(row.get("mask") or [])
+                        consensus_seen_masks.add(tuple(sorted(mask)))
+                        row_key = {
+                            int(k): int(v)
+                            for k, v in (row.get("key") or {}).items()
+                        }
+                        initial_key = dict(row_key)
+                        initial_key.update(adaptive_plan["anchor_key"])
+                        adaptive_consensus_jobs.append({
+                            "mask": mask,
+                            "index": 130_000 + rank,
+                            "seed_offset": 130_000 + rank * 100,
+                            "source": "adaptive_consensus_polish",
+                            "run_budget": adaptive_consensus_budget,
+                            "initial_key": initial_key,
+                            "fixed_cipher_ids": set(adaptive_plan["fixed_cipher_ids"]),
+                            "polish_metadata": adaptive_plan["row_metadata"],
+                        })
+                    bridge_consensus_masks: list[tuple[str, ...]] = []
+                    for row in completed:
+                        if not str(row.get("source") or "").startswith("adaptive_bridge"):
+                            continue
+                        mask = tuple(str(symbol) for symbol in (row.get("mask") or []))
+                        if len(mask) != 2:
+                            continue
+                        canonical = tuple(sorted(mask))
+                        if canonical in consensus_seen_masks:
+                            continue
+                        consensus_seen_masks.add(canonical)
+                        bridge_consensus_masks.append(canonical)
+                        if len(bridge_consensus_masks) >= adaptive_bridge_consensus_max_masks:
+                            break
+                    for mask in bridge_consensus_masks:
+                        adaptive_consensus_jobs.append({
+                            "mask": mask,
+                            "index": 131_000 + len(adaptive_consensus_jobs),
+                            "seed_offset": 131_000 + len(adaptive_consensus_jobs) * 100,
+                            "source": "adaptive_bridge_consensus_polish",
+                            "run_budget": adaptive_consensus_budget,
+                            "initial_key": dict(adaptive_plan["anchor_key"]),
+                            "fixed_cipher_ids": set(adaptive_plan["fixed_cipher_ids"]),
+                            "polish_metadata": adaptive_plan["row_metadata"],
+                        })
+                    adaptive_consensus_rows = solve_mask_batch(
+                        adaptive_consensus_jobs,
+                        default_budget=adaptive_consensus_budget,
+                    )
+                    rows.extend(adaptive_consensus_rows)
+                    completed = ranked_completed_rows()
+            adaptive_stability_rows: list[dict[str, Any]] = []
+            adaptive_stabilized: list[dict[str, Any]] = []
+            if (
+                adaptive_stability_top_n > 0
+                and adaptive_stability_restarts > 0
+                and adaptive_stability_waves > 0
+            ):
+                stabilized_masks: set[tuple[str, ...]] = set()
+                stability_source_rows: list[dict[str, Any]] = []
+                for wave in range(1, adaptive_stability_waves + 1):
+                    wave_source_rows = _null_mask_unique_rows_by_mask(
+                        [
+                            row for row in completed
+                            if tuple(sorted(str(symbol) for symbol in (row.get("mask") or [])))
+                            not in stabilized_masks
+                        ],
+                        limit=adaptive_stability_top_n,
+                    )
+                    if not wave_source_rows:
+                        break
+                    stability_source_rows.extend(wave_source_rows)
+                    stability_jobs = []
+                    for rank, row in enumerate(wave_source_rows, start=1):
+                        mask = tuple(str(symbol) for symbol in (row.get("mask") or []))
+                        for restart in range(1, adaptive_stability_restarts + 1):
+                            stability_jobs.append({
+                                "mask": mask,
+                                "index": 140_000 + wave * 100_000 + rank * 1_000 + restart,
+                                "seed_offset": 140_000 + wave * 100_000 + rank * 10_000 + restart * 100,
+                                "source": "adaptive_stability",
+                                "run_budget": adaptive_stability_budget,
+                            })
+                    wave_stability_rows = solve_mask_batch(
+                        stability_jobs,
+                        default_budget=adaptive_stability_budget,
+                    )
+                    adaptive_stability_rows.extend(wave_stability_rows)
+                    stability_rows_by_mask: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
+                    for row in wave_stability_rows:
+                        stability_rows_by_mask[
+                            tuple(str(symbol) for symbol in (row.get("mask") or []))
+                        ].append(row)
+                    for row in wave_source_rows:
+                        mask = tuple(str(symbol) for symbol in (row.get("mask") or []))
+                        stabilized_masks.add(tuple(sorted(mask)))
+                        _attach_null_mask_stability(row, stability_rows_by_mask.get(mask, []))
+                        adaptive_stabilized.append({
+                            "mask": row.get("mask") or [],
+                            "rank_validation_score_v2": row.get("rank_validation_score_v2"),
+                            "validation_score_v2": row.get("validation_score_v2"),
+                            "stability": row.get("stability"),
+                            "best_preview": row.get("preview"),
+                        })
+                    unstabilized_rows = [
+                        row for row in completed
+                        if tuple(sorted(str(symbol) for symbol in (row.get("mask") or [])))
+                        not in stabilized_masks
+                    ]
+                    completed = stability_source_rows + unstabilized_rows
+                    sort_completed_list(completed)
+            generated_count = (
+                len(adaptive_initial_jobs)
+                + len(adaptive_bridge_jobs)
+                + len(adaptive_beam_jobs)
+                + len(adaptive_neighborhood_jobs)
+                + (len(adaptive_consensus_rows) if adaptive_consensus_rows else 0)
+                + (len(adaptive_stability_rows) if adaptive_stability_rows else 0)
+            )
+            adaptive_report.update({
+                "candidate_symbols": adaptive_symbols,
+                "generated_mask_count": generated_count,
+                "completed_mask_count": sum(
+                    1 for row in rows
+                    if str(row.get("source") or "").startswith("adaptive_")
+                    and row.get("status") == "completed"
+                ),
+                "initial_mask_count": len(adaptive_initial_masks),
+                "bridge_mask_count": len(adaptive_bridge_masks),
+                "bridge_run_count": len(adaptive_bridge_jobs),
+                "beam_mask_count": len(adaptive_beam_masks),
+                "neighborhood_mask_count": len(adaptive_neighborhood_masks),
+                "consensus_run_count": len(adaptive_consensus_rows),
+                "consensus": adaptive_consensus_report,
+                "stability_run_count": len(adaptive_stability_rows),
+                "stabilized_mask_count": len(adaptive_stabilized),
+                "stabilized_finalists": adaptive_stabilized,
+                "selected_after_adaptive": _compact_null_mask_row(completed[0]) if completed else None,
+            })
+    promotion_report: dict[str, Any] = {
+        "enabled": promote_top_n > 0 and promote_reruns > 0,
+        "top_n": promote_top_n,
+        "reruns_per_mask": promote_reruns,
+        "budget": promote_budget,
+        "promoted_mask_count": 0,
+        "policy": (
+            "Stage B promotes the initial top null-mask finalists into a "
+            "stronger second-stage solve before final ranking. This keeps "
+            "multiple plausible basins alive long enough for a deeper "
+            "ground-truth-free validation pass."
+        ),
+    }
+    if completed and promotion_report["enabled"]:
+        promoted: list[dict[str, Any]] = []
+        promoted_rows: list[dict[str, Any]] = []
+        promotion_source_rows = (
+            _null_mask_ranker_portfolio(
+                completed,
+                limit=promote_top_n,
+                rankers=portfolio_rankers,
+                language_quality_enabled=language_quality_model is not None,
+            )
+            if portfolio_top_n > 0
+            else completed[:promote_top_n]
+        )
+        if portfolio_top_n > 0:
+            finalist_portfolio_report.update({
+                "selected_count": len(promotion_source_rows),
+                "selected_finalists": [
+                    _compact_null_mask_row(row) for row in promotion_source_rows
+                ],
+            })
+        for rank, row in enumerate(promotion_source_rows, start=1):
+            mask = tuple(row.get("mask") or [])
+            probe_rows = []
+            for probe_index in range(1, promote_reruns + 1):
+                seed_offset = 20_000 + rank * 1_000 + probe_index * 100
+                probe = solve_mask(
+                    mask,
+                    index=rank * 100 + probe_index,
+                    seed_offset=seed_offset,
+                    source="promotion",
+                    run_budget=promote_budget,
+                )
+                probe_rows.append(probe)
+            _attach_null_mask_promotion(row, probe_rows)
+            promoted_rows.append(row)
+            promoted.append({
+                "mask": row.get("mask") or [],
+                "initial_rank": rank,
+                "promoted_validation_score_v2": row.get("promoted_validation_score_v2"),
+                "promotion": row.get("promotion"),
+                "best_preview": row.get("preview"),
+            })
+        promotion_report.update({
+            "promoted_mask_count": len(promoted),
+            "promoted_finalists": promoted,
+        })
+        promoted_masks = {tuple(row.get("mask") or []) for row in promoted_rows}
+        unpromoted_rows = [
+            row for row in completed
+            if tuple(row.get("mask") or []) not in promoted_masks
+        ]
+        completed = promoted_rows + unpromoted_rows
+        sort_completed_list(completed)
     confirmation_report: dict[str, Any] = {
         "enabled": confirm_top_n > 0 and confirm_reruns > 0,
         "top_n": confirm_top_n,
@@ -3804,12 +4860,14 @@ def _run_null_mask_bakeoff(
         "confirmed_mask_count": 0,
         "policy": (
             "Stage B reruns the top null-mask finalists with independent seed "
-            "offsets, then selects by mean validation score with best-score "
-            "and stability tie breakers."
+            "offsets and records stability evidence. Selection follows the "
+            "configured ground-truth-free ranker, which defaults to scalar "
+            "validation; confirmation remains supporting metadata."
         ),
     }
     if completed and confirmation_report["enabled"]:
         confirmed = []
+        confirmed_rows = []
         for rank, row in enumerate(completed[:confirm_top_n], start=1):
             mask = tuple(row.get("mask") or [])
             probe_rows = []
@@ -3827,6 +4885,7 @@ def _run_null_mask_bakeoff(
                 if probe.get("status") == "completed"
             ]
             _attach_null_mask_confirmation(row, completed_probes)
+            confirmed_rows.append(row)
             confirmed.append({
                 "mask": row.get("mask") or [],
                 "initial_rank": rank,
@@ -3839,17 +4898,19 @@ def _run_null_mask_bakeoff(
             "confirmed_mask_count": len(confirmed),
             "confirmed_finalists": confirmed,
         })
-        completed.sort(
-            key=lambda item: (
-                float(item.get("confirmed_validation_score_v2", item.get("validation_score_v2")) or float("-inf")),
-                float(item.get("confirmation_best_validation_score_v2", item.get("validation_score_v2")) or float("-inf")),
-                float(item.get("selection_score") or float("-inf")),
-            ),
-            reverse=True,
-        )
+        confirmed_masks = {tuple(row.get("mask") or []) for row in confirmed_rows}
+        unconfirmed_rows = [
+            row for row in completed
+            if tuple(row.get("mask") or []) not in confirmed_masks
+        ]
+        completed = confirmed_rows + unconfirmed_rows
+        sort_completed_list(completed)
     selected = completed[0] if completed else None
     selected_mask = tuple(selected.get("mask") or []) if selected else ()
-    compact_rows = [_compact_null_mask_row(row) for row in rows]
+    compact_rows = [
+        _compact_null_mask_row(row, include_validation_text=store_evaluated_text)
+        for row in rows
+    ]
     return {
         "name": "search_null_masks",
         "status": "completed" if completed else "error",
@@ -3862,15 +4923,38 @@ def _run_null_mask_bakeoff(
         ),
         "language": language,
         "budget": null_budget,
+        "engine": null_engine,
+        "threads": null_threads,
+        "store_evaluated_text": store_evaluated_text,
         "solver_profile": solver_profile,
+        "profile": profile,
+        "binary_ngram_model": _zenith_native_model_metadata(str(binary_model_path)) if binary_model_path else None,
         "candidate_limit": candidate_limit,
         "candidate_symbols": candidate_symbols,
-        "mask_count": len(masks),
+        "mask_count": len(rows),
         "evaluated_mask_count": len(rows),
         "completed_mask_count": len(completed),
         "max_mask_size": max_mask_size,
         "max_masks": max_masks,
+        "beam": beam_report,
+        "neighborhood": neighborhood_report,
         "top_n": top_n,
+        "ranker": ranker,
+        "language_quality_model": (
+            {
+                "path": str(Path(language_quality_model_path_raw).expanduser()),
+                "language": language_quality_model.language,
+                "version": language_quality_model.version,
+                "feature_count": len(language_quality_model.feature_names),
+                "training_summary": language_quality_model.training_summary,
+            }
+            if language_quality_model is not None
+            else None
+        ),
+        "finalist_portfolio": finalist_portfolio_report,
+        "promotion": promotion_report,
+        "consensus_polish": consensus_report,
+        "adaptive": adaptive_report,
         "confirmation": confirmation_report,
         "diagnostics": diagnostics,
         "selected_mask": list(selected_mask),
@@ -3889,26 +4973,66 @@ def _run_null_mask_bakeoff(
     }
 
 
-def _compact_null_mask_row(row: dict[str, Any]) -> dict[str, Any]:
+def _compact_null_mask_row(
+    row: dict[str, Any],
+    *,
+    include_validation_text: bool = False,
+) -> dict[str, Any]:
     """Keep every null-mask row inspectable without storing every full decrypt."""
     compact = {
+        "candidate_id": row.get("candidate_id"),
+        "evaluated_index": row.get("evaluated_index"),
         "mask": row.get("mask") or [],
         "mask_size": row.get("mask_size"),
         "status": row.get("status"),
         "filtered_length": row.get("filtered_length"),
+        "rank_validation_score_v2": row.get("rank_validation_score_v2"),
         "validation_score_v2": row.get("validation_score_v2"),
         "validation_components_v2": row.get("validation_components_v2"),
         "selection_score": row.get("selection_score"),
         "anneal_score": row.get("anneal_score"),
+        "ensemble_score_v1": row.get("ensemble_score_v1"),
+        "ensemble_vote_rate_v1": row.get("ensemble_vote_rate_v1"),
+        "ensemble_features_v1": row.get("ensemble_features_v1"),
+        "language_quality_raw_score": row.get("language_quality_raw_score"),
+        "language_quality_score": row.get("language_quality_score"),
+        "language_quality_rank_score": row.get("language_quality_rank_score"),
+        "language_quality_model": row.get("language_quality_model"),
+        "engine": row.get("engine"),
+        "batch_threads": row.get("batch_threads"),
+        "best_seed": row.get("best_seed"),
+        "source": row.get("source"),
+        "budget": row.get("budget"),
+        "promoted_validation_score_v2": row.get("promoted_validation_score_v2"),
+        "confirmed_validation_score_v2": row.get("confirmed_validation_score_v2"),
+        "adaptive_stability_score_v2": row.get("adaptive_stability_score_v2"),
+        "adaptive_stability_best_validation_score_v2": row.get("adaptive_stability_best_validation_score_v2"),
+        "consensus_polish": row.get("consensus_polish"),
+        "stability": row.get("stability"),
         "elapsed_seconds": row.get("elapsed_seconds"),
         "preview": str(row.get("preview") or "")[:180],
         "reason": row.get("reason"),
     }
+    if include_validation_text:
+        compact["validation_text"] = str(row.get("decryption") or row.get("validation_text") or "")
     diagnostics = row.get("diagnostics") if isinstance(row.get("diagnostics"), dict) else {}
     quality = row.get("quality") if isinstance(row.get("quality"), dict) else {}
     compact["diagnostics"] = {
         "dict_rate": diagnostics.get("dict_rate"),
         "segmentation_cost": diagnostics.get("segmentation_cost"),
+        "segmented_word_count": diagnostics.get("segmented_word_count"),
+        "pseudo_word_count": diagnostics.get("pseudo_word_count"),
+        "pseudo_word_fraction": diagnostics.get("pseudo_word_fraction"),
+        "short_word_fraction": diagnostics.get("short_word_fraction"),
+        "long_pseudo_word_fraction": diagnostics.get("long_pseudo_word_fraction"),
+        "dictionary_hit_count": diagnostics.get("dictionary_hit_count"),
+        "dictionary_content_word_count": diagnostics.get("dictionary_content_word_count"),
+        "dictionary_long_content_word_count": diagnostics.get("dictionary_long_content_word_count"),
+        "dictionary_content_word_fraction": diagnostics.get("dictionary_content_word_fraction"),
+        "dictionary_content_char_fraction": diagnostics.get("dictionary_content_char_fraction"),
+        "dictionary_content_sample": diagnostics.get("dictionary_content_sample"),
+        "dictionary_long_content_sample": diagnostics.get("dictionary_long_content_sample"),
+        "binary_ngram_mean_log_prob": diagnostics.get("binary_ngram_mean_log_prob"),
         "unique_letters": diagnostics.get("unique_letters"),
         "top_letter_fraction": diagnostics.get("top_letter_fraction"),
     }
@@ -3919,6 +5043,495 @@ def _compact_null_mask_row(row: dict[str, Any]) -> dict[str, Any]:
         "penalty": quality.get("penalty"),
     }
     return compact
+
+
+def _null_mask_rank_validation_score(row: dict[str, Any]) -> float:
+    """Return the ground-truth-free validation score used for null-mask ranking."""
+    for field in (
+        "rank_validation_score_v2",
+        "confirmed_validation_score_v2",
+        "promoted_validation_score_v2",
+        "validation_score_v2",
+    ):
+        value = _float_or_none(row.get(field))
+        if value is not None:
+            return value
+    return float("-inf")
+
+
+def _null_mask_unique_rows_by_mask(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Keep the first row for each canonical mask in rank order."""
+    if limit <= 0:
+        return []
+    seen: set[tuple[str, ...]] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        mask = tuple(sorted(str(symbol) for symbol in (row.get("mask") or [])))
+        if mask in seen:
+            continue
+        seen.add(mask)
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _null_mask_ranker_portfolio(
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    rankers: list[str],
+    language_quality_enabled: bool,
+) -> list[dict[str, Any]]:
+    """Return a round-robin finalist portfolio across ranker views.
+
+    The portfolio is used to choose second-stage promotion targets.  It is
+    intentionally mask-unique: promotion reruns the mask family, so including
+    several same-mask rows usually spends budget without broadening basin
+    coverage.
+    """
+    if limit <= 0:
+        return []
+    usable_rankers = [
+        ranker for ranker in rankers
+        if ranker in {"validation", "ensemble"}
+        or (ranker == "language_quality" and language_quality_enabled)
+    ]
+    if not usable_rankers:
+        usable_rankers = ["validation"]
+    views = {
+        ranker: sorted(
+            rows,
+            key=lambda row, ranker=ranker: _null_mask_ranker_sort_key(row, ranker),
+            reverse=True,
+        )
+        for ranker in usable_rankers
+    }
+    positions = {ranker: 0 for ranker in usable_rankers}
+    selected: list[dict[str, Any]] = []
+    seen_masks: set[tuple[str, ...]] = set()
+    while len(selected) < limit:
+        advanced = False
+        for ranker in usable_rankers:
+            view = views[ranker]
+            position = positions[ranker]
+            while position < len(view):
+                row = view[position]
+                position += 1
+                mask = tuple(sorted(str(symbol) for symbol in (row.get("mask") or [])))
+                if mask in seen_masks:
+                    continue
+                seen_masks.add(mask)
+                selected.append(row)
+                advanced = True
+                break
+            positions[ranker] = position
+            if len(selected) >= limit:
+                break
+        if not advanced:
+            break
+    return selected
+
+
+def _null_mask_ranker_sort_key(row: dict[str, Any], ranker: str) -> tuple[float, float]:
+    if ranker == "language_quality":
+        lq_rank = _float_or_none(row.get("language_quality_rank_score"))
+        lq_raw = _float_or_none(row.get("language_quality_raw_score"))
+        return (
+            lq_rank if lq_rank is not None else float("-inf"),
+            lq_raw if lq_raw is not None else float("-inf"),
+        )
+    if ranker == "ensemble":
+        ensemble = _float_or_none(row.get("ensemble_score_v1"))
+        validation = _null_mask_rank_validation_score(row)
+        return (
+            ensemble if ensemble is not None else float("-inf"),
+            validation,
+        )
+    validation = _null_mask_rank_validation_score(row)
+    selection = _float_or_none(row.get("selection_score"))
+    return (
+        validation,
+        selection if selection is not None else float("-inf"),
+    )
+
+
+def _null_mask_adaptive_decision(
+    completed_rows: list[dict[str, Any]],
+    *,
+    consensus_report: dict[str, Any],
+    min_validation_score: float,
+    near_tie_margin: float,
+) -> dict[str, Any]:
+    """Decide whether a null-mask run should spend a broader search budget.
+
+    This intentionally uses only solver-native and plaintext-shape signals.
+    Benchmark plaintext/accuracy must never be part of this decision.
+    """
+    reasons: list[str] = []
+    selected = completed_rows[0] if completed_rows else None
+    metrics: dict[str, Any] = {
+        "completed_count": len(completed_rows),
+        "selected_mask": selected.get("mask") if selected else None,
+    }
+    if selected is None:
+        return {
+            "triggered": True,
+            "reasons": ["no_completed_null_mask_candidate"],
+            "metrics": metrics,
+        }
+    validation = _float_or_none(selected.get("validation_score_v2"))
+    ensemble = _float_or_none(selected.get("ensemble_score_v1"))
+    diagnostics = selected.get("diagnostics") if isinstance(selected.get("diagnostics"), dict) else {}
+    quality = selected.get("quality") if isinstance(selected.get("quality"), dict) else {}
+    components = (
+        selected.get("validation_components_v2")
+        if isinstance(selected.get("validation_components_v2"), dict)
+        else {}
+    )
+    metrics.update({
+        "validation_score_v2": validation,
+        "ensemble_score_v1": ensemble,
+        "source": selected.get("source"),
+        "pseudo_word_fraction": diagnostics.get("pseudo_word_fraction"),
+        "top_letter_fraction": quality.get("top_letter_fraction"),
+        "collapsed": quality.get("collapsed"),
+        "repetition_penalty": components.get("repetition_penalty"),
+        "function_overuse_penalty": components.get("function_overuse_penalty"),
+        "consensus_reason": consensus_report.get("reason"),
+    })
+    if validation is None or validation < min_validation_score:
+        reasons.append("low_validation_score")
+    try:
+        pseudo_fraction = float(diagnostics.get("pseudo_word_fraction") or 0.0)
+    except (TypeError, ValueError):
+        pseudo_fraction = 0.0
+    if pseudo_fraction >= 0.42 and (validation is None or validation < 1.0):
+        reasons.append("high_pseudo_word_fraction")
+    if quality.get("collapsed") and (validation is None or validation < 1.0):
+        reasons.append("collapsed_or_damaged_plaintext_shape")
+    if consensus_report.get("reason") == "wide_mutable_set" and (
+        validation is None or validation < 1.0
+    ):
+        reasons.append("wide_consensus_mutable_set")
+    if len(completed_rows) >= 2 and validation is not None:
+        runner_up = completed_rows[1]
+        runner_up_validation = _float_or_none(runner_up.get("validation_score_v2"))
+        if (
+            runner_up_validation is not None
+            and validation - runner_up_validation <= near_tie_margin
+            and validation < 1.0
+        ):
+            reasons.append("near_tie_finalist_menu")
+            metrics["runner_up_validation_score_v2"] = runner_up_validation
+            metrics["runner_up_mask"] = runner_up.get("mask")
+    return {
+        "triggered": bool(reasons),
+        "reasons": reasons,
+        "metrics": metrics,
+    }
+
+
+def _null_mask_bridge_pair_masks(
+    rows: list[dict[str, Any]],
+    *,
+    candidate_symbols: list[str],
+    anchor_symbols: list[str],
+    seen_masks: set[tuple[str, ...]],
+    max_masks: int,
+) -> list[tuple[str, ...]]:
+    """Generate long-range pair masks missed by the local-window generator."""
+    if max_masks <= 0:
+        return []
+    anchors: list[str] = []
+    for symbol in anchor_symbols:
+        symbol = str(symbol)
+        if symbol not in anchors:
+            anchors.append(symbol)
+    for row in rows:
+        for symbol in row.get("mask") or []:
+            symbol = str(symbol)
+            if symbol not in anchors:
+                anchors.append(symbol)
+    out: list[tuple[str, ...]] = []
+    for anchor in anchors:
+        for symbol in candidate_symbols:
+            symbol = str(symbol)
+            if symbol == anchor:
+                continue
+            mask = tuple(sorted((anchor, symbol)))
+            if mask in seen_masks:
+                continue
+            seen_masks.add(mask)
+            out.append(mask)
+            if len(out) >= max_masks:
+                return out
+    return out
+
+
+def _null_mask_neighborhood_masks(
+    rows: list[dict[str, Any]],
+    *,
+    candidate_symbols: list[str],
+    seen_masks: set[tuple[str, ...]],
+    max_size: int,
+    max_masks: int,
+) -> list[tuple[str, ...]]:
+    """Generate add/remove/swap neighbors around strong null-mask finalists."""
+    if max_masks <= 0:
+        return []
+    out: list[tuple[str, ...]] = []
+
+    def add_mask(mask: tuple[str, ...]) -> bool:
+        if len(out) >= max_masks:
+            return False
+        canonical = tuple(sorted(dict.fromkeys(mask)))
+        if len(canonical) > max_size or canonical in seen_masks:
+            return True
+        seen_masks.add(canonical)
+        out.append(canonical)
+        return len(out) < max_masks
+
+    for row in rows:
+        base = tuple(sorted(str(symbol) for symbol in (row.get("mask") or [])))
+        if not base:
+            # The initial screen already includes every singleton candidate.
+            continue
+        for symbol in base:
+            if not add_mask(tuple(item for item in base if item != symbol)):
+                return out
+        for symbol in candidate_symbols:
+            symbol = str(symbol)
+            if symbol in base:
+                continue
+            for existing in base:
+                swapped = tuple(symbol if item == existing else item for item in base)
+                if not add_mask(swapped):
+                    return out
+        for symbol in candidate_symbols:
+            symbol = str(symbol)
+            if symbol in base:
+                continue
+            if len(base) < max_size and not add_mask((*base, symbol)):
+                return out
+    return out
+
+
+def _null_mask_consensus_polish_plan(
+    rows: list[dict[str, Any]],
+    *,
+    cipher_text: CipherText,
+    min_agreement: float,
+    min_fixed_symbols: int,
+    target_max_mutable_symbols: int,
+) -> dict[str, Any]:
+    """Build a ground-truth-free constrained rerun plan from finalist agreement."""
+    source_rows = [
+        row for row in rows
+        if row.get("status") == "completed" and isinstance(row.get("key"), dict)
+    ]
+    symbol_ids = sorted(set(cipher_text.tokens))
+    total_symbols = len(symbol_ids)
+    report: dict[str, Any] = {
+        "enabled": False,
+        "source_row_count": len(source_rows),
+        "fixed_symbol_count": 0,
+        "mutable_symbol_count": total_symbols,
+        "reason": None,
+        "fixed_symbols": [],
+        "mutable_symbols_sample": [],
+    }
+    if len(source_rows) < 2:
+        report["reason"] = "insufficient_source_rows"
+        return {
+            "enabled": False,
+            "source_rows": source_rows,
+            "anchor_key": {},
+            "fixed_cipher_ids": set(),
+            "row_metadata": report,
+            "report": report,
+        }
+
+    mask_counts: Counter[str] = Counter()
+    assignment_counts: dict[int, Counter[int]] = {sid: Counter() for sid in symbol_ids}
+    considered_counts: Counter[int] = Counter()
+    for row in source_rows:
+        row_mask = {str(symbol) for symbol in (row.get("mask") or [])}
+        mask_counts.update(row_mask)
+        row_key = {
+            int(k): int(v)
+            for k, v in (row.get("key") or {}).items()
+        }
+        for sid in symbol_ids:
+            symbol = cipher_text.alphabet.symbol_for(sid)
+            if symbol in row_mask or sid not in row_key:
+                continue
+            assignment_counts[sid][row_key[sid]] += 1
+            considered_counts[sid] += 1
+
+    source_count = len(source_rows)
+    required_considered = max(2, math.ceil(source_count * 0.5))
+    anchor_key: dict[int, int] = {}
+    confidence_rows: list[dict[str, Any]] = []
+    for sid in symbol_ids:
+        symbol = cipher_text.alphabet.symbol_for(sid)
+        considered = considered_counts[sid]
+        if considered < required_considered:
+            continue
+        if mask_counts[symbol] / source_count >= 0.35:
+            continue
+        if not assignment_counts[sid]:
+            continue
+        plaintext_id, agreement_count = assignment_counts[sid].most_common(1)[0]
+        agreement = agreement_count / max(1, considered)
+        if agreement < min_agreement:
+            continue
+        anchor_key[sid] = plaintext_id
+        confidence_rows.append({
+            "symbol_id": sid,
+            "symbol": symbol,
+            "plaintext_id": plaintext_id,
+            "agreement": round(agreement, 4),
+            "agreement_count": agreement_count,
+            "considered_count": considered,
+            "masked_count": mask_counts[symbol],
+        })
+
+    fixed_ids = set(anchor_key)
+    mutable_ids = set(symbol_ids) - fixed_ids
+    confidence_rows.sort(
+        key=lambda item: (
+            float(item["agreement"]),
+            int(item["agreement_count"]),
+            int(item["considered_count"]),
+        ),
+        reverse=True,
+    )
+    report.update({
+        "fixed_symbol_count": len(fixed_ids),
+        "mutable_symbol_count": len(mutable_ids),
+        "fixed_symbols": confidence_rows[:24],
+        "mutable_symbols_sample": [
+            cipher_text.alphabet.symbol_for(sid)
+            for sid in sorted(mutable_ids)[:24]
+        ],
+        "masked_symbol_counts": dict(mask_counts),
+        "required_considered_count": required_considered,
+    })
+    if len(fixed_ids) < min_fixed_symbols:
+        report["reason"] = "insufficient_consensus_fixed_symbols"
+        return {
+            "enabled": False,
+            "source_rows": source_rows,
+            "anchor_key": anchor_key,
+            "fixed_cipher_ids": fixed_ids,
+            "row_metadata": report,
+            "report": report,
+        }
+    if len(mutable_ids) < 1:
+        report["reason"] = "no_mutable_symbols"
+        return {
+            "enabled": False,
+            "source_rows": source_rows,
+            "anchor_key": anchor_key,
+            "fixed_cipher_ids": fixed_ids,
+            "row_metadata": report,
+            "report": report,
+        }
+
+    report["enabled"] = True
+    report["reason"] = (
+        "wide_mutable_set"
+        if target_max_mutable_symbols > 0 and len(mutable_ids) > target_max_mutable_symbols
+        else "consensus_ready"
+    )
+    return {
+        "enabled": True,
+        "source_rows": source_rows,
+        "anchor_key": anchor_key,
+        "fixed_cipher_ids": fixed_ids,
+        "row_metadata": report,
+        "report": report,
+    }
+
+
+def _attach_null_mask_stability(
+    row: dict[str, Any],
+    probe_rows: list[dict[str, Any]],
+) -> None:
+    """Attach same-mask stability evidence and rank by robust validation.
+
+    The candidate text/key for a mask still comes from its best observed basin,
+    but the ranking score is conservative across independent reruns. This
+    prevents a single lucky-looking damaged plaintext from dominating the menu.
+    """
+    candidates = [row] + probe_rows
+    completed = [
+        candidate for candidate in candidates
+        if candidate.get("status") == "completed"
+        and _float_or_none(candidate.get("validation_score_v2")) is not None
+    ]
+    if not completed:
+        row["stability"] = {
+            "status": "no_completed_stability_runs",
+            "probe_count": len(probe_rows),
+        }
+        return
+    scores = [
+        float(candidate["validation_score_v2"])
+        for candidate in completed
+    ]
+    mean_score = sum(scores) / len(scores)
+    variance = sum((score - mean_score) ** 2 for score in scores) / len(scores)
+    stddev = math.sqrt(variance)
+    best = max(
+        completed,
+        key=lambda item: float(item.get("validation_score_v2") or float("-inf")),
+    )
+    best_score = float(best.get("validation_score_v2") or float("-inf"))
+    worst_score = min(scores)
+    robust_score = (0.70 * mean_score) + (0.30 * best_score) - min(0.20, 0.50 * stddev)
+
+    for field in (
+        "solver",
+        "anneal_score",
+        "selection_score",
+        "validation_score_v2",
+        "validation_components_v2",
+        "quality",
+        "diagnostics",
+        "preview",
+        "decryption",
+        "key",
+        "budget",
+        "engine",
+        "best_seed",
+        "batch_threads",
+    ):
+        if field in best:
+            row[field] = best[field]
+    row["rank_validation_score_v2"] = round(robust_score, 6)
+    row["adaptive_stability_score_v2"] = row["rank_validation_score_v2"]
+    row["adaptive_stability_best_validation_score_v2"] = round(best_score, 6)
+    row["adaptive_stability_mean_validation_score_v2"] = round(mean_score, 6)
+    row["adaptive_stability_stddev_validation_score_v2"] = round(stddev, 6)
+    row["stability"] = {
+        "status": "completed",
+        "probe_count": len(probe_rows),
+        "completed_probe_count": len(completed) - 1,
+        "mean_validation_score_v2": round(mean_score, 6),
+        "best_validation_score_v2": round(best_score, 6),
+        "worst_validation_score_v2": round(worst_score, 6),
+        "stddev_validation_score_v2": round(stddev, 6),
+        "rank_validation_score_v2": row["rank_validation_score_v2"],
+        "best_source": best.get("source"),
+        "best_budget": best.get("budget"),
+        "runs": [_compact_null_mask_row(candidate) for candidate in completed],
+    }
 
 
 def _attach_null_mask_confirmation(
@@ -3973,6 +5586,65 @@ def _attach_null_mask_confirmation(
         "stddev_validation_score_v2": round(stddev, 6),
         "stability_score": round(stability_score, 6),
         "confirmed_validation_score_v2": row["confirmed_validation_score_v2"],
+        "runs": [_compact_null_mask_row(candidate) for candidate in completed],
+    }
+
+
+def _attach_null_mask_promotion(
+    row: dict[str, Any],
+    probe_rows: list[dict[str, Any]],
+) -> None:
+    """Promote one finalist with deeper same-mask solves and keep the best basin."""
+    candidates = [row] + probe_rows
+    completed = [
+        candidate for candidate in candidates
+        if candidate.get("status") == "completed"
+        and candidate.get("validation_score_v2") is not None
+    ]
+    if not completed:
+        row["promotion"] = {
+            "status": "no_completed_promotion_runs",
+            "probe_count": len(probe_rows),
+        }
+        return
+    initial_score = row.get("validation_score_v2")
+    best = max(completed, key=lambda item: float(item.get("validation_score_v2") or float("-inf")))
+    best_score = float(best.get("validation_score_v2") or float("-inf"))
+    try:
+        initial_score_value = float(initial_score)
+    except (TypeError, ValueError):
+        initial_score_value = float("-inf")
+    adoption_margin = float(os.environ.get("DECIPHER_NULL_MASK_PROMOTE_ADOPTION_MARGIN", "0.08"))
+    adopted = best is row or best_score >= initial_score_value + adoption_margin
+    representative = best if adopted else row
+    for field in (
+        "solver",
+        "anneal_score",
+        "selection_score",
+        "validation_score_v2",
+        "validation_components_v2",
+        "quality",
+        "diagnostics",
+        "preview",
+        "decryption",
+        "key",
+        "budget",
+    ):
+        if field in representative:
+            row[field] = representative[field]
+    row["promoted_validation_score_v2"] = row.get("validation_score_v2")
+    row["promotion"] = {
+        "status": "completed",
+        "probe_count": len(probe_rows),
+        "completed_probe_count": len(completed) - 1,
+        "initial_validation_score_v2": initial_score,
+        "best_validation_score_v2": row.get("validation_score_v2"),
+        "best_probe_validation_score_v2": round(best_score, 6),
+        "adoption_margin": adoption_margin,
+        "adopted_promotion": adopted,
+        "best_source": best.get("source"),
+        "best_budget": best.get("budget"),
+        "representative_source": representative.get("source"),
         "runs": [_compact_null_mask_row(candidate) for candidate in completed],
     }
 
@@ -4422,6 +6094,51 @@ def _zenith_native_model_path(language: str = "en") -> Path | None:
     return None
 
 
+@functools.lru_cache(maxsize=16)
+def _zenith_native_model_metadata(path_text: str) -> dict[str, Any]:
+    """Return artifact-safe provenance for a Zenith binary model path."""
+    path = Path(path_text).expanduser()
+    resolved = path.resolve() if path.exists() else path
+    metadata_path = path.with_name(path.name + ".metadata.json")
+    metadata: dict[str, Any] = {}
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            metadata = {"metadata_parse_error": str(metadata_path)}
+    sha256 = metadata.get("sha256")
+    if not sha256 and path.exists():
+        h = hashlib.sha256()
+        with path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                h.update(chunk)
+        sha256 = h.hexdigest()
+    out: dict[str, Any] = {
+        "path": str(path),
+        "resolved_path": str(resolved),
+        "exists": path.exists(),
+        "size_bytes": path.stat().st_size if path.exists() else None,
+        "sha256": sha256,
+        "metadata_path": str(metadata_path) if metadata_path.exists() else None,
+    }
+    for key in (
+        "language",
+        "order",
+        "format",
+        "output_file",
+        "unknown_log_prob",
+        "build_timestamp_utc",
+        "builder_version",
+        "sources",
+        "corpus_stats",
+        "normalization",
+        "redistribution_status",
+    ):
+        if key in metadata:
+            out[key] = metadata[key]
+    return out
+
+
 def _run_homophonic_zenith_native(
     cipher_text: CipherText,
     language: str,
@@ -4434,6 +6151,8 @@ def _run_homophonic_zenith_native(
     short_homophonic: bool,
     budget_params: dict[str, Any],
     started: float,
+    initial_key: dict[int, int] | None = None,
+    fixed_cipher_ids: set[int] | None = None,
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     """Run the Zenith-parity homophonic solver (``zenith_native`` score profile).
 
@@ -4481,6 +6200,8 @@ def _run_homophonic_zenith_native(
                     sampler_iterations=sampler_iterations,
                     seed=seed,
                     engine=engine,
+                    initial_key=initial_key,
+                    fixed_cipher_ids=fixed_cipher_ids,
                 ): seed
                 for seed in seeds
             }
@@ -4504,6 +6225,8 @@ def _run_homophonic_zenith_native(
                         sampler_iterations=sampler_iterations,
                         seed=seed,
                         top_n=3,
+                        initial_key=initial_key,
+                        fixed_cipher_ids=fixed_cipher_ids,
                     ),
                 ))
         else:
@@ -4521,6 +6244,8 @@ def _run_homophonic_zenith_native(
                         sampler_iterations=sampler_iterations,
                         seed=seed,
                         top_n=3,
+                        initial_key=initial_key,
+                        fixed_cipher_ids=fixed_cipher_ids,
                     ),
                 ))
 
@@ -4594,11 +6319,15 @@ def _run_homophonic_zenith_native(
         "name": "search_homophonic_anneal",
         "solver": "zenith_native",
         "model_source": str(bin_path),
+        "model_metadata": _zenith_native_model_metadata(str(bin_path)),
         "model_note": "zenith_binary",
         "engine": engine,
         "homophonic_budget": budget,
         "budget_params": budget_params,
         "homophonic_refinement": "none",
+        "initial_key_provided": initial_key is not None,
+        "fixed_cipher_ids_count": len(fixed_cipher_ids or set()),
+        "fixed_cipher_ids_sample": sorted(fixed_cipher_ids or set())[:20],
         "selection_profile": "anneal_quality",
         "score_profile": "zenith_native",
         "score_formula": "zenith_entropy",
@@ -4610,6 +6339,7 @@ def _run_homophonic_zenith_native(
             selected_plaintext,
             language=language,
             word_list=word_list,
+            binary_model_path=bin_path,
         ),
         "key_repair": key_repair_info,
         "anchor_refine": anchor_refine_info,
@@ -4769,6 +6499,33 @@ def _zenith_model_score_fn(
         return total
 
     return score
+
+
+def _zenith_text_mean_log_prob(text: str, bin_path: Path | None) -> float | None:
+    """Mean 5-gram log probability for an already rendered plaintext."""
+    if bin_path is None:
+        return None
+    try:
+        from analysis.zenith_solver import load_zenith_binary_model
+
+        model = load_zenith_binary_model(bin_path)
+    except Exception:  # noqa: BLE001
+        return None
+    letters = [
+        ord(ch.lower()) - 97
+        for ch in text.upper()
+        if "A" <= ch <= "Z"
+    ]
+    if len(letters) < 5:
+        return None
+    total = 0.0
+    count = 0
+    for i in range(len(letters) - 4):
+        total += model.lookup_lo(
+            letters[i], letters[i + 1], letters[i + 2], letters[i + 3], letters[i + 4]
+        )
+        count += 1
+    return total / max(1, count)
 
 
 def _quadgram_key_score_fn(
@@ -5241,6 +6998,23 @@ def _homophonic_parallel_seed_workers(seed_count: int | None = None) -> int:
     return value
 
 
+def _null_mask_batch_threads() -> int:
+    raw = (
+        os.environ.get("DECIPHER_NULL_MASK_THREADS")
+        or os.environ.get("DECIPHER_TRANSFORM_RANK_THREADS")
+        or os.environ.get("DECIPHER_PARALLEL_WORKERS")
+        or "0"
+    )
+    try:
+        value = int(str(raw).strip() or "0")
+    except ValueError as exc:
+        raise ValueError(
+            "DECIPHER_NULL_MASK_THREADS / DECIPHER_TRANSFORM_RANK_THREADS / "
+            "DECIPHER_PARALLEL_WORKERS must be an integer >= 0"
+        ) from exc
+    return max(0, value)
+
+
 def _zenith_native_engine() -> str:
     raw = os.environ.get("DECIPHER_ZENITH_NATIVE_ENGINE", "rust").strip().lower()
     if raw in {"py", "python", "reference"}:
@@ -5290,6 +7064,8 @@ def _zenith_native_seed_worker(
     epochs: int,
     sampler_iterations: int,
     seed: int,
+    initial_key: dict[int, int] | None = None,
+    fixed_cipher_ids: set[int] | None = None,
     engine: str = "python",
 ):
     if engine == "rust":
@@ -5304,6 +7080,8 @@ def _zenith_native_seed_worker(
             sampler_iterations=sampler_iterations,
             seed=seed,
             top_n=3,
+            initial_key=initial_key,
+            fixed_cipher_ids=fixed_cipher_ids,
         )
 
     from analysis.zenith_solver import load_zenith_binary_model, zenith_solve
@@ -5319,6 +7097,8 @@ def _zenith_native_seed_worker(
         sampler_iterations=sampler_iterations,
         seed=seed,
         top_n=3,
+        initial_key=initial_key,
+        fixed_cipher_ids=fixed_cipher_ids,
     )
 
 
@@ -6490,6 +8270,7 @@ def _automated_candidate_diagnostics(
     plaintext: str,
     language: str,
     word_list: list[str],
+    binary_model_path: Path | None = None,
 ) -> dict[str, Any]:
     upper = "".join(ch for ch in plaintext.upper() if "A" <= ch <= "Z")
     counts = Counter(upper)
@@ -6507,10 +8288,23 @@ def _automated_candidate_diagnostics(
     if upper and word_set:
         freq_rank = {word.upper(): idx for idx, word in enumerate(word_list)}
         seg = segment_text(upper, word_set, freq_rank=freq_rank)
+        word_count = len(seg.words)
+        pseudo_word_count = len(seg.pseudo_words)
+        short_word_count = sum(1 for word in seg.words if len(word) <= 2)
+        long_pseudo_word_count = sum(1 for word in seg.pseudo_words if len(word) >= 8)
         diagnostics.update({
             "dict_rate": round(seg.dict_rate, 4),
             "segmentation_cost": round(seg.cost, 3),
             "segmented_preview": seg.segmented[:160],
-            "pseudo_word_count": len(seg.pseudo_words),
+            "segmented_word_count": word_count,
+            "pseudo_word_count": pseudo_word_count,
+            "pseudo_word_fraction": round(pseudo_word_count / word_count, 4) if word_count else 0.0,
+            "short_word_fraction": round(short_word_count / word_count, 4) if word_count else 0.0,
+            "long_pseudo_word_fraction": round(long_pseudo_word_count / word_count, 4) if word_count else 0.0,
         })
+        diagnostics.update(content_word_metrics(seg.words, word_set, language))
+    binary_score = _zenith_text_mean_log_prob(plaintext, binary_model_path)
+    if binary_score is not None:
+        diagnostics["binary_ngram_mean_log_prob"] = round(binary_score, 6)
+        diagnostics["binary_ngram_model_source"] = str(binary_model_path)
     return diagnostics

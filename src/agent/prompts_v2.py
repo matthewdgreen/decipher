@@ -332,7 +332,15 @@ the target language alone does not make null masks useful. If \
 `workspace_hypothesis_next_steps` returns `null_mask_guidance.applies=true`, \
 call `search_automated_solver` with `homophonic_refinement="null_masks"`, \
 then review, rate, and install finalists with the null-mask finalist tools \
-before drifting into off-family searches or local word repairs.
+before drifting into off-family searches or local word repairs. Do not trust \
+rank 1 automatically: the menu is ordered by scalar validation score, while \
+ensemble score is only a supporting calibration signal. Some finalists may be \
+`consensus_polish` reruns where agreed mappings were frozen and disputed \
+symbols were re-annealed; treat those as useful correction attempts, not as \
+proof of correctness. Read and rate at least \
+the top 3 scalar-validation finalists before installing or declaring; if the \
+menu contains several close damaged basins, inspect the top 5-8 when available, \
+rate multiple candidates, and install more than one plausible branch.
 
 When you have a genuinely plausible transcription, call `meta_declare_solution` \
 with your chosen branch, a rationale, your own confidence estimate, a brief \

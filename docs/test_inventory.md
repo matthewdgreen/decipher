@@ -195,10 +195,12 @@ Five-page packet with saved candidate rows for later no-rerun ranking:
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
   --suite-file frontier/copiale_evidence_packet.jsonl \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --split copiale_tests.jsonl \
   --summary-jsonl artifacts/copiale_evidence_packet/automated/summary.jsonl \
-  --candidate-limit 18 \
+  --candidate-limit 24 \
   --max-mask-size 2 \
-  --max-masks 80 \
+  --max-masks 140 \
   --seeds 0,1,2 \
   --epochs 4 \
   --sampler-iterations 1200 \
@@ -210,7 +212,8 @@ Cheap report/rerank pass over a saved null-mask probe:
 
 ```bash
 PYTHONPATH=src .venv/bin/python scripts/report_copiale_null_probe.py \
-  artifacts/copiale_evidence_packet/null_probe_pair_masks_full_rows.jsonl
+  artifacts/copiale_evidence_packet/null_probe_pair_masks_full_rows.jsonl \
+  --top 8
 ```
 
 This probe generates null-mask candidates without plaintext, reruns the native
@@ -218,9 +221,16 @@ homophonic solver on each filtered stream, and then reports post-hoc scores for
 calibration. The companion report compares raw solver selection, no-ground-truth
 validation ranking, and post-hoc character accuracy. It also prints aggregate
 hit/gap metrics, top-N capture rates, and component-level miss analysis when
-validation does not pick the post-hoc best mask. Use `--include-all-rows` when
+validation does not pick the post-hoc best mask. Current reports show the
+binary n-gram fit, word-lattice quality, segmentation pseudo-word fraction,
+language-shape reward, and repetition/overuse penalties for each finalist. Use
+`--include-all-rows` when
 generating probe JSONL if you want to tune ranking without rerunning the
-expensive solver pass. This is not yet a production automated route.
+expensive solver pass; saved rows include `validation_text` for faithful
+reranking. Reports also compute `ensemble_score_v1`, a pairwise
+ground-truth-free ranker over multiple evidence families, so it can be
+compared against scalar v2 validation before being promoted. This is not yet a
+production automated route.
 
 Opt-in automated Copiale null-mask finalist menu:
 
@@ -235,15 +245,114 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 ```
 
 This route records a `search_null_masks` step with candidate symbols,
-evaluated masks, validation components, the selected finalist, and the top
-finalist menu. It remains experimental and opt-in; use it to compare top-N
-null/codeword hypotheses before promoting anything into the default automated
-route.
+evaluated masks, validation components, the selected finalist, a promoted
+top-finalist menu, and confirmation metadata. It remains experimental and
+opt-in as a refinement profile, but when it is enabled the default null-mask
+search envelope is now the broad Copiale-style profile. The current defaults
+use `DECIPHER_NULL_MASK_PROFILE=wide`: `candidate_limit=48`, `max_size=3`,
+`max_masks=1500`, `top_n=100`, `beam_width=36`, `beam_max_masks=500`,
+`neighborhood_top_n=24`, `neighborhood_max_masks=500`, and a cross-ranker
+portfolio of validation/LQ/ensemble finalists. This is the default because the
+p084 breadth curve showed useful basins still appearing around the first few
+hundred evaluated masks. Use `DECIPHER_NULL_MASK_PROFILE=narrow` for quick
+reference/debug runs that intentionally reproduce the older compact envelope
+(`candidate_limit=24`, `max_masks=140`, `top_n=12`, smaller beam and
+neighborhood stages).
+
+Pair wide runs with a held-out language-quality model and
+`DECIPHER_NULL_MASK_RANKER=language_quality` when testing whether LQ can
+identify stronger basins from a broad candidate pool. Automated selection uses
+the scalar v2 ranker by default when no LQ model/ranker is supplied; set
+`DECIPHER_NULL_MASK_RANKER=ensemble` only for calibration experiments.
+
+Two experimental wide-mode knobs can generate ranker-specific search views
+inside one run: `DECIPHER_NULL_MASK_NEIGHBORHOOD_MULTI_VIEW=1` and
+`DECIPHER_NULL_MASK_CONSENSUS_MULTI_VIEW=1`. Keep them off for routine
+comparisons for now; the first p068 smoke was slower and did not improve the
+selected basin. Use `scripts/run_copiale_breadth_experiment.py` when the goal
+is to compare independent validation, ensemble, and language-quality menus.
+The harness trains held-out language-quality models with `--feature-set
+text_only` by default, based on p052 diagnostics showing that deletion/mask
+metadata can overpower genuine readability signals. The text-only feature set
+also leaves coarse concentration/diversity controls to the scalar validation
+layer, so the trained model can focus more directly on phrase quality and
+word-island plausibility. Override with `--feature-set all` only for
+scorer-ablation work.
+
+To inspect an existing breadth run without rerunning solvers:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_breadth_diagnostics.py \
+  --experiment-dir artifacts/copiale_breadth_experiment/four_page_wide
+```
+
+This report compares LQ/validation/ensemble picks with the post-hoc best
+generated candidate and lists feature/contribution deltas. It is an offline
+calibration report; ground truth is used only after completed candidates exist.
+
+To inspect whether a promising mask is reproducible across ranker views and
+consensus/neighborhood rows:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_mask_stability.py \
+  --experiment-dir artifacts/copiale_breadth_experiment/four_page_tiebreak_check \
+  --test-id copiale_single_B_copiale_p084 \
+  --mask S038,S062 \
+  --mask S038,S104
+```
+
+This is also an offline calibration report. It groups already-produced
+candidates by mask, reports best/mean/stddev post-hoc character accuracy, and
+is useful for separating "the scorer missed it" from "the search did not
+reliably generate it."
+
+To estimate whether a single broad run has already passed the useful breadth
+point, without rerunning smaller profiles:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_breadth_curve.py \
+  --experiment-dir artifacts/copiale_breadth_experiment/p084_slightly_wider \
+  --test-id copiale_single_B_copiale_p084
+```
+
+This reconstructs a conservative best-finalist-vs-candidate-prefix curve from
+stored artifacts. It can only score selected/top-finalist rows because compact
+`evaluated_rows` do not store full decryptions, but it is enough to see when
+the best saved basin first appears.
+
+To move from broad basin finding into local repair without using ground truth:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_repair_agenda.py \
+  --artifact artifacts/copiale_breadth_experiment/four_page_wide/language_quality/automated_only/copiale_single_B_copiale_p084/990c98058038.json \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --split copiale_tests.jsonl
+```
+
+This compares top runtime finalists, reports stable vs disputed key mappings,
+and highlights damaged-looking plaintext windows where disputed symbols appear.
+It is intended as the first repair handoff: choose a strong basin, then focus
+local key/null/multiletter experiments on the symbols and windows it names.
 
 `null_masks` is the canonical refinement name. Older commands that use
 `copiale_nulls` are still accepted as a compatibility alias, but new tests and
 artifacts should use the generic name because the machinery is not
 Copiale-specific.
+
+German scoring/model audit:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/audit_german_scoring.py \
+  --suite-file frontier/copiale_evidence_packet.jsonl \
+  --benchmark-root ../cipher_benchmark/benchmark \
+  --models models/ngram5_de.bin models/ngram5_de_500.bin \
+  --output-json artifacts/copiale_evidence_packet/german_scoring_audit.json
+```
+
+This is a calibration-only report over known plaintext. It compares German
+dictionary, wordlist quadgram, and Zenith-format binary 5-gram signals against
+deterministic degraded controls. Do not feed its ground-truth-derived outcomes
+into solver routing.
 
 ### English Model Comparison Packets
 
@@ -527,6 +636,33 @@ This checks `scripts/report_finalist_validation.py`, the markdown summary used
 to inspect whether finalist validation changed selected/ranked candidates in
 longer pure-transposition and transform-search runs, including integrity and
 damage-score columns when artifacts contain them.
+
+Copiale multi-page selector robustness report:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_selector_robustness.py \
+  --experiment-dir artifacts/copiale_multipage_experiment
+```
+
+This is a post-hoc calibration report only. It compares balanced page scoring
+against the anti-fragment robust selector on saved multi-page Copiale
+experiments, and is meant to catch cases where a selector improves repaired
+portfolios but hurts the broad elite recall stage.
+
+Copiale breadth-curve instrumentation smoke:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/report_copiale_breadth_curve.py \
+  --experiment-dir artifacts/copiale_breadth_experiment/four_page_wide \
+  --test-id copiale_single_B_copiale_p017 \
+  --max-finalists-per-artifact 12 \
+  --progress
+```
+
+New null-mask artifacts include explicit `candidate_id` and `evaluated_index`
+metadata for top finalists and compact evaluated rows. Set
+`DECIPHER_NULL_MASK_STORE_EVALUATED_TEXT=1` only for diagnostic runs where the
+extra artifact size is worth preserving full evaluated text.
 
 User-facing availability check:
 

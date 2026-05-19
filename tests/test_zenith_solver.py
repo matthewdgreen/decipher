@@ -523,6 +523,63 @@ def test_zenith_transform_candidates_batch_fast_preserves_candidate_contract(tmp
     assert rows[1]["attempts"][0]["seed"] == 1001
 
 
+@pytest.mark.skipif(
+    not FAST_AVAILABLE,
+    reason="decipher_fast Rust extension is not installed",
+)
+def test_zenith_null_mask_candidates_batch_fast_preserves_candidate_contract(tmp_path):
+    from analysis.zenith_fast import zenith_null_mask_candidates_batch_fast
+
+    bin_path = tmp_path / "tiny_zenith.array.bin"
+    _write_minimal_bin(bin_path)
+    tokens = [0, 1, 2, 3] * 20
+    plaintext_ids = list(range(26))
+    id_to_letter = {i: chr(ord("A") + i) for i in plaintext_ids}
+    candidates = [
+        {
+            "candidate_id": "000_none",
+            "source": "initial",
+            "mask_tokens": [],
+        },
+        {
+            "candidate_id": "001_mask_3",
+            "source": "beam",
+            "mask_tokens": [3],
+            "seed_offset": 1000,
+            "initial_key": {0: 0, 1: 1},
+            "fixed_cipher_ids": [0],
+        },
+    ]
+
+    result = zenith_null_mask_candidates_batch_fast(
+        tokens=tokens,
+        candidates=candidates,
+        plaintext_ids=plaintext_ids,
+        id_to_letter=id_to_letter,
+        model_path=bin_path,
+        epochs=1,
+        sampler_iterations=10,
+        seeds=[1, 2],
+        top_n=1,
+        threads=2,
+    )
+
+    assert result["status"] == "completed"
+    assert result["engine"] == "rust"
+    assert result["candidate_count"] == 2
+    assert result["seed_count"] == 2
+    rows = result["results"]
+    assert [row["candidate_id"] for row in rows] == ["000_none", "001_mask_3"]
+    assert rows[0]["status"] == "completed"
+    assert rows[0]["filtered_length"] == len(tokens)
+    assert rows[0]["attempts"][0]["seed"] == 1
+    assert rows[1]["status"] == "completed"
+    assert rows[1]["filtered_length"] == 60
+    assert rows[1]["seed_offset"] == 1000
+    assert rows[1]["attempts"][0]["seed"] == 1001
+    assert rows[1]["fixed_symbols"] == 1
+
+
 # ---------------------------------------------------------------------------
 # 7. Biased bucket
 # ---------------------------------------------------------------------------

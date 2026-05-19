@@ -162,6 +162,37 @@ struct ZenithTransformBatchItem {
     attempts: Vec<ZenithTransformAttempt>,
 }
 
+struct ZenithNullMaskCandidate {
+    candidate_id: String,
+    source: String,
+    seed_offset: u64,
+    mask_tokens: Vec<usize>,
+    initial_key: HashMap<usize, usize>,
+    fixed_cipher_ids: Vec<usize>,
+}
+
+struct ZenithNullMaskBatchItem {
+    candidate_index: usize,
+    candidate_id: String,
+    source: String,
+    seed_offset: u64,
+    mask_tokens: Vec<usize>,
+    status: String,
+    reason: String,
+    elapsed_seconds: f64,
+    filtered_length: usize,
+    best_seed: Option<u64>,
+    plaintext: String,
+    decryption: String,
+    score: Option<f64>,
+    normalized_score: Option<f64>,
+    accepted_moves: usize,
+    improved_moves: usize,
+    key: HashMap<usize, usize>,
+    fixed_symbols: usize,
+    attempts: Vec<ZenithTransformAttempt>,
+}
+
 static ZENITH_MODEL_CACHE: OnceLock<Mutex<HashMap<String, Arc<ZenithFastModel>>>> = OnceLock::new();
 
 #[pyfunction]
@@ -902,6 +933,170 @@ fn zenith_transform_candidates_batch(
     result.set_item("elapsed_seconds", started.elapsed().as_secs_f64())?;
     result.set_item("results", out)?;
     Ok(result.into())
+}
+
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn zenith_null_mask_candidates_batch(
+    py: Python<'_>,
+    model_path: String,
+    tokens: Vec<usize>,
+    candidates: &Bound<'_, PyList>,
+    plaintext_ids: Vec<usize>,
+    id_to_letter: HashMap<usize, String>,
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seeds: Vec<u64>,
+    top_n: usize,
+    threads: usize,
+) -> PyResult<PyObject> {
+    if tokens.len() < 5 {
+        return Err(PyValueError::new_err(
+            "Cipher text too short for order-5 Zenith model",
+        ));
+    }
+    if plaintext_ids.is_empty() {
+        return Err(PyValueError::new_err("plaintext_ids must not be empty"));
+    }
+    let mut parsed = Vec::with_capacity(candidates.len());
+    for item in candidates.iter() {
+        let dict = item.downcast::<PyDict>()?;
+        parsed.push(parse_null_mask_candidate(dict, parsed.len())?);
+    }
+    let model = load_zenith_fast_model(&model_path)?;
+    let seed_list = if seeds.is_empty() { vec![0] } else { seeds };
+    let worker_count = if threads == 0 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1)
+    } else {
+        threads.max(1)
+    };
+    let pool = ThreadPoolBuilder::new()
+        .num_threads(worker_count)
+        .build()
+        .map_err(|e| PyValueError::new_err(format!("failed to build rayon pool: {e}")))?;
+    let started = Instant::now();
+    let results: Vec<ZenithNullMaskBatchItem> = pool.install(|| {
+        parsed
+            .par_iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                solve_null_mask_batch_item(
+                    index,
+                    candidate,
+                    &tokens,
+                    &model,
+                    &plaintext_ids,
+                    &id_to_letter,
+                    epochs.max(1),
+                    sampler_iterations.max(1),
+                    t_start,
+                    t_end,
+                    &seed_list,
+                    top_n.max(1),
+                )
+            })
+            .collect()
+    });
+
+    let out = PyList::empty_bound(py);
+    for result in results {
+        let d = PyDict::new_bound(py);
+        d.set_item("candidate_index", result.candidate_index)?;
+        d.set_item("candidate_id", result.candidate_id)?;
+        d.set_item("source", result.source)?;
+        d.set_item("seed_offset", result.seed_offset)?;
+        d.set_item("mask_tokens", result.mask_tokens)?;
+        d.set_item("status", result.status)?;
+        d.set_item("reason", result.reason)?;
+        d.set_item("elapsed_seconds", result.elapsed_seconds)?;
+        d.set_item("filtered_length", result.filtered_length)?;
+        d.set_item("best_seed", result.best_seed)?;
+        d.set_item("plaintext", result.plaintext)?;
+        d.set_item("decryption", result.decryption)?;
+        d.set_item("score", result.score)?;
+        d.set_item("normalized_score", result.normalized_score)?;
+        d.set_item("accepted_moves", result.accepted_moves)?;
+        d.set_item("improved_moves", result.improved_moves)?;
+        d.set_item("fixed_symbols", result.fixed_symbols)?;
+        d.set_item("key", usize_map_to_pydict(py, &result.key)?)?;
+        let attempts = PyList::empty_bound(py);
+        for attempt in result.attempts {
+            let item = PyDict::new_bound(py);
+            item.set_item("seed", attempt.seed)?;
+            item.set_item("score", attempt.score)?;
+            item.set_item("normalized_score", attempt.score)?;
+            item.set_item("plaintext_preview", attempt.plaintext_preview)?;
+            item.set_item("elapsed_seconds", attempt.elapsed_seconds)?;
+            attempts.append(item)?;
+        }
+        d.set_item("attempts", attempts)?;
+        out.append(d)?;
+    }
+    let result = PyDict::new_bound(py);
+    result.set_item("status", "completed")?;
+    result.set_item("engine", "rust")?;
+    result.set_item("solver", "zenith_null_mask_candidates_batch")?;
+    result.set_item("threads", worker_count)?;
+    result.set_item("candidate_count", parsed.len())?;
+    result.set_item("seed_count", seed_list.len())?;
+    result.set_item("epochs", epochs.max(1))?;
+    result.set_item("sampler_iterations", sampler_iterations.max(1))?;
+    result.set_item("elapsed_seconds", started.elapsed().as_secs_f64())?;
+    result.set_item("results", out)?;
+    Ok(result.into())
+}
+
+fn parse_null_mask_candidate(
+    raw: &Bound<'_, PyDict>,
+    fallback_index: usize,
+) -> PyResult<ZenithNullMaskCandidate> {
+    let candidate_id = raw
+        .get_item("candidate_id")?
+        .and_then(|v| v.extract::<String>().ok())
+        .unwrap_or_else(|| fallback_index.to_string());
+    let source = raw
+        .get_item("source")?
+        .and_then(|v| v.extract::<String>().ok())
+        .unwrap_or_else(|| "unknown".to_string());
+    let seed_offset = raw
+        .get_item("seed_offset")?
+        .and_then(|v| v.extract::<u64>().ok())
+        .unwrap_or(0);
+    let mask_tokens = if let Some(obj) = raw.get_item("mask_tokens")? {
+        obj.extract::<Vec<usize>>()?
+    } else {
+        Vec::new()
+    };
+    let initial_key = if let Some(obj) = raw.get_item("initial_key")? {
+        if obj.is_none() {
+            HashMap::new()
+        } else {
+            obj.extract::<HashMap<usize, usize>>()?
+        }
+    } else {
+        HashMap::new()
+    };
+    let fixed_cipher_ids = if let Some(obj) = raw.get_item("fixed_cipher_ids")? {
+        if obj.is_none() {
+            Vec::new()
+        } else {
+            obj.extract::<Vec<usize>>()?
+        }
+    } else {
+        Vec::new()
+    };
+    Ok(ZenithNullMaskCandidate {
+        candidate_id,
+        source,
+        seed_offset,
+        mask_tokens,
+        initial_key,
+        fixed_cipher_ids,
+    })
 }
 
 fn parse_transform_candidate(raw: &Bound<'_, PyDict>) -> PyResult<FastTransformCandidate> {
@@ -3671,6 +3866,155 @@ fn invalid_zenith_transform_batch_item(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn solve_null_mask_batch_item(
+    candidate_index: usize,
+    candidate: &ZenithNullMaskCandidate,
+    tokens: &[usize],
+    model: &ZenithFastModel,
+    plaintext_ids: &[usize],
+    id_to_letter: &HashMap<usize, String>,
+    epochs: usize,
+    sampler_iterations: usize,
+    t_start: f64,
+    t_end: f64,
+    seeds: &[u64],
+    top_n: usize,
+) -> ZenithNullMaskBatchItem {
+    let started = Instant::now();
+    let mask: std::collections::HashSet<usize> = candidate.mask_tokens.iter().copied().collect();
+    let filtered_tokens: Vec<usize> = tokens
+        .iter()
+        .copied()
+        .filter(|token| !mask.contains(token))
+        .collect();
+    if filtered_tokens.len() < 50 {
+        return invalid_zenith_null_mask_batch_item(
+            candidate_index,
+            candidate,
+            started,
+            filtered_tokens.len(),
+            "filtered_stream_too_short".to_string(),
+        );
+    }
+    let effective_fixed: Vec<usize> = candidate
+        .fixed_cipher_ids
+        .iter()
+        .copied()
+        .filter(|sid| !mask.contains(sid))
+        .collect();
+    let initial_key = if candidate.initial_key.is_empty() {
+        None
+    } else {
+        Some(&candidate.initial_key)
+    };
+    let mut attempts = Vec::new();
+    let mut best: Option<(u64, ZenithFastSolveResult)> = None;
+    for seed in seeds {
+        let effective_seed = seed.saturating_add(candidate.seed_offset);
+        let attempt_started = Instant::now();
+        match zenith_solve_seed_inner(
+            model,
+            &filtered_tokens,
+            plaintext_ids,
+            id_to_letter,
+            initial_key,
+            &effective_fixed,
+            epochs,
+            sampler_iterations,
+            t_start,
+            t_end,
+            effective_seed,
+            top_n,
+        ) {
+            Ok(result) => {
+                attempts.push(ZenithTransformAttempt {
+                    seed: effective_seed,
+                    score: result.score,
+                    plaintext_preview: result.plaintext.chars().take(240).collect(),
+                    elapsed_seconds: attempt_started.elapsed().as_secs_f64(),
+                });
+                if best
+                    .as_ref()
+                    .map(|(_, current)| result.score > current.score)
+                    .unwrap_or(true)
+                {
+                    best = Some((effective_seed, result));
+                }
+            }
+            Err(err) => {
+                attempts.push(ZenithTransformAttempt {
+                    seed: effective_seed,
+                    score: f64::NEG_INFINITY,
+                    plaintext_preview: format!("error: {err}"),
+                    elapsed_seconds: attempt_started.elapsed().as_secs_f64(),
+                });
+            }
+        }
+    }
+    if let Some((best_seed, result)) = best {
+        ZenithNullMaskBatchItem {
+            candidate_index,
+            candidate_id: candidate.candidate_id.clone(),
+            source: candidate.source.clone(),
+            seed_offset: candidate.seed_offset,
+            mask_tokens: candidate.mask_tokens.clone(),
+            status: "completed".to_string(),
+            reason: "ok".to_string(),
+            elapsed_seconds: started.elapsed().as_secs_f64(),
+            filtered_length: filtered_tokens.len(),
+            best_seed: Some(best_seed),
+            plaintext: result.plaintext.clone(),
+            decryption: result.plaintext,
+            score: Some(result.score),
+            normalized_score: Some(result.score),
+            accepted_moves: result.accepted_moves,
+            improved_moves: result.improved_moves,
+            key: result.key,
+            fixed_symbols: result.fixed_symbols,
+            attempts,
+        }
+    } else {
+        invalid_zenith_null_mask_batch_item(
+            candidate_index,
+            candidate,
+            started,
+            filtered_tokens.len(),
+            "all_seed_attempts_failed".to_string(),
+        )
+    }
+}
+
+fn invalid_zenith_null_mask_batch_item(
+    candidate_index: usize,
+    candidate: &ZenithNullMaskCandidate,
+    started: Instant,
+    filtered_length: usize,
+    reason: String,
+) -> ZenithNullMaskBatchItem {
+    ZenithNullMaskBatchItem {
+        candidate_index,
+        candidate_id: candidate.candidate_id.clone(),
+        source: candidate.source.clone(),
+        seed_offset: candidate.seed_offset,
+        mask_tokens: candidate.mask_tokens.clone(),
+        status: "error".to_string(),
+        reason,
+        elapsed_seconds: started.elapsed().as_secs_f64(),
+        filtered_length,
+        best_seed: None,
+        plaintext: String::new(),
+        decryption: String::new(),
+        score: None,
+        normalized_score: None,
+        accepted_moves: 0,
+        improved_moves: 0,
+        key: HashMap::new(),
+        fixed_symbols: 0,
+        attempts: Vec::new(),
+    }
+}
+
 fn random_zenith_key(
     symbol_ids: &[usize],
     bucket: &[usize],
@@ -3848,5 +4192,6 @@ fn decipher_fast(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(pure_transposition_score_batch, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_solve_seed, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_transform_candidates_batch, m)?)?;
+    m.add_function(wrap_pyfunction!(zenith_null_mask_candidates_batch, m)?)?;
     Ok(())
 }

@@ -567,9 +567,18 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
             "decryption": text,
             "preview": text[:80],
             "selection_score": -4.2,
+            "ensemble_score_v1": validation + 6.0,
             "validation_score_v2": validation,
             "confirmed_validation_score_v2": validation + 0.1,
-            "diagnostics": {"dict_rate": 0.62, "segmentation_cost": 12},
+            "diagnostics": {
+                "dict_rate": 0.62,
+                "segmentation_cost": 12,
+                "dictionary_content_word_count": 2,
+                "dictionary_long_content_word_count": 1,
+                "dictionary_content_word_fraction": 0.5,
+                "dictionary_content_char_fraction": 0.75,
+                "dictionary_content_sample": ["WENIG"],
+            },
             "quality": {"top_letter_fraction": 0.2, "unique_letters": 12},
         }
 
@@ -592,6 +601,7 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
                         "baseline_rank": 2,
                         "mask_count": 3,
                         "completed_mask_count": 3,
+                        "ranker": "validation",
                         "confirmation": {"enabled": True, "confirmed_mask_count": 2},
                         "selected": finalist(["01"], "WENIGUND", -3.2),
                         "top_finalists": [
@@ -612,7 +622,15 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
 
     session_id = out["null_mask_search_session_id"]
     assert session_id
-    assert out["null_mask_finalist_review"]["total_finalist_count"] == 2
+    review = out["null_mask_finalist_review"]
+    assert review["total_finalist_count"] == 2
+    assert review["menu_order"] == "scalar_validation_score_v2"
+    assert review["primary_numeric_ranker"] == "validation_score_v2"
+    assert "ensemble" in review["numeric_scores_role"]
+    assert "top 3 scalar-validation finalists" in review["review_instruction"]
+    assert review["finalist_review"][0]["validation_score_role"].startswith("primary numeric")
+    assert "supporting_calibration_only" in review["finalist_review"][0]["ensemble_score_role"]
+    assert review["finalist_review"][0]["dictionary_content_word_count"] == 2
     assert ex.workspace.get_branch("main").metadata["decoded_text"] == "WENIGUND"
 
     rating = ex._tool_act_rate_null_mask_finalist({
