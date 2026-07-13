@@ -159,6 +159,17 @@ class OpenAIModelProvider:
         system: str = "",
         max_tokens: int = 4096,
     ) -> ModelResponse:
+        # GPT-5.6 tiers reject function tools on /v1/chat/completions unless
+        # reasoning_effort is 'none' (which would lobotomize the model).  Route
+        # them through /v1/responses instead.  gpt-5.5 and earlier keep the
+        # chat-completions path below unchanged.
+        if _requires_responses_api(self.model):
+            return self._send_responses(
+                messages=messages,
+                tools=tools,
+                system=system,
+                max_tokens=max_tokens,
+            )
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
@@ -187,6 +198,32 @@ class OpenAIModelProvider:
             else:
                 raise ModelProviderError(str(exc)) from exc
         return _openai_chat_response_to_model_response(response)
+
+    def _send_responses(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        system: str,
+        max_tokens: int,
+    ) -> ModelResponse:
+        """Send one request through the OpenAI Responses API.
+
+        Used for reasoning tiers (e.g. gpt-5.6-*) that reject function tools on
+        /v1/chat/completions.  No ``reasoning`` parameter is set, so the model's
+        server-side default effort applies.
+        """
+        try:
+            response = self.client.responses.create(
+                model=self.model,
+                instructions=system,
+                input=_messages_to_openai_responses(messages),
+                tools=_tools_to_openai_responses(tools),
+                max_output_tokens=max_tokens,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise ModelProviderError(str(exc)) from exc
+        return _openai_responses_response_to_model_response(response)
 
 
 class OllamaModelProvider:
@@ -910,6 +947,136 @@ def _openai_chat_response_to_model_response(response: Any) -> ModelResponse:
         input_tokens=int(getattr(raw_usage, "prompt_tokens", 0) or 0),
         output_tokens=int(getattr(raw_usage, "completion_tokens", 0) or 0),
         cache_read_input_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
+    )
+    return ModelResponse(content=content, usage=usage, raw=response)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI Responses API (/v1/responses)
+# ---------------------------------------------------------------------------
+#
+# GPT-5.6 reasoning tiers reject function tools on /v1/chat/completions unless
+# reasoning_effort is 'none'.  The Responses API accepts function tools with the
+# model's default reasoning effort, so these helpers mirror the chat converters
+# above using the flat Responses item shapes:
+#   - tools:               {"type": "function", "name", "description", "parameters"}
+#   - assistant tool call: {"type": "function_call", "call_id", "name", "arguments"}
+#   - tool result:         {"type": "function_call_output", "call_id", "output"}
+#   - text message:        {"role", "content"}
+
+
+def _requires_responses_api(model: str) -> bool:
+    """Return True when a model should be driven through /v1/responses.
+
+    ``DECIPHER_OPENAI_API=responses|chat`` forces either path for any model
+    (for experiments and future tiers); otherwise model ids beginning with
+    ``gpt-5.6`` default to the Responses API and everything else (e.g. gpt-5.5)
+    stays on chat completions.
+    """
+    import os
+
+    override = os.environ.get("DECIPHER_OPENAI_API", "").strip().lower()
+    if override == "responses":
+        return True
+    if override == "chat":
+        return False
+    return (model or "").strip().lower().startswith("gpt-5.6")
+
+
+def _tools_to_openai_responses(
+    tools: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if not tools:
+        return None
+    out = []
+    for tool in tools:
+        out.append({
+            "type": "function",
+            "name": tool["name"],
+            "description": tool.get("description", ""),
+            "parameters": tool.get("input_schema", {"type": "object", "properties": {}}),
+        })
+    return out
+
+
+def _messages_to_openai_responses(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Convert Anthropic-style messages to Responses API input items.
+
+    The system prompt is supplied separately via ``instructions=`` on
+    ``responses.create`` and is not represented here.
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        content = message.get("content", "")
+        if role == "assistant" and isinstance(content, list):
+            text_parts: list[str] = []
+            function_calls: list[dict[str, Any]] = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text":
+                    text_parts.append(str(block.get("text", "")))
+                elif block.get("type") == "tool_use":
+                    function_calls.append({
+                        "type": "function_call",
+                        "call_id": str(block.get("id") or f"toolu_{uuid.uuid4().hex[:12]}"),
+                        "name": str(block.get("name", "")),
+                        "arguments": json.dumps(block.get("input") or {}),
+                    })
+            joined = "\n\n".join(t for t in text_parts if t)
+            if joined:
+                out.append({"role": "assistant", "content": joined})
+            out.extend(function_calls)
+        elif role == "user" and isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "tool_result":
+                    out.append({
+                        "type": "function_call_output",
+                        "call_id": str(block.get("tool_use_id", "")),
+                        "output": str(block.get("content", "")),
+                    })
+                elif block.get("type") == "text":
+                    text_parts.append(str(block.get("text", "")))
+            if text_parts:
+                out.append({"role": "user", "content": "\n\n".join(text_parts)})
+        else:
+            out.append({"role": role, "content": _content_to_text(content)})
+    return out
+
+
+def _openai_responses_response_to_model_response(response: Any) -> ModelResponse:
+    content: list[ModelContentBlock] = []
+    for item in getattr(response, "output", None) or []:
+        item_type = getattr(item, "type", None)
+        if item_type == "function_call":
+            raw_args = getattr(item, "arguments", "{}") or "{}"
+            try:
+                parsed = json.loads(raw_args)
+            except json.JSONDecodeError:
+                parsed = {}
+            content.append(
+                ToolUseBlock(
+                    id=str(getattr(item, "call_id", "")),
+                    name=str(getattr(item, "name", "")),
+                    input=parsed if isinstance(parsed, dict) else {},
+                )
+            )
+        elif item_type == "message":
+            for part in getattr(item, "content", None) or []:
+                if getattr(part, "type", None) == "output_text":
+                    content.append(TextBlock(text=str(getattr(part, "text", ""))))
+    raw_usage = getattr(response, "usage", None)
+    input_details = getattr(raw_usage, "input_tokens_details", None)
+    usage = ModelUsage(
+        input_tokens=int(getattr(raw_usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(raw_usage, "output_tokens", 0) or 0),
+        cache_read_input_tokens=int(getattr(input_details, "cached_tokens", 0) or 0),
     )
     return ModelResponse(content=content, usage=usage, raw=response)
 

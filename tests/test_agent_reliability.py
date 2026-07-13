@@ -30,12 +30,17 @@ from agent.loop_v2 import (
 from agent.model_provider import (
     ClaudeModelProvider,
     ModelResponse,
+    OpenAIModelProvider,
     TextBlock,
     ToolUseBlock,
     _messages_to_openai_chat,
+    _messages_to_openai_responses,
     _openai_chat_response_to_model_response,
+    _openai_responses_response_to_model_response,
+    _requires_responses_api,
     _schema_for_gemini,
     _tools_to_openai_chat,
+    _tools_to_openai_responses,
     default_model_for_provider,
     estimate_provider_cost,
     infer_provider_from_model,
@@ -2817,6 +2822,272 @@ def test_tool_schema_converters_cover_openai_and_gemini_shapes():
     assert gemini_schema["type"] == "object"
     assert "default" not in gemini_schema["properties"]["branch"]
     assert "additionalProperties" not in gemini_schema
+
+
+class _FakeOpenAIEndpoint:
+    """Captures kwargs passed to a create(...) call and returns a canned response."""
+
+    def __init__(self, response):
+        self._response = response
+        self.calls: list[dict] = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return self._response
+
+
+class _FakeOpenAIClient:
+    def __init__(self, *, chat_response=None, responses_response=None):
+        self.responses = _FakeOpenAIEndpoint(responses_response)
+        self.chat = SimpleNamespace(
+            completions=_FakeOpenAIEndpoint(chat_response)
+        )
+
+
+def _fake_responses_reply():
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_1",
+                name="score_panel",
+                arguments='{"branch": "main"}',
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=11,
+            output_tokens=3,
+            input_tokens_details=SimpleNamespace(cached_tokens=1),
+        ),
+    )
+
+
+def _fake_chat_reply():
+    return SimpleNamespace(
+        usage=SimpleNamespace(
+            prompt_tokens=5,
+            completion_tokens=2,
+            prompt_tokens_details=SimpleNamespace(cached_tokens=0),
+        ),
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content="ok", tool_calls=[])
+            )
+        ],
+    )
+
+
+def test_openai_provider_routes_gpt_5_6_to_responses_api():
+    provider = OpenAIModelProvider(api_key="sk-test", model="gpt-5.6-sol")
+    fake = _FakeOpenAIClient(responses_response=_fake_responses_reply())
+    provider.client = fake
+
+    response = provider.send(
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=[
+            {
+                "name": "score_panel",
+                "description": "Score.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ],
+        system="System prompt",
+        max_tokens=1024,
+    )
+
+    assert fake.responses.calls, "expected responses.create to be called"
+    assert not fake.chat.completions.calls
+    call = fake.responses.calls[0]
+    assert call["model"] == "gpt-5.6-sol"
+    assert call["instructions"] == "System prompt"
+    assert call["max_output_tokens"] == 1024
+    # Flat responses-format tool (not the nested chat shape).
+    assert call["tools"] == [
+        {
+            "type": "function",
+            "name": "score_panel",
+            "description": "Score.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+    # Converted input items (system is carried by instructions=, not here).
+    assert call["input"] == [{"role": "user", "content": "Hi"}]
+    # No reasoning parameter is set: the model default effort applies.
+    assert "reasoning" not in call
+    assert isinstance(response, ModelResponse)
+    assert response.content == [
+        ToolUseBlock(id="call_1", name="score_panel", input={"branch": "main"})
+    ]
+    assert response.usage.input_tokens == 11
+    assert response.usage.output_tokens == 3
+    assert response.usage.cache_read_input_tokens == 1
+
+
+def test_openai_provider_keeps_gpt_5_5_on_chat_completions():
+    provider = OpenAIModelProvider(api_key="sk-test", model="gpt-5.5")
+    fake = _FakeOpenAIClient(chat_response=_fake_chat_reply())
+    provider.client = fake
+
+    response = provider.send(
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=[
+            {
+                "name": "score_panel",
+                "description": "Score.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ],
+        system="System prompt",
+        max_tokens=1024,
+    )
+
+    assert fake.chat.completions.calls, "expected chat.completions.create to be called"
+    assert not fake.responses.calls
+    call = fake.chat.completions.calls[0]
+    assert call["model"] == "gpt-5.5"
+    # Chat path kwargs stay exactly as before: nested tool, system message,
+    # and max_completion_tokens.
+    assert call["max_completion_tokens"] == 1024
+    assert "max_output_tokens" not in call
+    assert call["tools"][0]["type"] == "function"
+    assert call["tools"][0]["function"]["name"] == "score_panel"
+    assert call["messages"][0] == {"role": "system", "content": "System prompt"}
+    assert response.content == [TextBlock(text="ok")]
+
+
+def test_openai_responses_converts_anthropic_style_tool_history():
+    messages = [
+        {"role": "user", "content": "Initial text"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "I will inspect."},
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "decode_show",
+                    "input": {"branch": "main"},
+                },
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "tool_result",
+                    "tool_use_id": "toolu_1",
+                    "content": '{"ok": true}',
+                },
+                {"type": "text", "text": "Continue."},
+            ],
+        },
+    ]
+
+    items = _messages_to_openai_responses(messages)
+
+    assert items == [
+        {"role": "user", "content": "Initial text"},
+        {"role": "assistant", "content": "I will inspect."},
+        {
+            "type": "function_call",
+            "call_id": "toolu_1",
+            "name": "decode_show",
+            "arguments": '{"branch": "main"}',
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "toolu_1",
+            "output": '{"ok": true}',
+        },
+        {"role": "user", "content": "Continue."},
+    ]
+
+
+def test_openai_responses_normalizes_text_and_tool_calls():
+    raw = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_1",
+                name="score_panel",
+                arguments='{"branch": "main"}',
+            ),
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="Plan")],
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=10,
+            output_tokens=4,
+            input_tokens_details=SimpleNamespace(cached_tokens=2),
+        ),
+    )
+
+    response = _openai_responses_response_to_model_response(raw)
+
+    assert response.content == [
+        ToolUseBlock(id="call_1", name="score_panel", input={"branch": "main"}),
+        TextBlock(text="Plan"),
+    ]
+    assert response.usage.input_tokens == 10
+    assert response.usage.output_tokens == 4
+    assert response.usage.cache_read_input_tokens == 2
+
+
+def test_tools_to_openai_responses_uses_flat_function_shape():
+    tools = [
+        {
+            "name": "decode_show",
+            "description": "Show decode.",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
+
+    assert _tools_to_openai_responses(None) is None
+    assert _tools_to_openai_responses([]) is None
+    assert _tools_to_openai_responses(tools) == [
+        {
+            "type": "function",
+            "name": "decode_show",
+            "description": "Show decode.",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    ]
+
+
+def test_requires_responses_api_defaults_and_env_override(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_API", raising=False)
+    # Default routing: only gpt-5.6* uses the Responses API.
+    assert _requires_responses_api("gpt-5.6-sol") is True
+    assert _requires_responses_api("gpt-5.6-terra") is True
+    assert _requires_responses_api("gpt-5.5") is False
+    assert _requires_responses_api("gpt-5.4-mini") is False
+
+    # Override forces responses even for a chat-default model.
+    monkeypatch.setenv("DECIPHER_OPENAI_API", "responses")
+    assert _requires_responses_api("gpt-5.5") is True
+
+    # Override forces chat even for a responses-default model.
+    monkeypatch.setenv("DECIPHER_OPENAI_API", "chat")
+    assert _requires_responses_api("gpt-5.6-sol") is False
+
+
+def test_openai_api_env_override_routes_send(monkeypatch):
+    monkeypatch.setenv("DECIPHER_OPENAI_API", "responses")
+    provider = OpenAIModelProvider(api_key="sk-test", model="gpt-5.5")
+    fake = _FakeOpenAIClient(responses_response=_fake_responses_reply())
+    provider.client = fake
+
+    provider.send(
+        messages=[{"role": "user", "content": "Hi"}],
+        tools=None,
+        system="System prompt",
+        max_tokens=256,
+    )
+
+    assert fake.responses.calls, "override should force the responses path"
+    assert not fake.chat.completions.calls
 
 
 def test_provider_cost_estimation_is_provider_specific():
