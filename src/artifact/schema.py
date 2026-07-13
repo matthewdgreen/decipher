@@ -128,7 +128,8 @@ class RunArtifact:
 
     # Termination
     solution: SolutionDeclaration | None = None
-    status: str = "running"                     # running | solved | unsolved | exhausted | error | stopped
+    status: str = "running"                     # running | solved | unsolved | exhausted | error | stopped | fallback_declared
+    auto_declared: bool = False                 # True when the solution was synthesized by the fallback path
     error_message: str = ""
     final_summary: str = ""
 

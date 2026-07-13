@@ -278,12 +278,17 @@ def format_header(artifact: dict) -> str:
     char_acc = artifact.get("char_accuracy")
     word_acc = artifact.get("word_accuracy")
     declared = (artifact.get("solution") or artifact.get("declared_solution")) is not None
+    is_fallback = (
+        artifact.get("status") == "fallback_declared"
+        or bool(artifact.get("auto_declared"))
+    )
+    declared_str = f"{declared} (fallback)" if (declared and is_fallback) else str(declared)
     best_branch = artifact.get("best_branch") or "?"
 
     lines.append("=" * 70)
     lines.append(f"  Model   : {model} ({provider})")
     lines.append(f"  Cipher  : {cipher}  language={lang}")
-    lines.append(f"  Iters   : {iters}   declared={declared}")
+    lines.append(f"  Iters   : {iters}   declared={declared_str}")
     if char_acc is not None:
         lines.append(f"  Accuracy: char={char_acc:.1%}  word={word_acc:.1%}" if word_acc is not None else f"  Accuracy: char={char_acc:.1%}")
     lines.append(f"  Branch  : {best_branch}")
@@ -529,6 +534,10 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
         "score_meaning": "char_accuracy and word_accuracy are post-hoc comparisons to known benchmark plaintext when ground truth exists; they are not intrinsic solver confidence.",
         "iterations_used": artifact.get("iterations_used"),
         "declared": (artifact.get("solution") or artifact.get("declared_solution")) is not None,
+        "auto_declared": (
+            artifact.get("status") == "fallback_declared"
+            or bool(artifact.get("auto_declared"))
+        ),
         "solution": _trim_obj(artifact.get("solution") or artifact.get("declared_solution") or {}, 1600),
         "best_branch": artifact.get("best_branch"),
         "tool_counts": dict(tool_counts.most_common(20)),

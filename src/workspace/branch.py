@@ -1,6 +1,7 @@
 """Branch: a named partial key within a Workspace."""
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 
@@ -24,11 +25,11 @@ class Branch:
             key=dict(self.key),
             word_spans=list(self.word_spans) if self.word_spans is not None else None,
             token_order=list(self.token_order) if self.token_order is not None else None,
-            transform_pipeline=dict(self.transform_pipeline) if self.transform_pipeline is not None else None,
+            transform_pipeline=copy.deepcopy(self.transform_pipeline) if self.transform_pipeline is not None else None,
             parent=self.name,
             created_iteration=iteration,
             tags=list(self.tags),
-            metadata=dict(self.metadata),
+            metadata=copy.deepcopy(self.metadata),
         )
 
     def snapshot_dict(self) -> dict[str, object]:

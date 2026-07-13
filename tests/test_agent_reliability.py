@@ -15,6 +15,7 @@ from agent.loop_v2 import (
     FINAL_ITERATION_PREFLIGHT,
     FULL_READING_WORKFLOW_TOOL_NAMES,
     INSPECTION_SANDBOX_CONTINUE_PREFLIGHT,
+    PANEL_HEADER_MARKER,
     PENULTIMATE_READING_WORKFLOW_PREFLIGHT,
     PENULTIMATE_ALLOWED_TOOL_NAMES,
     REPAIR_SANDBOX_CONTINUE_PREFLIGHT,
@@ -2906,6 +2907,7 @@ def test_boundary_projection_gate_retries_inside_same_outer_iteration():
     )
 
     assert artifact.status == "solved"
+    assert artifact.auto_declared is False
     assert len(api.messages_seen) >= 2
     assert artifact.solution is not None
     assert artifact.solution.declared_at_iteration == 1
@@ -3154,7 +3156,8 @@ def test_final_turn_prefight_and_auto_declare_fallback():
         if isinstance(c, dict) and c.get("type") == "text"
     ]
     assert any(FINAL_ITERATION_PREFLIGHT in t for t in sent_texts)
-    assert artifact.status == "solved"
+    assert artifact.status == "fallback_declared"
+    assert artifact.auto_declared is True
     assert artifact.solution is not None
     assert artifact.solution.branch == "main"
     assert artifact.solution.self_confidence == 0.0
@@ -3367,7 +3370,8 @@ def test_api_error_after_progress_auto_declares_best_branch():
         cipher_id="unit",
     )
 
-    assert artifact.status == "solved"
+    assert artifact.status == "fallback_declared"
+    assert artifact.auto_declared is True
     assert artifact.error_message is not None
     assert "overloaded" in artifact.error_message
     assert artifact.solution is not None
@@ -3527,16 +3531,163 @@ def test_workspace_panel_reflects_branch_local_word_boundaries():
 def test_workspace_panel_includes_penultimate_reading_workflow_warning():
     ex = _executor_for("AP PLY", separator=" ")
 
+    # The panel reminder only fires when the full reading workflow has already
+    # been used (otherwise the gate user message is the single carrier).
     panel = build_workspace_panel(
         ex.workspace,
         iteration=14,
         max_iterations=15,
         language="en",
         word_set={"APPLY"},
+        full_reading_workflow_used=True,
     )
 
     assert PENULTIMATE_READING_WORKFLOW_PREFLIGHT in panel
     assert "act_resegment_from_reading_repair" in panel
+
+
+def test_workspace_panel_omits_penultimate_warning_when_workflow_unused():
+    ex = _executor_for("AP PLY", separator=" ")
+
+    panel = build_workspace_panel(
+        ex.workspace,
+        iteration=14,
+        max_iterations=15,
+        language="en",
+        word_set={"APPLY"},
+        full_reading_workflow_used=False,
+    )
+
+    assert PENULTIMATE_READING_WORKFLOW_PREFLIGHT not in panel
+
+
+class _ScorePanelEveryTurnAPI:
+    """Keeps the loop alive with a harmless read-only tool; never uses the
+    full reading workflow, so the gate user message is the single carrier."""
+
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen: list = []
+        self.n = 0
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.n += 1
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id=f"sp{self.n}",
+                    name="score_panel",
+                    input={"branch": "main"},
+                )
+            ],
+        )
+
+
+class _ReadingWorkflowThenScorePanelAPI:
+    """Uses a reading-workflow actuator on turn 1 (so the workflow counts as
+    used), then keeps the loop alive with a harmless read-only tool."""
+
+    model = "claude-sonnet-4-6"
+
+    def __init__(self) -> None:
+        self.messages_seen: list = []
+        self.n = 0
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        self.messages_seen.append(messages)
+        self.n += 1
+        if self.n == 1:
+            return SimpleNamespace(
+                usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+                content=[
+                    SimpleNamespace(
+                        type="tool_use",
+                        id="reseg1",
+                        name="act_resegment_by_reading",
+                        input={"branch": "main", "proposed_text": "ABCABCABC"},
+                    )
+                ],
+            )
+        return SimpleNamespace(
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id=f"sp{self.n}",
+                    name="score_panel",
+                    input={"branch": "main"},
+                )
+            ],
+        )
+
+
+def _count_penultimate_preflight(messages: list) -> tuple[int, int]:
+    """Return (standalone_gate_count, in_panel_count) of the penultimate
+    reading-workflow preflight across a single send's visible messages."""
+    standalone = 0
+    in_panel = 0
+    for m in messages:
+        content = m.get("content")
+        if not isinstance(content, list):
+            continue
+        for c in content:
+            if isinstance(c, dict) and c.get("type") == "text":
+                text = c.get("text", "")
+                if PENULTIMATE_READING_WORKFLOW_PREFLIGHT in text:
+                    if PANEL_HEADER_MARKER in text:
+                        in_panel += 1
+                    else:
+                        standalone += 1
+    return standalone, in_panel
+
+
+def test_penultimate_preflight_not_duplicated_when_workflow_unused():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC ABC ABC", alphabet=alpha, separator=" ")
+    api = _ScorePanelEveryTurnAPI()
+
+    run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=4,
+        cipher_id="unit",
+    )
+
+    counts = [_count_penultimate_preflight(msgs) for msgs in api.messages_seen]
+    # The model must see exactly one copy per turn: never more than one across
+    # a single send's visible messages.
+    assert all((standalone + in_panel) <= 1 for standalone, in_panel in counts)
+    # The gate user message is the single carrier; the panel copy is suppressed.
+    assert any(standalone == 1 for standalone, _ in counts)
+    assert all(in_panel == 0 for _, in_panel in counts)
+
+
+def test_penultimate_preflight_uses_panel_copy_when_workflow_used():
+    alpha = Alphabet(list("ABC"))
+    ct = CipherText(raw="ABC ABC ABC", alphabet=alpha, separator=" ")
+    api = _ReadingWorkflowThenScorePanelAPI()
+
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=4,
+        cipher_id="unit",
+    )
+
+    assert "act_resegment_by_reading" in [tc.tool_name for tc in artifact.tool_calls]
+
+    counts = [_count_penultimate_preflight(msgs) for msgs in api.messages_seen]
+    # Still at most one copy per turn.
+    assert all((standalone + in_panel) <= 1 for standalone, in_panel in counts)
+    # The panel copy is the carrier; the gate user message never fires.
+    assert any(in_panel == 1 for _, in_panel in counts)
+    assert all(standalone == 0 for standalone, _ in counts)
 
 
 def test_decode_diagnose_can_suggest_merging_adjacent_cipher_words():

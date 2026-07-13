@@ -2009,6 +2009,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
 ]
 
 
+# Canonical set of tool names the model is allowed to dispatch. Used by
+# WorkspaceToolExecutor.execute to reject unknown names before getattr-based
+# dispatch, so internal `_tool_`-suffixed helpers can never be invoked by name.
+VALID_TOOL_NAMES = frozenset(d["name"] for d in TOOL_DEFINITIONS)
+
+
 # ------------------------------------------------------------------
 # Executor
 # ------------------------------------------------------------------
@@ -2127,7 +2133,6 @@ class WorkspaceToolExecutor:
         args: dict[str, Any],
         tool_use_id: str = "",
     ) -> str:
-        handler = getattr(self, f"_tool_{tool_name}", None)
         started = time.time()
         if self.allowed_tool_names is not None and tool_name not in self.allowed_tool_names:
             allowed = sorted(self.allowed_tool_names)
@@ -2176,9 +2181,12 @@ class WorkspaceToolExecutor:
                 "allowed_tools": allowed,
                 "note": note_msg,
             })
+        elif tool_name not in VALID_TOOL_NAMES:
+            result = _json({"error": f"Unknown tool: {tool_name}"})
         elif (context_block := self._context_cipher_family_tool_block(tool_name, args)) is not None:
             result = _json(context_block)
-        elif handler is None:
+        elif (handler := getattr(self, f"_tool_{tool_name}", None)) is None:
+            # Backstop: a name in TOOL_DEFINITIONS without a matching handler.
             result = _json({"error": f"Unknown tool: {tool_name}"})
         else:
             try:
@@ -2701,7 +2709,7 @@ class WorkspaceToolExecutor:
             "monoalphabetic_substitution": {
                 "foreground_tools": [
                     "observe_frequency",
-                    "observe_patterns",
+                    "observe_isomorph_clusters",
                     "corpus_word_candidates",
                     "search_anneal",
                     "decode_diagnose",
@@ -2725,7 +2733,7 @@ class WorkspaceToolExecutor:
             "simple_substitution": {
                 "foreground_tools": [
                     "observe_frequency",
-                    "observe_patterns",
+                    "observe_isomorph_clusters",
                     "corpus_word_candidates",
                     "search_anneal",
                     "decode_diagnose",
@@ -3021,7 +3029,7 @@ class WorkspaceToolExecutor:
             return fallback
         return fallback
 
-    def _tool_tried_for_branch(self, tool_name: str, branch_name: str) -> bool:
+    def _was_tool_tried(self, tool_name: str, branch_name: str) -> bool:
         for call in self.call_log:
             if call.tool_name != tool_name:
                 continue
@@ -3350,11 +3358,11 @@ class WorkspaceToolExecutor:
         statistical_prior = None
         family_coverage_debt = None
         if mode in {"periodic_polyalphabetic", "polyalphabetic_vigenere"}:
-            search_tried = self._tool_tried_for_branch(
+            search_tried = self._was_tool_tried(
                 "search_periodic_polyalphabetic",
                 branch_name,
             )
-            quagmire_tried = self._tool_tried_for_branch(
+            quagmire_tried = self._was_tool_tried(
                 "search_quagmire3_keyword_alphabet",
                 branch_name,
             )
@@ -3376,7 +3384,7 @@ class WorkspaceToolExecutor:
                 if not quagmire_status["sufficient_to_reject"]:
                     pending.append(tool)
                 continue
-            if not self._tool_tried_for_branch(tool, branch_name):
+            if not self._was_tool_tried(tool, branch_name):
                 pending.append(tool)
         return {
             "required_tools_before_rejection": required,
@@ -3397,7 +3405,7 @@ class WorkspaceToolExecutor:
         playbook = self._mode_playbook(mode)
         steps = []
         for index, step in enumerate(playbook, 1):
-            tried = self._tool_tried_for_branch(step["tool"], branch_name)
+            tried = self._was_tool_tried(step["tool"], branch_name)
             steps.append({
                 "index": index,
                 "tool": step["tool"],

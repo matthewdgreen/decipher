@@ -31,6 +31,12 @@ of labor. The main-session model (Fable) oversees strategy end to end.
   mechanical/small tasks. Coding agents do not invent scope; gaps in the spec
   go back to the spec author.
 - **Code review** — Fable sub-agents reviewing the diff against the spec.
+- **Phase-completion commit** — after a phase passes review (including the
+  Fable-verification step below and any fixes it triggers), commit it. One
+  commit per completed phase, message naming the plan and phase. If the
+  working tree held unrelated pre-existing WIP when the phase started,
+  checkpoint that WIP as its own commit first so the phase commit contains
+  only phase work.
 - **Fable-verification step** — whenever a Fable sub-agent finishes, inspect
   that session's local metadata (the sub-agent transcript JSONL under the
   session/tasks directory) and confirm the assistant turns were actually
@@ -74,7 +80,6 @@ src/
     loop_v2.py            — V2 agent loop with workspace integration
     model_provider.py     — Provider-neutral model interface: Anthropic, OpenAI, Gemini,
                             Ollama, OpenRouter adapters + live pricing fetch
-    state.py              — AgentState, Checkpoint (checkpointing + rollback)
   workspace/
     __init__.py           — Branch and Workspace classes for v2 agent
   preprocessing/

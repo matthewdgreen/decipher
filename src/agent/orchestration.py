@@ -31,7 +31,7 @@ MODE_ALLOWED_TOOLS: dict[AgentMode, frozenset[str]] = {
         "observe_periodic_shift_candidates",
         "observe_transform_pipeline",
         "observe_transform_suspicion",
-        "observe_patterns",
+        "observe_isomorph_clusters",
         "decode_show",
         "decode_letter_stats",
         "score_panel",

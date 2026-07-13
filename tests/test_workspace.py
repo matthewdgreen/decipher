@@ -51,6 +51,34 @@ class TestBranchLifecycle:
         assert ws.get_branch("exp").metadata["rank"] == 2
         assert ws.snapshot_branch("exp")["metadata"]["rank"] == 2
 
+    def test_fork_deep_copies_nested_metadata_and_pipeline(self):
+        ws = _build_ws()
+        main = ws.get_branch("main")
+        main.metadata["decoded"] = {"blocks": ["HELLO", "WORLD"]}
+        main.transform_pipeline = {"steps": [{"op": "shift", "amount": 3}]}
+
+        ws.fork("exp")
+        exp = ws.get_branch("exp")
+
+        # Mutate nested structures on the fork.
+        exp.metadata["decoded"]["blocks"].append("!!!")
+        exp.transform_pipeline["steps"][0]["amount"] = 99
+        exp.transform_pipeline["steps"].append({"op": "reverse"})
+
+        # Parent's nested structures are untouched.
+        assert ws.get_branch("main").metadata["decoded"]["blocks"] == ["HELLO", "WORLD"]
+        assert ws.get_branch("main").transform_pipeline == {
+            "steps": [{"op": "shift", "amount": 3}]
+        }
+
+        # And mutations on the parent do not leak into the fork.
+        ws.get_branch("main").metadata["decoded"]["blocks"].append("PARENT")
+        ws.get_branch("main").transform_pipeline["steps"][0]["amount"] = -1
+        assert ws.get_branch("exp").metadata["decoded"]["blocks"] == [
+            "HELLO", "WORLD", "!!!"
+        ]
+        assert ws.get_branch("exp").transform_pipeline["steps"][0]["amount"] == 99
+
     def test_duplicate_fork_errors(self):
         ws = _build_ws()
         ws.fork("exp")

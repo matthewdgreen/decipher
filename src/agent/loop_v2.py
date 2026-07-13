@@ -222,13 +222,13 @@ REPAIR_SANDBOX_TOOL_NAMES = {
 INSPECTION_SANDBOX_TOOL_NAMES = {
     "workspace_fork_best",
     "observe_frequency",
-    "observe_patterns",
+    "observe_isomorph_clusters",
     "observe_ic",
     "observe_homophone_distribution",
     "observe_transform_pipeline",
     "decode_show",
-    "decode_unmapped",
-    "decode_heatmap",
+    "decode_unmapped_report",
+    "decode_ngram_heatmap",
     "decode_letter_stats",
     "decode_ambiguous_letter",
     "decode_absent_letter_candidates",
@@ -756,6 +756,7 @@ def build_workspace_panel(
     repair_agenda: list[dict[str, Any]] | None = None,
     gate_hits: list[dict[str, Any]] | None = None,
     declare_readiness: dict[str, Any] | None = None,
+    full_reading_workflow_used: bool = False,
 ) -> str:
     """Render ciphertext + current partial decode(s) for this turn.
 
@@ -969,7 +970,11 @@ def build_workspace_panel(
             )
         lines.append("")
 
-    if iters_left == 1:
+    # Only emit the panel reminder when the gate user message will NOT fire
+    # (i.e. the full reading workflow has already been used, mirroring the
+    # condition inside `_is_reading_workflow_gate_turn`). Otherwise the gate
+    # message is the single carrier and the panel copy would duplicate it.
+    if iters_left == 1 and full_reading_workflow_used:
         lines.append(PENULTIMATE_READING_WORKFLOW_PREFLIGHT)
         lines.append("")
 
@@ -1604,6 +1609,7 @@ def run_v2(
                 repair_agenda=executor.repair_agenda,
                 gate_hits=executor._gate_hits,
                 declare_readiness=declare_readiness,
+                full_reading_workflow_used=_has_used_full_reading_workflow(executor),
             )
             tool_results_blocks.append({"type": "text", "text": panel_text})
 
@@ -1659,7 +1665,8 @@ def run_v2(
             self_confidence=0.0,
             declared_at_iteration=max_iterations,
         )
-        artifact.status = "solved"
+        artifact.status = "fallback_declared"
+        artifact.auto_declared = True
         emit("auto_declared_solution", {
             "branch": best_branch,
             "scores": best_scores,

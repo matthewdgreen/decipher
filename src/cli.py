@@ -648,8 +648,12 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         success_status = "completed" if not agentic else "solved"
         success_label = "completed runs" if not agentic else "declared solutions"
         successful = sum(1 for r in results if r.status == success_status)
+        fallback_count = sum(1 for r in results if r.status == "fallback_declared")
+        fallback_note = (
+            f" (fallback declarations: {fallback_count})" if fallback_count else ""
+        )
         print(
-            f"AVERAGE: {successful}/{n} {success_label}, "
+            f"AVERAGE: {successful}/{n} {success_label}{fallback_note}, "
             f"comparison to known ground-truth plaintext: "
             f"char={avg_char:.1%}, word={avg_word:.1%}"
         )
