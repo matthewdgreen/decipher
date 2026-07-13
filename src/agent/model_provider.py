@@ -533,12 +533,17 @@ _PRICING: dict[str, dict[str, tuple[float, float, float]]] = {
         # (2026-07-13). Cache-write premiums are not modeled by
         # estimate_provider_cost, so estimates slightly undercount runs with
         # heavy cache churn.
+        # Pro tiers have no cached-input rate on the pricing page; cached is
+        # set equal to input (no discount) so estimates stay conservative.
         "gpt-5.6-sol": (5.00, 30.00, 0.50),
         "gpt-5.6-terra": (2.50, 15.00, 0.25),
         "gpt-5.6-luna": (1.00, 6.00, 0.10),
+        "gpt-5.5-pro": (30.00, 180.00, 30.00),
         "gpt-5.5": (5.00, 30.00, 0.50),
-        "gpt-5.4-mini": (0.80, 2.00, 0.08),
-        "gpt-5.4": (2.00, 8.00, 0.20),
+        "gpt-5.4-pro": (30.00, 180.00, 30.00),
+        "gpt-5.4-mini": (0.75, 4.50, 0.075),
+        "gpt-5.4-nano": (0.20, 1.25, 0.02),
+        "gpt-5.4": (2.50, 15.00, 0.25),
         "gpt-5": (1.25, 10.00, 0.125),
     },
     "gemini": {
