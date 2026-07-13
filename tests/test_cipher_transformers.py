@@ -861,3 +861,69 @@ def test_agent_transform_search_returns_finalist_review_and_branches(monkeypatch
     assert installed["status"] == "ok"
     assert installed["installed"][0]["rank"] == 3
     assert executor.workspace.has_branch("main_transform_rank3")
+
+
+def test_transform_search_session_stores_candidate_packets(monkeypatch):
+    import json
+
+    from analysis.candidate_packet import CandidatePacket
+
+    alphabet = Alphabet(["A", "B", "C", "D", "E"])
+    workspace = Workspace(
+        CipherText(raw=("ABCDE" * 18)[:88], alphabet=alphabet, source="test", separator=None),
+        plaintext_alphabet=Alphabet(["X", "Y", "Z", "W", "V"]),
+    )
+    executor = WorkspaceToolExecutor(
+        workspace=workspace,
+        language="en",
+        word_set={"XYZ"},
+        word_list=["XYZ"],
+        pattern_dict={},
+    )
+
+    def fake_run_automated(**kwargs):
+        class Result:
+            status = "completed"
+            solver = "fake"
+            elapsed_seconds = 0.01
+            final_decryption = "XYZXYZXYZ"
+            artifact = {
+                "steps": [{"name": "search_homophonic_anneal", "anneal_score": -1.0}],
+                "key": {"0": 0, "1": 1, "2": 2},
+            }
+        return Result()
+
+    monkeypatch.setattr("agent.tools_v2.run_automated", fake_run_automated)
+
+    out = executor._tool_search_transform_homophonic({
+        "branch": "main",
+        "columns": 22,
+        "profile": "small",
+        "top_n": 3,
+        "write_best_branch": True,
+        "write_candidate_branches": True,
+        "candidate_branch_count": 2,
+    })
+    # No-leak guard: packets are server-side only, never in the tool result.
+    assert "packet" not in json.dumps(out, default=str)
+    session_id = out["search_session_id"]
+    session = executor._finalist_sessions.get("transform_search", session_id)
+
+    assert isinstance(session["packets"], list)
+    assert len(session["packets"]) == len(session["ranked"])
+    assert len(session["packets"]) >= 1
+    packet0 = session["packets"][0]
+    assert packet0["kind"] == "transform"
+    assert packet0["rank"] == 1
+    assert packet0["preview"].startswith("XYZ")
+    assert CandidatePacket.from_dict(packet0).to_dict() == packet0
+
+    rating = executor._tool_act_rate_transform_finalist({
+        "search_session_id": session_id,
+        "rank": 1,
+        "readability_score": 1,
+        "label": "word_islands_only",
+        "rationale": "Fragments but no paraphrasable clause.",
+    })
+    assert session["packets"][0]["rating"]["label"] == "word_islands_only"
+    assert "packet" not in json.dumps(rating, default=str)

@@ -1087,6 +1087,65 @@ def test_agent_pure_transposition_tool_installs_readable_branch():
     assert selected.metadata["decoded_text"] == plaintext
 
 
+def test_pure_transposition_session_stores_candidate_packets():
+    from analysis.candidate_packet import CandidatePacket
+
+    base_plaintext = (
+        "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOGANDTHENRUNSACROSSTHE"
+        "FIELDWHILEWATCHINGTHEMOONRISEABOVETHEQUIETRIVERBANK"
+    )
+    plaintext = (base_plaintext * 2)[:120]
+    cipher = _inverse_pipeline_cipher(
+        plaintext,
+        TransformPipeline(
+            steps=(TransformStep("RouteRead", {"route": "columns_down"}),),
+            columns=20,
+            rows=6,
+        ),
+    )
+    ct = CipherText(raw=cipher, alphabet=Alphabet.standard_english(), separator=None)
+    executor = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE", "QUICK", "BROWN", "RIVER"},
+        word_list=["THE", "QUICK", "BROWN", "RIVER"],
+        pattern_dict={},
+    )
+
+    result = executor._tool_search_pure_transposition({
+        "branch": "main",
+        "profile": "small",
+        "include_transmatrix": False,
+        "top_n": 5,
+        "install_top_n": 1,
+        "threads": 2,
+    })
+    # No-leak guard: packets are server-side only, never in the tool result.
+    assert "packet" not in json.dumps(result, default=str)
+    session_id = result["search_session_id"]
+    session = executor._pure_transposition_session(session_id)
+
+    assert isinstance(session["packets"], list)
+    assert len(session["packets"]) == len(session["ranked"])
+    assert len(session["packets"]) >= 1
+    packet0 = session["packets"][0]
+    assert packet0["kind"] == "pure_transposition"
+    assert packet0["rank"] == 1
+    assert packet0["provenance"]["family"] == session["ranked"][0]["family"]
+    assert CandidatePacket.from_dict(packet0).to_dict() == packet0
+
+    rating = executor._tool_act_rate_transform_finalist({
+        "search_session_id": session_id,
+        "rank": 1,
+        "readability_score": 4,
+        "label": "coherent_plaintext",
+        "rationale": "Fluent English sentence stream.",
+        "coherent_clause": "THE QUICK BROWN FOX",
+    })
+    assert session["packets"][0]["rating"]["label"] == "coherent_plaintext"
+    assert "packet" not in json.dumps(rating, default=str)
+
+
 @_requires_k3
 def test_automated_pure_transposition_route_uses_broad_rust_screen(monkeypatch):
     payload = json.loads(_K3_PATH.read_text(encoding="utf-8"))

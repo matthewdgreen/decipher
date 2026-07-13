@@ -663,6 +663,189 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
     assert branch.metadata["agent_readability_label"] == "partial_clause"
 
 
+def test_null_mask_session_stores_candidate_packets(monkeypatch):
+    import json
+
+    from analysis.candidate_packet import CandidatePacket
+
+    raw = "01 02 03 01 02 03"
+    ct = CipherText(raw=raw, alphabet=Alphabet(["01", "02", "03"]), separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="de",
+        word_set={"WENIG", "UND"},
+        word_list=["WENIG", "UND"],
+        pattern_dict={},
+    )
+
+    def finalist(mask, text, validation):
+        return {
+            "status": "completed",
+            "mask": mask,
+            "mask_size": len(mask),
+            "filtered_length": 5,
+            "key": {"0": 22, "1": 4, "2": 13},
+            "decryption": text,
+            "preview": text[:80],
+            "selection_score": -4.2,
+            "ensemble_score_v1": validation + 6.0,
+            "validation_score_v2": validation,
+            "confirmed_validation_score_v2": validation + 0.1,
+            "diagnostics": {"dict_rate": 0.62},
+            "quality": {"top_letter_fraction": 0.2, "unique_letters": 12},
+        }
+
+    def fake_run_automated(**kwargs):
+        return SimpleNamespace(
+            status="completed",
+            solver="null_mask_homophonic",
+            elapsed_seconds=2.0,
+            error_message="",
+            artifact={
+                "key": {"0": 22, "1": 4, "2": 13},
+                "steps": [
+                    {"name": "route_automated_solver", "route": "homophonic"},
+                    {"name": "search_homophonic_anneal", "solver": "zenith_native"},
+                    {
+                        "name": "search_null_masks",
+                        "status": "completed",
+                        "candidate_symbols": ["01", "02"],
+                        "baseline_rank": 2,
+                        "mask_count": 3,
+                        "completed_mask_count": 3,
+                        "ranker": "validation",
+                        "confirmation": {"enabled": True, "confirmed_mask_count": 2},
+                        "selected": finalist(["01"], "WENIGUND", -3.2),
+                        "top_finalists": [
+                            finalist(["01"], "WENIGUND", -3.2),
+                            finalist([], "EEEEEUND", -3.7),
+                        ],
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr(tools_v2, "run_automated", fake_run_automated)
+    out = ex._tool_search_automated_solver({
+        "branch": "main",
+        "homophonic_refinement": "null_masks",
+    })
+    # No-leak guard: packets are server-side only, never in the tool result.
+    assert "packet" not in json.dumps(out, default=str)
+    session_id = out["null_mask_search_session_id"]
+    session = ex._finalist_sessions.get("null_mask", session_id)
+
+    assert isinstance(session["packets"], list)
+    assert len(session["packets"]) == len(session["ranked"]) == 2
+    packet0 = session["packets"][0]
+    assert packet0["kind"] == "null_mask"
+    assert packet0["rank"] == 1
+    assert session["packets"][1]["rank"] == 2
+    assert packet0["text"] == "WENIGUND"
+    assert packet0["provenance"]["mask"] == ["01"]
+    # packet[0] round-trips through the dataclass.
+    assert CandidatePacket.from_dict(packet0).to_dict() == packet0
+
+    # Rating a finalist refreshes the corresponding stored packet.
+    rating = ex._tool_act_rate_null_mask_finalist({
+        "search_session_id": session_id,
+        "rank": 1,
+        "readability_score": 3,
+        "label": "partial_clause",
+        "rationale": "Readable German-ish phrase.",
+    })
+    assert session["packets"][0]["rating"]["label"] == "partial_clause"
+    assert "packet" not in json.dumps(rating, default=str)
+
+
+def test_search_automated_solver_strips_runner_attached_packets(monkeypatch):
+    """Runner-attached ``packet`` keys on artifact step rows must never reach
+    the model-visible tool result (pins the structural strip in
+    ``_tool_search_automated_solver``, not the accidental routing that used to
+    keep them out)."""
+    import json
+
+    raw = "01 02 03 01 02 03"
+    ct = CipherText(raw=raw, alphabet=Alphabet(["01", "02", "03"]), separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"ABC"},
+        word_list=["ABC"],
+        pattern_dict={},
+    )
+
+    packet_stub = {"packet_version": 1, "candidate_id": "mask:01", "kind": "null_mask"}
+
+    def finalist(mask, text):
+        return {
+            "status": "completed",
+            "mask": mask,
+            "mask_size": len(mask),
+            "filtered_length": 5,
+            "key": {"0": 0, "1": 1, "2": 2},
+            "decryption": text,
+            "preview": text[:80],
+            "selection_score": -4.2,
+            "validation_score_v2": -3.2,
+            "packet": dict(packet_stub),
+        }
+
+    def fake_run_automated(**kwargs):
+        return SimpleNamespace(
+            status="completed",
+            solver="pure_transposition_screen_rust",
+            elapsed_seconds=1.0,
+            error_message="",
+            artifact={
+                "key": {"0": 0, "1": 1, "2": 2},
+                "steps": [
+                    {"name": "route_automated_solver", "route": "homophonic"},
+                    {
+                        # Primary step carrying runner-attached packets on both a
+                        # row list and a nested selected row.
+                        "name": "screen_pure_transposition",
+                        "status": "completed",
+                        "selected": {"candidate_id": "011", "packet": dict(packet_stub)},
+                        "top_candidates": [
+                            {"candidate_id": "011", "rank": 1, "packet": dict(packet_stub)},
+                            {"candidate_id": "012", "rank": 2, "packet": dict(packet_stub)},
+                        ],
+                    },
+                    {
+                        "name": "search_null_masks",
+                        "status": "completed",
+                        "candidate_symbols": ["01"],
+                        "mask_count": 2,
+                        "completed_mask_count": 2,
+                        "ranker": "validation",
+                        "selected": finalist(["01"], "ABCABC"),
+                        "top_finalists": [
+                            finalist(["01"], "ABCABC"),
+                            finalist([], "AAAAAA"),
+                        ],
+                    },
+                ],
+            },
+        )
+
+    monkeypatch.setattr(tools_v2, "run_automated", fake_run_automated)
+    out = ex._tool_search_automated_solver({"branch": "main"})
+
+    assert out["status"] == "completed"
+    # The echoed steps still carry their real content...
+    assert out["primary_step"]["name"] == "screen_pure_transposition"
+    assert out["primary_step"]["top_candidates"][0]["candidate_id"] == "011"
+    # ...but every packet key is structurally removed from the response.
+    assert "packet" not in json.dumps(out, default=str)
+    # The underlying artifact rows are untouched (packets stay artifact-side).
+    artifact_steps = ex._finalist_sessions.get(
+        "null_mask", out["null_mask_search_session_id"]
+    )
+    assert artifact_steps is not None
+    assert artifact_steps["ranked"][0]["packet"]["candidate_id"] == "mask:01"
+
+
 def test_search_homophonic_anneal_can_use_zenith_native_profile(monkeypatch):
     raw = "01 02 03 01 02 03"
     alphabet = Alphabet(["01", "02", "03"])

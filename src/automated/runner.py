@@ -23,6 +23,11 @@ from typing import Any, Callable
 
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
+from analysis.candidate_packet import (
+    packet_from_null_mask_row,
+    packet_from_pure_transposition_row,
+    packet_from_transform_row,
+)
 from analysis.homophonic_nulls import (
     attach_null_mask_ensemble_scores,
     diagnose_cipher_for_null_candidates,
@@ -1361,6 +1366,15 @@ def _rank_transform_candidates(
         diagnose=_diagnose_transform_finalists,
     )
     ranked = list(evaluation_report.get("top_ranked_candidates") or ranked)
+    # Additive artifact enrichment: attach a normalized candidate packet to each
+    # ranked transform candidate. NOTE: the transform menu's ``finalists`` key is
+    # a label-count summary, not a candidate-row list, so packets attach here to
+    # ``top_ranked_candidates`` (the actual finalist rows). See implementation
+    # report for this documented mismatch vs. the spec's wording.
+    for transform_rank, transform_row in enumerate(ranked, start=1):
+        transform_row["packet"] = packet_from_transform_row(
+            transform_row, rank=transform_rank
+        ).to_dict()
     return {
         "budget": budget,
         "max_candidates": max_candidates,
@@ -2731,6 +2745,12 @@ def _run_pure_transposition(
     best = result.get("best_candidate")
     if not best:
         raise ValueError("pure transposition screen produced no candidate")
+    pure_top_candidates = list(result.get("top_candidates") or [])
+    # Additive artifact enrichment: attach a normalized candidate packet per row.
+    for pure_rank, pure_row in enumerate(pure_top_candidates, start=1):
+        pure_row["packet"] = packet_from_pure_transposition_row(
+            pure_row, rank=pure_rank
+        ).to_dict()
     step = {
         "name": "screen_pure_transposition",
         "solver": result.get("solver", "k3_transmatrix_rust"),
@@ -2760,7 +2780,7 @@ def _run_pure_transposition(
             "pipeline": best.get("pipeline"),
             "preview": best.get("preview"),
         },
-        "top_candidates": result.get("top_candidates"),
+        "top_candidates": pure_top_candidates,
         "note": (
             "Broad Rust-scored pure-transposition screen. It includes K3-style "
             "TransMatrix candidates plus grid/route/columnar families, and "
@@ -4911,6 +4931,13 @@ def _run_null_mask_bakeoff(
         _compact_null_mask_row(row, include_validation_text=store_evaluated_text)
         for row in rows
     ]
+    top_finalists = completed[:top_n]
+    # Additive artifact enrichment: attach a normalized candidate packet to each
+    # finalist row so downstream consumers/artifacts have the interchange shape.
+    for finalist_rank, finalist_row_dict in enumerate(top_finalists, start=1):
+        finalist_row_dict["packet"] = packet_from_null_mask_row(
+            finalist_row_dict, rank=finalist_rank
+        ).to_dict()
     return {
         "name": "search_null_masks",
         "status": "completed" if completed else "error",
@@ -4959,7 +4986,7 @@ def _run_null_mask_bakeoff(
         "diagnostics": diagnostics,
         "selected_mask": list(selected_mask),
         "selected": selected,
-        "top_finalists": completed[:top_n],
+        "top_finalists": top_finalists,
         "evaluated_rows": compact_rows,
         "baseline_rank": next(
             (

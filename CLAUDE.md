@@ -309,8 +309,19 @@ Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
 
 ## Model Selection
 
-**Recommended for V2**: `claude-sonnet-4-6` — Best results on historical manuscript analysis
-**Default**: `claude-opus-4-7` — Configurable via `--model` flag
+**Current preferred agent model (2026-07-13)**: `gpt-5.5` (OpenAI) — per
+Matthew's benchmark experience it beats Sonnet on both results and token
+efficiency for the decipher agent loop. `gpt-5.6` is now available and
+verified reachable on this account; trial it against 5.5 before switching.
+Agentic API spend therefore bills the **OpenAI** account
+(`.decipher_keys/openai_api_key`). Note: `_PRICING` in
+`src/agent/model_provider.py` has no gpt-5.5/5.6 entries yet, so cost
+estimates read zero until added. `--model gpt-5.5` auto-routes to the
+OpenAI provider.
+
+**Previous recommendation**: `claude-sonnet-4-6` — best Anthropic results on
+historical manuscript analysis (Anthropic key lives in the macOS keychain,
+`service=decipher`; that account currently has no credits).
 
 ### Supported Providers
 

@@ -26,8 +26,14 @@ from pathlib import Path
 from typing import Any
 
 from analysis import cipher_id, dictionary, frequency, homophonic, ic, ngram, pattern, polyalphabetic
+from analysis.candidate_packet import (
+    packet_from_null_mask_row,
+    packet_from_pure_transposition_row,
+    packet_from_transform_row,
+)
 from analysis.finalist_validation import validate_plaintext_finalist
 from analysis.pure_transposition import screen_pure_transposition
+from agent.finalist_sessions import FinalistSessionStore
 from analysis import signals as sig
 from analysis.frequency import unigram_chi2
 from analysis.segment import repair_no_boundary_text, segment_text
@@ -2029,6 +2035,26 @@ def _truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"\n...[truncated {len(text) - max_chars} chars]"
 
 
+def _strip_packet_keys(value: Any) -> Any:
+    """Return a copy of ``value`` with every ``"packet"`` dict key removed.
+
+    Candidate packets are attached to runner-side artifact rows for artifact
+    consumers; they must never reach model-visible tool results (token cost).
+    This sanitizer is structural: it does not rely on which artifact steps
+    happen to be echoed back, and it never mutates the input (the packets must
+    survive in the artifact/session storage).
+    """
+    if isinstance(value, dict):
+        return {
+            key: _strip_packet_keys(item)
+            for key, item in value.items()
+            if key != "packet"
+        }
+    if isinstance(value, list):
+        return [_strip_packet_keys(item) for item in value]
+    return value
+
+
 # Maps declaration prerequisite reason → the tool that satisfies it.
 # Used to generate compact chain-hint notes in gate-fix tools.
 _PREREQ_FIX_TOOL: dict[str, str] = {
@@ -2108,12 +2134,10 @@ class WorkspaceToolExecutor:
         # In-memory wide-search sessions. These let the agent page through
         # finalist reviews and install selected branches without rerunning an
         # expensive transform+homophonic screen in the same run.
-        self._transform_search_sessions: dict[str, dict[str, Any]] = {}
-        self._next_transform_search_session_id: int = 1
-        self._pure_transposition_sessions: dict[str, dict[str, Any]] = {}
-        self._next_pure_transposition_session_id: int = 1
-        self._null_mask_sessions: dict[str, dict[str, Any]] = {}
-        self._next_null_mask_session_id: int = 1
+        # All three wide-search session kinds share one dependency-free store.
+        # It preserves the exact per-kind id scheme (``f"{kind}_{n}"``) and adds
+        # a server-side ``packets`` payload key (never model-visible).
+        self._finalist_sessions = FinalistSessionStore()
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -3051,7 +3075,7 @@ class WorkspaceToolExecutor:
         decoded_source = str(metadata.get("decoded_text_source") or "")
         if "null_masks" in decoded_source or "null_mask" in decoded_source:
             return True
-        for session in self._null_mask_sessions.values():
+        for _session_id, session in self._finalist_sessions.sessions("null_mask"):
             if session.get("source_branch") == branch_name:
                 return True
         for call in self.call_log:
@@ -9403,8 +9427,10 @@ class WorkspaceToolExecutor:
             "score_delta": self._score_delta(before, after),
             "elapsed_seconds": round(result.elapsed_seconds, 3),
             "decoded_preview": self._decoded_preview(branch_name, max_words=40),
-            "route_step": route_step,
-            "primary_step": primary_step,
+            # Runner-attached candidate packets (artifact-side) must never
+            # reach the model; strip them structurally from echoed steps.
+            "route_step": _strip_packet_keys(route_step),
+            "primary_step": _strip_packet_keys(primary_step),
             "null_mask_search_session_id": null_mask_session_id,
             "null_mask_finalist_review": null_mask_review,
             "note": (
@@ -9434,11 +9460,10 @@ class WorkspaceToolExecutor:
         source_branch: str,
         result: dict[str, Any],
     ) -> str:
-        session_id = f"null_mask_{self._next_null_mask_session_id}"
-        self._next_null_mask_session_id += 1
-        self._null_mask_sessions[session_id] = {
+        ranked = list(result.get("top_finalists") or [])
+        payload = {
             "source_branch": source_branch,
-            "ranked": list(result.get("top_finalists") or []),
+            "ranked": ranked,
             "evaluated_rows": list(result.get("evaluated_rows") or []),
             "candidate_symbols": list(result.get("candidate_symbols") or []),
             "diagnostics": result.get("diagnostics"),
@@ -9452,10 +9477,56 @@ class WorkspaceToolExecutor:
             "supporting_numeric_rankers": ["ensemble_score_v1", "selection_score"],
             "policy": result.get("policy"),
         }
-        return session_id
+        packets = [
+            packet_from_null_mask_row(row, source_branch=source_branch, rank=rank)
+            for rank, row in enumerate(ranked, start=1)
+        ]
+        return self._finalist_sessions.new_session(
+            "null_mask", payload, packets=packets
+        )
 
     def _null_mask_session(self, session_id: str) -> dict[str, Any] | None:
-        return self._null_mask_sessions.get(str(session_id))
+        return self._finalist_sessions.get("null_mask", session_id)
+
+    def _refresh_session_packet_rating(
+        self,
+        session: dict[str, Any] | None,
+        *,
+        rank: int,
+        rating: dict[str, Any],
+        candidate: dict[str, Any] | None = None,
+    ) -> None:
+        """Mirror a fresh agent readability rating onto the stored packet.
+
+        Packets are stored in the session's ``packets`` list in the same order
+        as ``ranked``; ``rank`` is 1-based. Rank-index match comes first so this
+        reproduces the rate tools' ``ranked[rank - 1]`` semantics exactly;
+        ``candidate_id`` is only a fallback for defensively handling a packets
+        list that has drifted out of positional sync.
+        """
+        if not isinstance(session, dict):
+            return
+        packets = session.get("packets")
+        if not isinstance(packets, list):
+            return
+        target: dict[str, Any] | None = None
+        index = rank - 1
+        if 0 <= index < len(packets) and isinstance(packets[index], dict):
+            target = packets[index]
+        if target is None:
+            candidate_id = None
+            if isinstance(candidate, dict):
+                candidate_id = candidate.get("candidate_id")
+                nested = candidate.get("candidate")
+                if candidate_id is None and isinstance(nested, dict):
+                    candidate_id = nested.get("candidate_id")
+            if candidate_id is not None:
+                for packet in packets:
+                    if isinstance(packet, dict) and packet.get("candidate_id") == str(candidate_id):
+                        target = packet
+                        break
+        if target is not None:
+            target["rating"] = rating
 
     def _null_mask_score_value(self, candidate: dict[str, Any]) -> float | None:
         for key in (
@@ -9659,7 +9730,7 @@ class WorkspaceToolExecutor:
                     ],
                     "suggested_args": structural.get("suggested_args"),
                 }
-        for session_id, session in reversed(list(self._null_mask_sessions.items())):
+        for session_id, session in self._finalist_sessions.last_sessions("null_mask"):
             source_branch = str(session.get("source_branch") or "")
             if branch_name is not None and source_branch != branch_name:
                 continue
@@ -9872,6 +9943,9 @@ class WorkspaceToolExecutor:
             "primary_ranking_signal": "agent_contextual_readability",
         }
         candidate["agent_readability_judgment"] = rating
+        self._refresh_session_packet_rating(
+            session, rank=rank, rating=rating, candidate=candidate
+        )
         updated_branches = self._mirror_null_mask_rating_to_branches(
             session_id=session_id,
             rank=rank,
@@ -9949,9 +10023,7 @@ class WorkspaceToolExecutor:
         ranked: list[dict[str, Any]],
         structural_screen: dict[str, Any],
     ) -> str:
-        session_id = f"transform_search_{self._next_transform_search_session_id}"
-        self._next_transform_search_session_id += 1
-        self._transform_search_sessions[session_id] = {
+        payload = {
             "source_branch": source_branch,
             "profile": profile,
             "columns": columns,
@@ -9963,10 +10035,16 @@ class WorkspaceToolExecutor:
                 "top_family_counts": structural_screen.get("top_family_counts", {}),
             },
         }
-        return session_id
+        packets = [
+            packet_from_transform_row(row, rank=rank)
+            for rank, row in enumerate(ranked, start=1)
+        ]
+        return self._finalist_sessions.new_session(
+            "transform_search", payload, packets=packets
+        )
 
     def _transform_session(self, session_id: str) -> dict[str, Any] | None:
-        return self._transform_search_sessions.get(str(session_id))
+        return self._finalist_sessions.get("transform_search", session_id)
 
     def _new_pure_transposition_session(
         self,
@@ -9975,12 +10053,11 @@ class WorkspaceToolExecutor:
         profile: str,
         result: dict[str, Any],
     ) -> str:
-        session_id = f"pure_transposition_{self._next_pure_transposition_session_id}"
-        self._next_pure_transposition_session_id += 1
-        self._pure_transposition_sessions[session_id] = {
+        ranked = list(result.get("top_candidates") or [])
+        payload = {
             "source_branch": source_branch,
             "profile": profile,
-            "ranked": list(result.get("top_candidates") or []),
+            "ranked": ranked,
             "candidate_count": result.get("candidate_count"),
             "valid_candidate_count": result.get("valid_candidate_count"),
             "family_counts": result.get("family_counts", {}),
@@ -9988,10 +10065,16 @@ class WorkspaceToolExecutor:
             "candidate_plan": result.get("candidate_plan"),
             "cache": result.get("cache"),
         }
-        return session_id
+        packets = [
+            packet_from_pure_transposition_row(row, rank=rank)
+            for rank, row in enumerate(ranked, start=1)
+        ]
+        return self._finalist_sessions.new_session(
+            "pure_transposition", payload, packets=packets
+        )
 
     def _pure_transposition_session(self, session_id: str) -> dict[str, Any] | None:
-        return self._pure_transposition_sessions.get(str(session_id))
+        return self._finalist_sessions.get("pure_transposition", session_id)
 
     def _pure_transposition_ranking_score(
         self,
@@ -10197,12 +10280,8 @@ class WorkspaceToolExecutor:
             if tag not in branch.tags:
                 branch.tags.append(tag)
         branch.metadata["transform_finalist"] = {
-            "search_session_id": next(
-                (
-                    sid for sid, stored in self._transform_search_sessions.items()
-                    if stored is session
-                ),
-                None,
+            "search_session_id": self._finalist_sessions.find_id(
+                "transform_search", session
             ),
             "source_branch": source_branch,
             "rank": rank,
@@ -10282,13 +10361,7 @@ class WorkspaceToolExecutor:
         plaintext = str(candidate.get("plaintext") or "")
         candidate["branch"] = branch_name
         family = str(candidate.get("family") or "candidate")
-        session_id = next(
-            (
-                sid for sid, stored in self._pure_transposition_sessions.items()
-                if stored is session
-            ),
-            None,
-        )
+        session_id = self._finalist_sessions.find_id("pure_transposition", session)
         for tag in (
             "pure_transposition_finalist",
             f"pure_rank_{rank}",
@@ -10700,6 +10773,9 @@ class WorkspaceToolExecutor:
                 "primary_ranking_signal": "agent_contextual_readability",
             }
             candidate["agent_readability_judgment"] = rating
+            self._refresh_session_packet_rating(
+                pure_session, rank=rank, rating=rating, candidate=candidate
+            )
             updated_branches = self._mirror_pure_rating_to_branches(
                 session_id=session_id,
                 rank=rank,
@@ -10762,6 +10838,9 @@ class WorkspaceToolExecutor:
             "primary_ranking_signal": "agent_contextual_readability",
         }
         candidate["agent_readability_judgment"] = rating
+        self._refresh_session_packet_rating(
+            session, rank=rank, rating=rating, candidate=candidate
+        )
         updated_branches = self._mirror_transform_rating_to_branches(
             session_id=session_id,
             rank=rank,
