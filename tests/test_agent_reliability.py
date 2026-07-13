@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -20,6 +21,9 @@ from agent.loop_v2 import (
     PENULTIMATE_ALLOWED_TOOL_NAMES,
     REPAIR_SANDBOX_CONTINUE_PREFLIGHT,
     READING_WORKFLOW_GATE_PREFLIGHT,
+    TOOL_RESULT_STUB,
+    _collect_assistant_blocks,
+    _compress_history,
     _is_boundary_projection_count_failure,
     _is_tool_gated_result,
     _branch_snapshot_for,
@@ -31,14 +35,19 @@ from agent.model_provider import (
     ClaudeModelProvider,
     ModelResponse,
     OpenAIModelProvider,
+    ProviderExtraBlock,
     TextBlock,
     ToolUseBlock,
+    _messages_to_gemini_contents,
     _messages_to_openai_chat,
     _messages_to_openai_responses,
     _openai_chat_response_to_model_response,
     _openai_responses_response_to_model_response,
+    _reasoning_passback_enabled,
     _requires_responses_api,
+    _sanitize_reasoning_item_for_input,
     _schema_for_gemini,
+    _strip_provider_extra_blocks,
     _tools_to_openai_chat,
     _tools_to_openai_responses,
     default_model_for_provider,
@@ -3088,6 +3097,587 @@ def test_openai_api_env_override_routes_send(monkeypatch):
 
     assert fake.responses.calls, "override should force the responses path"
     assert not fake.chat.completions.calls
+
+
+# ---------------------------------------------------------------------------
+# OpenAI reasoning-item passback (Responses API)
+# ---------------------------------------------------------------------------
+
+def _reasoning_item():
+    """A SimpleNamespace reasoning output item (no model_dump; exercises vars()).
+
+    Includes the response-only ``status`` field and a None-valued ``content``,
+    as real Responses API dumps do — the API 400s (unknown_parameter) if these
+    are re-sent as input, so tests assert they are captured verbatim but
+    sanitized away at re-emit time.
+    """
+    return SimpleNamespace(
+        type="reasoning",
+        id="rs_1",
+        summary=[],
+        encrypted_content="ENC==",
+        content=None,
+        status="completed",
+    )
+
+
+def _fake_responses_reply_with_reasoning():
+    """Responses reply where a reasoning item precedes a function_call item."""
+    return SimpleNamespace(
+        output=[
+            _reasoning_item(),
+            SimpleNamespace(
+                type="function_call",
+                call_id="call_1",
+                name="score_panel",
+                arguments='{"branch": "main"}',
+            ),
+        ],
+        usage=SimpleNamespace(
+            input_tokens=11,
+            output_tokens=3,
+            input_tokens_details=SimpleNamespace(cached_tokens=1),
+        ),
+    )
+
+
+def test_send_responses_sets_store_false_and_include_by_default(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    provider = OpenAIModelProvider(api_key="sk-test", model="gpt-5.6-sol")
+    fake = _FakeOpenAIClient(responses_response=_fake_responses_reply())
+    provider.client = fake
+
+    provider.send(messages=[{"role": "user", "content": "Hi"}], tools=None, system="S")
+
+    call = fake.responses.calls[0]
+    assert call["store"] is False
+    assert call["include"] == ["reasoning.encrypted_content"]
+
+
+def test_send_responses_omits_store_include_when_passback_disabled(monkeypatch):
+    monkeypatch.setenv("DECIPHER_OPENAI_REASONING_PASSBACK", "0")
+    provider = OpenAIModelProvider(api_key="sk-test", model="gpt-5.6-sol")
+    fake = _FakeOpenAIClient(responses_response=_fake_responses_reply())
+    provider.client = fake
+
+    provider.send(messages=[{"role": "user", "content": "Hi"}], tools=None, system="S")
+
+    call = fake.responses.calls[0]
+    assert "store" not in call
+    assert "include" not in call
+
+
+def test_openai_responses_captures_reasoning_as_provider_extra(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    response = _openai_responses_response_to_model_response(
+        _fake_responses_reply_with_reasoning()
+    )
+
+    # Capture is verbatim: response-only fields (status, None content) are kept
+    # in history and only stripped at re-emit time.
+    assert response.content == [
+        ToolUseBlock(id="call_1", name="score_panel", input={"branch": "main"}),
+        ProviderExtraBlock(
+            provider="openai",
+            kind="reasoning",
+            items=[
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [],
+                    "encrypted_content": "ENC==",
+                    "content": None,
+                    "status": "completed",
+                }
+            ],
+        ),
+    ]
+
+
+def test_openai_responses_skips_reasoning_capture_when_disabled(monkeypatch):
+    monkeypatch.setenv("DECIPHER_OPENAI_REASONING_PASSBACK", "off")
+    response = _openai_responses_response_to_model_response(
+        _fake_responses_reply_with_reasoning()
+    )
+
+    assert response.content == [
+        ToolUseBlock(id="call_1", name="score_panel", input={"branch": "main"}),
+    ]
+
+
+def test_reasoning_round_trips_positioned_before_function_call(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    response = _openai_responses_response_to_model_response(
+        _fake_responses_reply_with_reasoning()
+    )
+    # Mirror the loop: normalized blocks -> assistant message history.
+    assistant_blocks, _tool_uses, _text = _collect_assistant_blocks(response)
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {"role": "assistant", "content": assistant_blocks},
+    ]
+
+    items = _messages_to_openai_responses(messages)
+
+    # Re-emitted item is sanitized: the response-only `status` field and the
+    # None-valued `content` are dropped (the API 400s on them as input), while
+    # the whitelisted fields survive verbatim.
+    assert items == [
+        {"role": "user", "content": "Hi"},
+        {
+            "type": "reasoning",
+            "id": "rs_1",
+            "summary": [],
+            "encrypted_content": "ENC==",
+        },
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "score_panel",
+            "arguments": '{"branch": "main"}',
+        },
+    ]
+    emitted_reasoning = next(it for it in items if it.get("type") == "reasoning")
+    assert "status" not in emitted_reasoning
+    assert "content" not in emitted_reasoning
+    reasoning_idx = next(i for i, it in enumerate(items) if it.get("type") == "reasoning")
+    call_idx = next(i for i, it in enumerate(items) if it.get("type") == "function_call")
+    assert reasoning_idx < call_idx
+
+
+def test_sanitize_reasoning_item_for_input_whitelists_fields():
+    captured = {
+        "type": "reasoning",
+        "id": "rs_9",
+        "summary": [{"type": "summary_text", "text": "s"}],
+        "encrypted_content": "ENC==",
+        "content": [{"type": "reasoning_text", "text": "visible"}],
+        "status": "completed",           # response-only: must be dropped
+        "some_future_field": "x",        # unknown: must be dropped
+    }
+
+    sanitized = _sanitize_reasoning_item_for_input(captured)
+
+    assert sanitized == {
+        "type": "reasoning",
+        "id": "rs_9",
+        "summary": [{"type": "summary_text", "text": "s"}],
+        "encrypted_content": "ENC==",
+        "content": [{"type": "reasoning_text", "text": "visible"}],
+    }
+    # None-valued whitelisted fields are dropped too.
+    assert _sanitize_reasoning_item_for_input(
+        {"type": "reasoning", "id": "rs_9", "content": None, "encrypted_content": None}
+    ) == {"type": "reasoning", "id": "rs_9"}
+
+
+def _assistant_turn_with_reasoning(turn: int) -> dict:
+    """An assistant history turn: one tool_use plus its provider_extra block."""
+    return {
+        "role": "assistant",
+        "content": [
+            {
+                "type": "tool_use",
+                "id": f"call_{turn}",
+                "name": "decode_show",
+                "input": {"turn": turn},
+            },
+            {
+                "type": "provider_extra",
+                "provider": "openai",
+                "kind": "reasoning",
+                "items": [
+                    {
+                        "type": "reasoning",
+                        "id": f"rs_{turn}",
+                        "summary": [],
+                        "encrypted_content": f"ENC{turn}==",
+                        "status": "completed",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+def test_reasoning_round_trip_two_turns_keeps_per_turn_positioning(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    messages = [
+        {"role": "user", "content": "Hi"},
+        _assistant_turn_with_reasoning(1),
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_1", "content": "r1"},
+            ],
+        },
+        _assistant_turn_with_reasoning(2),
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "call_2", "content": "r2"},
+            ],
+        },
+    ]
+
+    items = _messages_to_openai_responses(messages)
+
+    def index_of(predicate):
+        return next(i for i, it in enumerate(items) if predicate(it))
+
+    rs1 = index_of(lambda it: it.get("type") == "reasoning" and it.get("id") == "rs_1")
+    fc1 = index_of(
+        lambda it: it.get("type") == "function_call" and it.get("call_id") == "call_1"
+    )
+    out1 = index_of(
+        lambda it: it.get("type") == "function_call_output"
+        and it.get("call_id") == "call_1"
+    )
+    rs2 = index_of(lambda it: it.get("type") == "reasoning" and it.get("id") == "rs_2")
+    fc2 = index_of(
+        lambda it: it.get("type") == "function_call" and it.get("call_id") == "call_2"
+    )
+    out2 = index_of(
+        lambda it: it.get("type") == "function_call_output"
+        and it.get("call_id") == "call_2"
+    )
+    # Each turn's reasoning stays with its own turn: turn 2's reasoning comes
+    # after turn 1's function_call_output and before turn 2's function_call.
+    assert rs1 < fc1 < out1 < rs2 < fc2 < out2
+
+
+def test_reasoning_only_turn_is_not_reemitted_dangling(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    # A reasoning-only assistant turn (no text, no tool_use) — e.g. produced by
+    # max-token exhaustion — must not re-emit a dangling reasoning item.
+    messages = [
+        {"role": "user", "content": "Hi"},
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "provider_extra",
+                    "provider": "openai",
+                    "kind": "reasoning",
+                    "items": [
+                        {
+                            "type": "reasoning",
+                            "id": "rs_1",
+                            "summary": [],
+                            "encrypted_content": "ENC==",
+                        }
+                    ],
+                },
+            ],
+        },
+    ]
+
+    items = _messages_to_openai_responses(messages)
+
+    assert items == [{"role": "user", "content": "Hi"}]
+
+
+def test_reasoning_item_without_encrypted_content_is_skipped(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    # An item lacking encrypted_content (e.g. captured while the passback env
+    # flag was off) is unresolvable under store=False; only the resolvable
+    # sibling is re-emitted, and the function_call still goes out.
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "call_1",
+                    "name": "decode_show",
+                    "input": {},
+                },
+                {
+                    "type": "provider_extra",
+                    "provider": "openai",
+                    "kind": "reasoning",
+                    "items": [
+                        {"type": "reasoning", "id": "rs_bare", "summary": []},
+                        {
+                            "type": "reasoning",
+                            "id": "rs_ok",
+                            "summary": [],
+                            "encrypted_content": "ENC==",
+                        },
+                    ],
+                },
+            ],
+        },
+    ]
+
+    items = _messages_to_openai_responses(messages)
+
+    reasoning_ids = [it.get("id") for it in items if it.get("type") == "reasoning"]
+    assert reasoning_ids == ["rs_ok"]
+    assert any(it.get("type") == "function_call" for it in items)
+
+
+def test_reasoning_absent_from_request_when_passback_disabled(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    response = _openai_responses_response_to_model_response(
+        _fake_responses_reply_with_reasoning()
+    )
+    assistant_blocks, _tool_uses, _text = _collect_assistant_blocks(response)
+    messages = [{"role": "assistant", "content": assistant_blocks}]
+
+    # provider_extra is still in history, but re-emit is gated off.
+    monkeypatch.setenv("DECIPHER_OPENAI_REASONING_PASSBACK", "0")
+    items = _messages_to_openai_responses(messages)
+
+    assert all(it.get("type") != "reasoning" for it in items)
+    assert any(it.get("type") == "function_call" for it in items)
+
+
+def test_collect_assistant_blocks_carries_provider_extra_without_tool_use():
+    response = ModelResponse(
+        content=[
+            TextBlock(text="Thinking about it."),
+            ToolUseBlock(id="t1", name="decode_show", input={"branch": "main"}),
+            ProviderExtraBlock(
+                provider="openai",
+                kind="reasoning",
+                items=[{"type": "reasoning", "encrypted_content": "ENC=="}],
+            ),
+        ]
+    )
+
+    assistant_blocks, tool_uses, text_parts = _collect_assistant_blocks(response)
+
+    # The opaque block lands in history verbatim as a plain dict...
+    assert {
+        "type": "provider_extra",
+        "provider": "openai",
+        "kind": "reasoning",
+        "items": [{"type": "reasoning", "encrypted_content": "ENC=="}],
+    } in assistant_blocks
+    assert all(isinstance(b, dict) for b in assistant_blocks)
+    # ...but does not leak into extracted text or tool calls.
+    assert text_parts == ["Thinking about it."]
+    assert tool_uses == [{"id": "t1", "name": "decode_show", "input": {"branch": "main"}}]
+
+
+def test_compress_history_preserves_provider_extra_and_stubs_old_tool_results():
+    messages: list[dict] = []
+    # Six assistant turns each followed by a user tool_result turn.  The
+    # assistant turns carry a provider_extra block that must survive intact,
+    # while tool_results older than TOOL_RESULT_HISTORY_DEPTH get stubbed.
+    for i in range(6):
+        messages.append({
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": f"t{i}", "name": "decode_show", "input": {}},
+                {
+                    "type": "provider_extra",
+                    "provider": "openai",
+                    "kind": "reasoning",
+                    "items": [{"type": "reasoning", "id": f"rs_{i}"}],
+                },
+            ],
+        })
+        messages.append({
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": f"t{i}", "content": f"result {i}"},
+            ],
+        })
+
+    compressed = _compress_history(messages)
+
+    # All provider_extra blocks in assistant turns are untouched.
+    provider_extras = [
+        c
+        for m in compressed
+        if m["role"] == "assistant"
+        for c in m["content"]
+        if isinstance(c, dict) and c.get("type") == "provider_extra"
+    ]
+    assert len(provider_extras) == 6
+    assert provider_extras[0]["items"] == [{"type": "reasoning", "id": "rs_0"}]
+    # The oldest tool_result (turn 0) is stubbed; the most recent is not.
+    first_result = compressed[1]["content"][0]
+    last_result = compressed[-1]["content"][0]
+    assert first_result["content"] == TOOL_RESULT_STUB
+    assert last_result["content"] == "result 5"
+
+
+def test_openai_chat_converter_drops_provider_extra():
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Plan."},
+                {
+                    "type": "provider_extra",
+                    "provider": "openai",
+                    "kind": "reasoning",
+                    "items": [{"type": "reasoning", "encrypted_content": "ENC=="}],
+                },
+                {"type": "tool_use", "id": "t1", "name": "decode_show", "input": {}},
+            ],
+        },
+    ]
+
+    chat = _messages_to_openai_chat(messages, system="")
+
+    assert len(chat) == 1
+    msg = chat[0]
+    assert msg["content"] == "Plan."
+    assert msg["tool_calls"][0]["function"]["name"] == "decode_show"
+    # No provider_extra leaks into the chat payload.
+    assert "provider_extra" not in json.dumps(chat)
+
+
+def test_gemini_converter_drops_provider_extra():
+    messages = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "Plan."},
+                {
+                    "type": "provider_extra",
+                    "provider": "openai",
+                    "kind": "reasoning",
+                    "items": [{"type": "reasoning", "encrypted_content": "ENC=="}],
+                },
+            ],
+        },
+    ]
+
+    contents = _messages_to_gemini_contents(messages)
+
+    # One Content with a single text part; the opaque block is silently skipped.
+    assert len(contents) == 1
+    rendered = " ".join(getattr(p, "text", "") or "" for p in contents[0].parts)
+    assert "Plan." in rendered
+    assert "provider_extra" not in rendered
+    assert "ENC==" not in rendered
+
+
+def test_strip_provider_extra_blocks_removes_only_those_blocks():
+    messages = [
+        {"role": "user", "content": "plain string stays"},
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "keep"},
+                {"type": "provider_extra", "provider": "openai", "kind": "reasoning", "items": []},
+                {"type": "tool_use", "id": "t1", "name": "x", "input": {}},
+            ],
+        },
+    ]
+
+    stripped = _strip_provider_extra_blocks(messages)
+
+    assert stripped[0] == {"role": "user", "content": "plain string stays"}
+    assert stripped[1]["content"] == [
+        {"type": "text", "text": "keep"},
+        {"type": "tool_use", "id": "t1", "name": "x", "input": {}},
+    ]
+
+
+def test_anthropic_path_drops_provider_extra_before_send():
+    captured: dict = {}
+
+    def _fake_send_message(*, messages, tools, system, max_tokens):
+        captured["messages"] = messages
+        return SimpleNamespace(
+            content=[SimpleNamespace(type="text", text="ok")],
+            usage=SimpleNamespace(
+                input_tokens=1, output_tokens=1, cache_read_input_tokens=0
+            ),
+        )
+
+    fake_api = SimpleNamespace(model="claude-sonnet-4-6", send_message=_fake_send_message)
+    provider = ClaudeModelProvider(fake_api)
+
+    provider.send(
+        messages=[
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {
+                        "type": "provider_extra",
+                        "provider": "openai",
+                        "kind": "reasoning",
+                        "items": [{"type": "reasoning", "encrypted_content": "ENC=="}],
+                    },
+                ],
+            }
+        ],
+        system="S",
+    )
+
+    sent = captured["messages"]
+    assert not any(
+        isinstance(c, dict) and c.get("type") == "provider_extra"
+        for m in sent
+        for c in (m["content"] if isinstance(m["content"], list) else [])
+    )
+    assert "ENC==" not in json.dumps(sent)
+
+
+def test_reasoning_passback_env_switch(monkeypatch):
+    monkeypatch.delenv("DECIPHER_OPENAI_REASONING_PASSBACK", raising=False)
+    assert _reasoning_passback_enabled() is True
+    for off_value in ("0", "false", "no", "off", "OFF", "False"):
+        monkeypatch.setenv("DECIPHER_OPENAI_REASONING_PASSBACK", off_value)
+        assert _reasoning_passback_enabled() is False
+    for on_value in ("1", "true", "yes", "on"):
+        monkeypatch.setenv("DECIPHER_OPENAI_REASONING_PASSBACK", on_value)
+        assert _reasoning_passback_enabled() is True
+
+
+def test_inspect_artifact_build_timeline_handles_provider_extra():
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location(
+        "inspect_artifact_under_test", repo_root / "scripts" / "inspect_artifact.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    # Register before exec so @dataclass can resolve annotations via sys.modules.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    artifact = {
+        "messages": [
+            {"role": "user", "content": "start"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "text", "text": "planning"},
+                    {
+                        "type": "provider_extra",
+                        "provider": "openai",
+                        "kind": "reasoning",
+                        "items": [{"type": "reasoning", "encrypted_content": "ENC=="}],
+                    },
+                    {"type": "tool_use", "id": "t1", "name": "decode_show", "input": {}},
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": "t1", "content": "{}"},
+                ],
+            },
+        ]
+    }
+
+    timeline = module.build_timeline(artifact)
+
+    assert len(timeline) == 1
+    assert timeline[0]["tools"][0]["name"] == "decode_show"
+    assert timeline[0]["reasoning"] == "planning"
 
 
 def test_provider_cost_estimation_is_provider_specific():

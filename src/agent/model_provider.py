@@ -39,7 +39,38 @@ class ToolUseBlock:
     type: str = "tool_use"
 
 
-ModelContentBlock = TextBlock | ToolUseBlock
+@dataclass(frozen=True)
+class ProviderExtraBlock:
+    """An opaque provider-specific passthrough block.
+
+    Used to carry provider items that the harness does not interpret but must
+    round-trip verbatim between turns — currently OpenAI ``reasoning`` output
+    items (with ``encrypted_content``) for reasoning-model tool-call passback.
+    It is serialized into the assistant turn's message history as a plain dict
+    ``{"type": "provider_extra", "provider": ..., "kind": ..., "items": [...]}``
+    and re-emitted to its native shape only by the originating provider's
+    converter; every other provider's converter drops it.
+    """
+
+    provider: str
+    kind: str
+    items: list[dict[str, Any]] = field(default_factory=list)
+    type: str = "provider_extra"
+
+
+ModelContentBlock = TextBlock | ToolUseBlock | ProviderExtraBlock
+
+
+def _reasoning_passback_enabled() -> bool:
+    """Whether OpenAI reasoning-item capture/re-emit is active.
+
+    Default on; ``DECIPHER_OPENAI_REASONING_PASSBACK=0`` (or ``false``/``no``/
+    ``off``) disables it for A/B measurement.
+    """
+    import os
+
+    raw = os.environ.get("DECIPHER_OPENAI_REASONING_PASSBACK", "").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 @dataclass(frozen=True)
@@ -125,7 +156,7 @@ class ClaudeModelProvider:
     ) -> ModelResponse:
         try:
             response = self.api.send_message(
-                messages=messages,
+                messages=_strip_provider_extra_blocks(messages),
                 tools=tools,
                 system=system,
                 max_tokens=max_tokens,
@@ -213,14 +244,22 @@ class OpenAIModelProvider:
         /v1/chat/completions.  No ``reasoning`` parameter is set, so the model's
         server-side default effort applies.
         """
+        create_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "instructions": system,
+            "input": _messages_to_openai_responses(messages),
+            "tools": _tools_to_openai_responses(tools),
+            "max_output_tokens": max_tokens,
+        }
+        if _reasoning_passback_enabled():
+            # Ask for reasoning items with re-sendable encrypted payloads so
+            # they can be passed back between tool calls (OpenAI reasoning-model
+            # recommendation).  store=False keeps this adapter stateless — the
+            # full input, including prior reasoning items, is re-sent each turn.
+            create_kwargs["store"] = False
+            create_kwargs["include"] = ["reasoning.encrypted_content"]
         try:
-            response = self.client.responses.create(
-                model=self.model,
-                instructions=system,
-                input=_messages_to_openai_responses(messages),
-                tools=_tools_to_openai_responses(tools),
-                max_output_tokens=max_tokens,
-            )
+            response = self.client.responses.create(**create_kwargs)
         except Exception as exc:  # noqa: BLE001
             raise ModelProviderError(str(exc)) from exc
         return _openai_responses_response_to_model_response(response)
@@ -1012,6 +1051,30 @@ def _tools_to_openai_responses(
     return out
 
 
+# Fields accepted when re-sending a captured reasoning item as a Responses API
+# input item.  Captured items are verbatim response dumps and carry
+# response-only fields (at minimum ``status``) that the live endpoint rejects
+# with 400 ``unknown_parameter`` on input (confirmed against gpt-5.6-sol, even
+# though the openai 2.32.0 SDK's ResponseReasoningItemParam TypedDict nominally
+# lists ``status``).  An explicit whitelist keeps any future response-only
+# fields from recurring.
+_REASONING_INPUT_ITEM_FIELDS = ("type", "id", "summary", "encrypted_content", "content")
+
+
+def _sanitize_reasoning_item_for_input(item: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a captured reasoning item to fields valid as request input.
+
+    Keeps whitelisted fields only and drops None-valued keys (e.g. a null
+    ``content``), which the API may also reject.  The captured block in the
+    message history stays verbatim; this applies at re-emit time only.
+    """
+    return {
+        key: item[key]
+        for key in _REASONING_INPUT_ITEM_FIELDS
+        if key in item and item[key] is not None
+    }
+
+
 def _messages_to_openai_responses(
     messages: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1027,19 +1090,44 @@ def _messages_to_openai_responses(
         if role == "assistant" and isinstance(content, list):
             text_parts: list[str] = []
             function_calls: list[dict[str, Any]] = []
+            reasoning_items: list[dict[str, Any]] = []
+            passback = _reasoning_passback_enabled()
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "text":
+                block_type = block.get("type")
+                if block_type == "text":
                     text_parts.append(str(block.get("text", "")))
-                elif block.get("type") == "tool_use":
+                elif block_type == "tool_use":
                     function_calls.append({
                         "type": "function_call",
                         "call_id": str(block.get("id") or f"toolu_{uuid.uuid4().hex[:12]}"),
                         "name": str(block.get("name", "")),
                         "arguments": json.dumps(block.get("input") or {}),
                     })
+                elif (
+                    passback
+                    and block_type == "provider_extra"
+                    and block.get("provider") == "openai"
+                    and block.get("kind") == "reasoning"
+                ):
+                    for item in block.get("items") or []:
+                        if isinstance(item, dict):
+                            sanitized = _sanitize_reasoning_item_for_input(item)
+                            # Require encrypted_content: without it the item
+                            # cannot be resolved server-side under store=False
+                            # (e.g. it was captured while the passback env flag
+                            # was toggled off mid-run), so skip it.
+                            if "encrypted_content" in sanitized:
+                                reasoning_items.append(sanitized)
             joined = "\n\n".join(t for t in text_parts if t)
+            # Reasoning items are native output items that precede their sibling
+            # function_call items in the same turn; re-emit them in that order.
+            # A reasoning-only turn (no text and no function calls — e.g. from
+            # max-token exhaustion) is skipped entirely: a dangling reasoning
+            # item with no sibling output item is rejected by the API.
+            if joined or function_calls:
+                out.extend(reasoning_items)
             if joined:
                 out.append({"role": "assistant", "content": joined})
             out.extend(function_calls)
@@ -1084,6 +1172,22 @@ def _openai_responses_response_to_model_response(response: Any) -> ModelResponse
             for part in getattr(item, "content", None) or []:
                 if getattr(part, "type", None) == "output_text":
                     content.append(TextBlock(text=str(getattr(part, "text", ""))))
+    if _reasoning_passback_enabled():
+        # Preserve reasoning output items verbatim (including encrypted_content)
+        # as one opaque block so they can be re-sent on subsequent turns.
+        reasoning_items = [
+            _output_item_to_dict(item)
+            for item in getattr(response, "output", None) or []
+            if getattr(item, "type", None) == "reasoning"
+        ]
+        if reasoning_items:
+            content.append(
+                ProviderExtraBlock(
+                    provider="openai",
+                    kind="reasoning",
+                    items=reasoning_items,
+                )
+            )
     raw_usage = getattr(response, "usage", None)
     input_details = getattr(raw_usage, "input_tokens_details", None)
     usage = ModelUsage(
@@ -1092,6 +1196,55 @@ def _openai_responses_response_to_model_response(response: Any) -> ModelResponse
         cache_read_input_tokens=int(getattr(input_details, "cached_tokens", 0) or 0),
     )
     return ModelResponse(content=content, usage=usage, raw=response)
+
+
+def _output_item_to_dict(item: Any) -> dict[str, Any]:
+    """Best-effort verbatim dict for a Responses API output item.
+
+    Handles real pydantic SDK models (``model_dump``), plain dicts, and the
+    ``SimpleNamespace`` fakes used by the test suite.
+    """
+    if isinstance(item, dict):
+        return dict(item)
+    model_dump = getattr(item, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump()
+        except Exception:  # noqa: BLE001 - fall through to attribute copy
+            dumped = None
+        if isinstance(dumped, dict):
+            return dumped
+    if hasattr(item, "__dict__"):
+        return dict(vars(item))
+    return {}
+
+
+def _strip_provider_extra_blocks(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop ``provider_extra`` passthrough blocks from message content.
+
+    Providers other than the one that emitted them (e.g. the Anthropic messages
+    API) do not understand these opaque blocks and would reject them, so they
+    are removed before the request is sent.  Messages without such blocks are
+    returned unchanged (same object).
+    """
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") == "provider_extra"
+            for block in content
+        ):
+            filtered = [
+                block
+                for block in content
+                if not (isinstance(block, dict) and block.get("type") == "provider_extra")
+            ]
+            out.append({**message, "content": filtered})
+        else:
+            out.append(message)
+    return out
 
 
 def _tools_to_gemini_tools(tools: list[dict[str, Any]] | None) -> list[Any] | None:
