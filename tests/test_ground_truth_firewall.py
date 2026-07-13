@@ -223,6 +223,114 @@ def test_automated_path_ground_truth_only_grades_never_influences():
     assert with_gt.artifact.get("ground_truth") == GROUND_TRUTH
 
 
+def test_multipage_group_route_is_ground_truth_free(monkeypatch, tmp_path):
+    """Phase-2.4 extension: the multipage shared-key route must stay
+    ground-truth-free. The homophonic solve is stubbed to a canned identity
+    solver so the real projection/scoring path runs, and the run uses the
+    ``word_repair`` refinement WITHOUT stubbing ``propose_word_repairs`` — the
+    real word-repair library processes the group under the leak assertion, and
+    F1 guarantees the pages it receives carry no plaintext (verified by a spy).
+    Each page's plaintext is a distinctive ground truth that must not influence
+    the solve or leak into any solver-facing output (combined solve steps,
+    shared key, per-page projected decryptions, or the word-repair menu). It
+    MAY appear only in the per-page artifact's post-hoc grading fields."""
+    from automated.multipage_route import run_automated_multipage
+
+    # A 30-symbol S-token page whose *plaintext* is the distinctive ground truth.
+    n_symbols = 30
+    symbols = " ".join(f"S{i:03d}" for i in range(n_symbols))
+
+    def canned_homophonic(cipher_text, language, **_kwargs):
+        # Identity-letter key: decode each symbol to its own (id mod 26) letter,
+        # reproducing a ciphertext stand-in, never the ground-truth plaintext.
+        key = {
+            tid: (tid % 26) for tid in range(cipher_text.alphabet.size)
+        }
+        decryption = "".join(chr(ord("A") + key[t]) for t in cipher_text.tokens)
+        step = {"name": "search_homophonic_anneal", "solver": "native_homophonic_anneal"}
+        return "native_homophonic_anneal", key, decryption, step
+
+    monkeypatch.setattr(runner_module, "_run_homophonic", canned_homophonic)
+
+    # Firewall-by-construction spy (F1): the pages that reach the word-repair
+    # refinement must have plaintext stripped. NOT a stub — the real
+    # refinement (and the real propose_word_repairs pipeline) still runs.
+    real_refinement = runner_module._word_repair_refinement_on_pages
+    refinement_calls: list[int] = []
+
+    def spying_refinement(**kwargs):
+        assert all(page.plaintext == "" for page in kwargs["pages"]), (
+            "plaintext reached the word-repair refinement"
+        )
+        refinement_calls.append(len(kwargs["pages"]))
+        return real_refinement(**kwargs)
+
+    monkeypatch.setattr(
+        runner_module, "_word_repair_refinement_on_pages", spying_refinement
+    )
+
+    class _FakeLoader:
+        def __init__(self, data):
+            self._data = data
+
+        def load_tests(self, split):  # noqa: ARG002
+            return [SimpleNamespace(test_id=tid) for tid in self._data]
+
+        def load_test_data(self, test):
+            canonical, plaintext = self._data[test.test_id]
+            return SimpleNamespace(canonical_transcription=canonical, plaintext=plaintext)
+
+    data = {
+        "pgA": (symbols, GROUND_TRUTH),
+        "pgB": (symbols, GROUND_TRUTH),
+    }
+    group = {
+        "name": "firewall_group",
+        "benchmark_split": "x.jsonl",
+        "language": "en",
+        "description": "firewall",
+        "test_ids": ["pgA", "pgB"],
+    }
+    result = run_automated_multipage(
+        loader=_FakeLoader(data),
+        group=group,
+        homophonic_budget="screen",
+        homophonic_refinement="word_repair",
+        artifact_dir=str(tmp_path),
+    )
+
+    assert result.status == "completed", "route did not complete; comparison vacuous"
+    # The real word-repair pipeline actually ran on the full 2-page group.
+    assert refinement_calls == [2], "word-repair refinement was not exercised"
+    assert result.word_repair is not None
+    assert result.word_repair.get("status") == "completed", (
+        f"word repair did not complete: {result.word_repair.get('reason')!r}"
+    )
+
+    group_artifact = json.loads(
+        open(result.group_artifact_path, encoding="utf-8").read()
+    )
+    # Solver-facing outputs: combined solve steps, shared keys (final +
+    # pre-refinement), per-page projected decryptions, the word-repair step
+    # (real candidate menu included), and per-page artifact solver fields.
+    solver_facing = [
+        json.dumps(group_artifact["combined_solve_steps"]),
+        json.dumps(group_artifact.get("key")),
+        json.dumps(group_artifact["combined"].get("key")),
+        json.dumps(group_artifact.get("word_repair")),
+        *[pr.decryption for pr in result.page_results],
+    ]
+    for page in result.page_results:
+        page_artifact = json.loads(open(page.artifact_path, encoding="utf-8").read())
+        solver_facing.append(page_artifact["decryption"])
+        solver_facing.append(json.dumps(page_artifact["key"]))
+        solver_facing.append(json.dumps(page_artifact["steps"]))
+        solver_facing.append(json.dumps(page_artifact["multipage_group"]))
+        # Post-hoc grading channel retains ground truth (by design).
+        assert page_artifact.get("ground_truth") == GROUND_TRUTH
+    assert_no_ground_truth_leak(solver_facing, GROUND_TRUTH)
+
+
 def test_automated_word_repair_refinement_is_ground_truth_free(monkeypatch):
     """Phase-2b extension: a run with the word_repair refinement enabled must
     stay ground-truth-free. The homophonic solve is stubbed to a fast, non-GT

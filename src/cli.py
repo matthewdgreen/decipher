@@ -549,10 +549,85 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print("  Usage: decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b")
 
 
+def _run_multipage_group_benchmark(args: argparse.Namespace, agentic: bool) -> None:
+    """Run the automated multipage shared-key route for --multipage-group."""
+    if agentic:
+        print(
+            "Error: --multipage-group is automated-only; agentic multipage is out "
+            "of scope. Drop --agentic.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    from benchmark.loader import BenchmarkLoader
+    from automated.multipage_route import load_group_definition, run_automated_multipage
+
+    try:
+        group = load_group_definition(args.multipage_group)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    loader = BenchmarkLoader(args.benchmark_path)
+    artifact_dir = args.artifact_dir or "artifacts"
+    homophonic_solver = "legacy" if args.legacy_homophonic else "zenith_native"
+    print(
+        f"Running multipage group '{group['name']}' "
+        f"({len(group['test_ids'])} pages) — automated, "
+        f"budget={args.homophonic_budget}, refinement={args.homophonic_refinement}"
+    )
+    print(f"Artifacts → {artifact_dir}/automated_multipage/{group['name']}/\n")
+
+    try:
+        result = run_automated_multipage(
+            loader=loader,
+            group=group,
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver=homophonic_solver,
+            language=args.language,
+            artifact_dir=artifact_dir,
+        )
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(
+        f"Combined: status={result.status}, solver={result.solver}, "
+        f"tokens={result.combined_token_count}, symbols={result.combined_alphabet_size}, "
+        f"mask={result.selected_mask or '(none)'}"
+    )
+    print(
+        f"Combined solve: {result.combined_solve_seconds:.1f}s "
+        f"(total {result.elapsed_seconds:.1f}s)"
+    )
+    if result.word_repair is not None:
+        adopted = result.word_repair.get("adopted")
+        print(
+            "Word repair (group): "
+            f"adopt_enabled={result.word_repair_adopt_enabled}, "
+            f"adopted={'yes' if adopted else 'no'}"
+        )
+    print("\nPer-page (post-hoc grading vs known plaintext):")
+    for page in result.page_results:
+        print(
+            f"  {page.test_id}: char={page.char_accuracy:.1%}, "
+            f"word={page.word_accuracy:.1%}, filtered={page.filtered_length}"
+        )
+    print(
+        f"\nAGGREGATE: char={result.aggregate_char_accuracy:.1%}, "
+        f"word={result.aggregate_word_accuracy:.1%}"
+    )
+    print(f"Group artifact: {result.group_artifact_path}")
+
+
 def cmd_benchmark(args: argparse.Namespace) -> None:
     from benchmark.loader import BenchmarkLoader
 
     agentic = _use_agentic_mode(args)
+    if getattr(args, "multipage_group", None):
+        _run_multipage_group_benchmark(args, agentic)
+        return
     if getattr(args, "analyze", False) and not agentic:
         print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
     display_mode = _resolve_agent_display(args) if agentic else "off"
@@ -1313,6 +1388,18 @@ def main() -> None:
         "--legacy-homophonic",
         action="store_true",
         help="Use the older pre-zenith_native homophonic solver path for comparison.",
+    )
+    bench.add_argument(
+        "--multipage-group",
+        metavar="PATH",
+        help=(
+            "Run the automated multipage shared-key route on a page-group "
+            "definition JSON (e.g. frontier/groups/copiale_evidence.json). "
+            "Combines the group's pages into one ciphertext, runs the homophonic "
+            "route once (respecting --homophonic-budget/-refinement/-solver), "
+            "projects the shared key back per page, and writes per-page plus "
+            "group artifacts. Automated-only; incompatible with --agentic."
+        ),
     )
     bench.add_argument(
         "--transform-search",

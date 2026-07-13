@@ -622,6 +622,59 @@ def test_word_repair_config_bad_float_raises(monkeypatch):
         runner._word_repair_config_from_env()
 
 
+def test_build_word_repair_menu_wrapper_kwarg_parity(monkeypatch):
+    """F3 (Phase-2.4 review): direct coverage for the ``build_word_repair_menu``
+    single-page wrapper, whose only production caller is the agent menu tool
+    (which every other test monkeypatches). The group-native core is stubbed
+    with a kwarg recorder; every kwarg uses a distinct sentinel value, so an
+    accidentally swapped pair (e.g. ``mask``<->``language``) fails loudly."""
+    cipher = _small_cipher()
+    captured: dict = {}
+    sentinel_menu = object()
+
+    def fake_core(**kwargs):
+        captured.update(kwargs)
+        return sentinel_menu
+
+    monkeypatch.setattr(runner, "build_word_repair_menu_for_pages", fake_core)
+
+    base_key = {0: 4, 1: 7, 2: 11}
+    config_sentinel = object()
+    result = runner.build_word_repair_menu(
+        cipher_text=cipher,
+        base_key=base_key,
+        mask=("S002",),
+        language="de",
+        config=config_sentinel,
+        dictionary_path="/sentinel/dictionary.txt",
+        model_path="/sentinel/model.bin",
+        source_branch="sentinel_branch",
+    )
+
+    # The wrapper returns the core's menu verbatim.
+    assert result is sentinel_menu
+
+    # Kwarg parity, each against its own distinct sentinel.
+    assert captured["base_key"] == {0: 4, 1: 7, 2: 11}
+    assert captured["mask"] == ("S002",)
+    assert captured["language"] == "de"
+    assert captured["config"] is config_sentinel
+    assert captured["dictionary_path"] == "/sentinel/dictionary.txt"
+    assert captured["model_path"] == "/sentinel/model.bin"
+    assert captured["source_branch"] == "sentinel_branch"
+    assert captured["alphabet"] is cipher.alphabet
+
+    # The page group is the shared single-page construction (_single_page_group):
+    # one PageBundle mirroring the ciphertext, with plaintext firewalled empty.
+    pages = captured["pages"]
+    assert len(pages) == 1
+    page = pages[0]
+    assert page.test_id == "page_0"
+    assert page.plaintext == ""
+    assert page.token_ids == list(cipher.tokens)
+    assert page.symbols == [cipher.alphabet.symbol_for(t) for t in cipher.tokens]
+
+
 def test_runner_does_not_import_promoted_libraries_at_module_level():
     """Binding constraint 1: lazy imports only.
 

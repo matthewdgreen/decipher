@@ -3806,20 +3806,49 @@ def _parse_word_repair_edit_label(label: str) -> tuple[str, str] | None:
 
 @dataclass
 class WordRepairMenu:
-    """A one-page word-repair candidate menu.
+    """A page-group word-repair candidate menu.
 
-    Shared return type for :func:`build_word_repair_menu` so the Phase-2b runner
-    refinement and the agent-facing ``search_word_repair_menu`` tool consume the
-    same construction. ``packets`` are :class:`analysis.candidate_packet.CandidatePacket`
-    instances (``text=None`` per the F3 deferral); ``page`` and ``alphabet`` are
-    returned so the runner can project the adopted edit set without rebuilding
-    the group.
+    Shared return type for :func:`build_word_repair_menu` (single-page) and
+    :func:`build_word_repair_menu_for_pages` (group-native) so the Phase-2b
+    runner refinement, the Phase-2.4 multipage route, and the agent-facing
+    ``search_word_repair_menu`` tool consume the same construction. ``packets``
+    are :class:`analysis.candidate_packet.CandidatePacket` instances
+    (``text=None`` per the F3 deferral); ``page`` (the group's first page --
+    THE page for single-page callers) and ``alphabet`` are returned so the
+    runner can project the adopted edit set without rebuilding the group.
     """
 
     packets: list[Any]
     baseline_validation: float
     page: Any
     alphabet: Any
+
+
+def _single_page_group(cipher_text: CipherText) -> tuple[list[Any], Alphabet]:
+    """Build the length-1 page group for single-page word-repair callers.
+
+    Single source of truth for the Phase-2b page construction, shared by
+    :func:`build_word_repair_menu` (agent tool path) and
+    :func:`_run_word_repair_refinement` (runner refinement path).
+
+    Lazy import (binding constraint 1): ``analysis.multipage`` imports
+    ``automated.runner`` at module top and this module's public wrappers sit at
+    EOF, so a top-of-file import would hit a partially-initialized module.
+    """
+    from analysis.multipage import PageBundle
+
+    alphabet = cipher_text.alphabet
+    symbols = [alphabet.symbol_for(token_id) for token_id in cipher_text.tokens]
+    # plaintext is intentionally empty: the runtime path never reads it, and
+    # keeping it blank guarantees no ground truth can enter the word-repair menu.
+    page = PageBundle(
+        test_id="page_0",
+        canonical_transcription=" ".join(symbols),
+        plaintext="",
+        symbols=symbols,
+        token_ids=list(cipher_text.tokens),
+    )
+    return [page], alphabet
 
 
 def build_word_repair_menu(
@@ -3841,31 +3870,63 @@ def build_word_repair_menu(
     adjudicated candidate packets from ``propose_word_repairs``. The agent
     ``search_word_repair_menu`` tool calls this so the two paths cannot drift.
 
+    Thin single-page wrapper over :func:`build_word_repair_menu_for_pages`
+    (the group-native core the Phase-2.4 multipage route calls directly).
+    """
+    pages, alphabet = _single_page_group(cipher_text)
+    return build_word_repair_menu_for_pages(
+        pages=pages,
+        alphabet=alphabet,
+        base_key=base_key,
+        mask=mask,
+        language=language,
+        config=config,
+        dictionary_path=dictionary_path,
+        model_path=model_path,
+        source_branch=source_branch,
+    )
+
+
+def build_word_repair_menu_for_pages(
+    *,
+    pages: list[Any],
+    alphabet: Any,
+    base_key: dict[int, int],
+    mask: tuple[str, ...],
+    language: str,
+    config: Any,
+    dictionary_path: Any,
+    model_path: Any,
+    source_branch: str | None,
+) -> WordRepairMenu:
+    """Group-native word-repair menu construction (Phase-2.4 reconciliation).
+
+    The shared core behind :func:`build_word_repair_menu`: a baseline
+    projection scored with ``score_page_runtime``, and the adjudicated
+    candidate packets from ``propose_word_repairs`` over the WHOLE page group
+    (cross-page collateral is real when the group has more than one page).
+    A length-1 ``pages`` list reproduces the single-page construction exactly.
+
+    The baseline validation is scored on the group's first page's projection
+    -- identical to the single-page construction (where it is THE page) and to
+    the Phase-2.4 group behavior as shipped. The library's own
+    ``repair_acceptance`` verdict (carried on each packet) already compares
+    group-level metric deltas across all pages.
+
     Lazy imports (binding constraint 1): ``analysis.multipage`` imports
     ``automated.runner`` at module top and this module's public wrappers sit at
     EOF, so a top-of-file import would hit a partially-initialized module.
     """
-    from analysis.multipage import PageBundle, project_pages, score_page_runtime
+    from analysis.multipage import project_pages, score_page_runtime
     from analysis.word_hypothesis_repair import propose_word_repairs
 
-    alphabet = cipher_text.alphabet
-    symbols = [alphabet.symbol_for(token_id) for token_id in cipher_text.tokens]
-    # plaintext is intentionally empty: the runtime path never reads it, and
-    # keeping it blank guarantees no ground truth can enter the word-repair menu.
-    page = PageBundle(
-        test_id="page_0",
-        canonical_transcription=" ".join(symbols),
-        plaintext="",
-        symbols=symbols,
-        token_ids=list(cipher_text.tokens),
-    )
-    baseline_row = project_pages(pages=[page], key=base_key, mask=mask)[0]
+    baseline_row = project_pages(pages=pages, key=base_key, mask=mask)[0]
     baseline_runtime = score_page_runtime(
         baseline_row, key=base_key, mask=mask, language=language, model_path=model_path
     )
     baseline_validation = round(float(baseline_runtime.get("validation_score_v2") or 0.0), 6)
     packets = propose_word_repairs(
-        pages=[page],
+        pages=pages,
         shared_key=base_key,
         dictionary_path=dictionary_path,
         language=language,
@@ -3878,7 +3939,7 @@ def build_word_repair_menu(
     return WordRepairMenu(
         packets=packets,
         baseline_validation=baseline_validation,
-        page=page,
+        page=pages[0],
         alphabet=alphabet,
     )
 
@@ -3930,27 +3991,62 @@ def _run_word_repair_refinement(
     base_decryption: str,
     mask: tuple[str, ...],
 ) -> tuple[dict[str, Any], tuple[str, dict[int, int], str] | None]:
-    """Run Phase-2a ``propose_word_repairs`` on the solved single-page basin.
+    """Single-page adapter for :func:`_word_repair_refinement_on_pages`.
 
-    Builds a one-page group from the run's cipher + solved key/mask, proposes
-    word-hypothesis repairs, and evaluates the composed ground-truth-free gate
-    (library repair-acceptance verdict AND strict ``validation_score_v2``
-    improvement). By default the gate is measurement-only: the
-    ``search_word_repair`` step records the candidate menu, per-candidate gate
-    decisions, and ``would_adopt`` (the candidate the gate selected, or None)
-    without modifying the run. When ``DECIPHER_WORD_REPAIR_ADOPT=1`` the gate's
-    selection is applied and ``(solver, key, decryption)`` is returned to swap
-    in.
+    Builds the length-1 page group (via :func:`_single_page_group`, shared with
+    ``build_word_repair_menu``) from the run's cipher + solved key/mask and
+    delegates to the group-native refinement. Kept as a thin, signature-stable
+    wrapper (``base_decryption`` is accepted for call-site/test compatibility
+    and is unused) so the single-page ``run_automated`` call site is unchanged
+    while the Phase-2.4 multi-page route reuses the exact same gate on a real
+    page group.
+    """
+    pages, alphabet = _single_page_group(cipher_text)
+    return _word_repair_refinement_on_pages(
+        pages=pages,
+        alphabet=alphabet,
+        language=language,
+        refinement=refinement,
+        base_solver=base_solver,
+        base_key=base_key,
+        mask=mask,
+    )
 
-    Page-group construction is deliberately group-native (a length-1 list of
-    :class:`PageBundle`) so the Phase-2.4 multi-page route is purely additive.
+
+def _word_repair_refinement_on_pages(
+    *,
+    pages: list[Any],
+    alphabet: Alphabet,
+    language: str,
+    refinement: str,
+    base_solver: str,
+    base_key: dict[int, int],
+    mask: tuple[str, ...],
+) -> tuple[dict[str, Any], tuple[str, dict[int, int], str] | None]:
+    """Run Phase-2a ``propose_word_repairs`` on a solved page group's basin.
+
+    Proposes word-hypothesis repairs across the whole page group and evaluates
+    the composed ground-truth-free gate (library repair-acceptance verdict AND
+    strict ``validation_score_v2`` improvement). By default the gate is
+    measurement-only: the ``search_word_repair`` step records the candidate
+    menu, per-candidate gate decisions, and ``would_adopt`` (the candidate the
+    gate selected, or None) without modifying the run. When
+    ``DECIPHER_WORD_REPAIR_ADOPT=1`` the gate's selection is applied and
+    ``(solver, key, decryption)`` is returned to swap in (the returned
+    decryption is the first page's projection; group callers re-project every
+    page from the adopted key).
+
+    ``pages`` is a list of :class:`~analysis.multipage.PageBundle`; a length-1
+    list reproduces the single-page behavior exactly. Cross-page collateral is
+    real when the group has more than one page -- the library's cross-page
+    adjudication was designed for exactly that case (Phase-2.4).
     """
     started = time.time()
     # Lazy import (binding constraint 1): analysis.multipage imports
     # automated.runner at module top, and this module's public wrappers sit at
     # EOF, so a top-of-file import would hit a partially-initialized module.
-    # ``build_word_repair_menu`` does its own lazy imports; the adoption
-    # projection below still needs ``project_pages`` directly.
+    # ``build_word_repair_menu_for_pages`` does its own lazy imports; the
+    # adoption projection below still needs ``project_pages`` directly.
     from analysis.multipage import project_pages
 
     config, env_overrides = _word_repair_config_from_env()
@@ -3995,11 +4091,13 @@ def _run_word_repair_refinement(
     if not base_key:
         return _skip_step("empty_base_key"), None
 
-    # Page-group construction is deliberately group-native (a length-1 list of
-    # PageBundle) and shared with the agent search_word_repair_menu tool so the
-    # Phase-2.4 multi-page route stays purely additive.
-    menu = build_word_repair_menu(
-        cipher_text=cipher_text,
+    # Menu construction is shared with the agent search_word_repair_menu tool
+    # via build_word_repair_menu_for_pages (single source of truth for the
+    # baseline projection + runtime score + adjudicated packets), called here
+    # group-native so the Phase-2.4 multi-page route reuses it unchanged.
+    menu = build_word_repair_menu_for_pages(
+        pages=pages,
+        alphabet=alphabet,
         base_key=base_key,
         mask=mask,
         language=language,
@@ -4008,8 +4106,6 @@ def _run_word_repair_refinement(
         model_path=resolved_model,
         source_branch=base_solver,
     )
-    page = menu.page
-    alphabet = menu.alphabet
     baseline_validation = menu.baseline_validation
     packets = menu.packets
 
@@ -4108,7 +4204,7 @@ def _run_word_repair_refinement(
         adopted_reason = gate_reason
     else:
         assert new_key is not None  # gate_reason == composed_gate_passed
-        new_decryption = project_pages(pages=[page], key=new_key, mask=mask)[0]["decryption"]
+        new_decryption = project_pages(pages=pages, key=new_key, mask=mask)[0]["decryption"]
         adopted_result = ("word_repair_homophonic", new_key, new_decryption)
         adopted_edits = list(applied)
         after_validation = best_validation

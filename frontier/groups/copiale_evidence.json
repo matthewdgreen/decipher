@@ -1,0 +1,13 @@
+{
+  "name": "copiale_evidence",
+  "benchmark_split": "copiale_tests.jsonl",
+  "language": "de",
+  "description": "Five Copiale evidence-packet Track-B pages (transcription2plaintext) solved as one shared-key page group. These are the five copiale_evidence single-page rows from frontier/copiale_evidence_packet.jsonl; the multipage route combines them into one ciphertext, runs the homophonic route once, projects the shared key back per page, and (with the word_repair refinement) exercises cross-page repair adjudication. Ground truth is used for post-hoc per-page scoring only.",
+  "test_ids": [
+    "copiale_single_B_copiale_p017",
+    "copiale_single_B_copiale_p035",
+    "copiale_single_B_copiale_p052",
+    "copiale_single_B_copiale_p068",
+    "copiale_single_B_copiale_p084"
+  ]
+}
