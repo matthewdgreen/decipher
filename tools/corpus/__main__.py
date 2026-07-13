@@ -126,6 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     build.add_argument("language", choices=SUPPORTED_LANGUAGES)
     build.add_argument("--corpus-dir", type=Path, required=True)
     build.add_argument("--output", type=Path, default=None)
+    _build_v2_args(build)
 
     verify = sub.add_parser("verify")
     verify.add_argument("model_path", type=Path)
@@ -136,8 +137,42 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--corpus-dir", type=Path, default=None)
     run.add_argument("--max-books", type=int, default=100)
     _build_sources_arg(run)
+    _build_v2_args(run)
 
     return parser
+
+
+def _build_v2_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--alphabet",
+        type=str,
+        default=None,
+        help=(
+            "Emit a zenith_binary_v2 model over this ordered symbol alphabet "
+            "instead of the default 26-letter v1 model. Symbol i maps to "
+            "alphabet[i]; normalization keeps only lowercased characters in the "
+            "alphabet."
+        ),
+    )
+    parser.add_argument(
+        "--order",
+        type=int,
+        default=None,
+        help="N-gram order for a --alphabet (v2) build. Defaults to 5.",
+    )
+
+
+def _validate_v2_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Validate the v2 (--alphabet/--order) option combination for build/run."""
+    alphabet = getattr(args, "alphabet", None)
+    order = getattr(args, "order", None)
+    if order is not None and alphabet is None:
+        parser.error("--order only applies to v2 builds; pass --alphabet as well")
+    if alphabet is not None and args.output is None:
+        parser.error(
+            "--alphabet (zenith_binary_v2) requires an explicit --output so a v2 "
+            "build cannot clobber the tracked v1 models under models/"
+        )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -160,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "build":
+        _validate_v2_args(parser, args)
         output = args.output or _default_output(args.language)
         manifest = load_manifest(args.corpus_dir)
         stats = build_model(
@@ -167,6 +203,8 @@ def main(argv: list[str] | None = None) -> int:
             corpus_dir=args.corpus_dir,
             output_path=output,
             sources=manifest.get("sources") or None,
+            alphabet=args.alphabet,
+            order=args.order,
         )
         print(f"Built {output} from {stats.raw_files} files")
         print(f"Metadata: {stats.metadata_path}")
@@ -179,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run":
+        _validate_v2_args(parser, args)
         corpus_dir = args.corpus_dir or _default_corpus_dir(args.language)
         output = args.output or _default_output(args.language)
         sources = _resolve_sources(args.language, args.sources)
@@ -195,6 +234,8 @@ def main(argv: list[str] | None = None) -> int:
             corpus_dir=corpus_dir,
             output_path=output,
             sources=manifest.get("sources") or None,
+            alphabet=args.alphabet,
+            order=args.order,
         )
         verify_model(output)
         print(f"Built and verified {output}")

@@ -30,6 +30,7 @@ scored 7.8% on Zodiac 408):
 """
 from __future__ import annotations
 
+import json
 import math
 import random
 import struct
@@ -48,53 +49,105 @@ from analysis.homophonic import HomophonicAnnealResult, HomophonicCandidate
 # Model dataclass
 # ---------------------------------------------------------------------------
 
+# Default alphabet for v1 (26 lowercase letters) — kept as a module constant so
+# both the loader and the dataclass default agree.
+_V1_ALPHABET = "abcdefghijklmnopqrstuvwxyz"
+
+
 @dataclass
 class ZenithModel:
-    """Loaded Zenith language model: 26^5 float32 log-prob array + metadata."""
+    """Loaded Zenith language model: ``base**order`` float32 log-prob array + metadata.
 
-    log_probs: np.ndarray           # shape (26**5,), dtype float32, natural-log probs
-    unknown_log_prob: float         # floor for any 5-gram not in the training corpus
-    letter_freq: dict[str, float]   # 'A'..'Z' → unigram probability (from corpus)
+    For legacy v1 models this is the classic 26^5 lowercase-letter table.  The
+    ``alphabet``/``order`` fields generalise the index math so ``zenith_binary_v2``
+    models over an arbitrary symbol alphabet and order load and look up correctly.
+    """
+
+    log_probs: np.ndarray           # shape (base**order,), dtype float32, natural-log probs
+    unknown_log_prob: float         # floor for any n-gram not in the training corpus
+    letter_freq: dict[str, float]   # symbol → unigram probability (from corpus)
     order: int = 5
+    alphabet: str = _V1_ALPHABET    # ordered symbol alphabet; index i → symbol alphabet[i]
 
-    # Pre-computed powers for the index formula
+    # Pre-computed powers for the index formula (derived from ``alphabet``/``order``
+    # in ``__post_init__``).  ``_P4``/``_P3``/``_P2`` remain available for the
+    # order-5 hot path used by the solver; for base=26 they equal 26**4/26**3/26**2.
+    _base: int = field(default=26, init=False, repr=False)
     _P4: int = field(default=26**4, init=False, repr=False)
     _P3: int = field(default=26**3, init=False, repr=False)
     _P2: int = field(default=26**2, init=False, repr=False)
+    _powers: tuple[int, ...] = field(default=(), init=False, repr=False)
+    _index_of: dict[str, int] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        base = len(self.alphabet) if self.alphabet else 26
+        self._base = base
+        # Order-5 hot-path powers (identical to the historical hardcoded values
+        # when base == 26).
+        self._P4 = base ** 4
+        self._P3 = base ** 3
+        self._P2 = base ** 2
+        # Generic positional powers: big-endian, most-significant symbol first.
+        self._powers = tuple(base ** (self.order - 1 - i) for i in range(self.order))
+        self._index_of = {ch: i for i, ch in enumerate(self.alphabet)}
 
     def lookup_lo(self, a: int, b: int, c: int, d: int, e: int) -> float:
-        """Return log-prob for the 5-gram encoded as five 0-25 offsets (lowercase)."""
-        idx = (a * self._P4 + b * self._P3 + c * self._P2 + d * 26 + e)
+        """Return log-prob for the 5-gram encoded as five 0-(base-1) offsets."""
+        idx = (a * self._P4 + b * self._P3 + c * self._P2 + d * self._base + e)
+        return float(self.log_probs[idx])
+
+    def lookup_indices(self, indices) -> float:
+        """Return log-prob for an ``order``-length sequence of symbol offsets.
+
+        Generic replacement for :meth:`lookup_lo` that works for any
+        ``(alphabet, order)``.  Out-of-range offsets or a wrong-length sequence
+        fall back to the floor.
+        """
+        if len(indices) != self.order:
+            return self.unknown_log_prob
+        idx = 0
+        base = self._base
+        for off, power in zip(indices, self._powers):
+            if not (0 <= off < base):
+                return self.unknown_log_prob
+            idx += off * power
         return float(self.log_probs[idx])
 
     def lookup(self, gram: str) -> float:
-        """Return log-prob for a 5-char lowercase string.  Falls back to floor."""
-        if len(gram) != 5:
+        """Return log-prob for an ``order``-length symbol string.  Falls back to floor."""
+        if len(gram) != self.order:
             return self.unknown_log_prob
-        a = ord(gram[0]) - 97
-        b = ord(gram[1]) - 97
-        c = ord(gram[2]) - 97
-        d = ord(gram[3]) - 97
-        e = ord(gram[4]) - 97
-        if not (0 <= a < 26 and 0 <= b < 26 and 0 <= c < 26
-                and 0 <= d < 26 and 0 <= e < 26):
-            return self.unknown_log_prob
-        return self.lookup_lo(a, b, c, d, e)
+        idx = 0
+        index_of = self._index_of
+        for ch, power in zip(gram, self._powers):
+            off = index_of.get(ch)
+            if off is None:
+                return self.unknown_log_prob
+            idx += off * power
+        return float(self.log_probs[idx])
 
 
 # ---------------------------------------------------------------------------
 # Binary model loader
 # ---------------------------------------------------------------------------
 
-_MAGIC = 0x5A4D4D43   # "ZMMC"
+_MAGIC = 0x5A4D4D43       # "ZMMC" — v1 headerless-26^5 Zenith model
+_MAGIC_V2 = 0x5A4D4332    # "ZMC2" — v2 (alphabet, order) container
 _VERSION = 1
+_VERSION_V2 = 2
 _NGRAM_ARRAY_LEN = 26 ** 5  # 11_881_376
+_DEFAULT_UNKNOWN_LOG_PROB = -30.0   # floor used when unknownProbability <= 0
+_MAX_V2_ORDER = 12   # sanity bound on header order — avoids huge base**order on corrupt headers
 
 
 def load_zenith_binary_model(path: str | Path) -> ZenithModel:
-    """Load ``zenith-model.array.bin`` into a :class:`ZenithModel`.
+    """Load a Zenith binary model into a :class:`ZenithModel`.
 
-    The binary format is Java ``DataOutputStream`` (big-endian):
+    Two container formats are supported and distinguished by sniffing the 4-byte
+    magic:
+
+    **v1** (magic ``0x5A4D4D43``) — the classic 26^5 lowercase-letter table,
+    Java ``DataOutputStream`` (big-endian).  Parsed byte-for-byte as before:
 
     .. code-block:: text
 
@@ -111,69 +164,188 @@ def load_zenith_binary_model(path: str | Path) -> ZenithModel:
             8B  logProbability (float64)
         4B  arrayLength = 26^5
         <arrayLength × 4B>  nGramLogProbabilities (float32)
+
+    **v2** (magic ``0x5A4D4332``) — a generalised (alphabet, order) container
+    (big-endian):
+
+    .. code-block:: text
+
+        4B  magic          = 0x5A4D4332
+        4B  version        = 2
+        4B  order          = K
+        4B  alphabetLen    = N (number of symbols / code points)
+        4B  alphabetBytes  = L (UTF-8 byte length of the alphabet string)
+        LB  alphabet       (UTF-8)
+        4B  unknownProbability  (float32)
+        4B  arrayLength    = N^K
+        <arrayLength × 4B>  nGramLogProbabilities (float32)
+
+    In both cases, when a ``<path>.metadata.json`` sidecar carrying an
+    ``unknown_log_prob`` value is present, that value overrides the floor parsed
+    from the binary (see :func:`_read_sidecar_unknown_log_prob`).
     """
     return _load_cached(str(Path(path).expanduser().resolve()))
 
 
-@lru_cache(maxsize=2)
+@lru_cache(maxsize=16)
 def _load_cached(path: str) -> ZenithModel:
     """LRU-cached loader — the model is large, only load once per path."""
     with open(path, "rb") as fh:
-        magic, version, order, max_ngrams = struct.unpack(">IIII", fh.read(16))
-        if magic != _MAGIC:
+        magic_bytes = fh.read(4)
+        if len(magic_bytes) < 4:
+            raise ValueError("Not a Zenith model file (truncated header)")
+        magic = struct.unpack(">I", magic_bytes)[0]
+        if magic == _MAGIC:
+            model = _read_v1(fh)
+        elif magic == _MAGIC_V2:
+            model = _read_v2(fh)
+        else:
             raise ValueError(
                 f"Not a Zenith model file (bad magic 0x{magic:08X}); expected 0x{_MAGIC:08X}"
             )
-        if version != _VERSION:
-            raise ValueError(f"Unsupported Zenith model version {version}")
-        if order != 5:
-            raise ValueError(f"Only order-5 models are supported; got order={order}")
 
-        unknown_prob: float = struct.unpack(">f", fh.read(4))[0]
-        unknown_log_prob = math.log(unknown_prob) if unknown_prob > 0 else -30.0
+    # Sidecar metadata may override the unknown-n-gram floor.
+    override = _read_sidecar_unknown_log_prob(path)
+    if override is not None:
+        model.unknown_log_prob = override
+    return model
 
-        total_nodes, first_order_count = struct.unpack(">II", fh.read(8))
 
-        letter_freq: dict[str, float] = {}
-        total_unigram_count = 0
-        unigram_counts: dict[str, int] = {}
+def _read_v1(fh) -> ZenithModel:
+    """Parse a v1 model body (``fh`` positioned right after the 4-byte magic)."""
+    version, order, max_ngrams = struct.unpack(">III", fh.read(12))
+    if version != _VERSION:
+        raise ValueError(f"Unsupported Zenith model version {version}")
+    if order != 5:
+        raise ValueError(f"Only order-5 models are supported; got order={order}")
 
-        for _ in range(first_order_count):
-            # char: 2-byte UTF-16 BE
-            char_code = struct.unpack(">H", fh.read(2))[0]
-            count = struct.unpack(">q", fh.read(8))[0]   # int64
-            log_prob = struct.unpack(">d", fh.read(8))[0]  # float64
-            letter = chr(char_code).upper()
-            if "A" <= letter <= "Z":
-                unigram_counts[letter] = count
-                total_unigram_count += count
-                _ = log_prob  # not needed; we recompute from counts
+    unknown_prob: float = struct.unpack(">f", fh.read(4))[0]
+    unknown_log_prob = math.log(unknown_prob) if unknown_prob > 0 else _DEFAULT_UNKNOWN_LOG_PROB
 
-        for letter, count in unigram_counts.items():
-            letter_freq[letter] = count / max(1, total_unigram_count)
+    total_nodes, first_order_count = struct.unpack(">II", fh.read(8))
 
-        array_length = struct.unpack(">I", fh.read(4))[0]
-        if array_length != _NGRAM_ARRAY_LEN:
-            raise ValueError(
-                f"Unexpected array length {array_length}; expected {_NGRAM_ARRAY_LEN}"
-            )
+    letter_freq: dict[str, float] = {}
+    total_unigram_count = 0
+    unigram_counts: dict[str, int] = {}
 
-        raw_bytes = fh.read(array_length * 4)
-        if len(raw_bytes) != array_length * 4:
-            raise ValueError(
-                f"Truncated model file: expected {array_length * 4} bytes, "
-                f"got {len(raw_bytes)}"
-            )
+    for _ in range(first_order_count):
+        # char: 2-byte UTF-16 BE
+        char_code = struct.unpack(">H", fh.read(2))[0]
+        count = struct.unpack(">q", fh.read(8))[0]   # int64
+        log_prob = struct.unpack(">d", fh.read(8))[0]  # float64
+        letter = chr(char_code).upper()
+        if "A" <= letter <= "Z":
+            unigram_counts[letter] = count
+            total_unigram_count += count
+            _ = log_prob  # not needed; we recompute from counts
 
-        # Big-endian float32 → native float32 numpy array
-        log_probs = np.frombuffer(raw_bytes, dtype=">f4").astype(np.float32)
+    for letter, count in unigram_counts.items():
+        letter_freq[letter] = count / max(1, total_unigram_count)
+
+    array_length = struct.unpack(">I", fh.read(4))[0]
+    if array_length != _NGRAM_ARRAY_LEN:
+        raise ValueError(
+            f"Unexpected array length {array_length}; expected {_NGRAM_ARRAY_LEN}"
+        )
+
+    raw_bytes = fh.read(array_length * 4)
+    if len(raw_bytes) != array_length * 4:
+        raise ValueError(
+            f"Truncated model file: expected {array_length * 4} bytes, "
+            f"got {len(raw_bytes)}"
+        )
+
+    # Big-endian float32 → native float32 numpy array
+    log_probs = np.frombuffer(raw_bytes, dtype=">f4").astype(np.float32)
 
     return ZenithModel(
         log_probs=log_probs,
         unknown_log_prob=unknown_log_prob,
         letter_freq=letter_freq,
         order=5,
+        alphabet=_V1_ALPHABET,
     )
+
+
+def _read_v2(fh) -> ZenithModel:
+    """Parse a v2 model body (``fh`` positioned right after the 4-byte magic)."""
+    version, order, alphabet_len, alphabet_bytes_len = struct.unpack(">IIII", fh.read(16))
+    if version != _VERSION_V2:
+        raise ValueError(f"Unsupported Zenith v2 model version {version}")
+    if not (1 <= order <= _MAX_V2_ORDER):
+        raise ValueError(
+            f"Invalid model order {order}; expected 1..{_MAX_V2_ORDER}"
+        )
+    if alphabet_len < 1:
+        raise ValueError(f"Invalid v2 alphabet length {alphabet_len}")
+
+    alphabet_bytes = fh.read(alphabet_bytes_len)
+    if len(alphabet_bytes) != alphabet_bytes_len:
+        raise ValueError("Truncated alphabet in v2 model header")
+    alphabet = alphabet_bytes.decode("utf-8")
+    if len(alphabet) != alphabet_len:
+        raise ValueError(
+            f"Alphabet length mismatch: header says {alphabet_len} symbols, "
+            f"decoded {len(alphabet)}"
+        )
+    base = alphabet_len
+
+    unknown_prob: float = struct.unpack(">f", fh.read(4))[0]
+    unknown_log_prob = math.log(unknown_prob) if unknown_prob > 0 else _DEFAULT_UNKNOWN_LOG_PROB
+
+    array_length = struct.unpack(">I", fh.read(4))[0]
+    expected = base ** order
+    if array_length != expected:
+        raise ValueError(
+            f"Unexpected array length {array_length}; expected {expected} "
+            f"(base {base} ^ order {order})"
+        )
+
+    raw_bytes = fh.read(array_length * 4)
+    if len(raw_bytes) != array_length * 4:
+        raise ValueError(
+            f"Truncated model file: expected {array_length * 4} bytes, "
+            f"got {len(raw_bytes)}"
+        )
+    log_probs = np.frombuffer(raw_bytes, dtype=">f4").astype(np.float32)
+
+    # v2 does not carry per-symbol counts; use a uniform prior keyed by the
+    # alphabet symbols themselves.
+    letter_freq = {ch: 1.0 / base for ch in alphabet} if base else {}
+
+    return ZenithModel(
+        log_probs=log_probs,
+        unknown_log_prob=unknown_log_prob,
+        letter_freq=letter_freq,
+        order=order,
+        alphabet=alphabet,
+    )
+
+
+def _read_sidecar_unknown_log_prob(path: str) -> float | None:
+    """Return ``unknown_log_prob`` from a ``<path>.metadata.json`` sidecar, if present.
+
+    The value in the sidecar is already a natural-log floor (matching the
+    ``model_metadata`` pattern used elsewhere).  Returns ``None`` when there is no
+    sidecar, it cannot be parsed, or it does not carry a numeric
+    ``unknown_log_prob`` — in which case the loader keeps the floor parsed from
+    the binary.
+    """
+    meta_path = Path(path + ".metadata.json")
+    if not meta_path.exists():
+        return None
+    try:
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    value = data.get("unknown_log_prob")
+    if isinstance(value, bool):  # guard: bool is a subclass of int
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -366,6 +538,18 @@ def zenith_solve(
     * Proposal bucket: 80% flat + 20% corpus frequency (from binary model)
     * Epoch structure: fresh random init each epoch, keep best overall
     """
+    # The SA solver's proposal bucket, chars_lo encoding, and 26-slot letter
+    # counts all assume the classic 26-letter order-5 (v1-shaped) model.  A v2
+    # model with base > 26 would silently garbage-score (indices stay in
+    # bounds), and base < 26 or order != 5 would crash mid-anneal — reject
+    # cleanly up front instead.
+    base = len(getattr(model, "alphabet", _V1_ALPHABET) or _V1_ALPHABET)
+    if base != 26 or model.order != 5:
+        raise ValueError(
+            "zenith_solve requires a 26-letter order-5 (v1-shaped) model; "
+            f"got base={base}, order={model.order}"
+        )
+
     rng = random.Random(seed)
     t0 = time.time()
 

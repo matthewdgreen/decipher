@@ -125,6 +125,33 @@ struct ZenithFastModel {
     log_probs: Arc<Vec<f32>>,
     letter_freq: [f64; 26],
     order: usize,
+    // Generalised (alphabet, order) fields.  For legacy v1 models this is the
+    // 26-symbol lowercase alphabet and base == 26.  The SA solver path only runs
+    // on base == 26 order-5 models; the extra fields let the v2 reader be mirrored
+    // and cross-checked against the Python loader.
+    alphabet: String,
+    base: usize,
+    // NOTE: this is the binary-derived floor.  The Python loader may override
+    // unknown_log_prob from a `<path>.metadata.json` sidecar; that override is
+    // intentionally Python-only, so `zenith_load_model_debug` exposes the value
+    // parsed from the binary and a tiny delta (~1e-7; the sidecar rounds to
+    // 6 dp) vs the Python model is expected whenever a sidecar is present.
+    unknown_log_prob: f64,
+}
+
+/// The SA kernels (proposal bucket, chars encoding, 26-slot letter counts)
+/// assume the classic 26-letter order-5 (v1-shaped) model.  A v2 model with
+/// base > 26 would silently garbage-score (indices stay in bounds) and
+/// base < 26 or order != 5 would panic on out-of-bounds indexing — reject
+/// cleanly at the entry points instead.
+fn ensure_v1_solver_model(model: &ZenithFastModel) -> PyResult<()> {
+    if model.base != 26 || model.order != 5 {
+        return Err(PyValueError::new_err(format!(
+            "Zenith SA solver requires a 26-letter order-5 (v1-shaped) model; got base={}, order={}",
+            model.base, model.order
+        )));
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -757,6 +784,7 @@ fn zenith_solve_seed(
         return Err(PyValueError::new_err("plaintext_ids must not be empty"));
     }
     let model = load_zenith_fast_model(&model_path)?;
+    ensure_v1_solver_model(&model)?;
     let result = zenith_solve_seed_inner(
         &model,
         &tokens,
@@ -799,6 +827,31 @@ fn zenith_solve_seed(
         candidates.append(item)?;
     }
     out.set_item("candidates", candidates)?;
+    Ok(out.into())
+}
+
+#[pyfunction]
+fn zenith_load_model_debug(py: Python<'_>, model_path: String) -> PyResult<PyObject> {
+    // Read a Zenith binary model (v1 or v2) and expose its raw contents so the
+    // Python and Rust loaders can be cross-checked for shared semantics.  Intended
+    // for tiny fixtures/tests — it materialises the whole log-prob array.
+    let model = read_zenith_fast_model(&model_path)?;
+    let out = PyDict::new_bound(py);
+    out.set_item("alphabet", model.alphabet.clone())?;
+    out.set_item("order", model.order)?;
+    out.set_item("base", model.base)?;
+    out.set_item("unknown_log_prob", model.unknown_log_prob)?;
+    out.set_item("array_length", model.log_probs.len())?;
+    let arr = PyList::empty_bound(py);
+    for value in model.log_probs.iter() {
+        arr.append(*value as f64)?;
+    }
+    out.set_item("log_probs", arr)?;
+    let freq = PyList::empty_bound(py);
+    for value in model.letter_freq.iter() {
+        freq.append(*value)?;
+    }
+    out.set_item("letter_freq", freq)?;
     Ok(out.into())
 }
 
@@ -850,6 +903,7 @@ fn zenith_transform_candidates_batch(
         ));
     }
     let model = load_zenith_fast_model(&model_path)?;
+    ensure_v1_solver_model(&model)?;
     let seed_list = if seeds.is_empty() { vec![0] } else { seeds };
     let worker_count = if threads == 0 {
         std::thread::available_parallelism()
@@ -966,6 +1020,7 @@ fn zenith_null_mask_candidates_batch(
         parsed.push(parse_null_mask_candidate(dict, parsed.len())?);
     }
     let model = load_zenith_fast_model(&model_path)?;
+    ensure_v1_solver_model(&model)?;
     let seed_list = if seeds.is_empty() { vec![0] } else { seeds };
     let worker_count = if threads == 0 {
         std::thread::available_parallelism()
@@ -3429,18 +3484,28 @@ fn load_zenith_fast_model(path: &str) -> PyResult<Arc<ZenithFastModel>> {
         .clone())
 }
 
+const ZENITH_V1_MAGIC: u32 = 0x5A4D4D43; // "ZMMC"
+const ZENITH_V2_MAGIC: u32 = 0x5A4D4332; // "ZMC2"
+const ZENITH_V1_ALPHABET: &str = "abcdefghijklmnopqrstuvwxyz";
+
 fn read_zenith_fast_model(path: &str) -> PyResult<ZenithFastModel> {
     let mut fh = File::open(path)
         .map_err(|e| PyValueError::new_err(format!("failed to open Zenith model {path}: {e}")))?;
     let magic = read_u32_be(&mut fh)?;
-    let version = read_u32_be(&mut fh)?;
-    let order = read_u32_be(&mut fh)? as usize;
-    let _max_ngrams = read_u32_be(&mut fh)?;
-    if magic != 0x5A4D4D43 {
-        return Err(PyValueError::new_err(format!(
+    match magic {
+        ZENITH_V1_MAGIC => read_zenith_fast_model_v1(&mut fh),
+        ZENITH_V2_MAGIC => read_zenith_fast_model_v2(&mut fh),
+        _ => Err(PyValueError::new_err(format!(
             "Not a Zenith model file (bad magic 0x{magic:08X})"
-        )));
+        ))),
     }
+}
+
+fn read_zenith_fast_model_v1(fh: &mut File) -> PyResult<ZenithFastModel> {
+    // ``fh`` is positioned right after the 4-byte magic.
+    let version = read_u32_be(fh)?;
+    let order = read_u32_be(fh)? as usize;
+    let _max_ngrams = read_u32_be(fh)?;
     if version != 1 {
         return Err(PyValueError::new_err(format!(
             "Unsupported Zenith model version {version}"
@@ -3451,15 +3516,20 @@ fn read_zenith_fast_model(path: &str) -> PyResult<ZenithFastModel> {
             "Only order-5 models are supported; got order={order}"
         )));
     }
-    let _unknown_prob = read_f32_be(&mut fh)?;
-    let _total_nodes = read_u32_be(&mut fh)?;
-    let first_order_count = read_u32_be(&mut fh)? as usize;
+    let unknown_prob = read_f32_be(fh)?;
+    let unknown_log_prob = if unknown_prob > 0.0 {
+        (unknown_prob as f64).ln()
+    } else {
+        -30.0
+    };
+    let _total_nodes = read_u32_be(fh)?;
+    let first_order_count = read_u32_be(fh)? as usize;
     let mut counts = [0u64; 26];
     let mut total = 0u64;
     for _ in 0..first_order_count {
-        let char_code = read_u16_be(&mut fh)?;
-        let count = read_i64_be(&mut fh)?;
-        let _log_prob = read_f64_be(&mut fh)?;
+        let char_code = read_u16_be(fh)?;
+        let count = read_i64_be(fh)?;
+        let _log_prob = read_f64_be(fh)?;
         let ch = char::from_u32(char_code as u32)
             .unwrap_or('\0')
             .to_ascii_uppercase();
@@ -3477,7 +3547,7 @@ fn read_zenith_fast_model(path: &str) -> PyResult<ZenithFastModel> {
     } else {
         letter_freq.fill(1.0 / 26.0);
     }
-    let array_length = read_u32_be(&mut fh)? as usize;
+    let array_length = read_u32_be(fh)? as usize;
     if array_length != 26usize.pow(5) {
         return Err(PyValueError::new_err(format!(
             "Unexpected array length {array_length}; expected {}",
@@ -3495,6 +3565,82 @@ fn read_zenith_fast_model(path: &str) -> PyResult<ZenithFastModel> {
         log_probs: Arc::new(log_probs),
         letter_freq,
         order,
+        alphabet: ZENITH_V1_ALPHABET.to_string(),
+        base: 26,
+        unknown_log_prob,
+    })
+}
+
+fn read_zenith_fast_model_v2(fh: &mut File) -> PyResult<ZenithFastModel> {
+    // ``fh`` is positioned right after the 4-byte magic.  Layout mirrors the
+    // Python ``analysis.zenith_solver._read_v2`` reader and the builder's
+    // ``write_zenith_binary_model_v2``.
+    let version = read_u32_be(fh)?;
+    let order = read_u32_be(fh)? as usize;
+    let alphabet_len = read_u32_be(fh)? as usize;
+    let alphabet_bytes_len = read_u32_be(fh)? as usize;
+    if version != 2 {
+        return Err(PyValueError::new_err(format!(
+            "Unsupported Zenith v2 model version {version}"
+        )));
+    }
+    // Bounds mirror the Python reader (_MAX_V2_ORDER = 12): reject corrupt
+    // headers before computing base^order.
+    if order < 1 || order > 12 {
+        return Err(PyValueError::new_err(format!(
+            "Invalid model order {order}; expected 1..12"
+        )));
+    }
+    if alphabet_len < 1 {
+        return Err(PyValueError::new_err(format!(
+            "Invalid v2 alphabet length {alphabet_len}"
+        )));
+    }
+    let mut alphabet_bytes = vec![0u8; alphabet_bytes_len];
+    fh.read_exact(&mut alphabet_bytes)
+        .map_err(|e| PyValueError::new_err(format!("truncated v2 alphabet: {e}")))?;
+    let alphabet = String::from_utf8(alphabet_bytes)
+        .map_err(|e| PyValueError::new_err(format!("invalid UTF-8 alphabet in v2 model: {e}")))?;
+    if alphabet.chars().count() != alphabet_len {
+        return Err(PyValueError::new_err(format!(
+            "Alphabet length mismatch: header says {alphabet_len} symbols, decoded {}",
+            alphabet.chars().count()
+        )));
+    }
+    let base = alphabet_len;
+    let unknown_prob = read_f32_be(fh)?;
+    let unknown_log_prob = if unknown_prob > 0.0 {
+        (unknown_prob as f64).ln()
+    } else {
+        -30.0
+    };
+    let array_length = read_u32_be(fh)? as usize;
+    let expected = base
+        .checked_pow(order as u32)
+        .ok_or_else(|| PyValueError::new_err("v2 base^order overflows usize"))?;
+    if array_length != expected {
+        return Err(PyValueError::new_err(format!(
+            "Unexpected array length {array_length}; expected {expected} (base {base} ^ order {order})"
+        )));
+    }
+    let mut bytes = vec![0u8; array_length * 4];
+    fh.read_exact(&mut bytes)
+        .map_err(|e| PyValueError::new_err(format!("truncated Zenith model array: {e}")))?;
+    let mut log_probs = Vec::with_capacity(array_length);
+    for chunk in bytes.chunks_exact(4) {
+        log_probs.push(f32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    // ``letter_freq`` is only consumed by the base-26 SA path; keep a uniform
+    // placeholder for v2 models (which are not run through the SA solver here).
+    let mut letter_freq = [0.0f64; 26];
+    letter_freq.fill(1.0 / 26.0);
+    Ok(ZenithFastModel {
+        log_probs: Arc::new(log_probs),
+        letter_freq,
+        order,
+        alphabet,
+        base,
+        unknown_log_prob,
     })
 }
 
@@ -4191,6 +4337,7 @@ fn decipher_fast(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(transform_structural_metrics_batch, m)?)?;
     m.add_function(wrap_pyfunction!(pure_transposition_score_batch, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_solve_seed, m)?)?;
+    m.add_function(wrap_pyfunction!(zenith_load_model_debug, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_transform_candidates_batch, m)?)?;
     m.add_function(wrap_pyfunction!(zenith_null_mask_candidates_batch, m)?)?;
     Ok(())

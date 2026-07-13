@@ -22,14 +22,18 @@ def verify_model(path: Path) -> dict[str, object]:
     metadata = None
     if metadata_path.exists():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    base = len(model.alphabet)
+    expected_len = base ** model.order
     checks = {
-        "shape_ok": model.log_probs.shape == (26 ** 5,),
+        "shape_ok": model.log_probs.shape == (expected_len,),
+        "alphabet": model.alphabet,
+        "order": model.order,
         "letter_freq_total": letter_total,
         "unknown_log_prob": model.unknown_log_prob,
         "metadata_path": str(metadata_path) if metadata_path.exists() else None,
         "metadata": metadata,
-        "sample_ation": model.lookup("ation"),
-        "sample_there": model.lookup("there"),
+        "sample_ation": model.lookup("ation") if model.order == 5 else None,
+        "sample_there": model.lookup("there") if model.order == 5 else None,
     }
     if not checks["shape_ok"]:
         raise ValueError("model array shape mismatch")
