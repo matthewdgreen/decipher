@@ -11,6 +11,7 @@ from analysis.candidate_packet import (
     packet_from_null_mask_row,
     packet_from_pure_transposition_row,
     packet_from_transform_row,
+    packet_from_word_repair_row,
 )
 from agent.finalist_sessions import FinalistSessionStore
 
@@ -78,6 +79,54 @@ def _pure_transposition_row() -> dict:
         "preview": "THEQUICKBROWNFOX",
         "validation": {"validation_score": 2.72, "validation_label": "coherent_candidate"},
         "validated_selection_score": -4.2974,
+    }
+
+
+def _word_repair_row() -> dict:
+    # Shape of a variant row produced by word_hypothesis_repair.propose_word_repairs.
+    return {
+        "edits": ["S001:X->O"],
+        "mask": [],
+        "word_hypotheses": [
+            {
+                "test_id": "pg1",
+                "window_start": 0,
+                "start": 3,
+                "end": 8,
+                "observed": "HXUSE",
+                "target": "HOUSE",
+                "edits": ["S001->O"],
+                "distance": 1,
+                "dictionary_rank": 277,
+                "local_score": 6.1,
+            }
+        ],
+        "word_hypothesis_score": 6.1,
+        "page_robust_score": 3.38,
+        "page_balanced_score": 3.21,
+        "page_validation_avg": 3.1,
+        "page_validation_min": 2.9,
+        "fragment_illusion_penalty": 0.0,
+        "page_runtime_scores": [{"test_id": "pg1", "validation_score_v2": 3.1}],
+        "page_previews": [{"test_id": "pg1", "preview": "THEHOUSE", "filtered_length": 18}],
+        "preview": "THEHOUSEGRAENWORLD",
+        "repair_adjudication": {
+            "adjudication_score": 1.22,
+            "collateral_occurrences": 0,
+            "target_occurrences": 1,
+            "target_gain_avg": 0.15,
+            "occurrence_impacts": [{"symbol": "S001"}],
+        },
+        "repair_acceptance": {
+            "accepted": True,
+            "decision": "runtime_accept",
+            "deltas": {"page_robust_score": 0.45, "page_validation_avg": 0.2},
+            "reasons": ["robust gain clears margin (0.450)"],
+        },
+        "repair_evidence": {
+            "page_count": 2,
+            "pages": [{"test_id": "pg2", "validation_delta": 0.0}],
+        },
     }
 
 
@@ -218,8 +267,74 @@ def test_pure_transposition_adapter_fields_and_round_trip():
     assert CandidatePacket.from_dict(packet.to_dict()) == packet
 
 
+def test_word_repair_adapter_fields_and_round_trip():
+    row = _word_repair_row()
+    packet = packet_from_word_repair_row(row, rank=1, source_branch="main")
+
+    assert packet.kind == "word_repair"
+    # No candidate_id on the row -> derived from the edit set.
+    assert packet.candidate_id == "edits:S001:X->O"
+    assert packet.rank == 1
+    # F3 deferral: full decryptions stay out of word-repair packets.
+    assert packet.text is None
+    assert packet.preview == "THEHOUSEGRAENWORLD"
+    assert packet.source == {"solver": "word_hypothesis_repair", "source_branch": "main"}
+    # Rank-key components plus the adjudication score.
+    assert packet.solver_scores == {
+        "page_robust_score": 3.38,
+        "page_balanced_score": 3.21,
+        "page_validation_avg": 3.1,
+        "page_validation_min": 2.9,
+        "word_hypothesis_score": 6.1,
+        "adjudication_score": 1.22,
+    }
+    # The accept/reject decision travels as validation.
+    assert packet.validation["accepted"] is True
+    assert packet.validation["decision"] == "runtime_accept"
+    # Provenance: edit set, page-GROUP metric deltas, per-page runtime
+    # evidence, and the compact collateral evidence.
+    assert packet.provenance["edits"] == ["S001:X->O"]
+    assert packet.provenance["mask"] == []
+    assert packet.provenance["word_hypotheses"][0]["target"] == "HOUSE"
+    assert packet.provenance["group_metric_deltas"] == {
+        "page_robust_score": 0.45,
+        "page_validation_avg": 0.2,
+    }
+    assert packet.provenance["page_runtime_evidence"] == [
+        {"test_id": "pg2", "validation_delta": 0.0}
+    ]
+    assert packet.provenance["collateral_evidence"] == {
+        "adjudication_score": 1.22,
+        "collateral_occurrences": 0,
+        "target_occurrences": 1,
+        "target_gain_avg": 0.15,
+    }
+    # Bulky per-page payloads are preserved under extras, not dropped.
+    assert packet.extras["page_runtime_scores"] == [
+        {"test_id": "pg1", "validation_score_v2": 3.1}
+    ]
+    assert packet.extras["page_previews"][0]["preview"] == "THEHOUSE"
+    assert packet.extras["fragment_illusion_penalty"] == 0.0
+
+    assert CandidatePacket.from_dict(packet.to_dict()) == packet
+
+
+def test_word_repair_adapter_candidate_id_edge_cases():
+    # Explicit candidate_id wins.
+    row = _word_repair_row()
+    row["candidate_id"] = "wr:000042"
+    assert packet_from_word_repair_row(row).candidate_id == "wr:000042"
+    # A baseline row (no edits) gets the sentinel id and text stays None.
+    baseline = _word_repair_row()
+    baseline["edits"] = []
+    packet = packet_from_word_repair_row(baseline)
+    assert packet.candidate_id == "edits:baseline"
+    assert packet.text is None
+    assert CandidatePacket.from_dict(packet.to_dict()) == packet
+
+
 # ---------------------------------------------------------------------------
-# Unknown-key tolerance and non-mutation (all three adapters)
+# Unknown-key tolerance and non-mutation (all four adapters)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -228,6 +343,7 @@ def test_pure_transposition_adapter_fields_and_round_trip():
         (packet_from_null_mask_row, _null_mask_row),
         (packet_from_transform_row, _transform_row),
         (packet_from_pure_transposition_row, _pure_transposition_row),
+        (packet_from_word_repair_row, _word_repair_row),
     ],
 )
 def test_adapter_unknown_key_lands_in_extras(adapter, make_row):
@@ -244,6 +360,7 @@ def test_adapter_unknown_key_lands_in_extras(adapter, make_row):
         (packet_from_null_mask_row, _null_mask_row),
         (packet_from_transform_row, _transform_row),
         (packet_from_pure_transposition_row, _pure_transposition_row),
+        (packet_from_word_repair_row, _word_repair_row),
     ],
 )
 def test_adapter_does_not_mutate_input_row(adapter, make_row):
@@ -262,6 +379,10 @@ def test_adapter_rank_parameter_overrides_row_rank():
     pure_row = _pure_transposition_row()  # carries rank=1 natively
     assert packet_from_pure_transposition_row(pure_row, rank=4).rank == 4
     assert packet_from_pure_transposition_row(pure_row).rank == 1  # fallback
+    word_repair_row = _word_repair_row()
+    assert packet_from_word_repair_row(word_repair_row, rank=5).rank == 5
+    word_repair_row["rank"] = 7
+    assert packet_from_word_repair_row(word_repair_row).rank == 7  # fallback
 
 
 def test_from_dict_promotes_unknown_top_level_keys_into_extras():

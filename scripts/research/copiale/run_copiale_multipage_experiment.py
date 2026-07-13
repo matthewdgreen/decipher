@@ -27,14 +27,34 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
-from analysis.homophonic_nulls import null_mask_validation_score_v2  # noqa: E402
-from analysis.language_scoring import language_quality_feature_dict  # noqa: E402
 from automated.runner import _cipher_text_from_tokens, _run_homophonic, run_automated  # noqa: E402
-from automated.runner import _automated_candidate_diagnostics, _plaintext_quality, _word_list  # noqa: E402
 from benchmark.loader import BenchmarkLoader  # noqa: E402
-from benchmark.scorer import score_decryption  # noqa: E402
 from models.alphabet import Alphabet  # noqa: E402
 from models.cipher_text import CipherText  # noqa: E402
+
+# Extracted, generalized library functions (Part A / Part B of the phase-2a
+# consolidation). These names are re-exported here so downstream research
+# scripts that import them from this module keep working unchanged.
+from analysis.multipage import (  # noqa: E402,F401
+    PageBundle,
+    attach_page_scores,
+    build_combined_cipher,
+    consensus_from_finalists,
+    consensus_summary,
+    fragment_illusion_penalty,
+    mean,
+    nested_mean,
+    page_runtime_metrics,
+    project_page_with_sources,
+    project_pages,
+    score_page_runtime,
+    stddev,
+)
+from analysis.word_hypothesis_repair import (  # noqa: E402,F401
+    damaged_windows_for_text,
+    window_damage_for_text,
+    window_damage_score,
+)
 
 
 TOKEN_RE = re.compile(r"S\d+")
@@ -42,15 +62,6 @@ ROBUST_PAGE_RANK_POLICY = (
     "minimum page validation plus binary/evidence/window stability, "
     "minus variance and fragment-illusion penalty"
 )
-
-
-@dataclass(frozen=True)
-class PageBundle:
-    test_id: str
-    canonical_transcription: str
-    plaintext: str
-    symbols: list[str]
-    token_ids: list[int]
 
 
 def main() -> None:
@@ -261,41 +272,6 @@ def main() -> None:
     print(f"Wrote {artifact_output}")
 
 
-def build_combined_cipher(
-    loader: BenchmarkLoader,
-    tests: dict[str, Any],
-    test_ids: list[str],
-) -> tuple[CipherText, list[PageBundle]]:
-    page_symbols: list[list[str]] = []
-    page_plaintexts: list[str] = []
-    canonical_pages: list[str] = []
-    seen: set[str] = set()
-    alphabet_symbols: list[str] = []
-    for test_id in test_ids:
-        data = loader.load_test_data(tests[test_id])
-        symbols = TOKEN_RE.findall(data.canonical_transcription)
-        page_symbols.append(symbols)
-        page_plaintexts.append(data.plaintext or "")
-        canonical_pages.append(data.canonical_transcription)
-        for symbol in symbols:
-            if symbol not in seen:
-                seen.add(symbol)
-                alphabet_symbols.append(symbol)
-    alphabet = Alphabet(alphabet_symbols)
-    pages = [
-        PageBundle(
-            test_id=test_id,
-            canonical_transcription=canonical_pages[index],
-            plaintext=page_plaintexts[index],
-            symbols=page_symbols[index],
-            token_ids=[alphabet.id_for(symbol) for symbol in page_symbols[index]],
-        )
-        for index, test_id in enumerate(test_ids)
-    ]
-    raw = " | ".join(" ".join(page.symbols) for page in pages)
-    return CipherText(raw=raw, alphabet=alphabet, source="copiale_multipage", separator=" | "), pages
-
-
 def selected_null_mask(artifact: dict[str, Any]) -> tuple[str, ...]:
     for step in reversed(artifact.get("steps") or []):
         if not isinstance(step, dict) or step.get("name") != "search_null_masks":
@@ -304,77 +280,6 @@ def selected_null_mask(artifact: dict[str, Any]) -> tuple[str, ...]:
         if isinstance(selected, dict):
             return tuple(str(symbol) for symbol in (selected.get("mask") or []))
     return ()
-
-
-def consensus_from_finalists(
-    *,
-    artifact: dict[str, Any],
-    alphabet: Alphabet,
-    top_n: int,
-    min_agreement: float,
-) -> dict[str, dict[str, Any]]:
-    rows = []
-    for step in reversed(artifact.get("steps") or []):
-        if not isinstance(step, dict) or step.get("name") != "search_null_masks":
-            continue
-        selected = step.get("selected")
-        if isinstance(selected, dict):
-            rows.append(selected)
-        rows.extend(
-            row for row in (step.get("top_finalists") or [])
-            if isinstance(row, dict)
-        )
-        break
-    if not rows:
-        rows = [{"key": artifact.get("key") or {}, "mask": selected_null_mask(artifact)}]
-    rows = rows[: max(1, top_n)]
-    consensus: dict[str, dict[str, Any]] = {}
-    for token_id in range(alphabet.size):
-        symbol = alphabet.symbol_for(token_id)
-        counts: dict[str, int] = {}
-        for row in rows:
-            mask = set(str(item) for item in (row.get("mask") or []))
-            if symbol in mask:
-                assignment = "<null>"
-            else:
-                key = row.get("key") if isinstance(row.get("key"), dict) else {}
-                value = key.get(str(token_id), key.get(token_id))
-                try:
-                    value_int = int(value)
-                except (TypeError, ValueError):
-                    assignment = "?"
-                else:
-                    assignment = chr(ord("A") + value_int) if 0 <= value_int <= 25 else "?"
-            counts[assignment] = counts.get(assignment, 0) + 1
-        winner, winner_count = max(counts.items(), key=lambda item: (item[1], item[0]))
-        agreement = winner_count / max(1, len(rows))
-        consensus[symbol] = {
-            "symbol": symbol,
-            "token_id": token_id,
-            "winner": winner,
-            "agreement": round(agreement, 4),
-            "stable": agreement >= min_agreement,
-            "counts": dict(sorted(counts.items(), key=lambda item: (-item[1], item[0]))),
-        }
-    return consensus
-
-
-def consensus_summary(consensus: dict[str, dict[str, Any]]) -> dict[str, Any]:
-    stable = [row for row in consensus.values() if row.get("stable")]
-    stable_letters = [
-        row for row in stable
-        if isinstance(row.get("winner"), str)
-        and len(str(row.get("winner"))) == 1
-        and "A" <= str(row.get("winner")) <= "Z"
-    ]
-    stable_nulls = [row for row in stable if row.get("winner") == "<null>"]
-    return {
-        "symbol_count": len(consensus),
-        "stable_symbol_count": len(stable),
-        "stable_letter_count": len(stable_letters),
-        "stable_null_count": len(stable_nulls),
-        "disputed_symbol_count": len(consensus) - len(stable),
-    }
 
 
 def refine_pages_with_shared_consensus(
@@ -457,47 +362,6 @@ def refine_pages_with_shared_consensus(
                 "error": f"{type(exc).__name__}: {exc}",
             })
     return rows
-
-
-def project_pages(
-    *,
-    pages: list[PageBundle],
-    key: dict[int, int],
-    mask: tuple[str, ...],
-) -> list[dict[str, Any]]:
-    masked = set(mask)
-    rows = []
-    for page in pages:
-        chars: list[str] = []
-        for symbol, token_id in zip(page.symbols, page.token_ids):
-            if symbol in masked:
-                continue
-            value = key.get(token_id)
-            if value is None or value < 0 or value > 25:
-                continue
-            chars.append(chr(ord("A") + value))
-        rows.append({
-            "test_id": page.test_id,
-            "token_count": len(page.token_ids),
-            "filtered_length": len(chars),
-            "decryption": "".join(chars),
-            "plaintext": page.plaintext,
-        })
-    return rows
-
-
-def attach_page_scores(rows: list[dict[str, Any]]) -> None:
-    for row in rows:
-        score = score_decryption(
-            row["test_id"],
-            row["decryption"],
-            row["plaintext"],
-            agent_score=0.0,
-            status=str(row.get("status") or "completed"),
-        )
-        row["char_accuracy"] = score.char_accuracy
-        row["word_accuracy"] = score.word_accuracy
-        row["preview"] = row["decryption"][:180]
 
 
 def page_aware_elite_rerank(
@@ -955,82 +819,6 @@ def repair_page_locally(
     return selected
 
 
-def project_page_with_sources(
-    *,
-    page: PageBundle,
-    key: dict[int, int],
-    mask: tuple[str, ...],
-    alphabet: Alphabet,
-) -> tuple[str, list[str]]:
-    masked = set(mask)
-    chars: list[str] = []
-    sources: list[str] = []
-    for symbol, token_id in zip(page.symbols, page.token_ids):
-        if symbol in masked:
-            continue
-        value = key.get(token_id)
-        if value is None or value < 0 or value > 25:
-            continue
-        chars.append(chr(ord("A") + value))
-        sources.append(alphabet.symbol_for(token_id))
-    return "".join(chars), sources
-
-
-def damaged_windows_for_text(
-    *,
-    text: str,
-    sources: list[str],
-    consensus: dict[str, dict[str, Any]],
-    window_size: int,
-    step: int,
-    limit: int,
-) -> list[dict[str, Any]]:
-    if not text:
-        return []
-    size = max(20, int(window_size))
-    stride = max(1, int(step))
-    if len(text) <= size:
-        starts = [0]
-    else:
-        starts = list(range(0, max(1, len(text) - size + 1), stride))
-        if starts[-1] != len(text) - size:
-            starts.append(len(text) - size)
-    windows = []
-    for start in starts:
-        end = min(len(text), start + size)
-        snippet = text[start:end]
-        features = language_quality_feature_dict(snippet, language="de")
-        symbol_counts = Counter(sources[start:end])
-        disputed = []
-        for symbol, count in symbol_counts.most_common():
-            info = consensus.get(symbol) or {}
-            if info.get("stable"):
-                continue
-            disputed.append({
-                "symbol": symbol,
-                "count": count,
-                "winner": info.get("winner"),
-                "agreement": info.get("agreement"),
-                "assignments": info.get("counts") or {},
-            })
-        windows.append({
-            "start": start,
-            "end": end,
-            "damage_score": round(window_damage_score(features), 6),
-            "disputed_symbol_count": len(disputed),
-            "disputed_symbols": disputed[:10],
-            "text": snippet,
-        })
-    return sorted(
-        windows,
-        key=lambda row: (
-            float(row["damage_score"]),
-            int(row["disputed_symbol_count"]),
-        ),
-        reverse=True,
-    )[: max(0, int(limit))]
-
-
 def local_edit_sets(
     *,
     windows: list[dict[str, Any]],
@@ -1179,25 +967,6 @@ def local_repair_rank_key(row: dict[str, Any]) -> tuple[float, float, float, int
         -float(row.get("repair_window_damage") or 0.0),
         -int(row.get("changed_positions") or 0) - int(row.get("deleted_positions") or 0),
     )
-
-
-def window_damage_score(features: dict[str, float]) -> float:
-    good = (
-        0.28 * float(features.get("language_coherence") or 0.0)
-        + 0.22 * float(features.get("language_shape") or 0.0)
-        + 0.15 * float(features.get("language_evidence_dispersion") or 0.0)
-        + 0.12 * float(features.get("function_content_balance") or 0.0)
-        + 0.10 * float(features.get("repetition_control") or 0.0)
-        + 0.08 * float(features.get("function_overuse_control") or 0.0)
-        + 0.05 * float(features.get("short_fragment_control") or 0.0)
-    )
-    return max(0.0, min(1.0, 1.0 - good))
-
-
-def window_damage_for_text(text: str) -> float:
-    if not text:
-        return 0.0
-    return window_damage_score(language_quality_feature_dict(text, language="de"))
 
 
 def compact_local_variants(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1352,186 +1121,6 @@ def finalist_rows(artifact: dict[str, Any], *, top_n: int) -> list[dict[str, Any
         seen.add(identity)
         unique.append(row)
     return unique[: max(1, top_n)]
-
-
-def score_page_runtime(
-    row: dict[str, Any],
-    *,
-    key: dict[int, int],
-    mask: tuple[str, ...],
-) -> dict[str, Any]:
-    text = row["decryption"]
-    word_list = _word_list("de")
-    model_path = Path(os.environ.get("DECIPHER_NGRAM_MODEL_DE", "models/ngram5_de.bin"))
-    binary_model_path = model_path if model_path.exists() else None
-    quality = _plaintext_quality(text, key)
-    diagnostics = _automated_candidate_diagnostics(
-        text,
-        language="de",
-        word_list=word_list,
-        binary_model_path=binary_model_path,
-    )
-    validation_row = {
-        "mask": list(mask),
-        "filtered_length": row["filtered_length"],
-        "selection_score": 0.0,
-        "quality": quality,
-        "diagnostics": diagnostics,
-        "decryption": text,
-        "preview": text,
-    }
-    validation = null_mask_validation_score_v2(
-        validation_row,
-        original_length=int(row["token_count"]),
-        language="de",
-    )
-    features = language_quality_feature_dict(
-        text,
-        diagnostics=diagnostics,
-        language="de",
-        original_length=int(row["token_count"]),
-        filtered_length=int(row["filtered_length"]),
-        mask_size=len(mask),
-    )
-    return {
-        "test_id": row["test_id"],
-        "validation_score_v2": float(validation["score"]),
-        "validation_components_v2": dict(validation["components"]),
-        "language_quality_mean": mean(float(value) for value in features.values()),
-        "language_quality_features": {key: float(value) for key, value in features.items()},
-        "dict_rate": float(diagnostics.get("dict_rate") or 0.0),
-        "diagnostics": {
-            key: diagnostics.get(key)
-            for key in (
-                "dict_rate",
-                "dictionary_content_word_fraction",
-                "dictionary_content_char_fraction",
-                "dictionary_long_content_word_count",
-                "pseudo_word_fraction",
-                "long_pseudo_word_fraction",
-                "binary_ngram_mean_log_prob",
-                "segmentation_cost",
-            )
-            if key in diagnostics
-        },
-    }
-
-
-def page_runtime_metrics(runtime_scores: list[dict[str, Any]]) -> dict[str, float]:
-    if not runtime_scores:
-        return {
-            "page_validation_avg": 0.0,
-            "page_validation_min": 0.0,
-            "page_validation_std": 0.0,
-            "page_balanced_score": 0.0,
-            "page_robust_score": 0.0,
-            "fragment_illusion_penalty": 0.0,
-            "page_language_quality_avg": 0.0,
-            "page_dict_avg": 0.0,
-            "page_content_char_avg": 0.0,
-            "page_pseudo_word_avg": 0.0,
-            "page_binary_component_avg": 0.0,
-            "page_shape_component_avg": 0.0,
-            "page_evidence_dispersion_avg": 0.0,
-            "page_window_stability_avg": 0.0,
-            "page_repetition_control_avg": 0.0,
-            "page_content_word_quality_avg": 0.0,
-            "page_language_coherence_avg": 0.0,
-        }
-    avg_validation = mean(item["validation_score_v2"] for item in runtime_scores)
-    min_validation = min(item["validation_score_v2"] for item in runtime_scores)
-    std_validation = stddev(item["validation_score_v2"] for item in runtime_scores)
-    page_balanced_score = avg_validation + 0.20 * min_validation - 0.15 * std_validation
-    avg_lq = mean(item["language_quality_mean"] for item in runtime_scores)
-    avg_dict = mean(item["dict_rate"] for item in runtime_scores)
-    avg_content_chars = nested_mean(runtime_scores, "diagnostics", "dictionary_content_char_fraction")
-    avg_pseudo = nested_mean(runtime_scores, "diagnostics", "pseudo_word_fraction")
-    avg_binary_component = nested_mean(runtime_scores, "validation_components_v2", "binary_ngram_fit")
-    avg_shape = nested_mean(runtime_scores, "validation_components_v2", "language_shape")
-    avg_coherence = nested_mean(runtime_scores, "validation_components_v2", "language_coherence")
-    avg_content_quality = nested_mean(runtime_scores, "validation_components_v2", "content_word_quality")
-    avg_dispersion = nested_mean(runtime_scores, "language_quality_features", "language_evidence_dispersion")
-    avg_stability = nested_mean(runtime_scores, "language_quality_features", "language_window_stability")
-    avg_repetition = nested_mean(runtime_scores, "language_quality_features", "repetition_control")
-    fragment_illusion = fragment_illusion_penalty(
-        content_word_quality=avg_content_quality,
-        language_coherence=avg_coherence,
-        language_shape=avg_shape,
-        binary_ngram_fit=avg_binary_component,
-        evidence_dispersion=avg_dispersion,
-        window_stability=avg_stability,
-        repetition_control=avg_repetition,
-    )
-    page_robust_score = (
-        min_validation
-        + 0.35 * avg_binary_component
-        + 0.25 * avg_dispersion
-        + 0.20 * avg_stability
-        + 0.15 * avg_repetition
-        - 0.15 * std_validation
-        - 0.75 * fragment_illusion
-    )
-    return {
-        "page_validation_avg": round(avg_validation, 6),
-        "page_validation_min": round(min_validation, 6),
-        "page_validation_std": round(std_validation, 6),
-        "page_balanced_score": round(page_balanced_score, 6),
-        "page_robust_score": round(page_robust_score, 6),
-        "fragment_illusion_penalty": round(fragment_illusion, 6),
-        "page_language_quality_avg": round(avg_lq, 6),
-        "page_dict_avg": round(avg_dict, 6),
-        "page_content_char_avg": round(avg_content_chars, 6),
-        "page_pseudo_word_avg": round(avg_pseudo, 6),
-        "page_binary_component_avg": round(avg_binary_component, 6),
-        "page_shape_component_avg": round(avg_shape, 6),
-        "page_evidence_dispersion_avg": round(avg_dispersion, 6),
-        "page_window_stability_avg": round(avg_stability, 6),
-        "page_repetition_control_avg": round(avg_repetition, 6),
-        "page_content_word_quality_avg": round(avg_content_quality, 6),
-        "page_language_coherence_avg": round(avg_coherence, 6),
-    }
-
-
-def nested_mean(rows: list[dict[str, Any]], nested_key: str, feature: str) -> float:
-    return mean(
-        float((row.get(nested_key) or {}).get(feature) or 0.0)
-        for row in rows
-    )
-
-
-def fragment_illusion_penalty(
-    *,
-    content_word_quality: float,
-    language_coherence: float,
-    language_shape: float,
-    binary_ngram_fit: float,
-    evidence_dispersion: float,
-    window_stability: float,
-    repetition_control: float,
-) -> float:
-    """Penalize fragment-rich basins unsupported by broader evidence.
-
-    This is ground-truth-free. It targets Copiale-style false positives where
-    German-looking word islands and smooth letter shape outrun the slower,
-    more global signals: binary n-grams, evidence dispersion, window
-    stability, and repetition control.
-    """
-    fragment_side = mean([content_word_quality, language_coherence, language_shape])
-    support_side = mean([binary_ngram_fit, evidence_dispersion, window_stability, repetition_control])
-    return max(0.0, min(1.0, fragment_side - support_side))
-
-
-def mean(values: Any) -> float:
-    items = [float(value) for value in values]
-    return sum(items) / max(1, len(items))
-
-
-def stddev(values: Any) -> float:
-    items = [float(value) for value in values]
-    if len(items) < 2:
-        return 0.0
-    avg = mean(items)
-    return (sum((value - avg) ** 2 for value in items) / len(items)) ** 0.5
 
 
 def render_markdown(payload: dict[str, Any]) -> str:

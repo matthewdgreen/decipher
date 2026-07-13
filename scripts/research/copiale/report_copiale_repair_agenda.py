@@ -22,6 +22,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
 from analysis.language_scoring import language_quality_feature_dict  # noqa: E402
+from analysis.word_hypothesis_repair import window_damage_score  # noqa: E402,F401
 from benchmark.loader import BenchmarkLoader, parse_canonical_transcription  # noqa: E402
 from models.alphabet import Alphabet  # noqa: E402
 from models.cipher_text import CipherText  # noqa: E402
@@ -357,19 +358,6 @@ def damaged_windows(
         ),
         reverse=True,
     )[:limit]
-
-
-def window_damage_score(features: dict[str, float]) -> float:
-    good = (
-        0.28 * float(features.get("language_coherence") or 0.0)
-        + 0.22 * float(features.get("language_shape") or 0.0)
-        + 0.15 * float(features.get("language_evidence_dispersion") or 0.0)
-        + 0.12 * float(features.get("function_content_balance") or 0.0)
-        + 0.10 * float(features.get("repetition_control") or 0.0)
-        + 0.08 * float(features.get("function_overuse_control") or 0.0)
-        + 0.05 * float(features.get("short_fragment_control") or 0.0)
-    )
-    return max(0.0, min(1.0, 1.0 - good))
 
 
 def reconstruct_candidate(candidate: Candidate, cipher: CipherText) -> tuple[str, list[str]]:

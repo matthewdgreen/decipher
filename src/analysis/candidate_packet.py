@@ -353,3 +353,106 @@ def packet_from_pure_transposition_row(
         rating=row.get("agent_readability_judgment"),
         extras=_sweep_extras(row, consumed, {}),
     )
+
+
+_WORD_REPAIR_SOLVER_SCORE_KEYS: tuple[str, ...] = (
+    "page_robust_score",
+    "page_balanced_score",
+    "page_validation_avg",
+    "page_validation_min",
+    "word_hypothesis_score",
+)
+
+_WORD_REPAIR_COLLATERAL_KEYS: tuple[str, ...] = (
+    "adjudication_score",
+    "adjudication_no_target_score",
+    "target_leverage_score",
+    "global_leverage_score",
+    "target_occurrences",
+    "collateral_occurrences",
+    "improved_occurrences",
+    "damaged_occurrences",
+    "target_gain_avg",
+    "collateral_gain_avg",
+    "collateral_damage_avg",
+    "collateral_word_gain_weighted_avg",
+    "collateral_word_damage_weighted_avg",
+    "word_improved_weighted_occurrences",
+    "word_damaged_weighted_occurrences",
+)
+
+
+def packet_from_word_repair_row(
+    row: dict[str, Any],
+    *,
+    rank: int | None = None,
+    source_branch: str | None = None,
+) -> CandidatePacket:
+    """Adapt a word-hypothesis repair variant row into a packet.
+
+    Word-repair variants are produced by
+    :func:`analysis.word_hypothesis_repair.propose_word_repairs`. Per the
+    Phase-1 review's F3 deferral, ``text`` is ``None`` -- full decryptions stay
+    out of these packets, only projected-text previews travel. ``provenance``
+    carries the symbol edit set, the page-GROUP metric deltas vs the baseline
+    (``group_metric_deltas``), the per-page runtime evidence rows
+    (``page_runtime_evidence``), and the collateral (word-island) evidence;
+    ``solver_scores`` carries the rank-key components (plus the adjudication
+    score); ``validation`` carries the accept/reject decision.
+    """
+    edits = list(row.get("edits") or [])
+    candidate_id = row.get("candidate_id")
+    if candidate_id is None:
+        candidate_id = "edits:" + ",".join(str(edit) for edit in edits) if edits else "edits:baseline"
+
+    solver_scores = _present(row, _WORD_REPAIR_SOLVER_SCORE_KEYS)
+    adjudication = row.get("repair_adjudication") if isinstance(row.get("repair_adjudication"), dict) else {}
+    if "adjudication_score" in adjudication:
+        solver_scores = dict(solver_scores)
+        solver_scores["adjudication_score"] = adjudication.get("adjudication_score")
+
+    acceptance = row.get("repair_acceptance") if isinstance(row.get("repair_acceptance"), dict) else {}
+    evidence = row.get("repair_evidence") if isinstance(row.get("repair_evidence"), dict) else {}
+
+    provenance = {
+        "edits": edits,
+        "mask": list(row.get("mask") or []),
+        "word_hypotheses": row.get("word_hypotheses") or [],
+        "group_metric_deltas": acceptance.get("deltas") or {},
+        "page_runtime_evidence": evidence.get("pages") or [],
+        "collateral_evidence": {
+            key: adjudication.get(key)
+            for key in _WORD_REPAIR_COLLATERAL_KEYS
+            if key in adjudication
+        },
+    }
+
+    consumed: set[str] = {
+        "candidate_id",
+        "edits",
+        "mask",
+        "word_hypotheses",
+        "preview",
+        "rank",
+        "repair_acceptance",
+        "repair_evidence",
+        "repair_adjudication",
+        "language_features",
+        "agent_readability_judgment",
+    }
+    consumed.update(_WORD_REPAIR_SOLVER_SCORE_KEYS)
+
+    return CandidatePacket(
+        candidate_id=str(candidate_id),
+        kind="word_repair",
+        source={"solver": "word_hypothesis_repair", "source_branch": source_branch},
+        rank=rank if rank is not None else row.get("rank"),
+        text=None,
+        preview=row.get("preview"),
+        solver_scores=solver_scores,
+        validation=acceptance or None,
+        language_features=row.get("language_features"),
+        provenance=provenance,
+        rating=row.get("agent_readability_judgment"),
+        extras=_sweep_extras(row, consumed, {}),
+    )

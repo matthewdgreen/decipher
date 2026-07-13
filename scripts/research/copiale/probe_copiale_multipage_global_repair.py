@@ -44,6 +44,26 @@ from train_language_quality_scorer import (  # noqa: E402
     global_repair_feature_dict,
 )
 
+# Adjudication / acceptance / key helpers extracted into the shared library
+# (phase-2a Part B). Re-exported so downstream scripts importing them from this
+# module keep working.
+from analysis.word_hypothesis_repair import (  # noqa: E402,F401
+    annotate_acceptance,
+    annotate_repair_evidence,
+    apply_assignment,
+    changed_excerpt,
+    current_assignment,
+    keyed_by_test_id,
+    mask_key,
+    nested_delta,
+    numeric_delta,
+    parse_key,
+    repair_acceptance,
+    repair_evidence,
+    variant_rank_key,
+    variant_summary,
+)
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -448,31 +468,6 @@ def pair_signature(pair: tuple[dict[str, Any], dict[str, Any]]) -> str:
     return ";".join(sorted(parts))
 
 
-def annotate_acceptance(
-    variants: list[dict[str, Any]],
-    *,
-    baseline: dict[str, Any],
-    robust_margin: float,
-    min_page_drop: float,
-    max_illusion_increase: float,
-    allow_pair_acceptance: bool = False,
-) -> None:
-    for row in variants:
-        row["repair_acceptance"] = repair_acceptance(
-            row,
-            baseline=baseline,
-            robust_margin=robust_margin,
-            min_page_drop=min_page_drop,
-            max_illusion_increase=max_illusion_increase,
-            allow_pair_acceptance=allow_pair_acceptance,
-        )
-
-
-def annotate_repair_evidence(variants: list[dict[str, Any]], *, baseline: dict[str, Any]) -> None:
-    for row in variants:
-        row["repair_evidence"] = repair_evidence(row, baseline=baseline)
-
-
 def annotate_language_quality_ranker(
     variants: list[dict[str, Any]],
     *,
@@ -591,256 +586,6 @@ def diverse_language_quality_shortlist(
         if len(selected) >= limit:
             break
     return selected
-
-
-def mask_key(row: dict[str, Any]) -> tuple[str, ...]:
-    return tuple(sorted(str(item) for item in (row.get("mask") or [])))
-
-
-def repair_evidence(row: dict[str, Any], *, baseline: dict[str, Any]) -> dict[str, Any]:
-    baseline_runtime = keyed_by_test_id(baseline.get("page_runtime_scores") or [])
-    baseline_chars = keyed_by_test_id(baseline.get("post_hoc_page_chars") or [])
-    baseline_previews = keyed_by_test_id(baseline.get("page_previews") or [])
-    page_evidence = []
-    runtime_improved = 0
-    runtime_regressed = 0
-    preview_changed = 0
-    runtime_suspicious_pages = 0
-    calibration_suspicious_pages = 0
-    posthoc_improved = 0
-    posthoc_regressed = 0
-    for runtime in row.get("page_runtime_scores") or []:
-        test_id = str(runtime.get("test_id") or "")
-        base_runtime = baseline_runtime.get(test_id, {})
-        base_char = baseline_chars.get(test_id, {})
-        char = (keyed_by_test_id(row.get("post_hoc_page_chars") or []).get(test_id, {}))
-        base_preview = str((baseline_previews.get(test_id) or {}).get("preview") or "")
-        preview = str((keyed_by_test_id(row.get("page_previews") or {}).get(test_id, {})).get("preview") or "")
-        val_delta = numeric_delta(runtime, base_runtime, "validation_score_v2")
-        lq_delta = numeric_delta(runtime, base_runtime, "language_quality_mean")
-        dict_delta = numeric_delta(runtime, base_runtime, "dict_rate")
-        pseudo_delta = nested_delta(runtime, base_runtime, "diagnostics", "pseudo_word_fraction")
-        binary_delta = nested_delta(runtime, base_runtime, "validation_components_v2", "binary_ngram_fit")
-        coherence_delta = nested_delta(runtime, base_runtime, "validation_components_v2", "language_coherence")
-        shape_delta = nested_delta(runtime, base_runtime, "validation_components_v2", "language_shape")
-        char_delta = numeric_delta(char, base_char, "char_accuracy")
-        changed = preview != base_preview
-        if val_delta > 0.005:
-            runtime_improved += 1
-        elif val_delta < -0.005:
-            runtime_regressed += 1
-        if char_delta > 0.001:
-            posthoc_improved += 1
-        elif char_delta < -0.001:
-            posthoc_regressed += 1
-        if changed:
-            preview_changed += 1
-        runtime_flags = []
-        if val_delta > 0.005 and lq_delta <= 0.0:
-            runtime_flags.append("validation_up_without_lq_gain")
-        if val_delta > 0.005 and dict_delta < -0.01:
-            runtime_flags.append("validation_up_dictionary_down")
-        if val_delta > 0.005 and pseudo_delta > 0.01:
-            runtime_flags.append("validation_up_more_pseudowords")
-        if val_delta > 0.005 and not changed:
-            runtime_flags.append("validation_up_preview_unchanged")
-        if runtime_flags:
-            runtime_suspicious_pages += 1
-        calibration_flags = []
-        if val_delta > 0.005 and char_delta < -0.001:
-            calibration_flags.append("runtime_up_posthoc_char_down")
-        if calibration_flags:
-            calibration_suspicious_pages += 1
-        page_evidence.append({
-            "test_id": test_id,
-            "validation_delta": val_delta,
-            "language_quality_delta": lq_delta,
-            "dict_rate_delta": dict_delta,
-            "pseudo_word_fraction_delta": pseudo_delta,
-            "binary_ngram_fit_delta": binary_delta,
-            "language_coherence_delta": coherence_delta,
-            "language_shape_delta": shape_delta,
-            "post_hoc_char_delta": char_delta,
-            "preview_changed": changed,
-            "changed_excerpt": changed_excerpt(base_preview, preview),
-            "runtime_flags": runtime_flags,
-            "calibration_flags": calibration_flags,
-        })
-    page_evidence.sort(
-        key=lambda item: (
-            -len(item["runtime_flags"]) - len(item["calibration_flags"]),
-            -abs(float(item["validation_delta"])),
-            item["test_id"],
-        )
-    )
-    runtime_decision_flags = []
-    if runtime_suspicious_pages:
-        runtime_decision_flags.append(f"{runtime_suspicious_pages} page(s) improve by validation but have weak supporting signals")
-    if runtime_improved <= runtime_regressed and row.get("edits") != ["baseline"]:
-        runtime_decision_flags.append("runtime improvements are not page-majority")
-    if not preview_changed and row.get("edits") != ["baseline"]:
-        runtime_decision_flags.append("no preview changed")
-    calibration_flags = []
-    if calibration_suspicious_pages:
-        calibration_flags.append(f"{calibration_suspicious_pages} page(s) improve by runtime score but lose post-hoc char")
-    if posthoc_regressed > posthoc_improved and row.get("edits") != ["baseline"]:
-        calibration_flags.append("post-hoc char regresses on more pages than it improves")
-    return {
-        "page_count": len(page_evidence),
-        "runtime_pages_improved": runtime_improved,
-        "runtime_pages_regressed": runtime_regressed,
-        "preview_pages_changed": preview_changed,
-        "runtime_suspicious_pages": runtime_suspicious_pages,
-        "post_hoc_pages_improved": posthoc_improved,
-        "post_hoc_pages_regressed": posthoc_regressed,
-        "calibration_suspicious_pages": calibration_suspicious_pages,
-        "runtime_decision_flags": runtime_decision_flags,
-        "calibration_flags": calibration_flags,
-        "pages": page_evidence,
-    }
-
-
-def repair_acceptance(
-    row: dict[str, Any],
-    *,
-    baseline: dict[str, Any],
-    robust_margin: float,
-    min_page_drop: float,
-    max_illusion_increase: float,
-    allow_pair_acceptance: bool = False,
-) -> dict[str, Any]:
-    deltas = {
-        "page_robust_score": numeric_delta(row, baseline, "page_robust_score"),
-        "page_balanced_score": numeric_delta(row, baseline, "page_balanced_score"),
-        "page_validation_avg": numeric_delta(row, baseline, "page_validation_avg"),
-        "page_validation_min": numeric_delta(row, baseline, "page_validation_min"),
-        "fragment_illusion_penalty": numeric_delta(row, baseline, "fragment_illusion_penalty"),
-        "page_language_quality_avg": numeric_delta(row, baseline, "page_language_quality_avg"),
-    }
-    edits = row.get("edits") or []
-    if edits == ["baseline"]:
-        return {
-            "accepted": False,
-            "decision": "baseline",
-            "deltas": deltas,
-            "reasons": ["baseline candidate"],
-        }
-    reasons = []
-    accepted = True
-    edit_count = len(edits)
-    if edit_count > 1 and not allow_pair_acceptance:
-        accepted = False
-        reasons.append("multi-edit variant is review-only unless --allow-pair-acceptance is set")
-    if deltas["page_robust_score"] < robust_margin:
-        accepted = False
-        reasons.append(f"robust gain below margin ({deltas['page_robust_score']:.3f} < {robust_margin:.3f})")
-    else:
-        reasons.append(f"robust gain clears margin ({deltas['page_robust_score']:.3f})")
-    if deltas["page_balanced_score"] < 0.0:
-        accepted = False
-        reasons.append(f"balanced score regresses ({deltas['page_balanced_score']:.3f})")
-    if deltas["page_validation_avg"] < 0.0:
-        accepted = False
-        reasons.append(f"average page validation regresses ({deltas['page_validation_avg']:.3f})")
-    if deltas["page_validation_min"] < -min_page_drop:
-        accepted = False
-        reasons.append(f"worst page drops too much ({deltas['page_validation_min']:.3f})")
-    if deltas["fragment_illusion_penalty"] > max_illusion_increase:
-        accepted = False
-        reasons.append(f"fragment illusion rises too much ({deltas['fragment_illusion_penalty']:.3f})")
-    positive_support = sum(
-        1
-        for key in ("page_robust_score", "page_balanced_score", "page_validation_avg", "page_language_quality_avg")
-        if deltas[key] > 0.0
-    )
-    if positive_support < 2:
-        accepted = False
-        reasons.append(f"only {positive_support} runtime signals improve")
-    return {
-        "accepted": accepted,
-        "decision": "runtime_accept" if accepted else "hold_for_review",
-        "deltas": deltas,
-        "positive_signal_count": positive_support,
-        "reasons": reasons,
-    }
-
-
-def numeric_delta(row: dict[str, Any], baseline: dict[str, Any], key: str) -> float:
-    return round(float(row.get(key) or 0.0) - float(baseline.get(key) or 0.0), 6)
-
-
-def nested_delta(row: dict[str, Any], baseline: dict[str, Any], parent: str, key: str) -> float:
-    return round(
-        float((row.get(parent) or {}).get(key) or 0.0)
-        - float((baseline.get(parent) or {}).get(key) or 0.0),
-        6,
-    )
-
-
-def keyed_by_test_id(rows: Any) -> dict[str, dict[str, Any]]:
-    if not isinstance(rows, list):
-        return {}
-    return {
-        str(row.get("test_id") or ""): row
-        for row in rows
-        if isinstance(row, dict)
-    }
-
-
-def changed_excerpt(before: str, after: str, *, radius: int = 28) -> dict[str, Any]:
-    if before == after:
-        return {"changed": False, "before": "", "after": "", "offset": None}
-    limit = min(len(before), len(after))
-    start = 0
-    while start < limit and before[start] == after[start]:
-        start += 1
-    left = max(0, start - radius)
-    right = min(max(len(before), len(after)), start + radius)
-    return {
-        "changed": True,
-        "offset": start,
-        "before": before[left:right],
-        "after": after[left:right],
-    }
-
-
-def variant_rank_key(row: dict[str, Any]) -> tuple[float, float, float, float]:
-    return (
-        float(row.get("page_robust_score") or 0.0),
-        float(row.get("page_balanced_score") or 0.0),
-        float(row.get("page_validation_avg") or 0.0),
-        -len(row.get("edits") or []),
-    )
-
-
-def variant_summary(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "edits": row.get("edits") or [],
-        "mask": row.get("mask") or [],
-        "page_robust_score": row.get("page_robust_score"),
-        "page_balanced_score": row.get("page_balanced_score"),
-        "page_validation_avg": row.get("page_validation_avg"),
-        "page_validation_min": row.get("page_validation_min"),
-        "fragment_illusion_penalty": row.get("fragment_illusion_penalty"),
-        "page_language_quality_avg": row.get("page_language_quality_avg"),
-        "page_dict_avg": row.get("page_dict_avg"),
-        "page_content_char_avg": row.get("page_content_char_avg"),
-        "page_pseudo_word_avg": row.get("page_pseudo_word_avg"),
-        "page_binary_component_avg": row.get("page_binary_component_avg"),
-        "page_shape_component_avg": row.get("page_shape_component_avg"),
-        "page_evidence_dispersion_avg": row.get("page_evidence_dispersion_avg"),
-        "page_window_stability_avg": row.get("page_window_stability_avg"),
-        "page_repetition_control_avg": row.get("page_repetition_control_avg"),
-        "page_content_word_quality_avg": row.get("page_content_word_quality_avg"),
-        "page_language_coherence_avg": row.get("page_language_coherence_avg"),
-        "language_quality_rank_score": row.get("language_quality_rank_score"),
-        "language_quality_rank_normalized": row.get("language_quality_rank_normalized"),
-        "post_hoc_char_avg": row.get("post_hoc_char_avg"),
-        "post_hoc_page_chars": row.get("post_hoc_page_chars") or [],
-        "repair_acceptance": row.get("repair_acceptance") or {},
-        "repair_evidence": row.get("repair_evidence") or {},
-        "preview": row.get("preview"),
-    }
 
 
 def render_markdown(payload: dict[str, Any]) -> str:
@@ -1048,42 +793,6 @@ def pages_to_alphabet(pages: list[PageBundle]) -> Any:
     from models.alphabet import Alphabet
 
     return Alphabet(symbols)
-
-
-def current_assignment(symbol: str, token_id: int, key: dict[int, int], mask: tuple[str, ...]) -> str:
-    if symbol in set(mask):
-        return "<null>"
-    value = key.get(token_id)
-    if value is None or value < 0 or value > 25:
-        return "?"
-    return chr(ord("A") + value)
-
-
-def apply_assignment(
-    symbol: str,
-    token_id: int,
-    assignment: str,
-    key: dict[int, int],
-    mask: set[str],
-) -> None:
-    if assignment == "<null>":
-        mask.add(symbol)
-        return
-    mask.discard(symbol)
-    if len(assignment) == 1 and "A" <= assignment <= "Z":
-        key[token_id] = ord(assignment) - ord("A")
-
-
-def parse_key(value: Any) -> dict[int, int]:
-    if not isinstance(value, dict):
-        return {}
-    parsed = {}
-    for key, item in value.items():
-        try:
-            parsed[int(key)] = int(item)
-        except (TypeError, ValueError):
-            continue
-    return parsed
 
 
 def compact_windows(windows: list[dict[str, Any]]) -> list[dict[str, Any]]:

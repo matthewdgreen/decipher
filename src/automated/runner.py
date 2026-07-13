@@ -8335,3 +8335,24 @@ def _automated_candidate_diagnostics(
         diagnostics["binary_ngram_mean_log_prob"] = round(binary_score, 6)
         diagnostics["binary_ngram_model_source"] = str(binary_model_path)
     return diagnostics
+
+
+# ---------------------------------------------------------------------------
+# Public helper wrappers
+#
+# Promoted ``src/analysis`` modules (e.g. ``analysis.multipage``) must not
+# import the underscore-private helpers above across module boundaries. These
+# thin public aliases expose the same callables under stable public names so
+# library code can depend on a public surface. Behavior is identical -- the
+# private names remain as aliases for existing internal call sites.
+# ---------------------------------------------------------------------------
+
+run_homophonic_search = _run_homophonic
+cipher_text_from_tokens = _cipher_text_from_tokens
+automated_candidate_diagnostics = _automated_candidate_diagnostics
+# NB: the public name ``plaintext_quality`` (not ``plaintext_quality_score``)
+# because ``plaintext_quality_score`` is already an imported symbol in this
+# module (a different, unrelated function). Deviation from the spec's suggested
+# wrapper name, forced by the name collision.
+plaintext_quality = _plaintext_quality
+load_word_list = _word_list
