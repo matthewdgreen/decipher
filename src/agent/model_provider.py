@@ -464,7 +464,7 @@ def infer_provider_from_model(model: str | None, provider: str | None = None) ->
 def default_model_for_provider(provider: str) -> str:
     provider = canonical_provider(provider)
     if provider == "openai":
-        return "gpt-5.4"
+        return "gpt-5.5"
     if provider == "gemini":
         return "gemini-3-flash-preview"
     if provider == "ollama":
@@ -529,6 +529,14 @@ _PRICING: dict[str, dict[str, tuple[float, float, float]]] = {
         "claude-haiku-3": (0.25, 1.25, 0.03),
     },
     "openai": {
+        # gpt-5.5/5.6 rates supplied by Matthew from the OpenAI pricing page
+        # (2026-07-13). Cache-write premiums are not modeled by
+        # estimate_provider_cost, so estimates slightly undercount runs with
+        # heavy cache churn.
+        "gpt-5.6-sol": (5.00, 30.00, 0.50),
+        "gpt-5.6-terra": (2.50, 15.00, 0.25),
+        "gpt-5.6-luna": (1.00, 6.00, 0.10),
+        "gpt-5.5": (5.00, 30.00, 0.50),
         "gpt-5.4-mini": (0.80, 2.00, 0.08),
         "gpt-5.4": (2.00, 8.00, 0.20),
         "gpt-5": (1.25, 10.00, 0.125),
