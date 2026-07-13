@@ -58,6 +58,9 @@ class BenchmarkRunnerV2:
         external_context: str | None = None,
         benchmark_context_policy: str = "max",
         system_prompt_style: str = "full",
+        homophonic_budget: str = "full",
+        homophonic_refinement: str = "none",
+        homophonic_solver: str = "zenith_native",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -69,6 +72,9 @@ class BenchmarkRunnerV2:
         self.external_context = external_context
         self.benchmark_context_policy = benchmark_context_policy
         self.system_prompt_style = system_prompt_style
+        self.homophonic_budget = homophonic_budget
+        self.homophonic_refinement = homophonic_refinement
+        self.homophonic_solver = homophonic_solver
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -136,6 +142,9 @@ class BenchmarkRunnerV2:
                 lang,
                 test_id,
                 test_data.test.cipher_system,
+                homophonic_budget=self.homophonic_budget,
+                homophonic_refinement=self.homophonic_refinement,
+                homophonic_solver=self.homophonic_solver,
             )
             if renderer is not None:
                 renderer.event("preflight_result", {
@@ -338,6 +347,10 @@ def _run_automated_preflight(
     language: str,
     test_id: str,
     cipher_system: str,
+    *,
+    homophonic_budget: str = "full",
+    homophonic_refinement: str = "none",
+    homophonic_solver: str = "zenith_native",
 ) -> dict[str, Any]:
     from automated.runner import format_automated_preflight_for_llm, run_automated
 
@@ -347,6 +360,9 @@ def _run_automated_preflight(
         cipher_id=test_id,
         ground_truth=None,
         cipher_system=cipher_system,
+        homophonic_budget=homophonic_budget,
+        homophonic_refinement=homophonic_refinement,
+        homophonic_solver=homophonic_solver,
     )
     artifact = dict(result.artifact)
     artifact["summary"] = format_automated_preflight_for_llm(result)

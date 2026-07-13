@@ -331,7 +331,7 @@ This is a more honest success criterion than exact rank-1: the model is
 strong enough to build a small review menu that almost always contains a
 near-best edit, but still too uncertain to silently choose one repair.
 
-Global-repair integration slice: `scripts/probe_copiale_multipage_global_repair.py`
+Global-repair integration slice: `scripts/research/copiale/probe_copiale_multipage_global_repair.py`
 now accepts `--language-quality-ranker <candidate_ranker.json>` and emits a
 `language_quality_ranker` block in the JSON plus a
 `Language-Ranker Review Shortlist` section in the markdown. The shortlist is
@@ -350,14 +350,14 @@ runtime ranker features no longer use `calibration_suspicious_pages` or other
 post-hoc flags. Those calibration flags remain useful in reports, but not in
 model input.
 
-Batch-review slice: `scripts/run_copiale_global_repair_batch.py` now runs the
+Batch-review slice: `scripts/research/copiale/run_copiale_global_repair_batch.py` now runs the
 global-repair probe over multiple labels from a multipage experiment section.
 It discovers section labels, invokes the child probe with consistent ranker
 settings, keeps child stdout quiet by default, and writes a manifest with the
 ranker-review pick and robust-score pick for each label. Example:
 
 ```bash
-PYTHONPATH=src:scripts .venv/bin/python scripts/run_copiale_global_repair_batch.py \
+PYTHONPATH=src:scripts .venv/bin/python scripts/research/copiale/run_copiale_global_repair_batch.py \
   artifacts/copiale_multipage_experiment/copiale_multipage_p017_p035_p052_p068_p084_c998db35f5d9.json \
   --section portfolio_local_repair \
   --label-count 5 \
@@ -374,7 +374,7 @@ artifacts/language_quality/global_repair_batch_smoke_quiet/
 artifacts/language_quality/global_repair_batch_smoke_run/
 ```
 
-`scripts/report_copiale_global_repair_batch.py` summarizes those manifests by
+`scripts/research/copiale/report_copiale_global_repair_batch.py` summarizes those manifests by
 loading the child global-repair JSON files, comparing the ranker-review pick
 against the robust-score pick, listing recurring masks/edits, and showing
 top candidates by post-hoc character accuracy, LQ ranker score, and robust
@@ -399,7 +399,7 @@ edit choice within a selected family": stronger page-level consensus features,
 explicit disagreement between pages, and perhaps a small listwise objective
 that prefers a top-N safe shortlist over exact scalar order.
 
-Word-hypothesis repair slice: `scripts/probe_copiale_word_hypothesis_repair.py`
+Word-hypothesis repair slice: `scripts/research/copiale/probe_copiale_word_hypothesis_repair.py`
 is the first move away from scalar micro-edits. It scans damaged windows in a
 multi-page finalist, proposes same-length German dictionary word hypotheses
 for garbled substrings, turns each hypothesis into one or more global symbol
@@ -422,7 +422,7 @@ calibration basin in that small probe. Current scope is same-length
 substitutions only; insertion/unmasking and deletion/null alignment are the
 next repair-generation extension.
 
-Portfolio batch slice: `scripts/run_copiale_word_hypothesis_batch.py` runs the
+Portfolio batch slice: `scripts/research/copiale/run_copiale_word_hypothesis_batch.py` runs the
 word-hypothesis probe across a finalist section and writes a manifest plus
 comparison summary. The first 12-label `portfolio_local_repair` batch found
 that adjudication improves over raw runtime/word-hypothesis ranking on average
@@ -513,13 +513,13 @@ second-stage shortlist/reranker that reviews diverse high-scoring families
 rather than relying on one scalar.
 
 Compact repair-delta reporting now lives in
-`scripts/report_copiale_word_repair_delta.py`. It compares each repair against
+`scripts/research/copiale/report_copiale_word_repair_delta.py`. It compares each repair against
 baseline or its best evaluated subset, showing the word corrections, symbol
 edits, post-hoc character delta, adjudication delta, no-target adjudication
 delta, marginal score, and robust-score delta. This gives a quick view of
 whether a bundle is actually adding value beyond a singleton.
 
-Controlled breadth-curve slice: `scripts/run_copiale_word_repair_breadth_curve.py`
+Controlled breadth-curve slice: `scripts/research/copiale/run_copiale_word_repair_breadth_curve.py`
 runs fixed breadth settings over selected finalist labels while preserving the
 full compact variant list. The first `top9/top6` small-vs-medium curve is at
 `artifacts/language_quality/word_repair_breadth_curve/copiale_multipage_p017_p035_p052_p068_p084_c998db35f5d9/`.

@@ -8,6 +8,7 @@ import pytest
 from analysis.language_scoring import (
     LANGUAGE_QUALITY_FEATURES,
     LinearLanguageQualityModel,
+    _az,
     content_lattice_consistency_score,
     content_rhythm_control_score,
     content_word_metrics,
@@ -58,6 +59,10 @@ def test_language_profiles_are_selected_by_code():
     assert get_language_scoring_profile("en").name == "English"
     assert get_language_scoring_profile("la").name == "Latin"
     assert get_language_scoring_profile("unknown").name == "English"
+
+
+def test_language_quality_az_folds_latin_diacritics():
+    assert _az("für größere Brüder; déjà vu") == "FURGROSSEREBRUDERDEJAVU"
 
 
 def test_language_shape_uses_profile_specific_anchors():

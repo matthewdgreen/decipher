@@ -21,9 +21,11 @@ import time
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
 from benchmark.loader import BenchmarkLoader  # noqa: E402
 from benchmark.scorer import score_decryption  # noqa: E402

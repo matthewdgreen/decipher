@@ -15,11 +15,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
-from scripts.probe_copiale_null_masks import (
+from probe_copiale_null_masks import (
     attach_null_mask_ensemble_scores,
     format_validation_components,
     null_mask_rank_key,

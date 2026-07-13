@@ -2602,9 +2602,9 @@ class WorkspaceToolExecutor:
             ],
             "homophonic_substitution": [
                 {"tool": "search_automated_solver", "purpose": "Run the modern no-LLM solver stack first; use null_masks refinement if shape/basin diagnostics suggest null/codeword risk."},
-                {"tool": "search_review_null_mask_finalists", "purpose": "Compare null/codeword finalist readings when null_masks refinement was used."},
-                {"tool": "act_rate_null_mask_finalist", "purpose": "Record contextual readability before choosing a null-mask branch."},
-                {"tool": "act_install_null_mask_finalists", "purpose": "Install selected null-mask finalists without rerunning the bakeoff."},
+                {"tool": "search_review_null_mask_finalists", "purpose": "Compare a broad null/codeword finalist menu when null_masks refinement was used; rank 1 is not enough."},
+                {"tool": "act_rate_null_mask_finalist", "purpose": "Record contextual readability for multiple null-mask candidates before choosing a branch."},
+                {"tool": "act_install_null_mask_finalists", "purpose": "Install selected null-mask finalists without rerunning the bakeoff, then compare them before local repair or off-family search."},
                 {"tool": "search_homophonic_anneal", "purpose": "Run focused homophonic annealing if needed."},
                 {"tool": "workspace_branch_cards", "purpose": "Check for coherent clauses, not just word islands."},
                 {"tool": "decode_absent_letter_candidates", "purpose": "Diagnose missing/overused letters before local repair."},
@@ -3138,10 +3138,19 @@ class WorkspaceToolExecutor:
                     "act_install_null_mask_finalists",
                     "workspace_branch_cards",
                 ],
+                "review_args": {
+                    "start_rank": 1,
+                    "count": 12,
+                    "review_chars": 1000,
+                },
                 "reading_instruction": (
-                    "After the bakeoff, page through finalists and rate the "
-                    "target-language reading. Do not promote candidates merely "
-                    "because they contain short dictionary islands."
+                    "After the bakeoff, page through and rate a broad finalist "
+                    "menu: at least the top 8 scalar-validation candidates, and "
+                    "top 12 when available or when previews are close/damaged. "
+                    "Do not promote candidates merely because they contain "
+                    "short dictionary islands, and do not switch to local repair "
+                    "or transform search until plausible null-mask branches have "
+                    "been installed and compared."
                 ),
             })
         return guidance
@@ -9370,8 +9379,8 @@ class WorkspaceToolExecutor:
             null_mask_review = self._null_mask_finalist_review(
                 session_id=null_mask_session_id,
                 start_rank=1,
-                count=8,
-                review_chars=900,
+                count=12,
+                review_chars=1000,
                 good_score_gap=0.25,
             )
         response = {
@@ -9405,8 +9414,9 @@ class WorkspaceToolExecutor:
             ]
             response["note"] += (
                 " A null-mask finalist menu is available; review and rate "
-                "at least the top scalar-validation finalists before trusting "
-                "a single selected mask. Ensemble scores are calibration-only."
+                "at least the top 8 scalar-validation finalists, and top 12 "
+                "when available, before trusting a single selected mask. "
+                "Ensemble scores are calibration-only."
             )
         return response
 
@@ -9553,7 +9563,7 @@ class WorkspaceToolExecutor:
                 "agent_readability_judgment": self._null_mask_candidate_rating(candidate),
                 "recommended_next": (
                     "rate_contextual_readability_then_install_if_coherent"
-                    if rank <= 8 else "review_if_top_candidates_are_word_islands"
+                    if rank <= 12 else "review_if_top_candidates_are_word_islands"
                 ),
             })
         reviewed_ranks = set(range(start_rank, start_rank + len(page)))
@@ -9603,16 +9613,126 @@ class WorkspaceToolExecutor:
                 if self._null_mask_candidate_rating(candidate) is not None
             ),
             "review_instruction": (
-                "Read and rate at least the top 3 scalar-validation finalists "
-                "before installing or declaring; prefer top 5-8 if the previews "
-                "are all damaged or score gaps are small. Treat target-language "
-                "short word islands as insufficient; rate contextual coherence "
-                "with act_rate_null_mask_finalist, then install multiple "
-                "plausible scalar ranks with act_install_null_mask_finalists "
-                "if the numeric scores are close. Do not use ensemble rank by "
-                "itself to choose a branch."
+                "Read and rate at least the top 8 scalar-validation finalists "
+                "before installing or declaring; prefer top 12 when available "
+                "or when the previews are all damaged/close. Treat "
+                "target-language short word islands as insufficient; rate "
+                "contextual coherence with act_rate_null_mask_finalist, then "
+                "install multiple plausible scalar ranks with "
+                "act_install_null_mask_finalists if the numeric scores are "
+                "close. Do not use ensemble rank by itself to choose a branch, "
+                "and do not treat a weak rank-1 candidate as evidence that the "
+                "whole null-mask route failed."
             ),
         }
+
+    def _pending_null_mask_followup_block(self, branch_name: str | None = None) -> dict[str, Any] | None:
+        if branch_name is not None and self.workspace.has_branch(branch_name):
+            branch = self.workspace.get_branch(branch_name)
+            mode = str(branch.metadata.get("cipher_mode") or "unknown")
+            structural = self._null_mask_structural_guidance(branch_name, mode)
+            if structural.get("applies") and not structural.get("already_tried"):
+                return {
+                    "status": "blocked",
+                    "reason": "null_mask_structural_refinement_pending",
+                    "source_branch": branch_name,
+                    "null_mask_guidance": structural,
+                    "note": (
+                        "Structural null/codeword risk applies to this "
+                        "homophonic/nomenclator branch. Run the null-mask "
+                        "automated solver, then review/install finalists, "
+                        "before transform search, local repair, or stopping."
+                    ),
+                    "suggested_next_tools": [
+                        "search_automated_solver",
+                        "search_review_null_mask_finalists",
+                        "act_rate_null_mask_finalist",
+                        "act_install_null_mask_finalists",
+                    ],
+                    "suggested_args": structural.get("suggested_args"),
+                }
+        for session_id, session in reversed(list(self._null_mask_sessions.items())):
+            source_branch = str(session.get("source_branch") or "")
+            if branch_name is not None and source_branch != branch_name:
+                continue
+            ranked = list(session.get("ranked") or [])
+            if not ranked:
+                continue
+            installed = [
+                name for name in self.workspace.branch_names()
+                if (
+                    isinstance(
+                        self.workspace.get_branch(name).metadata.get("null_mask_finalist"),
+                        dict,
+                    )
+                    and self.workspace.get_branch(name).metadata["null_mask_finalist"].get(
+                        "search_session_id"
+                    ) == session_id
+                )
+            ]
+            if installed:
+                continue
+            required_count = min(12, len(ranked))
+            required_ranks = list(range(1, required_count + 1))
+            ratings = {
+                rank: self._null_mask_candidate_rating(ranked[rank - 1])
+                for rank in required_ranks
+            }
+            missing_ranks = [rank for rank, rating in ratings.items() if rating is None]
+            if missing_ranks:
+                return {
+                    "status": "blocked",
+                    "reason": "null_mask_finalist_review_incomplete",
+                    "search_session_id": session_id,
+                    "source_branch": source_branch,
+                    "required_review_ranks": required_ranks,
+                    "missing_review_ranks": missing_ranks,
+                    "note": (
+                        "A null-mask finalist menu is active and has not had "
+                        "its required top candidates rated yet. Finish the "
+                        "top-12 review before moving to transform search, "
+                        "local repair, or declaration."
+                    ),
+                    "suggested_next_tools": [
+                        "search_review_null_mask_finalists",
+                        "act_rate_null_mask_finalist",
+                        "act_install_null_mask_finalists",
+                    ],
+                    "suggested_args": {
+                        "search_session_id": session_id,
+                        "start_rank": max(1, missing_ranks[0]),
+                        "count": min(12 - missing_ranks[0] + 1, 12),
+                        "review_chars": 1000,
+                    },
+                }
+            plausible_ranks = [
+                rank for rank, rating in ratings.items()
+                if float(rating.get("readability_score") or 0.0) >= 2.0
+            ]
+            if plausible_ranks:
+                return {
+                    "status": "blocked",
+                    "reason": "null_mask_plausible_finalists_not_installed",
+                    "search_session_id": session_id,
+                    "source_branch": source_branch,
+                    "plausible_ranks": plausible_ranks,
+                    "note": (
+                        "One or more null-mask finalists were rated as at "
+                        "least structurally promising, but none were installed "
+                        "as branches. Install and compare those candidates "
+                        "before switching strategy or declaring."
+                    ),
+                    "suggested_next_tools": [
+                        "act_install_null_mask_finalists",
+                        "workspace_branch_cards",
+                        "decode_show",
+                    ],
+                    "suggested_args": {
+                        "search_session_id": session_id,
+                        "ranks": plausible_ranks[:4],
+                    },
+                }
+        return None
 
     def _mirror_null_mask_rating_to_branches(
         self,
@@ -10761,6 +10881,13 @@ class WorkspaceToolExecutor:
         branch_name = args["branch"]
         if not self.workspace.has_branch(branch_name):
             return {"error": f"Branch not found: {branch_name}"}
+        null_mask_block = self._pending_null_mask_followup_block(branch_name)
+        if null_mask_block is not None:
+            return {
+                **null_mask_block,
+                "blocked_tool": "search_transform_homophonic",
+                "branch": branch_name,
+            }
         branch = self.workspace.get_branch(branch_name)
         if branch.token_order is not None:
             return {
@@ -11488,6 +11615,19 @@ class WorkspaceToolExecutor:
                 ),
             })
 
+        null_mask_block = self._pending_null_mask_followup_block()
+        if null_mask_block is not None:
+            quick_prerequisites.append({
+                "reason": null_mask_block["reason"],
+                "fix_tool": null_mask_block["suggested_next_tools"][0],
+                "fix_tool_args": null_mask_block.get("suggested_args", {}),
+                "note": null_mask_block["note"],
+                "details": {
+                    key: value for key, value in null_mask_block.items()
+                    if key not in {"status", "note", "suggested_next_tools", "suggested_args"}
+                },
+            })
+
         hyp_block = self._hypothesis_declaration_block(branch)
         if hyp_block is not None:
             quick_prerequisites.append({
@@ -11781,6 +11921,48 @@ class WorkspaceToolExecutor:
                 "suggested_next_tools": [
                     *pending_tools,
                     "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                    "meta_declare_unsolved",
+                ],
+            }
+        null_mask_reports = []
+        for name in self.workspace.branch_names():
+            if not self.workspace.has_branch(name):
+                continue
+            branch = self.workspace.get_branch(name)
+            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                continue
+            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            block = self._pending_null_mask_followup_block(name)
+            if block is not None:
+                null_mask_reports.append({
+                    "branch": name,
+                    "cipher_mode": branch.metadata.get("cipher_mode"),
+                    **block,
+                })
+        if null_mask_reports and not (
+            self.max_iterations is not None and self._current_iteration >= self.max_iterations
+        ):
+            suggested = []
+            for report in null_mask_reports:
+                for tool in report.get("suggested_next_tools", []):
+                    if tool not in suggested:
+                        suggested.append(tool)
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "null_mask_workflow_pending_before_unsolved",
+                "pending_null_mask_work": null_mask_reports,
+                "note": (
+                    "Do not declare unsolved while an active homophonic/"
+                    "nomenclator hypothesis still has structural null-mask "
+                    "work pending. Run or finish the null-mask review/install "
+                    "loop, compare branches, then stop as unsolved only if no "
+                    "coherent branch emerges."
+                ),
+                "suggested_next_tools": [
+                    *suggested,
                     "workspace_branch_cards",
                     "meta_declare_unsolved",
                 ],

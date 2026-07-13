@@ -15,7 +15,7 @@ import sys
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def main() -> None:
@@ -189,7 +189,7 @@ def build_command(
 ) -> list[str]:
     cmd = [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "probe_copiale_multipage_global_repair.py"),
+        str(REPO_ROOT / "scripts" / "research" / "copiale" / "probe_copiale_multipage_global_repair.py"),
         str(experiment_path),
         "--benchmark-root",
         benchmark_root,

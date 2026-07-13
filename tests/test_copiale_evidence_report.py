@@ -9,91 +9,96 @@ from analysis.language_scoring import LANGUAGE_QUALITY_FEATURES, LinearLanguageQ
 from models.alphabet import Alphabet
 
 
-REPORT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_evidence.py"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SCRIPTS_DIR = REPO_ROOT / "scripts"
+COPIALE_RESEARCH_DIR = SCRIPTS_DIR / "research" / "copiale"
+
+
+REPORT_PATH = SCRIPTS_DIR / "report_copiale_evidence.py"
 report_spec = importlib.util.spec_from_file_location("report_copiale_evidence", REPORT_PATH)
 assert report_spec is not None and report_spec.loader is not None
 copiale_report = importlib.util.module_from_spec(report_spec)
 sys.modules[report_spec.name] = copiale_report
 report_spec.loader.exec_module(copiale_report)
 
-PROBE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "probe_copiale_null_masks.py"
+PROBE_PATH = COPIALE_RESEARCH_DIR / "probe_copiale_null_masks.py"
 probe_spec = importlib.util.spec_from_file_location("probe_copiale_null_masks", PROBE_PATH)
 assert probe_spec is not None and probe_spec.loader is not None
 copiale_probe = importlib.util.module_from_spec(probe_spec)
 sys.modules[probe_spec.name] = copiale_probe
 probe_spec.loader.exec_module(copiale_probe)
 
-NULL_REPORT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_null_probe.py"
+NULL_REPORT_PATH = COPIALE_RESEARCH_DIR / "report_copiale_null_probe.py"
 null_report_spec = importlib.util.spec_from_file_location("report_copiale_null_probe", NULL_REPORT_PATH)
 assert null_report_spec is not None and null_report_spec.loader is not None
 copiale_null_report = importlib.util.module_from_spec(null_report_spec)
 sys.modules[null_report_spec.name] = copiale_null_report
 null_report_spec.loader.exec_module(copiale_null_report)
 
-BREADTH_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_copiale_breadth_experiment.py"
+BREADTH_PATH = SCRIPTS_DIR / "run_copiale_breadth_experiment.py"
 breadth_spec = importlib.util.spec_from_file_location("run_copiale_breadth_experiment", BREADTH_PATH)
 assert breadth_spec is not None and breadth_spec.loader is not None
 copiale_breadth = importlib.util.module_from_spec(breadth_spec)
 sys.modules[breadth_spec.name] = copiale_breadth
 breadth_spec.loader.exec_module(copiale_breadth)
 
-BREADTH_DIAG_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_breadth_diagnostics.py"
+BREADTH_DIAG_PATH = SCRIPTS_DIR / "report_copiale_breadth_diagnostics.py"
 breadth_diag_spec = importlib.util.spec_from_file_location("report_copiale_breadth_diagnostics", BREADTH_DIAG_PATH)
 assert breadth_diag_spec is not None and breadth_diag_spec.loader is not None
 copiale_breadth_diag = importlib.util.module_from_spec(breadth_diag_spec)
 sys.modules[breadth_diag_spec.name] = copiale_breadth_diag
 breadth_diag_spec.loader.exec_module(copiale_breadth_diag)
 
-BREADTH_CURVE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_breadth_curve.py"
+BREADTH_CURVE_PATH = SCRIPTS_DIR / "report_copiale_breadth_curve.py"
 breadth_curve_spec = importlib.util.spec_from_file_location("report_copiale_breadth_curve", BREADTH_CURVE_PATH)
 assert breadth_curve_spec is not None and breadth_curve_spec.loader is not None
 copiale_breadth_curve = importlib.util.module_from_spec(breadth_curve_spec)
 sys.modules[breadth_curve_spec.name] = copiale_breadth_curve
 breadth_curve_spec.loader.exec_module(copiale_breadth_curve)
 
-MASK_STABILITY_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_mask_stability.py"
+MASK_STABILITY_PATH = SCRIPTS_DIR / "report_copiale_mask_stability.py"
 mask_stability_spec = importlib.util.spec_from_file_location("report_copiale_mask_stability", MASK_STABILITY_PATH)
 assert mask_stability_spec is not None and mask_stability_spec.loader is not None
 copiale_mask_stability = importlib.util.module_from_spec(mask_stability_spec)
 sys.modules[mask_stability_spec.name] = copiale_mask_stability
 mask_stability_spec.loader.exec_module(copiale_mask_stability)
 
-REPAIR_AGENDA_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_repair_agenda.py"
+REPAIR_AGENDA_PATH = COPIALE_RESEARCH_DIR / "report_copiale_repair_agenda.py"
 repair_agenda_spec = importlib.util.spec_from_file_location("report_copiale_repair_agenda", REPAIR_AGENDA_PATH)
 assert repair_agenda_spec is not None and repair_agenda_spec.loader is not None
 copiale_repair_agenda = importlib.util.module_from_spec(repair_agenda_spec)
 sys.modules[repair_agenda_spec.name] = copiale_repair_agenda
 repair_agenda_spec.loader.exec_module(copiale_repair_agenda)
 
-REPAIR_VARIANTS_PATH = Path(__file__).resolve().parents[1] / "scripts" / "probe_copiale_repair_variants.py"
+REPAIR_VARIANTS_PATH = COPIALE_RESEARCH_DIR / "probe_copiale_repair_variants.py"
 repair_variants_spec = importlib.util.spec_from_file_location("probe_copiale_repair_variants", REPAIR_VARIANTS_PATH)
 assert repair_variants_spec is not None and repair_variants_spec.loader is not None
 copiale_repair_variants = importlib.util.module_from_spec(repair_variants_spec)
 sys.modules[repair_variants_spec.name] = copiale_repair_variants
 repair_variants_spec.loader.exec_module(copiale_repair_variants)
 
-TARGETED_REPAIR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_copiale_targeted_repair.py"
+TARGETED_REPAIR_PATH = COPIALE_RESEARCH_DIR / "run_copiale_targeted_repair.py"
 targeted_repair_spec = importlib.util.spec_from_file_location("run_copiale_targeted_repair", TARGETED_REPAIR_PATH)
 assert targeted_repair_spec is not None and targeted_repair_spec.loader is not None
 copiale_targeted_repair = importlib.util.module_from_spec(targeted_repair_spec)
 sys.modules[targeted_repair_spec.name] = copiale_targeted_repair
 targeted_repair_spec.loader.exec_module(copiale_targeted_repair)
 
-WINDOW_REPAIR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "probe_copiale_window_repair.py"
+WINDOW_REPAIR_PATH = COPIALE_RESEARCH_DIR / "probe_copiale_window_repair.py"
 window_repair_spec = importlib.util.spec_from_file_location("probe_copiale_window_repair", WINDOW_REPAIR_PATH)
 assert window_repair_spec is not None and window_repair_spec.loader is not None
 copiale_window_repair = importlib.util.module_from_spec(window_repair_spec)
 sys.modules[window_repair_spec.name] = copiale_window_repair
 window_repair_spec.loader.exec_module(copiale_window_repair)
 
-MULTIPAGE_PATH = Path(__file__).resolve().parents[1] / "scripts" / "run_copiale_multipage_experiment.py"
+MULTIPAGE_PATH = COPIALE_RESEARCH_DIR / "run_copiale_multipage_experiment.py"
 multipage_spec = importlib.util.spec_from_file_location("run_copiale_multipage_experiment", MULTIPAGE_PATH)
 assert multipage_spec is not None and multipage_spec.loader is not None
 copiale_multipage = importlib.util.module_from_spec(multipage_spec)
 sys.modules[multipage_spec.name] = copiale_multipage
 multipage_spec.loader.exec_module(copiale_multipage)
 
-MULTIPAGE_SELECTOR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_multipage_selector.py"
+MULTIPAGE_SELECTOR_PATH = COPIALE_RESEARCH_DIR / "report_copiale_multipage_selector.py"
 multipage_selector_spec = importlib.util.spec_from_file_location(
     "report_copiale_multipage_selector",
     MULTIPAGE_SELECTOR_PATH,
@@ -103,7 +108,7 @@ copiale_multipage_selector = importlib.util.module_from_spec(multipage_selector_
 sys.modules[multipage_selector_spec.name] = copiale_multipage_selector
 multipage_selector_spec.loader.exec_module(copiale_multipage_selector)
 
-SELECTOR_ROBUSTNESS_PATH = Path(__file__).resolve().parents[1] / "scripts" / "report_copiale_selector_robustness.py"
+SELECTOR_ROBUSTNESS_PATH = COPIALE_RESEARCH_DIR / "report_copiale_selector_robustness.py"
 selector_robustness_spec = importlib.util.spec_from_file_location(
     "report_copiale_selector_robustness",
     SELECTOR_ROBUSTNESS_PATH,
@@ -113,7 +118,7 @@ copiale_selector_robustness = importlib.util.module_from_spec(selector_robustnes
 sys.modules[selector_robustness_spec.name] = copiale_selector_robustness
 selector_robustness_spec.loader.exec_module(copiale_selector_robustness)
 
-GLOBAL_REPAIR_PATH = Path(__file__).resolve().parents[1] / "scripts" / "probe_copiale_multipage_global_repair.py"
+GLOBAL_REPAIR_PATH = COPIALE_RESEARCH_DIR / "probe_copiale_multipage_global_repair.py"
 global_repair_spec = importlib.util.spec_from_file_location(
     "probe_copiale_multipage_global_repair",
     GLOBAL_REPAIR_PATH,

@@ -180,7 +180,7 @@ candidate generation has already completed.
 Prototype Copiale null-mask search:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
+PYTHONPATH=src .venv/bin/python scripts/research/copiale/probe_copiale_null_masks.py \
   --test-id copiale_single_B_copiale_p052 \
   --artifact artifacts/copiale_evidence_packet/automated/decipher/automated_only/copiale_single_B_copiale_p052/35f79bd36886.json \
   --candidate-limit 14 \
@@ -193,7 +193,7 @@ PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
 Five-page packet with saved candidate rows for later no-rerun ranking:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
+PYTHONPATH=src .venv/bin/python scripts/research/copiale/probe_copiale_null_masks.py \
   --suite-file frontier/copiale_evidence_packet.jsonl \
   --benchmark-root ../cipher_benchmark/benchmark \
   --split copiale_tests.jsonl \
@@ -211,7 +211,7 @@ PYTHONPATH=src .venv/bin/python scripts/probe_copiale_null_masks.py \
 Cheap report/rerank pass over a saved null-mask probe:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/report_copiale_null_probe.py \
+PYTHONPATH=src .venv/bin/python scripts/research/copiale/report_copiale_null_probe.py \
   artifacts/copiale_evidence_packet/null_probe_pair_masks_full_rows.jsonl \
   --top 8
 ```
@@ -323,7 +323,7 @@ the best saved basin first appears.
 To move from broad basin finding into local repair without using ground truth:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/report_copiale_repair_agenda.py \
+PYTHONPATH=src .venv/bin/python scripts/research/copiale/report_copiale_repair_agenda.py \
   --artifact artifacts/copiale_breadth_experiment/four_page_wide/language_quality/automated_only/copiale_single_B_copiale_p084/990c98058038.json \
   --benchmark-root ../cipher_benchmark/benchmark \
   --split copiale_tests.jsonl
@@ -640,7 +640,7 @@ damage-score columns when artifacts contain them.
 Copiale multi-page selector robustness report:
 
 ```bash
-PYTHONPATH=src .venv/bin/python scripts/report_copiale_selector_robustness.py \
+PYTHONPATH=src .venv/bin/python scripts/research/copiale/report_copiale_selector_robustness.py \
   --experiment-dir artifacts/copiale_multipage_experiment
 ```
 

@@ -11,6 +11,7 @@ import pytest
 from benchmark.context import build_benchmark_context, safe_read_benchmark_file
 from benchmark.loader import BenchmarkLoader, BenchmarkTest, parse_canonical_transcription
 from benchmark.scorer import (
+    DiagnosticPlaintextUnit,
     ScoreResult,
     _collapse_spaced_letters,
     align_char_sequences,
@@ -19,6 +20,7 @@ from benchmark.scorer import (
     format_report,
     normalize_text,
     score_decryption,
+    score_decryption_diagnostic,
 )
 
 
@@ -171,6 +173,66 @@ class TestScoreDecryption:
         assert result.char_accuracy == pytest.approx(1.0)
         assert result.word_accuracy == pytest.approx(1.0)
         assert result.total_words == 3
+
+
+class TestDiagnosticScoring:
+    def test_known_logogram_scores_as_expanded_text(self):
+        result = score_decryption_diagnostic(
+            "diag_known",
+            [
+                DiagnosticPlaintextUnit("text", "WHEN"),
+                DiagnosticPlaintextUnit("known_logogram", "THE", symbol="S090"),
+                DiagnosticPlaintextUnit("text", "TWAS"),
+            ],
+            "WHEN THE TWAS",
+        )
+
+        assert result.rendered_text == "WHENTHETWAS"
+        assert result.base_score.char_accuracy == pytest.approx(1.0)
+        assert result.known_logogram_count == 1
+        assert result.unknown_spans == []
+
+    def test_unknown_logogram_infers_gap_without_credit(self):
+        result = score_decryption_diagnostic(
+            "diag_unknown",
+            [
+                {"kind": "text", "text": "WHEN"},
+                {"kind": "unknown_logogram", "symbol": "S090"},
+                {"kind": "text", "text": "TWAS"},
+            ],
+            "WHEN THE TWAS",
+        )
+
+        assert result.rendered_text == "WHENTWAS"
+        assert result.base_score.correct_chars == 8
+        assert result.base_score.total_chars == 11
+        assert result.base_score.char_accuracy == pytest.approx(8 / 11)
+        assert result.unknown_logogram_count == 1
+        assert result.inferred_unknown_chars == 3
+        assert result.unknown_spans[0].symbol == "S090"
+        assert result.unknown_spans[0].ground_truth_text == "THE"
+
+    def test_unknown_logogram_diagnostic_matches_default_omission_score(self):
+        ordinary = score_decryption(
+            "diag_default",
+            "WHENTWAS",
+            "WHEN THE TWAS",
+            0.0,
+            "diagnostic",
+        )
+        diagnostic = score_decryption_diagnostic(
+            "diag_default",
+            [
+                DiagnosticPlaintextUnit("text", "WHEN"),
+                DiagnosticPlaintextUnit("possible_logogram", symbol="S090"),
+                DiagnosticPlaintextUnit("text", "TWAS"),
+            ],
+            "WHEN THE TWAS",
+        )
+
+        assert diagnostic.base_score.char_accuracy == ordinary.char_accuracy
+        assert diagnostic.base_score.correct_chars == ordinary.correct_chars
+        assert diagnostic.unknown_spans[0].ground_truth_text == "THE"
 
 
 class TestFormatReport:

@@ -1551,9 +1551,45 @@ def test_hypothesis_next_steps_recommends_null_masks_from_structure_not_language
     assert guidance["coarse_or_missing_boundaries"] is True
     assert "target language by itself is not evidence" in guidance["not_language_assumption"]
     assert guidance["suggested_args"]["homophonic_refinement"] == "null_masks"
+    assert guidance["review_args"]["count"] == 12
+    assert "top 8 scalar-validation candidates" in guidance["reading_instruction"]
     assert report["next_step"]["tool"] == "search_automated_solver"
     assert report["next_step"]["status"] == "pending_structural_refinement"
     assert report["next_step"]["suggested_args"]["homophonic_budget"] == "screen"
+
+
+def test_transform_and_unsolved_block_until_null_masks_are_tried():
+    ex = _homophonic_executor()
+    ex.max_iterations = 25
+    ex._current_iteration = 5
+    ex.execute("workspace_create_hypothesis_branch", {
+        "new_name": "hyp_hom",
+        "cipher_mode": "homophonic_substitution",
+        "rationale": "Large symbol inventory and coarse boundaries suggest homophonic search.",
+    })
+
+    transform = ex._tool_search_transform_homophonic({
+        "branch": "hyp_hom",
+        "profile": "medium",
+    })
+
+    assert transform["status"] == "blocked"
+    assert transform["reason"] == "null_mask_structural_refinement_pending"
+    assert transform["blocked_tool"] == "search_transform_homophonic"
+    assert transform["suggested_args"]["homophonic_refinement"] == "null_masks"
+
+    unsolved = ex._tool_meta_declare_unsolved({
+        "rationale": "No coherent reading yet.",
+        "best_branch": "hyp_hom",
+        "branches_considered": ["hyp_hom"],
+        "reading_summary": "Only word islands.",
+        "further_iterations_helpful": False,
+    })
+
+    assert unsolved["status"] == "blocked"
+    assert unsolved["reason"] == "null_mask_workflow_pending_before_unsolved"
+    assert unsolved["pending_null_mask_work"][0]["reason"] == "null_mask_structural_refinement_pending"
+    assert "search_automated_solver" in unsolved["suggested_next_tools"]
 
 
 def test_hypothesis_next_steps_does_not_recommend_null_masks_for_german_alone():

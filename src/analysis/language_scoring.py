@@ -13,6 +13,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 
 @dataclass(frozen=True)
@@ -1395,8 +1396,22 @@ def segmentation_shape_penalty(
     )
 
 
+def _fold_latin_for_scoring(text: str) -> str:
+    """Fold Latin diacritics before A-Z scoring.
+
+    The decipherment candidates produced by the current homophonic/null-mask
+    solvers are plain A-Z. Language-quality scoring should therefore treat
+    common diacritic variants as their base letters instead of silently
+    deleting them.
+    """
+    expanded = text.replace("ß", "SS").replace("ẞ", "SS")
+    decomposed = unicodedata.normalize("NFKD", expanded)
+    return "".join(ch for ch in decomposed if not unicodedata.combining(ch))
+
+
 def _az(text: str) -> str:
-    return "".join(ch for ch in text.upper() if "A" <= ch <= "Z")
+    folded = _fold_latin_for_scoring(text).upper()
+    return "".join(ch for ch in folded if "A" <= ch <= "Z")
 
 
 def _as_float(value: Any) -> float:

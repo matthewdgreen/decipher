@@ -73,6 +73,10 @@ src/
                             transparent trainable fast-scorer scaffold
     homophonic_nulls.py   — Null/codeword candidate generation and
                             ground-truth-free language finalist validation
+    nomenclator.py        — Ground-truth-free symbol-level rendering helpers
+                            for homophonic/nomenclator candidates: null masks,
+                            token-position views, recurrence packets, and
+                            optional whole-word/codeword expansions
     signals.py            — Multi-signal scoring panel (6 metrics)
     segment.py            — Rank-aware no-boundary word segmentation
     transform_evaluation.py — Shared transform finalist-menu validation,
@@ -913,6 +917,16 @@ items. Headline points:
   mental model (`decoded T should be B`). The decoded-letter framing primes
   `act_swap_decoded` (a bidirectional tool that is a footgun for
   reading-driven fixes) when the correct primitive is `act_set_mapping`.
+- Reading-driven repair must also allow nomenclator/logogram uncertainty. If a
+  readable damaged basin has a whole-word hole at an unmapped or null-rendered
+  cipher symbol, the next principled step is a recurrence-checked logogram
+  hypothesis, not a random one-letter patch. It is acceptable for tools and
+  prompts to render uncertainty explicitly, e.g.
+  `<possible logogram:S123>` or `<unknown logogram:S123>`, when the evidence
+  supports a missing unit but not a specific expansion.
+- Future agent cleanup should make the diagnostic chain explicit before
+  recommending tools: homophonic evidence, null evidence, missing-word/logogram
+  evidence, then recurrence-tested repair hypotheses.
 - `act_swap_decoded` should be marked clearly in the toolkit as a
   bidirectional-letter operation, not a fix-this-word operation. For
   reading-driven repairs, `act_set_mapping` is always the right primitive.

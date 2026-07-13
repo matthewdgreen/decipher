@@ -2,10 +2,19 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Mapping
 from typing import Literal
 
 
 AlignmentOp = Literal["match", "substitute", "insert", "delete"]
+DiagnosticUnitKind = Literal[
+    "text",
+    "known_logogram",
+    "unknown_logogram",
+    "possible_logogram",
+    "unknown_gap",
+    "null",
+]
 
 
 @dataclass
@@ -39,6 +48,60 @@ class ScoreResult:
     correct_words: int
     agent_score: float  # agent's own dictionary-based score
     status: str
+
+
+@dataclass(frozen=True)
+class DiagnosticPlaintextUnit:
+    """Typed post-hoc scoring unit for logogram/null diagnostics.
+
+    This is deliberately separate from the normal benchmark scorer.  It lets
+    reports reason about known whole-word symbols, unknown whole-word gaps, and
+    nulls without changing the cross-suite character accuracy metric.
+    """
+
+    kind: DiagnosticUnitKind
+    text: str = ""
+    symbol: str | None = None
+    confidence: float | None = None
+
+
+@dataclass(frozen=True)
+class DiagnosticUnknownSpan:
+    """A likely ground-truth span explained by an unknown diagnostic unit."""
+
+    unit_index: int
+    kind: DiagnosticUnitKind
+    symbol: str | None
+    decoded_char_offset: int
+    ground_truth_start: int | None
+    ground_truth_end: int | None
+    ground_truth_text: str
+    context_before: str
+    context_after: str
+
+
+@dataclass
+class DiagnosticScoreResult:
+    """Post-hoc diagnostic scoring with typed logogram/null evidence.
+
+    `base_score` is the ordinary shared `ScoreResult` for the rendered text.
+    Unknown logograms/gaps are omitted from that rendered text, then annotated
+    with likely ground-truth spans from the same edit-aware alignment.  Those
+    spans are diagnostic evidence only; they do not add character credit.
+    """
+
+    test_id: str
+    rendered_text: str
+    base_score: ScoreResult
+    units: list[DiagnosticPlaintextUnit]
+    unknown_spans: list[DiagnosticUnknownSpan]
+    known_logogram_count: int
+    unknown_logogram_count: int
+    null_count: int
+
+    @property
+    def inferred_unknown_chars(self) -> int:
+        return sum(len(span.ground_truth_text) for span in self.unknown_spans)
 
 
 def normalize_text(text: str) -> str:
@@ -109,6 +172,206 @@ def score_decryption(
         correct_words=correct_words,
         agent_score=agent_score,
         status=status,
+    )
+
+
+def score_decryption_diagnostic(
+    test_id: str,
+    units: list[DiagnosticPlaintextUnit | Mapping[str, object]],
+    ground_truth: str,
+    agent_score: float = 0.0,
+    status: str = "diagnostic",
+    *,
+    context: int = 12,
+) -> DiagnosticScoreResult:
+    """Score typed diagnostic output without changing the default metric.
+
+    Known text and known logograms are rendered into a plaintext string and
+    scored with the shared `score_decryption()` path.  Unknown logogram/gap
+    units are omitted from the rendered text, then aligned against ground truth
+    to infer which deleted plaintext span they may explain.  This is intended
+    for post-hoc reports and artifact analyzers; it must not be used inside
+    solver selection loops.
+    """
+    normalized_units = [_coerce_diagnostic_unit(unit) for unit in units]
+    rendered_parts: list[str] = []
+    unknown_offsets: list[tuple[int, DiagnosticPlaintextUnit]] = []
+    known_logograms = 0
+    unknown_logograms = 0
+    nulls = 0
+
+    for idx, unit in enumerate(normalized_units):
+        if unit.kind in {"text", "known_logogram"}:
+            if unit.kind == "known_logogram":
+                known_logograms += 1
+            rendered_parts.append(unit.text)
+        elif unit.kind in {"unknown_logogram", "possible_logogram", "unknown_gap"}:
+            unknown_logograms += 1
+            unknown_offsets.append((idx, unit))
+        elif unit.kind == "null":
+            nulls += 1
+        else:
+            raise ValueError(f"unsupported diagnostic unit kind: {unit.kind}")
+
+    rendered_text = "".join(rendered_parts)
+    base_score = score_decryption(
+        test_id,
+        rendered_text,
+        ground_truth,
+        agent_score,
+        status,
+    )
+
+    rendered_chars = _scoring_chars(rendered_text)
+    gt_chars = _scoring_chars(ground_truth)
+    rows = align_char_sequences(rendered_chars, gt_chars)
+    unknown_spans = [
+        _infer_unknown_span(
+            unit_index=idx,
+            unit=unit,
+            decoded_char_offset=offset,
+            rows=rows,
+            gt_chars=gt_chars,
+            context=context,
+        )
+        for offset, (idx, unit) in zip(
+            _unknown_rendered_offsets(normalized_units),
+            unknown_offsets,
+        )
+    ]
+
+    return DiagnosticScoreResult(
+        test_id=test_id,
+        rendered_text=rendered_text,
+        base_score=base_score,
+        units=normalized_units,
+        unknown_spans=unknown_spans,
+        known_logogram_count=known_logograms,
+        unknown_logogram_count=unknown_logograms,
+        null_count=nulls,
+    )
+
+
+def _coerce_diagnostic_unit(
+    unit: DiagnosticPlaintextUnit | Mapping[str, object],
+) -> DiagnosticPlaintextUnit:
+    if isinstance(unit, DiagnosticPlaintextUnit):
+        return unit
+    kind = unit.get("kind")
+    if not isinstance(kind, str):
+        raise ValueError("diagnostic unit is missing string 'kind'")
+    allowed_kinds = {
+        "text",
+        "known_logogram",
+        "unknown_logogram",
+        "possible_logogram",
+        "unknown_gap",
+        "null",
+    }
+    if kind not in allowed_kinds:
+        raise ValueError(f"unsupported diagnostic unit kind: {kind}")
+    text = unit.get("text", "")
+    symbol = unit.get("symbol")
+    confidence = unit.get("confidence")
+    if not isinstance(text, str):
+        raise ValueError("diagnostic unit 'text' must be a string")
+    if symbol is not None and not isinstance(symbol, str):
+        raise ValueError("diagnostic unit 'symbol' must be a string when present")
+    if confidence is not None and not isinstance(confidence, int | float):
+        raise ValueError("diagnostic unit 'confidence' must be numeric when present")
+    return DiagnosticPlaintextUnit(
+        kind=kind,  # type: ignore[arg-type]
+        text=text,
+        symbol=symbol,
+        confidence=float(confidence) if confidence is not None else None,
+    )
+
+
+def _scoring_chars(text: str) -> str:
+    return normalize_text(_collapse_spaced_letters(text)).replace(" ", "")
+
+
+def _unknown_rendered_offsets(
+    units: list[DiagnosticPlaintextUnit],
+) -> list[int]:
+    offsets: list[int] = []
+    rendered_char_offset = 0
+    for unit in units:
+        if unit.kind in {"text", "known_logogram"}:
+            rendered_char_offset += len(_scoring_chars(unit.text))
+        elif unit.kind in {"unknown_logogram", "possible_logogram", "unknown_gap"}:
+            offsets.append(rendered_char_offset)
+    return offsets
+
+
+def _infer_unknown_span(
+    *,
+    unit_index: int,
+    unit: DiagnosticPlaintextUnit,
+    decoded_char_offset: int,
+    rows: list[CharAlignmentRow],
+    gt_chars: str,
+    context: int,
+) -> DiagnosticUnknownSpan:
+    # Find deleted ground-truth characters that occur exactly at the rendered
+    # cursor where this unknown unit was omitted.
+    span_indices: list[int] = []
+    cursor_seen = False
+    for row in rows:
+        if row.decoded_index is not None and row.decoded_index < decoded_char_offset:
+            continue
+        if row.decoded_index is not None and row.decoded_index >= decoded_char_offset:
+            if cursor_seen:
+                break
+            cursor_seen = True
+        if row.decoded_index is None and row.ground_truth_index is not None:
+            # At offset 0, leading deletions arrive before any decoded row.
+            if decoded_char_offset == 0 or cursor_seen:
+                span_indices.append(row.ground_truth_index)
+                continue
+        if cursor_seen and row.decoded_index is not None:
+            break
+
+    # For the common middle-of-text case, the loop above sees the next decoded
+    # character before the deleted span.  Use the interval between previous and
+    # next decoded characters as a second pass.
+    if not span_indices:
+        before = None
+        after = None
+        for pos, row in enumerate(rows):
+            if row.decoded_index == decoded_char_offset - 1:
+                before = pos
+            if row.decoded_index == decoded_char_offset and after is None:
+                after = pos
+        lo = (before + 1) if before is not None else 0
+        hi = after if after is not None else len(rows)
+        span_indices = [
+            row.ground_truth_index
+            for row in rows[lo:hi]
+            if row.decoded_index is None and row.ground_truth_index is not None
+        ]
+
+    if span_indices:
+        start = min(span_indices)
+        end = max(span_indices) + 1
+        span_text = gt_chars[start:end]
+    else:
+        start = None
+        end = None
+        span_text = ""
+
+    context_start = max(0, (start if start is not None else 0) - context)
+    context_end = min(len(gt_chars), (end if end is not None else 0) + context)
+    return DiagnosticUnknownSpan(
+        unit_index=unit_index,
+        kind=unit.kind,
+        symbol=unit.symbol,
+        decoded_char_offset=decoded_char_offset,
+        ground_truth_start=start,
+        ground_truth_end=end,
+        ground_truth_text=span_text,
+        context_before=gt_chars[context_start:start] if start is not None else "",
+        context_after=gt_chars[end:context_end] if end is not None else "",
     )
 
 

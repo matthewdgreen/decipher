@@ -12,6 +12,12 @@ Current planning split:
   coverage.
 - New Copiale/generalization work is tracked in
   `docs/copiale_generalization_plan.md`.
+- Experimental cleanup/promotion status is tracked in
+  `docs/experimental_consolidation_plan.md`.
+- The cross-cutting improvement program (evaluation-integrity fixes, shared
+  candidate packets, Copiale research promotion, German model/solver
+  upgrades, LLM reader scout, agent cost/robustness work) is prioritized in
+  `docs/improvement_program_plan.md`.
 - After the Copiale track, the next major capability priority should be
   better statistical diagnostics for unknown cipher families, aiming for
   parity with strong identifier/diagnostic tools such as dCode and Boxentriq.
@@ -1666,7 +1672,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         `p035` 61.2%, `p052` 66.1%, `p068` 54.0%, `p084` 63.0%). The
         post-hoc best was often higher than selection best, so the main gap is
         now finalist selection/calibration, not merely candidate generation.
-      - `scripts/probe_copiale_null_masks.py` now reports a transparent
+      - `scripts/research/copiale/probe_copiale_null_masks.py` now reports a transparent
         no-ground-truth validation score. The current v2 score reduces raw
         anneal-selection weight and adds stricter German coherence,
         letter-diversity, top-letter, binary-model fit, German-shape, and
@@ -1763,7 +1769,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         pressure, and pseudo-word glue. This demotes some p068 word-island
         basins while keeping the post-hoc best basin in the top scalar
         validation cluster.
-      - `scripts/report_copiale_null_probe.py` can summarize and rerank saved
+      - `scripts/research/copiale/report_copiale_null_probe.py` can summarize and rerank saved
         probe JSONL cheaply. Use `--include-all-rows` on the probe when doing
         scorer-tuning runs so validation changes do not require rerunning all
         null-mask solves; older compact JSONL rows cannot fully exercise new
@@ -1991,7 +1997,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         `S038,S062` at all, so p084's next issue is reachability/stability of
         promising neighboring masks rather than simply choosing among a stable
         finalist set.
-      - Multi-page selector robustness checkpoint: `scripts/report_copiale_selector_robustness.py`
+      - Multi-page selector robustness checkpoint: `scripts/research/copiale/report_copiale_selector_robustness.py`
         now compares balanced vs. anti-fragment robust selection across saved
         multi-page artifacts using post-hoc labels only. The current evidence
         says the robust score should stay scoped to portfolio
@@ -2019,7 +2025,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         prefers those explicit IDs/indices and falls back to the older
         row-signature join for legacy artifacts; use `--progress` and
         `--max-finalists-per-artifact` for broad-directory smoke checks.
-      - Added `scripts/report_copiale_repair_agenda.py` as the first
+      - Added `scripts/research/copiale/report_copiale_repair_agenda.py` as the first
         basin-to-repair handoff. It reads completed null-mask artifacts,
         compares top runtime finalists without ground truth, reports stable
         and disputed key assignments, and names damaged-looking plaintext
@@ -2029,6 +2035,28 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         interpretations for symbols repeatedly implicated in damaged windows,
         and keep changes ranked by language-quality/validation signals rather
         than benchmark plaintext.
+      - Add reading-driven logogram/codeword hypothesis tooling and agent
+        workflow. A high-probability logogram signal is: readable damaged
+        plaintext plus a whole-word hole at a position occupied by an
+        unmapped/null-rendered symbol. The tool should then check all
+        recurrences of that symbol and reread the text with candidate
+        expansions installed. Do not force a guessed word when the evidence
+        proves only that a missing unit exists: rendered uncertainty such as
+        `THE BIG BROWN <possible logogram:S123> JUMPED OVER` or
+        `<unknown logogram:S123>` is a valid and useful investigative output.
+        Future agent cleanup should expose the evidence chain explicitly:
+        homophonic diagnosis -> null evidence -> missing-word/logogram
+        evidence -> recurrence-tested repair hypotheses.
+        Prototype note: `scripts/research/copiale/probe_reading_holes.py` now implements the
+        first local reading-first report: word-island segmentation, broken-word
+        windows, missing-word slot aggregation by symbol, and recurrence-level
+        `<MISSING_WORD?>` rereads. Calibration currently shows the local scorer
+        is too weak by itself: common one-letter symbols at plausible word
+        boundaries swamp the true Copiale logograms. The script now also has
+        an opt-in `--rereader llm` semantic stage that sends recurrence packets
+        to the configured API model and asks for structured missing-word vs
+        ordinary-letter judgments. Keep this as a calibration harness until it
+        proves useful before wiring it into agent-facing decisions.
       - Initial feature families: character/binary n-gram fit, dictionary and
         content-word quality, word-lattice/segmentation quality, function-word
         balance, repetition/overuse penalties, word length/content-function
@@ -2040,7 +2068,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       - Later optional layer: run a slower LLM/neural judge only on a small
         finalist set, with token/cost accounting and careful prompts that ask
         for damaged-text plausibility rather than confident translation.
-      - Continue expanding `scripts/report_copiale_null_probe.py` into a
+      - Continue expanding `scripts/research/copiale/report_copiale_null_probe.py` into a
         general scorer-calibration report. It already includes aggregate
         exact-hit/gap metrics, top-N capture rates, and component-level miss
         analysis for null-mask candidates.
@@ -2062,7 +2090,7 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
         and install null/codeword mask candidates without rerunning the
         bakeoff.
     - [x] Add a prototype null-mask search script:
-      `scripts/probe_copiale_null_masks.py`. It generates null masks without
+      `scripts/research/copiale/probe_copiale_null_masks.py`. It generates null masks without
       plaintext, reruns `zenith_native` on filtered token streams, and reports
       post-hoc scores for calibration. Do not treat this as a production
       solver route until candidate selection is good enough without

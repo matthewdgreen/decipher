@@ -14,6 +14,38 @@ A CLI research tool for classical cipher cryptanalysis. Primary focus:
 
 ---
 
+## Claude Code Orchestration Strategy
+
+All implementation plans in this repo are executed with the following division
+of labor. The main-session model (Fable) oversees strategy end to end.
+
+- **Oversight/strategy** — Fable in the main session loop: plans, sequences,
+  launches sub-agents, integrates results, and decides what lands.
+- **Specification development** — Fable at extra effort with full context.
+  Doing this in the main loop is fine (the main session is Fable). Specs are
+  written documents under `docs/specs/`, detailed enough to implement without
+  access to the originating conversation: exact files/lines, desired behavior,
+  edge cases, and required tests.
+- **Coding** — Opus or Sonnet sub-agents implementing from the written spec,
+  chosen per task: Opus for careful multi-file or behavioral work, Sonnet for
+  mechanical/small tasks. Coding agents do not invent scope; gaps in the spec
+  go back to the spec author.
+- **Code review** — Fable sub-agents reviewing the diff against the spec.
+- **Fable-verification step** — whenever a Fable sub-agent finishes, inspect
+  that session's local metadata (the sub-agent transcript JSONL under the
+  session/tasks directory) and confirm the assistant turns were actually
+  served by `claude-fable-5` and not gated down to Opus by the safety gate,
+  e.g.:
+
+  ```bash
+  grep -ho '"model": *"[^"]*"' <transcript>.jsonl | sort | uniq -c
+  ```
+
+  Report the check result alongside the agent's findings. If a turn was
+  served by a different model, flag it and decide whether to rerun.
+
+---
+
 ## Key Files
 
 ```

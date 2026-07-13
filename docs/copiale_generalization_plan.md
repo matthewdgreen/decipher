@@ -244,7 +244,7 @@ benchmark issue.
     the default finalist menu, because p068 showed that useful basins can sit
     around ranks 8-12 when the scorer over-rewards short German word islands.
   - Multi-page selection now has an explicit robustness audit:
-    `scripts/report_copiale_selector_robustness.py`. Current saved artifacts
+    `scripts/research/copiale/report_copiale_selector_robustness.py`. Current saved artifacts
     support a two-stage policy: use the balanced page score for the broad
     elite menu, then use the anti-fragment robust score for the smaller
     refined/local-repair portfolio. This avoids a raw elite-menu regression
@@ -260,7 +260,7 @@ benchmark issue.
     same-mask rerun cannot overwrite a useful basin merely by improving the
     noisy scalar score by a tiny amount.
   - A first global shared-key repair probe now exists:
-    `scripts/probe_copiale_multipage_global_repair.py`. It starts from a
+    `scripts/research/copiale/probe_copiale_multipage_global_repair.py`. It starts from a
     multi-page finalist, finds disputed symbols in damaged windows across
     pages, and evaluates bounded shared-key/null edits with the same
     page-aware runtime scores used by the multi-page selector. On the current
@@ -283,14 +283,49 @@ benchmark issue.
     four pages. Smaller `S084:E->T`-family edits remain plausible review items
     rather than accepted repairs, which is the right posture until the runtime
     scorer has a stronger reading-level signal.
+- [ ] Add reading-driven logogram/codeword hypothesis tools.
+  - A high-probability logogram signal is: readable damaged plaintext plus a
+    whole-word hole at a position occupied by an unmapped/null-rendered symbol.
+    This should be treated as evidence for a nomenclator/codeword test, not as
+    an ordinary single-letter typo.
+  - Prototype status: `scripts/research/copiale/probe_reading_holes.py` now performs a first
+    reading-first pass. It segments a damaged candidate into word islands,
+    reports broken words, identifies reader-visible missing-word slots, then
+    aggregates those slots by cipher symbol and recurrence contexts. A second
+    recurrence-level table asks whether the same symbol repeatedly behaves like
+    a missing-word marker and renders rereads with
+    `<MISSING_WORD?>` placeholders.
+  - Current calibration result: the local segmenter-only layer is useful for
+    exposing the evidence chain, but it does **not** yet reliably surface true
+    Copiale logograms. On the four-page smoke run, ordinary one-letter symbols
+    at word boundaries dominate the shortlist, while true logograms remain
+    low-rank or unrevealed. The script now has an opt-in `--rereader llm`
+    semantic pass that sends recurrence packets to the configured API model
+    and asks it to distinguish real missing whole-word/codeword slots from
+    ordinary damaged letters. This is still a diagnostic harness, not default
+    solver behavior.
+  - Candidate generation must check all recurrences of the suspicious symbol
+    and reread the text with the proposed expansion installed. A repair should
+    be promoted only when the expansion is globally plausible, not merely cute
+    in one local phrase.
+  - Unknown-but-suspicious is a valid output state. Tooling should support
+    rendered placeholders such as
+    `THE BIG BROWN <possible logogram:S123> JUMPED OVER` or
+    `<unknown logogram:S123>` when the context proves a missing unit exists
+    but does not pin down the exact plaintext.
+  - Keep the evidence chain explicit for the future agent cleanup pass:
+    identify homophonic structure from alphabet/frequency evidence; identify
+    true null candidates from recurrence/readability evidence; identify
+    logogram candidates from repeated missing-word holes; then test expansions
+    by rereading all occurrences globally.
 - [x] Add a prototype null-mask search script:
-  `scripts/probe_copiale_null_masks.py`. It generates candidate null masks
+  `scripts/research/copiale/probe_copiale_null_masks.py`. It generates candidate null masks
   without plaintext, reruns the homophonic solver on filtered token streams,
   and reports ground-truth accuracy only after each candidate is produced.
   Keep it as a calibration tool until the selection signal is strong enough to
   promote into `AutomatedBenchmarkRunner`.
 - [x] Add a cheap saved-probe reporter:
-  `scripts/report_copiale_null_probe.py`. Run the probe with
+  `scripts/research/copiale/report_copiale_null_probe.py`. Run the probe with
   `--include-all-rows` when tuning validation; the report can then compare raw
   solver selection, no-ground-truth validation ranking, and post-hoc character
   accuracy without rerunning the native solver. It also reports aggregate
@@ -326,6 +361,18 @@ benchmark issue.
   hits from sentence-level German.
 - [ ] Teach the agent to hold, not declare, branches that only contain islands
   such as articles, particles, or short common words.
+- [ ] Add a reading-driven null/logogram workflow for homophonic/nomenclator
+  basins.
+  - The agent should see explicit evidence packets for each investigative
+    step: homophonic diagnosis, null evidence, missing-word/logogram evidence,
+    and recurrence-tested repair hypotheses.
+  - The agent should call logogram hypothesis/review tools when a missing-word
+    hole plus an unmapped/null-rendered symbol is present. This should be
+    justified by the evidence pattern rather than by random availability of a
+    new tool.
+  - The workflow must allow marked uncertainty in the candidate plaintext:
+    `<possible logogram:S123>` is a useful result when the exact expansion is
+    unknown.
 - [ ] Add optional context-loading support for benchmark `context_records`,
   gated by a CLI flag so blind and context-aware runs remain separate.
 - [ ] Add prompt notes for historical German spelling and Copiale-specific

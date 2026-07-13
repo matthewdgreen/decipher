@@ -17,7 +17,7 @@ import time
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 CONFIGS: dict[str, dict[str, int]] = {
     "small": {
@@ -175,7 +175,7 @@ def build_command(
 ) -> list[str]:
     return [
         sys.executable,
-        str(REPO_ROOT / "scripts" / "probe_copiale_word_hypothesis_repair.py"),
+        str(REPO_ROOT / "scripts" / "research" / "copiale" / "probe_copiale_word_hypothesis_repair.py"),
         str(experiment_path),
         "--benchmark-root",
         benchmark_root,

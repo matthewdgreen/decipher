@@ -1592,10 +1592,22 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     class FakeAPI:
         model = "fake-model"
 
-    def fake_preflight(cipher_text, language, test_id, cipher_system):
+    def fake_preflight(
+        cipher_text,
+        language,
+        test_id,
+        cipher_system,
+        *,
+        homophonic_budget="full",
+        homophonic_refinement="none",
+        homophonic_solver="zenith_native",
+    ):
         seen["language"] = language
         seen["test_id"] = test_id
         seen["cipher_system"] = cipher_system
+        seen["homophonic_budget"] = homophonic_budget
+        seen["homophonic_refinement"] = homophonic_refinement
+        seen["homophonic_solver"] = homophonic_solver
         return {
             "enabled": True,
             "status": "completed",
@@ -1637,6 +1649,9 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     runner = BenchmarkRunnerV2(
         claude_api=FakeAPI(),  # type: ignore[arg-type]
         artifact_dir=tmp_path,
+        homophonic_budget="screen",
+        homophonic_refinement="null_masks",
+        homophonic_solver="legacy",
     )
     result = runner.run_test(_test_data(), language="en")
 
@@ -1644,6 +1659,9 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     assert seen["test_id"] == "auto_demo"
     assert seen["language"] == "en"
     assert seen["cipher_system"] == "simple_substitution"
+    assert seen["homophonic_budget"] == "screen"
+    assert seen["homophonic_refinement"] == "null_masks"
+    assert seen["homophonic_solver"] == "legacy"
     assert seen["automated_preflight"]["summary"] == "preflight summary"
     assert seen["benchmark_context"].policy == "max"
 

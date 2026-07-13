@@ -627,7 +627,7 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
     assert review["menu_order"] == "scalar_validation_score_v2"
     assert review["primary_numeric_ranker"] == "validation_score_v2"
     assert "ensemble" in review["numeric_scores_role"]
-    assert "top 3 scalar-validation finalists" in review["review_instruction"]
+    assert "top 8 scalar-validation finalists" in review["review_instruction"]
     assert review["finalist_review"][0]["validation_score_role"].startswith("primary numeric")
     assert "supporting_calibration_only" in review["finalist_review"][0]["ensemble_score_role"]
     assert review["finalist_review"][0]["dictionary_content_word_count"] == 2
@@ -643,6 +643,12 @@ def test_search_automated_solver_exposes_null_mask_finalist_session(monkeypatch)
     })
     assert rating["status"] == "ok"
     assert rating["finalist"]["agent_readability_judgment"]["label"] == "partial_clause"
+
+    transform_block = ex._tool_search_transform_homophonic({"branch": "main"})
+    assert transform_block["status"] == "blocked"
+    assert transform_block["reason"] == "null_mask_finalist_review_incomplete"
+    assert transform_block["blocked_tool"] == "search_transform_homophonic"
+    assert transform_block["suggested_args"]["search_session_id"] == session_id
 
     installed = ex._tool_act_install_null_mask_finalists({
         "search_session_id": session_id,

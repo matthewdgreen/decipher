@@ -17,9 +17,11 @@ import time
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
 from automated.runner import (  # noqa: E402
     _plaintext_quality,
@@ -29,11 +31,11 @@ from automated.runner import (  # noqa: E402
 )
 from benchmark.loader import BenchmarkLoader, parse_canonical_transcription  # noqa: E402
 from models.cipher_text import CipherText  # noqa: E402
-from scripts.probe_copiale_repair_variants import (  # noqa: E402
+from probe_copiale_repair_variants import (  # noqa: E402
     apply_assignment,
     load_selected_row,
 )
-from scripts.report_copiale_repair_agenda import parse_key  # noqa: E402
+from report_copiale_repair_agenda import parse_key  # noqa: E402
 from analysis.homophonic_nulls import null_mask_validation_score_v2  # noqa: E402
 
 

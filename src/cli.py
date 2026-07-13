@@ -604,6 +604,9 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             external_context=_read_external_context(args),
             benchmark_context_policy=args.benchmark_context,
             system_prompt_style=_resolve_system_prompt_style(args),
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
         )
         mode_label = f"agentic ({provider}/{model})"
 
@@ -1147,6 +1150,9 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             artifact_dir=args.artifact_dir,
             automated_preflight=not args.no_automated_preflight,
             display_mode=display_mode,
+            homophonic_budget=args.homophonic_budget,
+            homophonic_refinement=args.homophonic_refinement,
+            homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
         )
         print(
             f"\nRunning agent (provider={provider}, model={crack_model}, "

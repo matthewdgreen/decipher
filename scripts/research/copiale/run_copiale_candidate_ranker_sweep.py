@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_TEST_IDS = (
     "copiale_single_B_copiale_p017",
     "copiale_single_B_copiale_p035",

@@ -312,11 +312,14 @@ This is a **word-island basin**, not a near solution. Before using local \
 repair tools on such a branch, ask yourself one question: can you paraphrase \
 at least one coherent clause from the decoded text, not just list isolated \
 words? If the answer is no, **do not repair individual words**. Trust your \
-gut: the basin is wrong. Take a bigger search swing instead — inspect \
-transform suspicion, run `search_transform_candidates` or \
-`search_transform_homophonic` with `profile='medium'`/`'wide'` and \
-`include_program_search=true`, or restart automated/homophonic search from \
-an untransformed source branch.
+gut: the basin is wrong. Take a bigger search swing instead. For \
+homophonic/nomenclator-style ciphers, first exhaust the null-mask finalist \
+menu if structural guidance says it applies; do not jump to transform search \
+just because a bad homophonic key has word islands. For transposition-like \
+hypotheses with independent order evidence, inspect transform suspicion, run \
+`search_transform_candidates` or `search_transform_homophonic` with \
+`profile='medium'`/`'wide'` and `include_program_search=true`, or restart \
+automated/homophonic search from an untransformed source branch.
 
 Branch cards report a `basin` block. If it says `word_islands_only` or its \
 `repair_policy` says to search/map before local repair, treat local word \
@@ -338,9 +341,11 @@ ensemble score is only a supporting calibration signal. Some finalists may be \
 `consensus_polish` reruns where agreed mappings were frozen and disputed \
 symbols were re-annealed; treat those as useful correction attempts, not as \
 proof of correctness. Read and rate at least \
-the top 3 scalar-validation finalists before installing or declaring; if the \
-menu contains several close damaged basins, inspect the top 5-8 when available, \
-rate multiple candidates, and install more than one plausible branch.
+the top 8 scalar-validation finalists before installing or declaring; if the \
+menu contains several close damaged basins, inspect the top 12 when available, \
+rate multiple candidates, and install more than one plausible branch. A good \
+Copiale-style basin can sit below rank 3, so do not treat a weak top-ranked \
+candidate as evidence that the whole null-mask route failed.
 
 When you have a genuinely plausible transcription, call `meta_declare_solution` \
 with your chosen branch, a rationale, your own confidence estimate, a brief \

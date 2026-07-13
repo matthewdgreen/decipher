@@ -19,15 +19,17 @@ import sys
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT / "scripts" / "research" / "copiale"))
 
 from analysis.homophonic_nulls import null_mask_validation_score_v2  # noqa: E402
 from analysis.language_scoring import language_quality_feature_dict  # noqa: E402
 from automated.runner import _automated_candidate_diagnostics, _plaintext_quality, _word_list  # noqa: E402
 from benchmark.loader import BenchmarkLoader, parse_canonical_transcription  # noqa: E402
-from scripts.report_copiale_repair_agenda import (  # noqa: E402
+from report_copiale_repair_agenda import (  # noqa: E402
     damaged_windows,
     parse_key,
     reconstruct_candidate,
