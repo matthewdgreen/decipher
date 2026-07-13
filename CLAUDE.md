@@ -309,15 +309,18 @@ Python 3.11 at `/opt/homebrew/bin/python3.11`. Venv at `.venv/`.
 
 ## Model Selection
 
-**Current preferred agent model (2026-07-13)**: `gpt-5.5` (OpenAI) — per
-Matthew's benchmark experience it beats Sonnet on both results and token
-efficiency for the decipher agent loop. `gpt-5.6` is now available and
-verified reachable on this account; trial it against 5.5 before switching.
-Agentic API spend therefore bills the **OpenAI** account
-(`.decipher_keys/openai_api_key`). Note: `_PRICING` in
-`src/agent/model_provider.py` has no gpt-5.5/5.6 entries yet, so cost
-estimates read zero until added. `--model gpt-5.5` auto-routes to the
-OpenAI provider.
+**Confirmed agent model (2026-07-13, head-to-head verdict)**: `gpt-5.5`
+(OpenAI). Beat `gpt-5.6-sol` at equal price on borg_0109v word accuracy
+(mean 82.3% over {84.8, 79.7} vs Sol's 75.2% over {65.4, 85.9, 74.4 —
+last with reasoning passback}), with bit-identical 95.9% char accuracy
+across runs and fewer tokens on the hardest synthetic (275k vs 335k).
+Evidence: `artifacts/agentic_model_comparison/`. Caveat: n=2–3 on one
+page; revisit at the V3-M6 bake-off. The gpt-5.6 tiers are fully usable
+(Responses-API path + reasoning passback landed): `gpt-5.6-luna` is the
+standout value tier ($0.59 for a solved Borg page, 94.2%/77.2%) — first
+candidate for cheap v3 episode workers. Agentic API spend bills the
+**OpenAI** account (`.decipher_keys/openai_api_key`); `--model gpt-5.5`
+auto-routes to the OpenAI provider; pricing table is current.
 
 **Previous recommendation**: `claude-sonnet-4-6` — best Anthropic results on
 historical manuscript analysis (Anthropic key lives in the macOS keychain,
