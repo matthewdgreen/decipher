@@ -19,18 +19,24 @@ trustworthy or more expensive than it should be.
 
 | Phase | Title | Why this order | Size | Depends on |
 |---|---|---|---|---|
-| 0 | Evaluation integrity + hygiene | Small, protects every number collected afterward | S (1–2 days) | — |
-| 1 | Shared candidate packet + generic finalist sessions | Foundation for all promotion and ranking work | M (3–5 days) | — |
-| 2 | **Copiale research promotion** | The centerpiece: ~79% basins live in orphaned scripts | L (1.5–3 weeks) | 1 (for 2.4+) |
+| 0 | Evaluation integrity + hygiene | Small, protects every number collected afterward | S (1–2 days) | ✅ landed `ef4ac9a` |
+| 1 | Shared candidate packet + generic finalist sessions | Foundation for promotion, ranking, and v3 episodes | M (3–5 days) | — |
+| 2 | **Copiale research promotion** | ~79% basins live in orphaned scripts; solver-side, survives the v3 redesign | L (1.5–3 weeks) | 1 (for 2.4+) |
 | 3 | German model + solver objective upgrades | Cheapest accuracy lever; parallelizable with 2 | M–L (1–2 weeks) | — |
-| 4 | LLM reader scout (runtime selection) | Attacks the known selection wall; needs packets | M (~1 week) | 1 |
-| 5 | Agent loop cost + robustness | Continuous engineering track; telemetry first | M (~1 week spread) | — |
-| 6 | Boundary actuator consolidation | High value but touches prompts/tests broadly; do with telemetry from 5 | M (~1 week) | 5.6 |
+| **V3** | **Agent loop v3 redesign** | The v2 loop's failures are architectural; episodes + state-rebuilt context replace the coercion machinery. Design: `docs/specs/agent_v3_design.md` | XL (3–5 weeks, milestoned M1–M6) | 1; 2.5 built v3-shaped |
+| 4 | LLM reader (runtime selection) | 4.1/4.2 attack the selection wall on the runner side; 4.3 is subsumed by V3-M5 | M (~1 week) | 1 |
+| 5 | Agent loop cost + robustness | Shrunk: telemetry + tool output caps only; the rest is deleted-by-design in v3 | S | — |
+| 6 | ~~Boundary actuator consolidation~~ | **Subsumed by V3-M3** (Reading artifact + `hypothesis_apply_reading`); do not execute separately | — | — |
 
-Phases 2 and 3 can run in parallel (different files). Phase 4 should start
-only after Phase 1's packet schema is stable. Phase 6 is deliberately last
-among the big items because it changes agent-visible tool names and needs
-the failure-rate telemetry from Phase 5 to prove itself.
+Phases 2 and 3 run in parallel (different files). The V3 redesign is the
+centerpiece of the agent-side program: the v2 loop has not produced
+successful historical solves, and its failure modes (wrong-basin
+declarations, gate bounces, actuator misuse, token bloat) are properties of
+the single-long-conversation architecture. V3 proceeds in six milestones
+with a v2-vs-v3 bake-off gate (M6) before the default switches and the v2
+coercion machinery is deleted. Until M6, v2 receives no new features except
+Phase 2's tool exposure, which is built in the v3 composite-action shape
+from the start.
 
 ## Landing Discipline (applies to every phase)
 
@@ -311,6 +317,44 @@ flat-stream on word-delimited homophonic synthetics.
 
 ---
 
+## Phase V3: Agent Loop v3 Redesign
+
+Full design: `docs/specs/agent_v3_design.md`. Summary of the architecture:
+
+- **InvestigationState** — one serializable state object (workspace,
+  hypothesis board, evidence log, episode ledger, experiment queue, budget
+  ledger); every turn's context is *rebuilt* from it; resume-from-artifact
+  becomes the normal code path.
+- **Episodes** — a lead context makes strategic decisions only; bounded
+  fresh-context worker episodes (survey/search/reading/repair/verify/
+  compare) do the work with task-scoped toolsets and structured results.
+  The v2 executor's tool handlers are retained as the worker tool library.
+- **Hypothesis-level actions** — composite tools
+  (`hypothesis_test_word`, `hypothesis_apply_reading`,
+  `branch_adjudicate`) returning evidence packets; `Reading` becomes a
+  first-class artifact, replacing the seven boundary actuators.
+- **Experiment queue** — long searches run async; the lead adjudicates
+  results instead of babysitting synchronous calls.
+- **Verification-gated declaration** — a fresh-context attestation
+  (candidate text only) replaces self-attestation and the declare-gate
+  bounce machinery.
+
+Milestones (each gets its own implementation spec + review cycle + commit):
+
+- [ ] **M1** State + lead loop (no episodes); `run_v3` entry; token parity
+      measurement vs v2 on synthetics.
+- [ ] **M2** Episode runtime + fake-provider multi-context test harness.
+- [ ] **M3** Composite actions + Reading artifact (absorbs Phase 6's test
+      matrix; boundary misuse impossible by construction).
+- [ ] **M4** Experiment queue (async + mandatory sync mode).
+- [ ] **M5** Verify episodes + attestation-carrying declaration; firewall
+      extension; wrong-basin fixture must be caught.
+- [ ] **M6** v2-vs-v3 benchmark bake-off (accuracy/tokens/cost/wall-clock
+      on the baseline matrix); default switch iff accuracy ≥ v2 at
+      materially lower cost; delete the v2 coercion machinery.
+
+---
+
 ## Phase 4: LLM Reader Scout (runtime selection)
 
 The measured wall is selection: post-hoc-best beats GT-free selection on
@@ -329,10 +373,10 @@ as the offline `rank_candidate_texts_with_llm.py` harness.
       before selection. Votes, rationale snippets, model id, and cost land
       in the artifact. Ground-truth firewall tests from 0.7 extend to this
       path. Default off; cheap-model default when on.
-- [ ] **4.3 Agent-side scout.** First slice of the TODO's "lead + scouts"
-      design, scoped to the candidate-reader role only: the finalist review
-      tools can invoke the reader on a session's packets and attach scores —
-      structured findings with provenance, no shared-state mutation.
+- [ ] **4.3 Agent-side scout — SUBSUMED by V3-M5.** The candidate-reader
+      role is the `verify`/`compare` episode kinds in the v3 architecture;
+      do not build a separate v2-side scout. 4.1's `llm_reader` library is
+      still the shared engine those episodes call.
 - [ ] **4.4 Calibration bake-off.** Re-run the clustered-holdout ranker
       evaluation with the LLM reader vs `LinearLanguageQualityModel` vs the
       v2/ensemble validators on the same held-out families; publish the
@@ -344,7 +388,15 @@ as the offline `rank_candidate_texts_with_llm.py` harness.
 
 ## Phase 5: Agent Loop Cost + Robustness
 
-Telemetry first, then the fixes, so each change has a before/after number.
+**Shrunk by the V3 redesign.** Items 5.1 (telemetry — lands in the v3
+budget ledger) and 5.2 (central tool output caps — applies to the shared
+tool library either way) proceed. Items 5.3 (in-place pruning), 5.4
+(mode-gated prompt), 5.5 (panel dedup), 5.6 (proactive declaration
+guidance), 5.7 (retry budget), and 5.8 (panel rotation) are
+deleted-by-design in v3 — implement them only if a v2 stopgap is needed
+before V3-M6 lands.
+
+Original rationale below, retained for reference.
 Precedent: `docs/prompt_reduction_strategy.md` (27k tokens/turn baseline
 measurement).
 
@@ -388,7 +440,13 @@ snapshot runs with no accuracy regression on the smoke matrix.
 
 ---
 
-## Phase 6: Boundary Actuator Consolidation
+## Phase 6: Boundary Actuator Consolidation — SUBSUMED BY V3-M3
+
+Do not execute this phase separately. The Reading artifact and
+`hypothesis_apply_reading` in `docs/specs/agent_v3_design.md` (milestone
+M3) absorb this phase's goal and its test matrix (char-preserving,
+char-changing, window-scoped, and miscounted readings). The v2 actuators
+are deleted at V3-M6. Original analysis retained below for reference.
 
 Seven–eight overlapping boundary/reading actuators (`act_split_cipher_word`,
 `act_merge_cipher_words`, `act_merge_decoded_words`,
@@ -432,11 +490,15 @@ misuse failures; net tool count drops by ~6.
   word-repair tools, boundary actuators move into their own files), not as
   a big-bang refactor.
 
-## Suggested Landing Order (first two weeks)
+## Suggested Landing Order
 
-1. Baseline snapshot + Phase 0 (days 1–2).
-2. Phase 1 packet + session store (days 3–6).
-3. Phase 2.1–2.2 extraction with tests (days 6–10), while Phase 3.1–3.2
-   (format generalization + DTA corpus build) runs as the parallel track.
-4. Phase 2.3 runner integration + five-page acceptance gate (days 10–14).
-5. Then: 2.4 multipage route, 2.5 agent exposure, Phase 4 reader scout.
+1. ✅ Phase 0 (landed `ef4ac9a`).
+2. Baseline snapshot + Phase 1 packet + session store.
+3. Phase 2.1–2.3 extraction and runner integration, with Phase 3.1–3.2
+   (format generalization + DTA corpus build) as the parallel track.
+4. V3-M1/M2 (state + lead loop, episode runtime) — may overlap late
+   Phase 2, different files.
+5. Phase 2.4 multipage route; Phase 2.5 agent exposure built as the
+   V3-M3 composite-action shape; V3-M3 through M5.
+6. Phase 4.1/4.2 runner-side reader (feeds V3-M5's verify episodes).
+7. V3-M6 bake-off, default switch, coercion-machinery deletion.
