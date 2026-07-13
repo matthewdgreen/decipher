@@ -42,6 +42,13 @@ from models.cipher_text import CipherText
 
 _TOKEN_RE = re.compile(r"S\d+")
 
+# Sentinel distinguishing "caller omitted model_path" (legacy env/CWD-relative
+# resolution, preserved for direct research-script callers) from an explicit
+# ``model_path=None`` (no binary model, and NO CWD fallback). Runner-initiated
+# calls always pass an explicit path (via ``automated.runner`` public alias
+# ``zenith_native_model_path``) so scoring never depends on the process CWD.
+_MODEL_PATH_UNSET = object()
+
 # Re-exported so downstream page-group tooling can build the runtime page
 # ciphertext / solver call without importing the runner directly.
 __all__ = [
@@ -277,20 +284,35 @@ def score_page_runtime(
     key: dict[int, int],
     mask: tuple[str, ...],
     language: str = "de",
+    model_path: Any = _MODEL_PATH_UNSET,
 ) -> dict[str, Any]:
     """Score one projected page with runtime (ground-truth-free) signals.
 
     Consumes only the projected ``decryption`` text plus the key/mask; the
     ``plaintext`` field of ``row`` is never read. ``language`` selects the word
-    list, dictionary, and binary n-gram model (``DECIPHER_NGRAM_MODEL_<LANG>``
-    env override, default ``models/ngram5_<lang>.bin``).
+    list and dictionary.
+
+    ``model_path`` selects the binary n-gram model:
+
+    * omitted (``_MODEL_PATH_UNSET``) -- legacy behavior for direct
+      research-script callers: resolve from ``DECIPHER_NGRAM_MODEL_<LANG>`` or
+      the CWD-relative default ``models/ngram5_<lang>.bin``.
+    * an explicit ``Path``/``str`` -- use it verbatim (existence-checked). This
+      is what the runner passes so scoring never depends on the process CWD.
+    * an explicit ``None`` -- score with no binary model (and NO CWD fallback).
     """
     text = row["decryption"]
     word_list = load_word_list(language)
-    default_model = f"models/ngram5_{language}.bin"
-    env_name = f"DECIPHER_NGRAM_MODEL_{language.upper()}"
-    model_path = Path(os.environ.get(env_name, default_model))
-    binary_model_path = model_path if model_path.exists() else None
+    if model_path is _MODEL_PATH_UNSET:
+        default_model = f"models/ngram5_{language}.bin"
+        env_name = f"DECIPHER_NGRAM_MODEL_{language.upper()}"
+        resolved = Path(os.environ.get(env_name, default_model))
+        binary_model_path = resolved if resolved.exists() else None
+    elif model_path is None:
+        binary_model_path = None
+    else:
+        resolved = Path(model_path)
+        binary_model_path = resolved if resolved.exists() else None
     quality = plaintext_quality(text, key)
     diagnostics = automated_candidate_diagnostics(
         text,

@@ -81,6 +81,8 @@ def main() -> None:
             "null_masks",
             "homophonic_nulls",
             "copiale_nulls",
+            "word_repair",
+            "null_masks+word_repair",
         ],
         default="none",
         help="Optional second-stage local refinement for Decipher automated homophonic runs.",

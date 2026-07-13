@@ -43,6 +43,7 @@ from typing import Any
 from analysis.candidate_packet import CandidatePacket, packet_from_word_repair_row
 from analysis.language_scoring import language_quality_feature_dict
 from analysis.multipage import (
+    _MODEL_PATH_UNSET,
     PageBundle,
     page_runtime_metrics,
     project_page_with_sources,
@@ -1443,10 +1444,14 @@ def _score_variant_row(
     edits: list[str],
     hypothesis_set: tuple[WordHypothesis, ...],
     language: str,
+    model_path: Any = _MODEL_PATH_UNSET,
 ) -> dict[str, Any]:
     """Project + runtime-score all pages for one key/mask (ground-truth-free)."""
     page_rows = project_pages(pages=pages, key=key, mask=mask)
-    runtime_scores = [score_page_runtime(row, key=key, mask=mask, language=language) for row in page_rows]
+    runtime_scores = [
+        score_page_runtime(row, key=key, mask=mask, language=language, model_path=model_path)
+        for row in page_rows
+    ]
     metrics = page_runtime_metrics(runtime_scores)
     variant = {
         "edits": edits or ["baseline"],
@@ -1480,6 +1485,7 @@ def propose_word_repairs(
     consensus: dict[str, dict[str, Any]] | None = None,
     alphabet: Alphabet | None = None,
     source_branch: str | None = None,
+    model_path: Any = _MODEL_PATH_UNSET,
 ) -> list[CandidatePacket]:
     """Run the word-hypothesis repair pipeline and return candidate packets.
 
@@ -1490,9 +1496,12 @@ def propose_word_repairs(
 
     Deviations from the spec sketch ``propose_word_repairs(pages, shared_key,
     dictionary_path, language, config)``: ``mask``, ``consensus``, ``alphabet``,
-    and ``source_branch`` are additional (optional) parameters that the extracted
-    pipeline genuinely needs. ``consensus`` may be omitted (no symbol treated as
-    stable); ``alphabet`` defaults to the page group's shared alphabet.
+    ``source_branch``, and ``model_path`` are additional (optional) parameters
+    that the extracted pipeline genuinely needs. ``consensus`` may be omitted
+    (no symbol treated as stable); ``alphabet`` defaults to the page group's
+    shared alphabet. ``model_path`` is forwarded verbatim to
+    :func:`multipage.score_page_runtime` -- runner callers pass the resolver
+    result so the binary-model scoring never falls back to a CWD-relative path.
     """
     config = config or WordRepairConfig()
     consensus = consensus or {}
@@ -1565,6 +1574,7 @@ def propose_word_repairs(
             edits=edit_labels,
             hypothesis_set=hypothesis_set,
             language=language,
+            model_path=model_path,
         )
         if hypothesis_set:
             adjudication = adjudicate_repair(

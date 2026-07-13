@@ -505,7 +505,12 @@ misuse failures; net tool count drops by ~6.
    (format generalization + DTA corpus build) as the parallel track.
 4. V3-M1/M2 (state + lead loop, episode runtime) — may overlap late
    Phase 2, different files.
-5. Phase 2.4 multipage route; Phase 2.5 agent exposure built as the
-   V3-M3 composite-action shape; V3-M3 through M5.
+5. Phase 2.5 agent exposure BEFORE 2.4 (reprioritized 2026-07-13: the
+   2b acceptance runs proved no GT-free scalar safely auto-adopts
+   single-page repairs — word_repair landed menu-only, and the menu's
+   intended selector is the agent-as-reader; trace evidence shows ~half
+   of a successful Borg run's tool calls go to manual repair mechanics,
+   the program's costliest remaining agent-side friction). Then 2.4
+   multipage route; V3-M3 through M5.
 6. Phase 4.1/4.2 runner-side reader (feeds V3-M5's verify episodes).
 7. V3-M6 bake-off, default switch, coercion-machinery deletion.

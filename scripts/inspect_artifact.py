@@ -443,6 +443,103 @@ def format_timing_summary(timing: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Automated-runner refinement steps (null-mask bakeoff + word repair)
+#
+# The v2 agent artifacts inspected above carry tool_calls/timeline; the
+# automated-runner artifacts (run_automated / run_frontier_suite) instead carry
+# a flat `steps` list. These compact renderers surface the two homophonic
+# refinement steps so a word-repair run is inspectable without opening the raw
+# JSON. search_word_repair mirrors the search_null_masks summary style.
+# ---------------------------------------------------------------------------
+
+def _fmt_delta(value: Any) -> str:
+    try:
+        return f"{float(value):+.6f}"
+    except (TypeError, ValueError):
+        return "n/a"
+
+
+def _format_null_mask_step(step: dict[str, Any]) -> str:
+    selected = step.get("selected") if isinstance(step.get("selected"), dict) else {}
+    validation = selected.get("validation_score_v2")
+    validation_text = f"{float(validation):.4f}" if isinstance(validation, (int, float)) else "n/a"
+    return (
+        f"  search_null_masks status={step.get('status')} "
+        f"masks={step.get('mask_count')} completed={step.get('completed_mask_count')} "
+        f"selected_mask={step.get('selected_mask')} validation={validation_text}"
+    )
+
+
+def _format_word_repair_step(step: dict[str, Any]) -> list[str]:
+    status = step.get("status")
+    header = f"  search_word_repair [{step.get('mode')}] status={status}"
+    if status == "skipped":
+        return [header + f" reason={step.get('reason')}"]
+    counts = step.get("counts") or {}
+    gate_counts = ""
+    if "verdict_accepted" in counts or "passed_composed_gate" in counts:
+        gate_counts = (
+            f" verdict_accepted={counts.get('verdict_accepted')} "
+            f"passed_gate={counts.get('passed_composed_gate')}"
+        )
+    lines = [
+        header,
+        (
+            f"    counts: proposed={counts.get('proposed')} "
+            f"prescreened={counts.get('prescreened')} "
+            f"adjudicated={counts.get('adjudicated')} "
+            f"improving={counts.get('improving')}"
+            f"{gate_counts} "
+            f"adopted={counts.get('adopted')} rejected={counts.get('rejected')}"
+        ),
+        (
+            f"    validation: {step.get('validation_before')} -> "
+            f"{step.get('validation_after')} (delta {_fmt_delta(step.get('validation_delta'))})"
+        ),
+    ]
+    def _signals(entry: dict[str, Any]) -> str:
+        signals = ""
+        acceptance = entry.get("acceptance")
+        if isinstance(acceptance, dict):
+            signals += f" verdict={acceptance.get('decision')}"
+        if entry.get("adjudication_score") is not None:
+            signals += f" adjudication={_fmt_delta(entry.get('adjudication_score'))}"
+        return signals
+
+    adopted = step.get("adopted")
+    if isinstance(adopted, dict):
+        edits = ", ".join(str(edit) for edit in (adopted.get("edits") or []))
+        lines.append(
+            f"    adopted edits: {edits or '(none)'} [{adopted.get('solver')}]{_signals(adopted)}"
+        )
+    else:
+        lines.append(f"    adopted: none ({step.get('adopted_reason')})")
+        would = step.get("would_adopt")
+        if isinstance(would, dict):
+            edits = ", ".join(str(edit) for edit in (would.get("edits") or []))
+            lines.append(f"    would adopt: {edits or '(none)'}{_signals(would)}")
+    return lines
+
+
+def format_automated_steps(artifact: dict[str, Any]) -> str:
+    steps = artifact.get("steps")
+    if not isinstance(steps, list):
+        return ""
+    lines: list[str] = []
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        name = step.get("name")
+        if name == "search_null_masks":
+            lines.append(_format_null_mask_step(step))
+        elif name == "search_word_repair":
+            lines.extend(_format_word_repair_step(step))
+    if not lines:
+        return ""
+    return "Automated refinement steps:\n" + "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Compact machine-readable summary dict for LLM prompt
 # ---------------------------------------------------------------------------
 
@@ -924,6 +1021,11 @@ def inspect_one(
     print()
     print(format_timing_summary(analyze_tool_timing(artifact)))
     print()
+    automated_steps = format_automated_steps(artifact)
+    if automated_steps:
+        print("─" * 70)
+        print(automated_steps)
+        print()
     print("─" * 70)
     print("Iteration timeline:")
     print(format_timeline(timeline))

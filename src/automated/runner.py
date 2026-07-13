@@ -591,7 +591,8 @@ def run_automated(
         elif routing["route"] == "homophonic":
             base_refinement = (
                 "none"
-                if _is_null_mask_refinement(homophonic_refinement)
+                if _refinement_runs_null_masks(homophonic_refinement)
+                or _is_word_repair_refinement(homophonic_refinement)
                 else homophonic_refinement
             )
             solver, key, decryption, step = _run_homophonic(
@@ -603,7 +604,11 @@ def run_automated(
                 ground_truth=ground_truth,
             )
             steps.append(step)
-            if _is_null_mask_refinement(homophonic_refinement):
+            # The mask travels with the basin word repair refines: plain
+            # word_repair works on the unmasked solve, the composite works on
+            # the null-mask bakeoff winner's masked basin.
+            word_repair_mask: tuple[str, ...] = ()
+            if _refinement_runs_null_masks(homophonic_refinement):
                 bakeoff = _run_null_mask_bakeoff(
                     cipher_text=cipher_text,
                     language=language,
@@ -623,6 +628,20 @@ def run_automated(
                         for k, v in (winner.get("key") or {}).items()
                     }
                     decryption = str(winner.get("decryption") or "")
+                    word_repair_mask = tuple(str(sym) for sym in (winner.get("mask") or []))
+            if _is_word_repair_refinement(homophonic_refinement):
+                word_repair_step, adopted = _run_word_repair_refinement(
+                    cipher_text=cipher_text,
+                    language=language,
+                    refinement=homophonic_refinement,
+                    base_solver=solver,
+                    base_key=key,
+                    base_decryption=decryption,
+                    mask=word_repair_mask,
+                )
+                steps.append(word_repair_step)
+                if adopted is not None:
+                    solver, key, decryption = adopted
         elif routing["route"] == "pure_transposition":
             solver, key, decryption, step = _run_pure_transposition(
                 cipher_text,
@@ -3677,6 +3696,423 @@ def _is_null_mask_refinement(refinement: str) -> bool:
         "copiale_null_masks",
         "copiale_null_topn",
     }
+
+
+def _is_word_repair_refinement(refinement: str) -> bool:
+    """True for the Phase-2b word-repair refinements (plain + composite)."""
+    return (refinement or "none").strip().lower() in {
+        "word_repair",
+        "null_masks+word_repair",
+    }
+
+
+def _refinement_runs_null_masks(refinement: str) -> bool:
+    """True when the refinement includes the null-mask bakeoff stage.
+
+    Covers the standalone null-mask values plus the ``null_masks+word_repair``
+    composite, whose null-mask bakeoff runs before word repair.
+    """
+    key = (refinement or "none").strip().lower()
+    return _is_null_mask_refinement(refinement) or key == "null_masks+word_repair"
+
+
+# DECIPHER_WORD_REPAIR_* env vars map 1:1 onto the enumerated WordRepairConfig
+# fields. Numeric values are parsed with int()/float(); a malformed value raises
+# ValueError, matching the DECIPHER_NULL_MASK_* convention (int() there raises
+# too). Unset vars keep the library (probe-CLI) defaults.
+_WORD_REPAIR_ENV_INT_FIELDS: dict[str, str] = {
+    "window_size": "DECIPHER_WORD_REPAIR_WINDOW_SIZE",
+    "window_step": "DECIPHER_WORD_REPAIR_WINDOW_STEP",
+    "min_word_len": "DECIPHER_WORD_REPAIR_MIN_WORD_LEN",
+    "max_word_len": "DECIPHER_WORD_REPAIR_MAX_WORD_LEN",
+    "max_edits": "DECIPHER_WORD_REPAIR_MAX_EDITS",
+    "max_hypotheses": "DECIPHER_WORD_REPAIR_MAX_HYPOTHESES",
+    "max_hypotheses_per_window": "DECIPHER_WORD_REPAIR_MAX_HYPOTHESES_PER_WINDOW",
+}
+_WORD_REPAIR_ENV_FLOAT_FIELDS: dict[str, str] = {
+    "acceptance_margin": "DECIPHER_WORD_REPAIR_ACCEPTANCE_MARGIN",
+    "min_page_drop": "DECIPHER_WORD_REPAIR_MIN_PAGE_DROP",
+    "max_illusion_increase": "DECIPHER_WORD_REPAIR_MAX_ILLUSION_INCREASE",
+}
+
+
+def _word_repair_config_from_env() -> tuple[Any, dict[str, Any]]:
+    """Return ``(WordRepairConfig, env_overrides)`` for the word-repair pipeline.
+
+    Parses the ``DECIPHER_WORD_REPAIR_*`` surface once. Returns the effective
+    config plus the subset of env vars that were actually set (for the artifact
+    step). A malformed numeric value raises ``ValueError``.
+    """
+    from dataclasses import replace
+
+    # Lazy import (see _run_word_repair_refinement for the circular-import
+    # rationale): analysis.word_hypothesis_repair pulls in analysis.multipage,
+    # which imports automated.runner at module top.
+    from analysis.word_hypothesis_repair import WordRepairConfig
+
+    overrides: dict[str, Any] = {}
+    env_used: dict[str, Any] = {}
+    for field_name, env_name in _WORD_REPAIR_ENV_INT_FIELDS.items():
+        raw = os.environ.get(env_name)
+        if raw is not None and raw.strip() != "":
+            value = int(raw)
+            overrides[field_name] = value
+            env_used[env_name] = value
+    for field_name, env_name in _WORD_REPAIR_ENV_FLOAT_FIELDS.items():
+        raw = os.environ.get(env_name)
+        if raw is not None and raw.strip() != "":
+            value = float(raw)
+            overrides[field_name] = value
+            env_used[env_name] = value
+    config = replace(WordRepairConfig(), **overrides) if overrides else WordRepairConfig()
+    return config, env_used
+
+
+_WORD_REPAIR_ADOPT_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+def _word_repair_adopt_enabled() -> bool:
+    """Strict, fail-closed parse of ``DECIPHER_WORD_REPAIR_ADOPT``.
+
+    This flag guards the menu-only safety default (spec item 3 FINAL) — the
+    property that forced two spec amendments — so unlike the repo-wide
+    ``_env_bool`` convention (where anything outside the falsy set counts as
+    true), adoption enables ONLY on an explicit affirmative value
+    (case/whitespace tolerant). Unset, empty, or garbage values all mean
+    disabled.
+    """
+    raw = os.environ.get("DECIPHER_WORD_REPAIR_ADOPT", "")
+    return raw.strip().lower() in _WORD_REPAIR_ADOPT_TRUE_VALUES
+
+
+def _parse_word_repair_edit_label(label: str) -> tuple[str, str] | None:
+    """Parse a ``"<symbol>:<before>-><target>"`` variant edit label.
+
+    Returns ``(symbol, target)`` or ``None`` if the label is malformed. Only
+    single-letter A-Z targets are applied (word hypotheses are dictionary
+    words, so ``propose_word_repairs`` never emits ``<null>`` targets).
+    """
+    symbol, sep, rest = str(label).partition(":")
+    if not sep:
+        return None
+    _before, arrow, target = rest.partition("->")
+    if not arrow:
+        return None
+    target = target.strip()
+    if len(target) != 1 or not ("A" <= target <= "Z"):
+        return None
+    return symbol, target
+
+
+def _run_word_repair_refinement(
+    *,
+    cipher_text: CipherText,
+    language: str,
+    refinement: str,
+    base_solver: str,
+    base_key: dict[int, int],
+    base_decryption: str,
+    mask: tuple[str, ...],
+) -> tuple[dict[str, Any], tuple[str, dict[int, int], str] | None]:
+    """Run Phase-2a ``propose_word_repairs`` on the solved single-page basin.
+
+    Builds a one-page group from the run's cipher + solved key/mask, proposes
+    word-hypothesis repairs, and evaluates the composed ground-truth-free gate
+    (library repair-acceptance verdict AND strict ``validation_score_v2``
+    improvement). By default the gate is measurement-only: the
+    ``search_word_repair`` step records the candidate menu, per-candidate gate
+    decisions, and ``would_adopt`` (the candidate the gate selected, or None)
+    without modifying the run. When ``DECIPHER_WORD_REPAIR_ADOPT=1`` the gate's
+    selection is applied and ``(solver, key, decryption)`` is returned to swap
+    in.
+
+    Page-group construction is deliberately group-native (a length-1 list of
+    :class:`PageBundle`) so the Phase-2.4 multi-page route is purely additive.
+    """
+    started = time.time()
+    # Lazy imports: analysis.multipage imports automated.runner at module top,
+    # and this module's public wrappers sit at EOF. A top-of-file
+    # ``import analysis.multipage`` / ``analysis.word_hypothesis_repair`` would
+    # hit a partially-initialized runner module (circular ImportError), so the
+    # promoted libraries are imported inside the refinement function body only.
+    from analysis.multipage import PageBundle, project_pages, score_page_runtime
+    from analysis.word_hypothesis_repair import propose_word_repairs
+
+    config, env_overrides = _word_repair_config_from_env()
+    # Route model resolution through the runner's repo-root-anchored resolver so
+    # library scoring never falls back to a CWD-relative models/ngram5_*.bin.
+    resolved_model = zenith_native_model_path(language)
+    dictionary_path = dictionary.get_dictionary_path(language)
+
+    def _config_dict() -> dict[str, Any]:
+        return {
+            field_name: getattr(config, field_name)
+            for field_name in _WORD_REPAIR_ENV_INT_FIELDS
+        } | {
+            field_name: getattr(config, field_name)
+            for field_name in _WORD_REPAIR_ENV_FLOAT_FIELDS
+        }
+
+    def _skip_step(reason: str) -> dict[str, Any]:
+        return {
+            "name": "search_word_repair",
+            "status": "skipped",
+            "experimental": True,
+            "mode": refinement,
+            "base_solver": base_solver,
+            "mask": list(mask),
+            "language": language,
+            "reason": reason,
+            "effective_config": _config_dict(),
+            "config_env_overrides": env_overrides,
+            "binary_ngram_model": (
+                _zenith_native_model_metadata(str(resolved_model)) if resolved_model else None
+            ),
+            "adopt_enabled": _word_repair_adopt_enabled(),
+            "would_adopt": None,
+            "adopted": None,
+            "candidate_menu": [],
+            "elapsed_seconds": round(time.time() - started, 3),
+        }
+
+    if not dictionary_path:
+        return _skip_step("no_dictionary_for_language"), None
+    if not base_key:
+        return _skip_step("empty_base_key"), None
+
+    alphabet = cipher_text.alphabet
+    symbols = [alphabet.symbol_for(token_id) for token_id in cipher_text.tokens]
+    # plaintext is intentionally empty: the runtime path never reads it, and
+    # keeping it blank guarantees no ground truth can enter the word-repair menu.
+    page = PageBundle(
+        test_id="page_0",
+        canonical_transcription=" ".join(symbols),
+        plaintext="",
+        symbols=symbols,
+        token_ids=list(cipher_text.tokens),
+    )
+
+    baseline_row = project_pages(pages=[page], key=base_key, mask=mask)[0]
+    baseline_runtime = score_page_runtime(
+        baseline_row, key=base_key, mask=mask, language=language, model_path=resolved_model
+    )
+    baseline_validation = round(float(baseline_runtime.get("validation_score_v2") or 0.0), 6)
+
+    packets = propose_word_repairs(
+        pages=[page],
+        shared_key=base_key,
+        dictionary_path=dictionary_path,
+        language=language,
+        config=config,
+        mask=mask,
+        alphabet=alphabet,
+        source_branch=base_solver,
+        model_path=resolved_model,
+    )
+
+    def _packet_validation(packet: Any) -> float:
+        value = (packet.solver_scores or {}).get("page_validation_avg")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    def _packet_acceptance(packet: Any) -> dict[str, Any]:
+        """The library's repair_acceptance verdict (carried in packet.validation)."""
+        return packet.validation if isinstance(packet.validation, dict) else {}
+
+    def _packet_adjudication_score(packet: Any) -> float | None:
+        value = (packet.solver_scores or {}).get("adjudication_score")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    # Composed gate (spec item 3, FINAL 2026-07-13): evaluate iff BOTH
+    # (a) the library's repair-acceptance verdict accepts the candidate
+    #     (annotate_acceptance/repair_acceptance with its own margins, computed
+    #     inside propose_word_repairs and carried on packet.validation), AND
+    # (b) validation_score_v2 strictly improves over the baseline projection.
+    #
+    # The gate is MEASUREMENT-ONLY by default: the rerun evidence showed no
+    # available GT-free signal safely auto-adopts single-page repairs (the
+    # verdict accepted all five packet-page candidates including one with
+    # adjudication_score -3.00, and adjudication sign does not separate the
+    # harmful adoptions). The step always records `would_adopt`; the key/
+    # decryption are modified only when DECIPHER_WORD_REPAIR_ADOPT=1 (research
+    # + multipage experiments). Menu consumers are Phase 2.5 agent review.
+    adopt_enabled = _word_repair_adopt_enabled()
+    adoption_epsilon = 1e-6
+    improving = [
+        packet for packet in packets
+        if _packet_validation(packet) > baseline_validation + adoption_epsilon
+    ]
+    verdict_accepted = [
+        packet for packet in packets
+        if bool(_packet_acceptance(packet).get("accepted"))
+    ]
+    passing = [
+        packet for packet in improving
+        if bool(_packet_acceptance(packet).get("accepted"))
+    ]
+    best = max(passing, key=_packet_validation) if passing else None
+    best_validation = _packet_validation(best) if best is not None else baseline_validation
+
+    # Gate evaluation (always recorded, never mutates the run by itself).
+    would_adopt: dict[str, Any] | None = None
+    gate_reason = ""
+    applied: list[str] = []
+    new_key: dict[int, int] | None = None
+    if not packets:
+        gate_reason = "no_repairs_proposed"
+    elif best is None:
+        gate_reason = "no_candidate_passed_composed_gate"
+    else:
+        edit_labels = list((best.provenance or {}).get("edits") or [])
+        masked_symbols = set(mask)
+        new_key = dict(base_key)
+        # Whole-candidate applicability: if ANY edit label fails to parse or
+        # apply, the entire candidate is rejected — adopting a subset of a
+        # scored edit set would apply a variant the library never evaluated.
+        applicable = bool(edit_labels)
+        for label in edit_labels:
+            parsed = _parse_word_repair_edit_label(label)
+            if parsed is None:
+                applicable = False
+                break
+            symbol, target = parsed
+            if not alphabet.has_symbol(symbol):
+                applicable = False
+                break
+            # Masked-symbol guard: the library scores candidates on the masked
+            # projection, where a masked symbol never appears — an edit
+            # targeting one means the scored variant and the runner's projected
+            # result would diverge. Reject the whole candidate.
+            if symbol in masked_symbols:
+                applicable = False
+                break
+            new_key[alphabet.id_for(symbol)] = ord(target) - ord("A")
+            applied.append(label)
+        if not applicable:
+            applied = []
+            gate_reason = "no_applicable_edits"
+        else:
+            gate_reason = "composed_gate_passed"
+            would_adopt = {
+                "edits": list(applied),
+                "candidate_id": best.candidate_id,
+                "preview": (best.preview or "")[:180],
+                # Both composed-gate signals, explicit on the would-adopt entry.
+                "acceptance": {
+                    "accepted": bool(_packet_acceptance(best).get("accepted")),
+                    "decision": _packet_acceptance(best).get("decision"),
+                    "reasons": list(_packet_acceptance(best).get("reasons") or []),
+                },
+                "adjudication_score": _packet_adjudication_score(best),
+                "page_validation_avg": round(best_validation, 6),
+            }
+
+    # Adoption (opt-in): apply the would-adopt candidate only when enabled.
+    adopted_result: tuple[str, dict[int, int], str] | None = None
+    adopted_edits: list[str] | None = None
+    after_validation = baseline_validation
+    if not adopt_enabled:
+        adopted_reason = "menu_only_default"
+    elif would_adopt is None:
+        adopted_reason = gate_reason
+    else:
+        assert new_key is not None  # gate_reason == composed_gate_passed
+        new_decryption = project_pages(pages=[page], key=new_key, mask=mask)[0]["decryption"]
+        adopted_result = ("word_repair_homophonic", new_key, new_decryption)
+        adopted_edits = list(applied)
+        after_validation = best_validation
+        adopted_reason = gate_reason
+
+    def _gate_decision(packet: Any) -> dict[str, Any]:
+        """Both gate signals, recorded for every candidate (adopted or rejected)."""
+        acceptance = _packet_acceptance(packet)
+        validation_value = _packet_validation(packet)
+        improves = validation_value > baseline_validation + adoption_epsilon
+        accepted = bool(acceptance.get("accepted"))
+        return {
+            "candidate_id": packet.candidate_id,
+            "edits": list((packet.provenance or {}).get("edits") or []),
+            "page_validation_avg": validation_value if math.isfinite(validation_value) else None,
+            "validation_improves": improves,
+            "acceptance_accepted": accepted,
+            "acceptance_decision": acceptance.get("decision"),
+            "adjudication_score": _packet_adjudication_score(packet),
+            "passed_composed_gate": improves and accepted,
+            "adopted": (
+                adopted_result is not None
+                and best is not None
+                and packet.candidate_id == best.candidate_id
+            ),
+        }
+
+    proposed = len(packets)
+    adopted_count = 1 if adopted_result is not None else 0
+    step = {
+        "name": "search_word_repair",
+        "status": "completed",
+        "experimental": True,
+        "policy": (
+            "Opt-in word-hypothesis repair for homophonic ciphers. Same-length "
+            "dictionary-word repairs are proposed on the solved single-page "
+            "basin from ciphertext + the solver key only. The composed "
+            "ground-truth-free gate (library repair-acceptance verdict AND "
+            "strict validation_score_v2 improvement) is measurement-only by "
+            "default: the step records would_adopt without modifying the key/"
+            "decryption. Set DECIPHER_WORD_REPAIR_ADOPT=1 to apply the gate's "
+            "selection (research/multipage experiments)."
+        ),
+        "mode": refinement,
+        "base_solver": base_solver,
+        "mask": list(mask),
+        "language": language,
+        "effective_config": _config_dict(),
+        "config_env_overrides": env_overrides,
+        "binary_ngram_model": (
+            _zenith_native_model_metadata(str(resolved_model)) if resolved_model else None
+        ),
+        "adoption_epsilon": adoption_epsilon,
+        "adopt_enabled": adopt_enabled,
+        "validation_before": baseline_validation,
+        "validation_after": round(float(after_validation), 6),
+        "validation_delta": round(float(after_validation) - baseline_validation, 6),
+        # What the composed gate selected (or None) — recorded in every mode so
+        # artifacts keep measuring the gate even when it does not act.
+        "would_adopt": would_adopt,
+        "would_adopt_reason": gate_reason,
+        "adopted": (
+            {
+                "solver": adopted_result[0],
+                **would_adopt,
+            }
+            if adopted_result is not None and would_adopt is not None
+            else None
+        ),
+        "adopted_reason": adopted_reason,
+        "counts": {
+            # propose_word_repairs returns the post-prescreen, adjudicated menu,
+            # so proposed == prescreened == adjudicated; rejected = proposed
+            # minus the single adopted candidate.
+            "proposed": proposed,
+            "prescreened": proposed,
+            "adjudicated": proposed,
+            "improving": len(improving),
+            "verdict_accepted": len(verdict_accepted),
+            "passed_composed_gate": len(passing),
+            "adopted": adopted_count,
+            "rejected": proposed - adopted_count,
+        },
+        # Both gate signals for every candidate, adopted or rejected (compact;
+        # the full packets are in candidate_menu).
+        "gate_decisions": [_gate_decision(packet) for packet in packets],
+        "candidate_menu": [packet.to_dict() for packet in packets],
+        "elapsed_seconds": round(time.time() - started, 3),
+    }
+    return step, adopted_result
 
 
 def _run_null_mask_bakeoff(
@@ -8356,3 +8792,8 @@ automated_candidate_diagnostics = _automated_candidate_diagnostics
 # wrapper name, forced by the name collision.
 plaintext_quality = _plaintext_quality
 load_word_list = _word_list
+# Repo-root-anchored binary-model resolver (expanduser + language
+# normalization). Promoted libraries (``analysis.word_hypothesis_repair`` via
+# the runner's word-repair refinement) route model resolution through this
+# public alias so they never hit ``multipage``'s CWD-relative fallback.
+zenith_native_model_path = _zenith_native_model_path

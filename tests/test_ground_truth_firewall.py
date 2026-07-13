@@ -18,6 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import automated.runner as runner_module
 from agent.loop_v2 import run_v2
 from automated.runner import run_automated
 from benchmark.context import ScopedBenchmarkContext
@@ -219,4 +220,84 @@ def test_automated_path_ground_truth_only_grades_never_influences():
     assert_no_ground_truth_leak(solver_facing, GROUND_TRUTH)
 
     # Document the post-hoc grading channel: ground truth IS retained there.
+    assert with_gt.artifact.get("ground_truth") == GROUND_TRUTH
+
+
+def test_automated_word_repair_refinement_is_ground_truth_free(monkeypatch):
+    """Phase-2b extension: a run with the word_repair refinement enabled must
+    stay ground-truth-free. The homophonic solve is stubbed to a fast, non-GT
+    canned result so the real propose_word_repairs pipeline runs on the solved
+    basin; the plaintext must not influence the repair nor leak into the
+    word-repair artifact step / candidate menu."""
+    def canned_homophonic(cipher_text, language, **_kwargs):
+        # Identity-letter key: decode each cipher symbol to its own letter, so
+        # the "solve" reproduces the (unreadable) ciphertext, never the GT.
+        key = {
+            token_id: ord(cipher_text.alphabet.symbol_for(token_id)) - ord("A")
+            for token_id in range(cipher_text.alphabet.size)
+        }
+        decryption = "".join(chr(ord("A") + key[t]) for t in cipher_text.tokens)
+        step = {"name": "search_homophonic_anneal", "solver": "native_homophonic_anneal"}
+        return "native_homophonic_anneal", key, decryption, step
+
+    monkeypatch.setattr(runner_module, "_run_homophonic", canned_homophonic)
+
+    def _run(ground_truth):
+        alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+        ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+        return run_automated(
+            cipher_text=ct,
+            language="en",
+            cipher_id="firewall_word_repair",
+            ground_truth=ground_truth,
+            cipher_system="homophonic_substitution",
+            homophonic_refinement="word_repair",
+        )
+
+    without = _run(None)
+    with_gt = _run(GROUND_TRUTH)
+
+    assert with_gt.status == "completed", (
+        f"run did not complete (status={with_gt.status!r}, "
+        f"error={with_gt.error_message!r}); firewall comparison would be vacuous"
+    )
+    assert with_gt.final_decryption, "empty decryption; comparison would be vacuous"
+    # The word-repair refinement actually ran and its step is present.
+    assert any(step.get("name") == "search_word_repair" for step in with_gt.steps), (
+        "word_repair step missing; the refinement path was not exercised"
+    )
+
+    # Ground truth does not influence the solve or the repair.
+    assert without.final_decryption == with_gt.final_decryption
+    assert without.artifact["key"] == with_gt.artifact["key"]
+
+    # Absolute expectation (not just run-vs-run equality): the final key must
+    # equal the identity-letter key the canned solver produced, computed here
+    # independently of the runner. An in-place key mutation by the real
+    # word-repair library would break this even if it hit both runs
+    # identically.
+    expected_alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    expected_key = {
+        str(token_id): ord(expected_alpha.symbol_for(token_id)) - ord("A")
+        for token_id in range(expected_alpha.size)
+    }
+    assert with_gt.artifact["key"] == expected_key
+
+    def _strip_timing(steps):
+        return [
+            {k: v for k, v in step.items() if k != "elapsed_seconds"}
+            for step in steps
+        ]
+
+    assert _strip_timing(without.steps) == _strip_timing(with_gt.steps)
+
+    # No leak into solver-facing outputs, including the word-repair step and its
+    # candidate menu. The plaintext MAY appear only in post-hoc grading fields.
+    solver_facing = [
+        with_gt.final_decryption,
+        json.dumps(with_gt.steps),
+        json.dumps(with_gt.artifact["key"]),
+        with_gt.artifact.get("solver", ""),
+    ]
+    assert_no_ground_truth_leak(solver_facing, GROUND_TRUTH)
     assert with_gt.artifact.get("ground_truth") == GROUND_TRUTH

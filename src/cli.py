@@ -50,6 +50,8 @@ HOMOPHONIC_REFINEMENT_CHOICES = [
     "null_masks",
     "homophonic_nulls",
     "copiale_nulls",
+    "word_repair",
+    "null_masks+word_repair",
 ]
 
 
