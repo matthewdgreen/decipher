@@ -125,9 +125,9 @@ Episode kinds (v1 set):
 | `verify` | independent attestation of candidate plaintext | none (text-only) | cheap/mid |
 | `compare` | adjudicate N branches/candidates | decode_show, score_panel | mid |
 
-Model assignment per kind is config (provider-neutral via
-`model_provider`); single-model operation (all kinds = one model) must
-work for Ollama parity.
+Model assignment per kind is config via the session-factory registry
+(see C7); single-model operation (all kinds = one model) must work for
+Ollama parity.
 
 Lead tool surface (replaces most of the 88 for the lead): episode
 launch/collect, experiment submit/collect, hypothesis board CRUD, branch
@@ -192,7 +192,63 @@ Firewall: verify episodes are the most leak-sensitive surface (text-only
 input); `assert_no_ground_truth_leak` extends to episode inputs,
 experiment specs, and attestations.
 
-### C7. Artifacts, observability, benchmark integration
+### C7. Provider-native model sessions (amendment, 2026-07-13 — user decision)
+
+v3 abandons the lowest-common-denominator provider abstraction. Matthew's
+directive: agent loops should be as native and powerful as each API
+allows; a limiting neutral layer is not worth maintaining. Motivating
+failure: the neutral message schema silently dropped OpenAI reasoning
+items between tool calls, measurably handicapping gpt-5.6 tiers.
+
+**Design: neutrality moves up to the seam the loop actually needs.**
+A `ModelSession` (one per live context: the lead, each episode) OWNS its
+conversation state in the provider's native format and exposes only:
+
+```python
+class ModelSession(Protocol):
+    def send(self, blocks: list[ContextBlock], tools: list[dict],
+             budget: TokenBudget) -> AgentEvents   # text / tool_calls / usage
+    def add_tool_results(self, results: list[ToolResult]) -> None
+    def export_transcript(self) -> dict  # provider-tagged, for artifacts
+    capabilities: SessionCapabilities    # declared, see below
+```
+
+The loop never sees or stores provider message formats; it supplies
+semantic context blocks (from the C2 builder) and consumes events.
+Per-provider implementations exploit everything native:
+
+- **OpenAISession** (primary — current preferred models are gpt-5.5/5.6):
+  Responses API native. Within an episode, `previous_response_id`
+  server-side chaining (safe because episodes are bounded and never
+  history-stubbed); for the lead and anything resumable, stateless mode
+  with `reasoning.encrypted_content` round-tripped so chain-of-thought
+  survives tool calls. Strict tool schemas. Native usage/cache fields.
+- **AnthropicSession**: native messages with `cache_control` breakpoints
+  placed at the C2 builder's stable-prefix boundaries; extended thinking
+  where configured; fine-grained tool-result blocks.
+- **GenericChatSession**: OpenAI-compatible chat completions — covers
+  Ollama, OpenRouter, and legacy models. This is the old neutral behavior
+  demoted to one implementation among several.
+
+`SessionCapabilities` declares what each implementation supports
+(server_state, reasoning_passback, cache_breakpoints, strict_tools) so
+episode scheduling can select worker tiers by capability + price, and
+tests can assert capability-dependent behavior per session type.
+
+**What stays common:** the event surface, `TokenBudget`, per-entry cost
+accounting (A7), and `export_transcript()` — artifacts store the
+provider-tagged native transcript; `inspect_artifact.py` renders per
+provider. Fake sessions implement the same protocol per provider shape,
+replacing the single fake-provider script style.
+
+**Migration:** `agent/model_provider.py` remains untouched for the v2
+loop until retirement. The session layer is v3-only, introduced at M1
+with OpenAISession + GenericChatSession (AnthropicSession lands with M2).
+The interim v2 reasoning-passback hotfix
+(`docs/specs/hotfix_openai_reasoning_passback.md`) builds the
+encrypted-content mechanics OpenAISession will reuse.
+
+### C8. Artifacts, observability, benchmark integration
 
 - `RunArtifact` gains `episodes`, `experiments`, `attestations`,
   `budget_by_category` (schema additive; v2 artifacts stay readable).
@@ -208,7 +264,10 @@ experiment specs, and attestations.
 
 **M1 — State + lead loop, no episodes.** `InvestigationState`, context
 builder, minimal lead loop using direct tools only (existing handlers),
-`run_v3` entry, artifact round-trip, resume-as-load. Acceptance:
+`run_v3` entry, artifact round-trip, resume-as-load. Introduces the
+`ModelSession` seam (C7) with OpenAISession (Responses-native, stateless
+encrypted-reasoning mode) and GenericChatSession; AnthropicSession lands
+with M2. Acceptance:
 fake-provider parity tests; solves `synth_en_250nb_s4`-class synthetics at
 ≥ v2 accuracy with materially fewer prompt tokens per turn (measure).
 
@@ -319,8 +378,8 @@ on the milestone specs.
 - **A7 (F8) Mixed-model accounting.** Budget-ledger entries carry
   (category, provider, model, input/output/cache tokens); cost is summed
   per entry, never recomputed from run totals. `run_episode` takes its
-  provider from a kind→provider registry; the fake-provider harness
-  registers one scripted fake per kind.
+  session from a kind→session-factory registry (C7); the fake harness
+  registers one scripted fake session per kind/provider shape.
 - **A8 (F9) Ordering.** M2 acceptance ends at `compare` (application is
   M3). M3 has an explicit entry gate: Phase 2.2
   (`analysis/word_hypothesis_repair.py`) must have landed.

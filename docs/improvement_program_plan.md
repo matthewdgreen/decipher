@@ -338,6 +338,13 @@ Full design: `docs/specs/agent_v3_design.md`. Summary of the architecture:
 - **Verification-gated declaration** — a fresh-context attestation
   (candidate text only) replaces self-attestation and the declare-gate
   bounce machinery.
+- **Provider-native model sessions** (2026-07-13 user decision) — v3
+  drops the lowest-common-denominator provider layer: each live context
+  owns a native `ModelSession` (OpenAI Responses with reasoning passback
+  and server-side chaining inside episodes; Anthropic with cache
+  breakpoints and extended thinking; generic chat for Ollama/OpenRouter),
+  with neutrality only at the event/usage/transcript seam the loop needs.
+  Design section C7.
 
 Milestones (each gets its own implementation spec + review cycle + commit):
 
