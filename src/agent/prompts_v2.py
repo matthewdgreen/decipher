@@ -145,7 +145,16 @@ Boundary candidates from `decode_diagnose`/`decode_diagnose_and_fix` are \
 useful when they exist, but if the same diagnostic also lists letter-level \
 candidate corrections, the letter-level fixes typically have far higher \
 leverage and should be tried first. See "Reading-driven repair" below for \
-the full discipline.
+the full discipline. \
+When a substitution/homophonic branch already reads mostly as target-language \
+text but a handful of words are locally damaged, the PREFERRED route is \
+`search_word_repair_menu`: it proposes same-length dictionary-word repairs on \
+the current key, evidence-tags each (adjudication vs collateral word-islands, \
+validation delta, acceptance verdict), and installs a review session. Page it \
+with `search_review_word_repair_finalists`, rate the readable ones with \
+`act_rate_transform_finalist` (numeric scores are supporting evidence only), \
+and install the good ranks as forks with `act_install_word_repair_finalists` \
+rather than hand-applying edits with `act_set_mapping`.
 - `meta_*` — `declare_solution` terminates the run.
 
 """
@@ -186,6 +195,10 @@ more search. If transform suspected: `search_transform_candidates` / \
 `search_transform_homophonic`.
 - Pure transposition: `search_pure_transposition` + \
 `search_review_pure_transposition_finalists`.
+- Mostly-readable but locally-damaged substitution/homophonic basin: prefer \
+`search_word_repair_menu` -> `search_review_word_repair_finalists` -> \
+`act_rate_transform_finalist` -> `act_install_word_repair_finalists` over \
+hand-applied `act_set_mapping` repairs.
 - Quagmire/keyed-tableau: \
 `search_quagmire3_keyword_alphabet(estimate_only=true)` first.
 

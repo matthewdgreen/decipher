@@ -1,6 +1,6 @@
 # Agent Tool Reference
 
-Complete reference for the 85 tools exposed to the v2 agentic loop
+Complete reference for the 92 tools exposed to the v2 agentic loop
 (`src/agent/tools_v2.py`). Tools are organized by namespace. Each entry gives
 the tool name, what it does, its key parameters, and usage notes.
 
@@ -465,6 +465,72 @@ bakeoff.
 
 Installed branches store the filtered finalist plaintext in branch metadata so
 `decode_show` and `workspace_branch_cards` can read the candidate directly.
+
+---
+
+### `search_word_repair_menu`
+Generate an evidence-tagged word-repair menu for a mostly-readable but
+locally-damaged substitution/homophonic branch. Proposes same-length
+dictionary-word repairs on the branch's current key/mask, adjudicates each
+against collateral word-islands, and installs a `FinalistSessionStore` review
+session (`word_repair_N`). Reuses the Phase-2b runner pipeline
+(`build_word_repair_menu`); nothing is applied to the branch.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | **required** — the mostly-readable source basin |
+| `window_size` | integer | damaged-window width, clamped to 8–200 (library default otherwise) |
+| `max_edits` | integer | max symbol edits per word hypothesis, clamped to 1–4 |
+| `max_hypotheses` | integer | global hypothesis cap, clamped to 1–400 |
+| `max_hypotheses_per_window` | integer | per-window hypothesis cap, clamped to 1–40 |
+| `top_n` | integer | how many finalist rows to return initially (default 8) |
+| `allow_mode_mismatch_repair` | boolean | override the substitution-family guard on periodic/transform/fractionation branches |
+
+Substitution-family only (blocked on periodic/transform modes unless overridden).
+Returns a compact review only — the full candidate packets stay server-side.
+Each row carries: rank, edit labels, `adjudication_score`, `validation_delta`,
+acceptance verdict/reasons, collateral occurrence counts, a decoded preview
+(≤120 chars), and per-edit local context (observed damaged form → target word).
+`would_adopt` summarises the composed gate's pick. Review, rate with
+`act_rate_transform_finalist`, and install with `act_install_word_repair_finalists`.
+Numeric scores are supporting evidence; the ranking signal is your contextual reading.
+
+---
+
+### `search_review_word_repair_finalists`
+Page through word-repair finalists from a prior `search_word_repair_menu`
+session without regenerating the menu.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** — from `search_word_repair_menu` |
+| `start_rank` | integer | first rank to show (default 1) |
+| `count` | integer | how many finalists to show (default 8, capped at 50) |
+
+Returns the same compact rows as the initial menu. Rate finalists with
+`act_rate_transform_finalist` (the shared rate tool, which also handles
+transform and pure-transposition sessions).
+
+---
+
+### `act_install_word_repair_finalists`
+Install selected word-repair finalists from a prior `search_word_repair_menu`
+session as workspace branches. Each rank forks the source branch
+(`<source>_wr_rank<N>`) and applies the finalist's **full** edit set to the
+fork's key.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `search_session_id` | string | **required** |
+| `ranks` | array of int | **required** — 1-based finalist ranks to install |
+| `branch_prefix` | string | optional branch prefix; defaults to `<source_branch>_wr_rank` |
+
+Whole-candidate application: if any edit label fails to parse/apply or targets a
+symbol in the active mask, that rank is rejected with a clear error and no
+partial branch is created (mirrors the Phase-2b runner's no-partial rule).
+Installed branches carry a `word_repair_finalist` metadata block (session id,
+rank, edits, adjudication score, acceptance, agent rating) and the tags
+`word_repair_finalist` / `wr_rank_<n>`.
 
 ---
 

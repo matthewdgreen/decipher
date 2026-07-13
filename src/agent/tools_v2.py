@@ -1241,6 +1241,105 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "search_word_repair_menu",
+        "description": (
+            "Generate an evidence-tagged word-repair menu for a mostly-readable "
+            "but locally-damaged substitution/homophonic branch. Proposes "
+            "same-length dictionary-word repairs on the branch's current "
+            "key/mask, adjudicates each against collateral word-islands, and "
+            "installs a review session. Returns a compact menu (top-N rows); "
+            "review with search_review_word_repair_finalists, rate with "
+            "act_rate_transform_finalist, install with "
+            "act_install_word_repair_finalists. Substitution-family only."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string"},
+                "window_size": {
+                    "type": "integer",
+                    "minimum": 8,
+                    "maximum": 200,
+                    "description": "Damaged-window width in characters (bounded override of the library default).",
+                },
+                "max_edits": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 4,
+                    "description": "Maximum symbol edits per word hypothesis (bounded override).",
+                },
+                "max_hypotheses": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 400,
+                    "description": "Global cap on generated word hypotheses (bounded override).",
+                },
+                "max_hypotheses_per_window": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 40,
+                    "description": "Per-window cap on generated word hypotheses (bounded override).",
+                },
+                "top_n": {
+                    "type": "integer",
+                    "default": 8,
+                    "description": "How many finalist rows to return in the initial review (default 8).",
+                },
+                "allow_mode_mismatch_repair": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Override the substitution-family guard on a periodic/transform/fractionation branch.",
+                },
+            },
+            "required": ["branch"],
+        },
+    },
+    {
+        "name": "search_review_word_repair_finalists",
+        "description": (
+            "Page through word-repair finalists from a prior "
+            "search_word_repair_menu session without regenerating the menu. "
+            "Returns the same compact rows: edit labels, adjudication score, "
+            "validation delta, acceptance verdict/reasons, collateral "
+            "occurrence count, a decoded preview, and per-edit local context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "start_rank": {"type": "integer", "default": 1},
+                "count": {"type": "integer", "default": 8},
+            },
+            "required": ["search_session_id"],
+        },
+    },
+    {
+        "name": "act_install_word_repair_finalists",
+        "description": (
+            "Install selected word-repair finalists from a prior "
+            "search_word_repair_menu session as workspace branches. Each rank "
+            "forks the source branch and applies the finalist's FULL edit set "
+            "to the fork's key (whole-candidate: rejected with a clear error if "
+            "any label fails to parse/apply or targets a masked symbol)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search_session_id": {"type": "string"},
+                "ranks": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "1-based finalist ranks to install as branches.",
+                },
+                "branch_prefix": {
+                    "type": "string",
+                    "description": "Optional branch prefix. Defaults to <source_branch>_wr_rank.",
+                },
+            },
+            "required": ["search_session_id", "ranks"],
+        },
+    },
+    {
         "name": "search_homophonic_anneal",
         "description": "Primary solver for homophonic ciphers (alphabet_size > 26, no boundaries). Uses 5-gram + letter-distribution scoring. Runs directly on main. Prefer over search_anneal when homophonic evidence is present.",
         "input_schema": {
@@ -2736,6 +2835,7 @@ class WorkspaceToolExecutor:
                     "observe_isomorph_clusters",
                     "corpus_word_candidates",
                     "search_anneal",
+                    "search_word_repair_menu",
                     "decode_diagnose",
                     "act_set_mapping",
                     "act_bulk_set",
@@ -2760,6 +2860,7 @@ class WorkspaceToolExecutor:
                     "observe_isomorph_clusters",
                     "corpus_word_candidates",
                     "search_anneal",
+                    "search_word_repair_menu",
                     "decode_diagnose",
                     "act_set_mapping",
                     "act_bulk_set",
@@ -2785,6 +2886,7 @@ class WorkspaceToolExecutor:
                     "act_rate_null_mask_finalist",
                     "act_install_null_mask_finalists",
                     "search_homophonic_anneal",
+                    "search_word_repair_menu",
                     "decode_letter_stats",
                     "decode_absent_letter_candidates",
                     "decode_ambiguous_letter",
@@ -10014,6 +10116,557 @@ class WorkspaceToolExecutor:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Word-repair finalist menu (Phase 2.5)
+    # ------------------------------------------------------------------
+    #
+    # Composite-action pattern: one call generates and evidence-tags word
+    # repairs on a mostly-readable but locally-damaged substitution/homophonic
+    # branch, and installs a shared FinalistSessionStore session
+    # (kind="word_repair"). The heavy pipeline is reused from the Phase-2b
+    # runner path (build_word_repair_menu / apply_word_repair_edits); nothing is
+    # reimplemented here. Token discipline: the server-side session holds the
+    # full CandidatePacket dicts; every model-visible result carries only the
+    # compact review rows below.
+
+    def _branch_word_repair_mask(self, branch: Any) -> tuple[str, ...]:
+        """The active null-mask (symbol strings) carried by a branch, or ()."""
+        for meta_key in ("word_repair_finalist", "null_mask_finalist", "null_mask_selected"):
+            meta = branch.metadata.get(meta_key)
+            if isinstance(meta, dict):
+                mask = meta.get("mask")
+                if mask:
+                    return tuple(str(symbol) for symbol in mask)
+        return ()
+
+    def _word_repair_menu_config(self, args: dict) -> Any:
+        """Build a WordRepairConfig from bounded agent overrides.
+
+        Only the four spec-listed knobs are exposed; each is clamped into a safe
+        range so the agent cannot request an unbounded generation. Lazy import
+        (binding constraint): analysis.word_hypothesis_repair pulls in
+        analysis.multipage which imports automated.runner at module top.
+        """
+        from dataclasses import replace
+
+        from analysis.word_hypothesis_repair import WordRepairConfig
+
+        bounds: dict[str, tuple[int, int]] = {
+            "window_size": (8, 200),
+            "max_edits": (1, 4),
+            "max_hypotheses": (1, 400),
+            "max_hypotheses_per_window": (1, 40),
+        }
+        overrides: dict[str, int] = {}
+        for field_name, (low, high) in bounds.items():
+            raw = args.get(field_name)
+            if raw is None:
+                continue
+            value = int(raw)
+            overrides[field_name] = max(low, min(value, high))
+        return replace(WordRepairConfig(), **overrides) if overrides else WordRepairConfig()
+
+    @staticmethod
+    def _word_repair_effective_config(config: Any) -> dict[str, Any]:
+        return {
+            field_name: getattr(config, field_name, None)
+            for field_name in (
+                "window_size",
+                "window_step",
+                "min_word_len",
+                "max_word_len",
+                "max_edits",
+                "max_hypotheses",
+                "max_hypotheses_per_window",
+            )
+        }
+
+    def _word_repair_would_adopt(
+        self,
+        packets: list[Any],
+        baseline_validation: float,
+        *,
+        base_key: dict[int, int],
+        alphabet: Any,
+        mask: tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        """Mirror the runner's composed gate to summarise the gate's pick.
+
+        A ground-truth-free convenience only: pick the applicable candidate with
+        the best strictly-improving ``page_validation_avg`` whose library
+        acceptance verdict accepts. Applicability is checked with the shared
+        ``apply_word_repair_edits`` so this never advertises an unapplicable set.
+        """
+        epsilon = 1e-6
+        threshold = float(baseline_validation) + epsilon
+        best = None
+        best_val: float | None = None
+        for packet in packets:
+            solver_scores = packet.solver_scores or {}
+            validation = packet.validation or {}
+            try:
+                value = float(solver_scores.get("page_validation_avg"))
+            except (TypeError, ValueError):
+                continue
+            if value <= threshold or not bool(validation.get("accepted")):
+                continue
+            if best_val is None or value > best_val:
+                best_val, best = value, packet
+        if best is None:
+            return None
+        edits = list((best.provenance or {}).get("edits") or [])
+        new_key, applied, _reason = automated_runner.apply_word_repair_edits(
+            base_key=base_key, edits=edits, alphabet=alphabet, mask=mask
+        )
+        if new_key is None:
+            return None
+        solver_scores = best.solver_scores or {}
+        validation = best.validation or {}
+        return {
+            "rank": best.rank,
+            "candidate_id": best.candidate_id,
+            "edits": applied,
+            "adjudication_score": solver_scores.get("adjudication_score"),
+            "page_validation_avg": round(float(best_val), 6),
+            "acceptance": {
+                "accepted": bool(validation.get("accepted")),
+                "decision": validation.get("decision"),
+                "reasons": list(validation.get("reasons") or [])[:3],
+            },
+        }
+
+    def _new_word_repair_session(
+        self,
+        *,
+        source_branch: str,
+        packets: list[Any],
+        baseline_validation: float,
+        mask: tuple[str, ...],
+        effective_config: dict[str, Any],
+        would_adopt: dict[str, Any] | None,
+    ) -> str:
+        payload = {
+            "source_branch": source_branch,
+            "mask": list(mask),
+            "baseline_validation": baseline_validation,
+            "effective_config": effective_config,
+            "would_adopt": would_adopt,
+        }
+        return self._finalist_sessions.new_session("word_repair", payload, packets=packets)
+
+    def _word_repair_session(self, session_id: str) -> dict[str, Any] | None:
+        return self._finalist_sessions.get("word_repair", session_id)
+
+    @staticmethod
+    def _word_repair_word_context(provenance: dict[str, Any], *, max_words: int = 4) -> list[dict[str, Any]]:
+        """Per-edited-word local context (observed damaged form -> target word)."""
+        hypotheses = provenance.get("word_hypotheses") or []
+        context: list[dict[str, Any]] = []
+        for hypothesis in hypotheses[:max_words]:
+            if not isinstance(hypothesis, dict):
+                continue
+            context.append({
+                "observed": str(hypothesis.get("observed") or "")[:40],
+                "target": str(hypothesis.get("target") or "")[:40],
+            })
+        return context
+
+    def _word_repair_review_row(
+        self,
+        packet: dict[str, Any],
+        *,
+        would_adopt_id: str | None,
+    ) -> dict[str, Any]:
+        provenance = packet.get("provenance") if isinstance(packet.get("provenance"), dict) else {}
+        solver_scores = packet.get("solver_scores") if isinstance(packet.get("solver_scores"), dict) else {}
+        validation = packet.get("validation") if isinstance(packet.get("validation"), dict) else {}
+        deltas = validation.get("deltas") if isinstance(validation.get("deltas"), dict) else {}
+        collateral = provenance.get("collateral_evidence") if isinstance(provenance.get("collateral_evidence"), dict) else {}
+        candidate_id = packet.get("candidate_id")
+        return {
+            "rank": packet.get("rank"),
+            "candidate_id": candidate_id,
+            "edits": list(provenance.get("edits") or []),
+            "adjudication_score": solver_scores.get("adjudication_score"),
+            "page_validation_avg": solver_scores.get("page_validation_avg"),
+            "validation_delta": deltas.get("page_validation_avg"),
+            "acceptance": {
+                "accepted": bool(validation.get("accepted")),
+                "decision": validation.get("decision"),
+                "reasons": list(validation.get("reasons") or [])[:3],
+            },
+            "collateral_occurrence_count": collateral.get("collateral_occurrences"),
+            "improved_occurrence_count": collateral.get("improved_occurrences"),
+            "damaged_occurrence_count": collateral.get("damaged_occurrences"),
+            "word_context": self._word_repair_word_context(provenance),
+            "decoded_preview": str(packet.get("preview") or "")[:120],
+            "would_adopt": bool(would_adopt_id is not None and candidate_id == would_adopt_id),
+            "agent_readability_judgment": packet.get("rating"),
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+        }
+
+    def _word_repair_finalist_review(
+        self,
+        *,
+        session_id: str,
+        start_rank: int,
+        count: int,
+    ) -> dict[str, Any]:
+        session = self._word_repair_session(session_id)
+        if session is None:
+            return {"error": f"Unknown word-repair search session: {session_id}"}
+        packets = list(session.get("packets") or [])
+        would_adopt = session.get("would_adopt") if isinstance(session.get("would_adopt"), dict) else None
+        would_adopt_id = would_adopt.get("candidate_id") if would_adopt else None
+        total = len(packets)
+        start_rank = max(1, int(start_rank))
+        count = max(1, min(int(count), 50))
+        page = packets[start_rank - 1:start_rank - 1 + count]
+        rows = [self._word_repair_review_row(packet, would_adopt_id=would_adopt_id) for packet in page]
+        rated = sum(1 for packet in packets if isinstance(packet.get("rating"), dict))
+        has_more = start_rank - 1 + len(page) < total
+        return {
+            "search_session_id": session_id,
+            "source_branch": session.get("source_branch"),
+            "mask": session.get("mask"),
+            "baseline_validation": session.get("baseline_validation"),
+            "effective_config": session.get("effective_config"),
+            "would_adopt": would_adopt,
+            "start_rank": start_rank,
+            "count": count,
+            "finalist_review": rows,
+            "finalist_review_count": len(rows),
+            "total_finalist_count": total,
+            "rated_finalist_count": rated,
+            "has_more_finalists": has_more,
+            "next_start_rank": (start_rank + len(page)) if has_more else None,
+            "menu_order": "page_robust_then_balanced_then_validation",
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+            "review_instruction": (
+                "Each row is a same-length dictionary-word repair on the branch "
+                "key. Read the decoded_preview and per-edit word_context; the "
+                "adjudication_score, validation_delta, and acceptance verdict "
+                "are supporting evidence, not the decision. Rate finalists with "
+                "act_rate_transform_finalist, then install the ones that read as "
+                "coherent target-language clauses with "
+                "act_install_word_repair_finalists."
+            ),
+        }
+
+    def _mirror_word_repair_rating_to_branches(
+        self,
+        *,
+        session_id: str,
+        rank: int,
+        rating: dict[str, Any],
+    ) -> list[str]:
+        updated: list[str] = []
+        for branch_name in self.workspace.branch_names():
+            branch = self.workspace.get_branch(branch_name)
+            metadata = branch.metadata.get("word_repair_finalist")
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("search_session_id") != session_id:
+                continue
+            if int(metadata.get("rank") or -1) != rank:
+                continue
+            metadata["agent_readability_judgment"] = rating
+            branch.metadata["agent_readability_score"] = rating["readability_score"]
+            branch.metadata["agent_readability_label"] = rating["label"]
+            branch.metadata["agent_readability_rationale"] = rating["rationale"]
+            updated.append(branch_name)
+        return updated
+
+    def _rate_word_repair_finalist(
+        self,
+        session: dict[str, Any],
+        session_id: str,
+        args: dict,
+    ) -> dict[str, Any]:
+        """Word-repair branch of the shared act_rate_transform_finalist tool."""
+        packets = session.get("packets") or []
+        rank = int(args["rank"])
+        if rank < 1 or rank > len(packets):
+            return {
+                "error": f"rank {rank} out of range (1..{len(packets)})",
+                "search_session_id": session_id,
+            }
+        score = float(args["readability_score"])
+        if score < 0 or score > 4:
+            return {"error": "readability_score must be between 0 and 4"}
+        allowed_labels = {
+            "coherent_plaintext",
+            "partial_clause",
+            "word_islands_with_some_structure",
+            "word_islands_only",
+            "garbage",
+        }
+        label = str(args.get("label") or self._default_transform_label_for_score(score))
+        if label not in allowed_labels:
+            return {
+                "error": f"label must be one of {sorted(allowed_labels)}",
+                "search_session_id": session_id,
+            }
+        rationale = str(args.get("rationale") or "").strip()
+        if not rationale:
+            return {"error": "rationale is required"}
+        coherent_clause = str(args.get("coherent_clause") or "").strip()
+        candidate = packets[rank - 1]
+        rating = {
+            "readability_score": round(score, 2),
+            "label": label,
+            "rationale": rationale,
+            "coherent_clause": coherent_clause,
+            "iteration": self._current_iteration,
+            "primary_ranking_signal": "agent_contextual_readability",
+        }
+        candidate["rating"] = rating
+        self._refresh_session_packet_rating(
+            session, rank=rank, rating=rating, candidate=candidate
+        )
+        updated_branches = self._mirror_word_repair_rating_to_branches(
+            session_id=session_id, rank=rank, rating=rating
+        )
+        review = self._word_repair_finalist_review(
+            session_id=session_id, start_rank=rank, count=1
+        )
+        return {
+            "status": "ok",
+            "search_session_id": session_id,
+            "session_type": "word_repair",
+            "rank": rank,
+            "rating": rating,
+            "updated_branches": updated_branches,
+            "finalist": (review.get("finalist_review") or [None])[0],
+            "note": (
+                "Recorded the agent's contextual readability judgment for a "
+                "word-repair finalist. This reading is the primary ranking "
+                "signal; adjudication/validation scores are supporting evidence."
+            ),
+        }
+
+    def _install_word_repair_finalist_branch(
+        self,
+        *,
+        session: dict[str, Any],
+        session_id: str,
+        rank: int,
+        branch_name: str,
+    ) -> dict[str, Any]:
+        packets = session.get("packets") or []
+        if rank < 1 or rank > len(packets):
+            raise WorkspaceError(f"rank {rank} out of range (1..{len(packets)})")
+        packet = packets[rank - 1]
+        provenance = packet.get("provenance") if isinstance(packet.get("provenance"), dict) else {}
+        edits = list(provenance.get("edits") or [])
+        source_branch = str(session["source_branch"])
+        mask = tuple(str(symbol) for symbol in (session.get("mask") or ()))
+        source_key = dict(self.workspace.get_branch(source_branch).key)
+        # Whole-candidate application + masked-symbol guard, shared verbatim with
+        # the 2b runner path. Reject the whole candidate (never a subset) if any
+        # label fails to parse/apply or targets a masked symbol.
+        new_key, applied, reason = automated_runner.apply_word_repair_edits(
+            base_key=source_key, edits=edits, alphabet=self._alpha(), mask=mask
+        )
+        if new_key is None:
+            raise WorkspaceError(
+                f"word-repair edit set not applicable ({reason}); edits={edits}"
+            )
+        branch = self.workspace.fork(branch_name, source_branch)
+        self.workspace.set_full_key(branch_name, new_key)
+        for tag in ("word_repair_finalist", f"wr_rank_{rank}"):
+            if tag not in branch.tags:
+                branch.tags.append(tag)
+        rating = packet.get("rating") if isinstance(packet.get("rating"), dict) else None
+        validation = packet.get("validation") if isinstance(packet.get("validation"), dict) else {}
+        solver_scores = packet.get("solver_scores") if isinstance(packet.get("solver_scores"), dict) else {}
+        branch.metadata.update({
+            "decoded_text": self.workspace.apply_key(branch_name),
+            "decoded_text_source": "act_install_word_repair_finalists",
+            "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
+            "word_repair_finalist": {
+                "search_session_id": session_id,
+                "rank": rank,
+                "edits": applied,
+                "mask": list(mask),
+                "adjudication_score": solver_scores.get("adjudication_score"),
+                "acceptance": {
+                    "accepted": bool(validation.get("accepted")),
+                    "decision": validation.get("decision"),
+                    "reasons": list(validation.get("reasons") or [])[:3],
+                },
+                "agent_readability_judgment": rating,
+            },
+        })
+        if rating:
+            branch.metadata["agent_readability_score"] = rating.get("readability_score")
+            branch.metadata["agent_readability_label"] = rating.get("label")
+            branch.metadata["agent_readability_rationale"] = rating.get("rationale")
+        return {
+            "branch": branch_name,
+            "rank": rank,
+            "edits": applied,
+            "quick_scores": self._compute_quick_scores(branch_name),
+            "decoded_preview": self._decoded_preview(branch_name, max_words=40),
+            "agent_readability_judgment": rating,
+        }
+
+    def _tool_search_word_repair_menu(self, args: dict) -> Any:
+        branch_name = str(args.get("branch") or "main")
+        if not self.workspace.has_branch(branch_name):
+            return {"error": f"Unknown branch: {branch_name}"}
+        block = self._mode_mismatch_repair_block(
+            branch_name,
+            "search_word_repair_menu",
+            allow_override=bool(args.get("allow_mode_mismatch_repair", False)),
+        )
+        if block is not None:
+            return block
+        branch = self.workspace.get_branch(branch_name)
+        base_key = dict(branch.key)
+        if not base_key:
+            return {
+                "status": "skipped",
+                "branch": branch_name,
+                "reason": "empty_base_key",
+                "note": (
+                    "Solve or install a key on this branch first; the word-repair "
+                    "menu refines an existing mostly-readable basin."
+                ),
+            }
+        # Lazy import (binding constraint): keep analysis.dictionary off the
+        # module-load path.
+        from analysis import dictionary as dictionary_module
+
+        dictionary_path = dictionary_module.get_dictionary_path(self.language)
+        if not dictionary_path:
+            return {
+                "status": "skipped",
+                "branch": branch_name,
+                "reason": "no_dictionary_for_language",
+                "language": self.language,
+            }
+        mask = self._branch_word_repair_mask(branch)
+        config = self._word_repair_menu_config(args)
+        resolved_model = automated_runner.zenith_native_model_path(self.language)
+        try:
+            menu = automated_runner.build_word_repair_menu(
+                cipher_text=self.workspace.cipher_text,
+                base_key=base_key,
+                mask=mask,
+                language=self.language,
+                config=config,
+                dictionary_path=dictionary_path,
+                model_path=resolved_model,
+                source_branch=branch_name,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "branch": branch_name,
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        would_adopt = self._word_repair_would_adopt(
+            menu.packets,
+            menu.baseline_validation,
+            base_key=base_key,
+            alphabet=menu.alphabet,
+            mask=mask,
+        )
+        session_id = self._new_word_repair_session(
+            source_branch=branch_name,
+            packets=menu.packets,
+            baseline_validation=menu.baseline_validation,
+            mask=mask,
+            effective_config=self._word_repair_effective_config(config),
+            would_adopt=would_adopt,
+        )
+        top_n = int(args.get("top_n", 8))
+        review = self._word_repair_finalist_review(
+            session_id=session_id, start_rank=1, count=top_n
+        )
+        return {
+            "status": "ok",
+            "branch": branch_name,
+            "search_session_id": session_id,
+            "mask": list(mask),
+            "candidate_count": len(menu.packets),
+            "baseline_validation": menu.baseline_validation,
+            "would_adopt": would_adopt,
+            "effective_config": review.get("effective_config"),
+            "finalist_review": review.get("finalist_review"),
+            "finalist_review_count": review.get("finalist_review_count"),
+            "total_finalist_count": review.get("total_finalist_count"),
+            "has_more_finalists": review.get("has_more_finalists"),
+            "next_start_rank": review.get("next_start_rank"),
+            "primary_ranking_signal": "agent_contextual_readability",
+            "numeric_scores_role": "supporting_evidence",
+            "suggested_next_tools": [
+                "search_review_word_repair_finalists",
+                "act_rate_transform_finalist",
+                "act_install_word_repair_finalists",
+                "workspace_branch_cards",
+            ],
+            "note": (
+                "Word-repair menu built from this branch's current key/mask. "
+                "The rows are the PREFERRED route when decoded text is mostly "
+                "readable but locally damaged: review, rate the readable ones, "
+                "and install them as forks — do not hand-apply the edits with "
+                "act_set_mapping. Numeric scores are supporting evidence; your "
+                "contextual reading decides. Nothing was applied to this branch."
+            ),
+        }
+
+    def _tool_search_review_word_repair_finalists(self, args: dict) -> Any:
+        return self._word_repair_finalist_review(
+            session_id=str(args["search_session_id"]),
+            start_rank=int(args.get("start_rank", 1)),
+            count=int(args.get("count", 8)),
+        )
+
+    def _tool_act_install_word_repair_finalists(self, args: dict) -> Any:
+        session_id = str(args["search_session_id"])
+        session = self._word_repair_session(session_id)
+        if session is None:
+            return {"error": f"Unknown word-repair search session: {session_id}"}
+        ranks = args.get("ranks") or []
+        if not isinstance(ranks, list) or not ranks:
+            return {"error": "ranks must be a non-empty list of 1-based finalist ranks"}
+        source_branch = str(session["source_branch"])
+        prefix = str(args.get("branch_prefix") or f"{source_branch}_wr_rank")
+        installed: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        for raw_rank in ranks:
+            try:
+                rank = int(raw_rank)
+                branch_name = f"{prefix}{rank}"
+                installed.append(self._install_word_repair_finalist_branch(
+                    session=session,
+                    session_id=session_id,
+                    rank=rank,
+                    branch_name=branch_name,
+                ))
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "rank": raw_rank,
+                    "reason": f"{type(exc).__name__}: {exc}",
+                })
+        return {
+            "status": "ok" if installed else "error",
+            "search_session_id": session_id,
+            "installed_count": len(installed),
+            "installed": installed,
+            "errors": errors,
+            "note": (
+                "Installed selected word-repair finalists as forks of the source "
+                "branch with the full edit set applied. Use workspace_branch_cards "
+                "and decode_show to confirm the installed text reads as coherent "
+                "target-language clauses before declaring."
+            ),
+        }
+
     def _new_transform_search_session(
         self,
         *,
@@ -10735,7 +11388,14 @@ class WorkspaceToolExecutor:
         if session is None:
             pure_session = self._pure_transposition_session(session_id)
             if pure_session is None:
-                return {"error": f"Unknown transform search session: {session_id}"}
+                # Shared rate tool also adjudicates word-repair finalists (the
+                # way pure-transposition shares this tool). Existing transform/
+                # pure JSON is unchanged; word-repair sessions get their own
+                # compact-row branch.
+                word_session = self._word_repair_session(session_id)
+                if word_session is None:
+                    return {"error": f"Unknown transform search session: {session_id}"}
+                return self._rate_word_repair_finalist(word_session, session_id, args)
             ranked = pure_session.get("ranked") or []
             rank = int(args["rank"])
             if rank < 1 or rank > len(ranked):

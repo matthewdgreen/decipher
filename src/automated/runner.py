@@ -3804,6 +3804,122 @@ def _parse_word_repair_edit_label(label: str) -> tuple[str, str] | None:
     return symbol, target
 
 
+@dataclass
+class WordRepairMenu:
+    """A one-page word-repair candidate menu.
+
+    Shared return type for :func:`build_word_repair_menu` so the Phase-2b runner
+    refinement and the agent-facing ``search_word_repair_menu`` tool consume the
+    same construction. ``packets`` are :class:`analysis.candidate_packet.CandidatePacket`
+    instances (``text=None`` per the F3 deferral); ``page`` and ``alphabet`` are
+    returned so the runner can project the adopted edit set without rebuilding
+    the group.
+    """
+
+    packets: list[Any]
+    baseline_validation: float
+    page: Any
+    alphabet: Any
+
+
+def build_word_repair_menu(
+    *,
+    cipher_text: CipherText,
+    base_key: dict[int, int],
+    mask: tuple[str, ...],
+    language: str,
+    config: Any,
+    dictionary_path: Any,
+    model_path: Any,
+    source_branch: str | None,
+) -> WordRepairMenu:
+    """Build the single-page word-repair menu (page group + baseline + packets).
+
+    This is the exact Phase-2b construction: a length-1 group of one
+    :class:`PageBundle` built from the ciphertext + the branch's effective
+    key/mask, a baseline projection scored with ``score_page_runtime``, and the
+    adjudicated candidate packets from ``propose_word_repairs``. The agent
+    ``search_word_repair_menu`` tool calls this so the two paths cannot drift.
+
+    Lazy imports (binding constraint 1): ``analysis.multipage`` imports
+    ``automated.runner`` at module top and this module's public wrappers sit at
+    EOF, so a top-of-file import would hit a partially-initialized module.
+    """
+    from analysis.multipage import PageBundle, project_pages, score_page_runtime
+    from analysis.word_hypothesis_repair import propose_word_repairs
+
+    alphabet = cipher_text.alphabet
+    symbols = [alphabet.symbol_for(token_id) for token_id in cipher_text.tokens]
+    # plaintext is intentionally empty: the runtime path never reads it, and
+    # keeping it blank guarantees no ground truth can enter the word-repair menu.
+    page = PageBundle(
+        test_id="page_0",
+        canonical_transcription=" ".join(symbols),
+        plaintext="",
+        symbols=symbols,
+        token_ids=list(cipher_text.tokens),
+    )
+    baseline_row = project_pages(pages=[page], key=base_key, mask=mask)[0]
+    baseline_runtime = score_page_runtime(
+        baseline_row, key=base_key, mask=mask, language=language, model_path=model_path
+    )
+    baseline_validation = round(float(baseline_runtime.get("validation_score_v2") or 0.0), 6)
+    packets = propose_word_repairs(
+        pages=[page],
+        shared_key=base_key,
+        dictionary_path=dictionary_path,
+        language=language,
+        config=config,
+        mask=mask,
+        alphabet=alphabet,
+        source_branch=source_branch,
+        model_path=model_path,
+    )
+    return WordRepairMenu(
+        packets=packets,
+        baseline_validation=baseline_validation,
+        page=page,
+        alphabet=alphabet,
+    )
+
+
+def apply_word_repair_edits(
+    *,
+    base_key: dict[int, int],
+    edits: list[str],
+    alphabet: Any,
+    mask: tuple[str, ...],
+) -> tuple[dict[int, int] | None, list[str], str]:
+    """Whole-candidate word-repair edit application with the masked-symbol guard.
+
+    Returns ``(new_key, applied_labels, reason)``. Mirrors the Phase-2b rule: if
+    ANY edit label fails to parse/apply (unparseable, unknown symbol) or targets
+    a symbol in the active mask, the ENTIRE candidate is rejected -- adopting a
+    subset of a scored edit set would apply a variant the library never
+    evaluated, and a masked symbol never appears in the scored projection. On
+    rejection ``new_key`` is ``None``, ``applied_labels`` is empty, and
+    ``reason`` is ``"no_applicable_edits"``. On success ``new_key`` is a fresh
+    dict (``base_key`` is never mutated) and ``reason`` is ``""``.
+    """
+    masked_symbols = set(mask)
+    if not edits:
+        return None, [], "no_applicable_edits"
+    new_key = dict(base_key)
+    applied: list[str] = []
+    for label in edits:
+        parsed = _parse_word_repair_edit_label(label)
+        if parsed is None:
+            return None, [], "no_applicable_edits"
+        symbol, target = parsed
+        if not alphabet.has_symbol(symbol):
+            return None, [], "no_applicable_edits"
+        if symbol in masked_symbols:
+            return None, [], "no_applicable_edits"
+        new_key[alphabet.id_for(symbol)] = ord(target) - ord("A")
+        applied.append(label)
+    return new_key, applied, ""
+
+
 def _run_word_repair_refinement(
     *,
     cipher_text: CipherText,
@@ -3830,13 +3946,12 @@ def _run_word_repair_refinement(
     :class:`PageBundle`) so the Phase-2.4 multi-page route is purely additive.
     """
     started = time.time()
-    # Lazy imports: analysis.multipage imports automated.runner at module top,
-    # and this module's public wrappers sit at EOF. A top-of-file
-    # ``import analysis.multipage`` / ``analysis.word_hypothesis_repair`` would
-    # hit a partially-initialized runner module (circular ImportError), so the
-    # promoted libraries are imported inside the refinement function body only.
-    from analysis.multipage import PageBundle, project_pages, score_page_runtime
-    from analysis.word_hypothesis_repair import propose_word_repairs
+    # Lazy import (binding constraint 1): analysis.multipage imports
+    # automated.runner at module top, and this module's public wrappers sit at
+    # EOF, so a top-of-file import would hit a partially-initialized module.
+    # ``build_word_repair_menu`` does its own lazy imports; the adoption
+    # projection below still needs ``project_pages`` directly.
+    from analysis.multipage import project_pages
 
     config, env_overrides = _word_repair_config_from_env()
     # Route model resolution through the runner's repo-root-anchored resolver so
@@ -3880,35 +3995,23 @@ def _run_word_repair_refinement(
     if not base_key:
         return _skip_step("empty_base_key"), None
 
-    alphabet = cipher_text.alphabet
-    symbols = [alphabet.symbol_for(token_id) for token_id in cipher_text.tokens]
-    # plaintext is intentionally empty: the runtime path never reads it, and
-    # keeping it blank guarantees no ground truth can enter the word-repair menu.
-    page = PageBundle(
-        test_id="page_0",
-        canonical_transcription=" ".join(symbols),
-        plaintext="",
-        symbols=symbols,
-        token_ids=list(cipher_text.tokens),
-    )
-
-    baseline_row = project_pages(pages=[page], key=base_key, mask=mask)[0]
-    baseline_runtime = score_page_runtime(
-        baseline_row, key=base_key, mask=mask, language=language, model_path=resolved_model
-    )
-    baseline_validation = round(float(baseline_runtime.get("validation_score_v2") or 0.0), 6)
-
-    packets = propose_word_repairs(
-        pages=[page],
-        shared_key=base_key,
-        dictionary_path=dictionary_path,
+    # Page-group construction is deliberately group-native (a length-1 list of
+    # PageBundle) and shared with the agent search_word_repair_menu tool so the
+    # Phase-2.4 multi-page route stays purely additive.
+    menu = build_word_repair_menu(
+        cipher_text=cipher_text,
+        base_key=base_key,
+        mask=mask,
         language=language,
         config=config,
-        mask=mask,
-        alphabet=alphabet,
-        source_branch=base_solver,
+        dictionary_path=dictionary_path,
         model_path=resolved_model,
+        source_branch=base_solver,
     )
+    page = menu.page
+    alphabet = menu.alphabet
+    baseline_validation = menu.baseline_validation
+    packets = menu.packets
 
     def _packet_validation(packet: Any) -> float:
         value = (packet.solver_scores or {}).get("page_validation_avg")
@@ -3969,32 +4072,15 @@ def _run_word_repair_refinement(
         gate_reason = "no_candidate_passed_composed_gate"
     else:
         edit_labels = list((best.provenance or {}).get("edits") or [])
-        masked_symbols = set(mask)
-        new_key = dict(base_key)
-        # Whole-candidate applicability: if ANY edit label fails to parse or
-        # apply, the entire candidate is rejected — adopting a subset of a
-        # scored edit set would apply a variant the library never evaluated.
-        applicable = bool(edit_labels)
-        for label in edit_labels:
-            parsed = _parse_word_repair_edit_label(label)
-            if parsed is None:
-                applicable = False
-                break
-            symbol, target = parsed
-            if not alphabet.has_symbol(symbol):
-                applicable = False
-                break
-            # Masked-symbol guard: the library scores candidates on the masked
-            # projection, where a masked symbol never appears — an edit
-            # targeting one means the scored variant and the runner's projected
-            # result would diverge. Reject the whole candidate.
-            if symbol in masked_symbols:
-                applicable = False
-                break
-            new_key[alphabet.id_for(symbol)] = ord(target) - ord("A")
-            applied.append(label)
-        if not applicable:
-            applied = []
+        # Whole-candidate applicability + masked-symbol guard (shared with the
+        # agent install tool): if ANY edit label fails to parse/apply or targets
+        # a masked symbol, the entire candidate is rejected — adopting a subset
+        # of a scored edit set would apply a variant the library never
+        # evaluated, and a masked symbol never appears in the scored projection.
+        new_key, applied, _edit_reason = apply_word_repair_edits(
+            base_key=base_key, edits=edit_labels, alphabet=alphabet, mask=mask
+        )
+        if new_key is None:
             gate_reason = "no_applicable_edits"
         else:
             gate_reason = "composed_gate_passed"

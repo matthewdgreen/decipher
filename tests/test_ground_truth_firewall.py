@@ -301,3 +301,76 @@ def test_automated_word_repair_refinement_is_ground_truth_free(monkeypatch):
     ]
     assert_no_ground_truth_leak(solver_facing, GROUND_TRUTH)
     assert with_gt.artifact.get("ground_truth") == GROUND_TRUTH
+
+
+def test_agent_word_repair_menu_tools_are_ground_truth_free(monkeypatch):
+    """Phase-2.5 extension: the agent word-repair menu triplet operates on the
+    workspace only (which never holds ground truth). Every model-visible result
+    of search/review/rate/install must carry neither the benchmark plaintext nor
+    the server-side candidate packets."""
+    import agent.tools_v2 as tools_v2
+    from agent.tools_v2 import WorkspaceToolExecutor
+    from analysis.candidate_packet import CandidatePacket
+    from automated.runner import WordRepairMenu
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct),
+        language="en",
+        word_set={"THE"},
+        word_list=["THE"],
+        pattern_dict={},
+    )
+    ex.set_iteration(1)
+    # Give main the (wrong-on-purpose) identity-ish key so the tool has a basin.
+    ex.workspace.set_full_key("main", {tid: tid % 26 for tid in set(ct.tokens)})
+    ex.workspace.get_branch("main").metadata["cipher_mode"] = "homophonic_substitution"
+
+    packet = CandidatePacket(
+        candidate_id="edits:A1:Q->T",
+        kind="word_repair",
+        rank=1,
+        text=None,
+        preview="THE QUICK BROWN",  # a candidate decode, never the plaintext
+        solver_scores={"page_validation_avg": 2.0, "adjudication_score": 1.0},
+        validation={"accepted": True, "decision": "runtime_accept", "reasons": ["ok"],
+                    "deltas": {"page_validation_avg": 1.0}},
+        provenance={"edits": ["A1:Q->T"], "mask": [],
+                    "word_hypotheses": [{"observed": "QUICX", "target": "QUICK"}],
+                    "collateral_evidence": {"collateral_occurrences": 1}},
+    )
+
+    def fake_build(**_kwargs):
+        return WordRepairMenu(packets=[packet], baseline_validation=1.0, page=None, alphabet=alpha)
+
+    monkeypatch.setattr(tools_v2.automated_runner, "build_word_repair_menu", fake_build)
+    monkeypatch.setattr(tools_v2.automated_runner, "zenith_native_model_path", lambda _lang: None)
+
+    results: list[str] = []
+    menu = ex._tool_search_word_repair_menu({"branch": "main", "top_n": 8})
+    results.append(json.dumps(menu, default=str))
+    session_id = menu["search_session_id"]
+    results.append(json.dumps(
+        ex._tool_search_review_word_repair_finalists({"search_session_id": session_id}),
+        default=str,
+    ))
+    results.append(json.dumps(
+        ex._tool_act_rate_transform_finalist({
+            "search_session_id": session_id,
+            "rank": 1,
+            "readability_score": 3,
+            "label": "partial_clause",
+            "rationale": "readable-ish",
+        }),
+        default=str,
+    ))
+    results.append(json.dumps(
+        ex._tool_act_install_word_repair_finalists({"search_session_id": session_id, "ranks": [1]}),
+        default=str,
+    ))
+
+    assert_no_ground_truth_leak(results, GROUND_TRUTH)
+    for result in results:
+        assert "packet" not in result, "candidate packet leaked into a model-visible result"
