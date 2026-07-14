@@ -142,3 +142,43 @@ def test_evidence_entry_roundtrip():
     entry = EvidenceEntry("turn_summary", 3, "act_bulk_set:ok", data={"n": 2})
     restored = EvidenceEntry.from_dict(entry.to_dict())
     assert restored == entry
+
+
+def test_r7_token_order_and_transform_pipeline_survive_roundtrip():
+    """R7: the two branch fields v2 resume drops must round-trip through state."""
+    ct = parse_canonical_transcription("S001 S002 S003 | S004 S005 S006")
+    ws = Workspace(ct)
+    ws.fork("perm", from_branch="main")
+    branch = ws.get_branch("perm")
+    branch.token_order = [5, 4, 3, 2, 1, 0]
+    branch.transform_pipeline = {"steps": [{"op": "columnar", "cols": 3}]}
+    state = InvestigationState(workspace=ws, language="en")
+
+    restored = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict()))
+    )
+    dst = restored.workspace.get_branch("perm")
+    assert dst.token_order == [5, 4, 3, 2, 1, 0]
+    assert dst.transform_pipeline == {"steps": [{"op": "columnar", "cols": 3}]}
+
+
+def test_finalist_sessions_and_board_survive_roundtrip():
+    """M2: the state-owned finalist store and hypothesis board round-trip."""
+    ct = parse_canonical_transcription("S001 S002 | S003 S002")
+    ws = Workspace(ct)
+    state = InvestigationState(workspace=ws, language="en")
+    state.finalist_sessions.new_session("word_repair", {"a": 1}, packets=[])
+    ex = _executor_for(state)
+    # Route a hypothesis through the board (single writer).
+    ws.fork("h", from_branch="main")
+    state.hypothesis_board.create(
+        ws, "h", cipher_mode="substitution", mode_confidence="high",
+        mode_status="active", mode_evidence="mono", evidence_source="agent_inference",
+    )
+    restored = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict()))
+    )
+    assert restored.finalist_sessions.get("word_repair", "word_repair_1") == {
+        "a": 1, "packets": []}
+    cards = {c["branch"]: c for c in restored.hypothesis_cards()}
+    assert cards["h"]["cipher_mode"] == "substitution"

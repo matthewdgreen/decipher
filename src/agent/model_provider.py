@@ -254,17 +254,26 @@ class OpenAIModelProvider:
         tools: list[dict[str, Any]] | None = None,
         system: str = "",
         max_tokens: int = 4096,
+        previous_response_id: str | None = None,
+        store: bool | None = None,
     ) -> ModelResponse:
         # GPT-5.6 tiers reject function tools on /v1/chat/completions unless
         # reasoning_effort is 'none' (which would lobotomize the model).  Route
         # them through /v1/responses instead.  gpt-5.5 and earlier keep the
         # chat-completions path below unchanged.
+        #
+        # ``previous_response_id`` / ``store`` support within-episode server-state
+        # chaining (C7): they are only ever set by an episode-role OpenAISession
+        # on the Responses path.  For every other caller they default to None and
+        # the request is byte-identical to the pre-M2 behavior.
         if _requires_responses_api(self.model):
             return self._send_responses(
                 messages=messages,
                 tools=tools,
                 system=system,
                 max_tokens=max_tokens,
+                previous_response_id=previous_response_id,
+                store=store,
             )
         try:
             response = self.client.chat.completions.create(
@@ -302,27 +311,51 @@ class OpenAIModelProvider:
         tools: list[dict[str, Any]] | None,
         system: str,
         max_tokens: int,
+        previous_response_id: str | None = None,
+        store: bool | None = None,
     ) -> ModelResponse:
         """Send one request through the OpenAI Responses API.
 
         Used for reasoning tiers (e.g. gpt-5.6-*) that reject function tools on
         /v1/chat/completions.  No ``reasoning`` parameter is set, so the model's
         server-side default effort applies.
+
+        ``store``/``previous_response_id`` control within-episode server-state
+        chaining (C7/F2).  When ``store is None`` (every non-episode caller) the
+        request is byte-identical to the pre-M2 behavior.  When ``store`` is set
+        explicitly, ``include=["reasoning.encrypted_content"]`` is always kept —
+        it enables the stateless fallback and keeps the transcript
+        self-contained — and ``previous_response_id`` is attached only for a
+        chained (``store=True``) send.
         """
         create_kwargs: dict[str, Any] = {
             "model": self.model,
             "instructions": system,
             "input": _messages_to_openai_responses(messages),
-            "tools": _tools_to_openai_responses(tools),
             "max_output_tokens": max_tokens,
         }
-        if _reasoning_passback_enabled():
-            # Ask for reasoning items with re-sendable encrypted payloads so
-            # they can be passed back between tool calls (OpenAI reasoning-model
-            # recommendation).  store=False keeps this adapter stateless — the
-            # full input, including prior reasoning items, is re-sent each turn.
-            create_kwargs["store"] = False
+        # Omit the tools kwarg entirely for a tool-less send (e.g. an episode's
+        # final "emit the result JSON" nudge): `"tools": null` may 400 on the
+        # Responses API. Every pre-M2 live caller passed a non-empty tools list,
+        # so this changes nothing for existing paths (kwargs-pinned).
+        converted_tools = _tools_to_openai_responses(tools)
+        if converted_tools is not None:
+            create_kwargs["tools"] = converted_tools
+        if store is None:
+            # Default (M1) behavior — byte-identical to pre-M2.
+            if _reasoning_passback_enabled():
+                # Ask for reasoning items with re-sendable encrypted payloads so
+                # they can be passed back between tool calls (OpenAI reasoning-
+                # model recommendation).  store=False keeps this adapter
+                # stateless — the full input, including prior reasoning items, is
+                # re-sent each turn.
+                create_kwargs["store"] = False
+                create_kwargs["include"] = ["reasoning.encrypted_content"]
+        else:
+            create_kwargs["store"] = store
             create_kwargs["include"] = ["reasoning.encrypted_content"]
+            if store and previous_response_id is not None:
+                create_kwargs["previous_response_id"] = previous_response_id
         try:
             response = self.client.responses.create(**create_kwargs)
         except Exception as exc:  # noqa: BLE001

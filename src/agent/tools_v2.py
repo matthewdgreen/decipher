@@ -2154,6 +2154,44 @@ def _strip_packet_keys(value: Any) -> Any:
     return value
 
 
+# Result keys whose value is a LIST of tool names (A4 filter).
+_NEXT_TOOL_LIST_KEYS = frozenset({"suggested_next_tools", "recommended_next_tools"})
+# Result keys whose value is a single tool-name STRING (A4 filter).
+_NEXT_TOOL_STRING_KEYS = frozenset({"recommended_next_tool", "fix_tool"})
+
+
+def _filter_next_tool_hints(value: Any, toolset: set[str]) -> Any:
+    """Recursively drop off-toolset next-tool hints from a tool result (A4).
+
+    Applied at the executor's single choke point ONLY when an episode toolset is
+    active, so a worker never sees a hint for a tool it cannot call:
+
+    - list keys (``suggested_next_tools``/``recommended_next_tools``): drop every
+      name not in ``toolset``; if the list empties, drop the key entirely;
+    - string keys (``recommended_next_tool``/``fix_tool``): if the value names a
+      tool not in ``toolset``, null it (set to ``None``).
+
+    The input is never mutated. Non-episode calls never reach this function.
+    """
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in _NEXT_TOOL_LIST_KEYS and isinstance(item, list):
+                kept = [t for t in item if not isinstance(t, str) or t in toolset]
+                if kept:
+                    out[key] = kept
+                # else: drop the emptied key
+                continue
+            if key in _NEXT_TOOL_STRING_KEYS and isinstance(item, str):
+                out[key] = item if item in toolset else None
+                continue
+            out[key] = _filter_next_tool_hints(item, toolset)
+        return out
+    if isinstance(value, list):
+        return [_filter_next_tool_hints(item, toolset) for item in value]
+    return value
+
+
 # Maps declaration prerequisite reason → the tool that satisfies it.
 # Used to generate compact chain-hint notes in gate-fix tools.
 _PREREQ_FIX_TOOL: dict[str, str] = {
@@ -2194,6 +2232,25 @@ class DeclarationPolicy:
     ) -> dict[str, Any] | None:
         return None
 
+    # A4: finalize-phase guard for heavy search tools. ``search_kind`` is
+    # "hill_climb" or "anneal". Return a blocked-result dict or ``None`` to let
+    # the search proceed. Base = no guard.
+    def finalize_guard(
+        self,
+        executor: "WorkspaceToolExecutor",
+        branch: str,
+        search_kind: str,
+        args: dict,
+    ) -> dict[str, Any] | None:
+        return None
+
+    # A4: post-search declare guidance note. Base = the neutral v3 text (no
+    # declare-tool references, no off-toolset names).
+    def search_note(
+        self, executor: "WorkspaceToolExecutor", search_kind: str
+    ) -> str:
+        return _neutral_search_declare_note(executor, search_kind)
+
 
 class NoGatesPolicy(DeclarationPolicy):
     """v3 policy: declaration is always allowed; no coercion gates fire.
@@ -2202,7 +2259,34 @@ class NoGatesPolicy(DeclarationPolicy):
     cascade is bypassed. Non-declaration executor blocks (context-family,
     null-mask, transform) are unaffected — they live in ``execute`` / handlers,
     not in this policy.
+
+    The finalize-phase guard keeps its LOGIC (a readable branch should not be
+    re-searched without explicit justification) but drops the coercive text —
+    no ``meta_declare_solution``, no ``suggested_next_tools`` (F8: this neutral
+    text applies to the v3 lead as well as to episodes). ``search_note`` is the
+    base neutral text.
     """
+
+    def finalize_guard(
+        self,
+        executor: "WorkspaceToolExecutor",
+        branch: str,
+        search_kind: str,
+        args: dict,
+    ) -> dict[str, Any] | None:
+        if not executor._is_finalize_phase(branch) or args.get("justification"):
+            return None
+        return {
+            "status": "blocked",
+            "reason": "finalize_phase",
+            "branch": branch,
+            "note": (
+                "This branch is in finalize phase (comprehensibility score ≥ 7 "
+                f"recorded). Running {search_kind} again on a readable branch "
+                "risks overwriting the current key. Re-call with "
+                "justification=<reason> if further search is needed."
+            ),
+        }
 
 
 class V2GatePolicy(DeclarationPolicy):
@@ -2623,6 +2707,122 @@ class V2GatePolicy(DeclarationPolicy):
             }
         return None
 
+    def finalize_guard(
+        self,
+        executor: "WorkspaceToolExecutor",
+        branch: str,
+        search_kind: str,
+        args: dict,
+    ) -> dict[str, Any] | None:
+        # Extracted verbatim from _tool_search_hill_climb / _tool_search_anneal.
+        if not executor._is_finalize_phase(branch) or args.get("justification"):
+            return None
+        if search_kind == "hill_climb":
+            note = (
+                "This branch is in finalize phase (comprehensibility score ≥ 7 "
+                "recorded). Running hill_climb on a readable branch risks "
+                "overwriting the correct key. Prefer meta_declare_solution. "
+                "If further search is genuinely needed, re-call with "
+                "justification=<reason>."
+            )
+        else:  # anneal
+            note = (
+                "This branch is in finalize phase (comprehensibility score ≥ 7 "
+                "recorded). Re-annealing a readable branch risks overwriting "
+                "the correct key with a random-restart artifact. "
+                "Prefer meta_declare_solution. "
+                "If further search is genuinely needed, re-call with "
+                "justification=<reason>."
+            )
+        return {
+            "status": "blocked",
+            "reason": "finalize_phase",
+            "branch": branch,
+            "note": note,
+            "suggested_next_tools": ["meta_declare_solution"],
+        }
+
+    def search_note(
+        self, executor: "WorkspaceToolExecutor", search_kind: str
+    ) -> str:
+        return _v2_search_declare_note(executor, search_kind)
+
+
+def _neutral_search_declare_note(executor: Any, search_kind: str) -> str:
+    """Neutral post-search note for the v3 lead and episodes (A4/F8).
+
+    Drops declare-tool references and off-toolset tool names; keeps the
+    substance (read the decode, repair residual errors, trust the reading).
+    """
+    return (
+        f"{search_kind} finished. Read the decoded_preview carefully and judge "
+        "whether it reads as coherent language. If a few residual letter errors "
+        "remain, repair them; if the branch has converged and still reads as "
+        "garble, try a different hypothesis. Trust the reading over any single "
+        "score."
+    )
+
+
+def _v2_search_declare_note(executor: Any, search_kind: str = "anneal") -> str:
+    """The v2 post-search guidance note (extracted verbatim from the executor).
+
+    search_kind ∈ {"anneal", "hill_climb"}.
+    """
+    no_boundaries = len(executor.workspace.cipher_text.words) <= 1
+    if executor._is_homophonic_cipher() and no_boundaries:
+        return (
+            f"{search_kind} has produced a candidate for a no-boundary "
+            "homophonic cipher. Be conservative: high dictionary_rate can "
+            "be a false positive because segmentation finds short words in "
+            "wrong text. Before declaring, call score_panel and "
+            "observe_homophone_distribution; if common letters are absent, "
+            "use decode_absent_letter_candidates on those letters. Declare "
+            "only when the full decoded stream reads as coherent prose, not "
+            "just scattered words."
+        )
+    if search_kind == "hill_climb":
+        if no_boundaries:
+            return (
+                "hill_climb has converged. If the decoded_preview is "
+                "readable, declare now. If still garbled, this branch's "
+                "local-search has maxed out — fork a fresh branch and "
+                "restart with search_anneal (stronger explorer)."
+            )
+        return (
+            "hill_climb has converged. If decoded text shows any "
+            f"coherent {executor.language} phrases, consider declaring; a "
+            "few recognisable words alone are not enough if useful search "
+            "or repair tools remain. If still stuck, fork and restart "
+            "with search_anneal — it escapes local optima that hill_climb "
+            "can't."
+        )
+    # search_kind == "anneal"
+    if no_boundaries:
+        return (
+            "Read decoded_preview carefully. If you can segment most of it "
+            f"into {executor.language} words, DECLARE NOW — chasing perfection "
+            "risks regression and zero score. If a few obvious letter errors "
+            "remain, call decode_diagnose_and_fix(branch) — it identifies the "
+            "culprit cipher symbol for EACH error and applies ALL fixes in one "
+            "call. You can also batch multiple act_set_mapping calls in a "
+            "single response. After targeted fixes, do one anchored polish "
+            "search with search_homophonic_anneal(preserve_existing=true, "
+            "solver_profile='zenith_native') and then read again. Do NOT "
+            "fix errors one per iteration; each iteration costs tokens and "
+            "grows the context."
+        )
+    return (
+        f"Read decoded_preview carefully. If coherent {executor.language} "
+        "phrases appear, repair obvious residual errors and then consider "
+        "declaring. Do not declare early merely because a few recognizable "
+        "words appear; if useful tools remain, continued exploration beats "
+        "a low-confidence partial. If a few residual errors remain, "
+        "call decode_diagnose_and_fix(branch) to fix them all in one call, "
+        "then do one anchored polish run with "
+        "search_anneal(preserve_existing=true, score_fn='combined') before "
+        "declaring."
+    )
+
 
 class WorkspaceToolExecutor:
     """Dispatches v2 tool calls against a Workspace + language resources."""
@@ -2636,6 +2836,11 @@ class WorkspaceToolExecutor:
         pattern_dict: dict[str, list[str]],
         benchmark_context: ScopedBenchmarkContext | None = None,
         declaration_policy: "DeclarationPolicy | None" = None,
+        *,
+        episode_toolset: set[str] | None = None,
+        finalist_sessions: "FinalistSessionStore | None" = None,
+        hypothesis_board: "Any | None" = None,
+        repair_agenda: list[dict[str, Any]] | None = None,
     ) -> None:
         self.workspace = workspace
         self.language = language
@@ -2647,6 +2852,13 @@ class WorkspaceToolExecutor:
         # cascade so existing callers/tests see byte-identical behavior; the v3
         # lead loop injects NoGatesPolicy.
         self._declaration_policy: DeclarationPolicy = declaration_policy or V2GatePolicy()
+        # A4: when set, ``episode_toolset`` acts as a hard allowlist — off-toolset
+        # calls are rejected with a neutral message and every result has its
+        # next-tool hints filtered to the toolset (one choke point in execute()).
+        # Unset (v2 default) leaves output byte-identical.
+        self.episode_toolset: set[str] | None = (
+            set(episode_toolset) if episode_toolset is not None else None
+        )
 
         # Frequency rank for lookup (1-based; lower = more common)
         self._freq_rank: dict[str, int] = {
@@ -2688,9 +2900,22 @@ class WorkspaceToolExecutor:
         self.context_family_overrides: list[dict[str, Any]] = []
 
         # Durable reading-repair agenda. These are deliberately plain dicts so
-        # they serialize directly into run artifacts and tool results.
-        self.repair_agenda: list[dict[str, Any]] = []
-        self._next_repair_agenda_id: int = 1
+        # they serialize directly into run artifacts and tool results. R8:
+        # constructor-injectable so the v3 lead / episodes can share the
+        # state-owned list instead of poking the attribute after construction.
+        self.repair_agenda: list[dict[str, Any]] = (
+            repair_agenda if repair_agenda is not None else []
+        )
+        self._next_repair_agenda_id: int = (
+            max((int(item.get("id") or 0) for item in self.repair_agenda), default=0) + 1
+        )
+        # A10: single-writer hypothesis board. ``None`` → a private board (v2
+        # path — handler outputs and metadata writes byte-identical). v3 injects
+        # the state-owned board so it survives resume and renders in context.
+        from investigation.board import HypothesisBoard
+        self.hypothesis_board = (
+            hypothesis_board if hypothesis_board is not None else HypothesisBoard()
+        )
 
         # Reading-comprehensibility attestations keyed by branch name.
         # Stored as plain dicts for easy serialization.
@@ -2701,8 +2926,17 @@ class WorkspaceToolExecutor:
         # expensive transform+homophonic screen in the same run.
         # All three wide-search session kinds share one dependency-free store.
         # It preserves the exact per-kind id scheme (``f"{kind}_{n}"``) and adds
-        # a server-side ``packets`` payload key (never model-visible).
-        self._finalist_sessions = FinalistSessionStore()
+        # a server-side ``packets`` payload key (never model-visible). A1: v3
+        # injects the state-owned store so a search episode's finalist session is
+        # reviewable/installable by the lead or a later episode; ``None`` → a
+        # fresh store (v2 byte-identical).
+        self._finalist_sessions = (
+            finalist_sessions if finalist_sessions is not None
+            else FinalistSessionStore()
+        )
+        # A11: set by run_episode so tool calls made inside an episode are logged
+        # with their originating episode id (additive ToolCall field).
+        self.episode_id: str | None = None
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -2723,7 +2957,22 @@ class WorkspaceToolExecutor:
         tool_use_id: str = "",
     ) -> str:
         started = time.time()
-        if self.allowed_tool_names is not None and tool_name not in self.allowed_tool_names:
+        if self.episode_toolset is not None and tool_name not in self.episode_toolset:
+            # A4: toolset-as-allowlist. Neutral rejection (none of the v2 gated-
+            # window essay) — episodes are single-purpose workers. Keep _gate_hits
+            # telemetry so the runner can see repeated off-toolset attempts.
+            prior_hits = [h for h in self._gate_hits if h["tool"] == tool_name]
+            hit_count = len(prior_hits) + 1
+            self._gate_hits.append({
+                "tool": tool_name,
+                "iteration": self._current_iteration,
+                "count": hit_count,
+            })
+            result_obj = {
+                "error": f"`{tool_name}` is not in this episode's toolset.",
+                "allowed_tools": sorted(self.episode_toolset),
+            }
+        elif self.allowed_tool_names is not None and tool_name not in self.allowed_tool_names:
             allowed = sorted(self.allowed_tool_names)
             # Track gate hits; detect repeats for escalated messaging.
             prior_hits = [h for h in self._gate_hits if h["tool"] == tool_name]
@@ -2762,29 +3011,35 @@ class WorkspaceToolExecutor:
                     "`decode_validate_reading_repair` only if you need to "
                     "decide which resegmentation actuator applies."
                 )
-            result = _json({
+            result_obj = {
                 "error": error_msg,
                 "reason": "tool_gated",
                 "attempted_tool": tool_name,
                 "attempt_number": hit_count,
                 "allowed_tools": allowed,
                 "note": note_msg,
-            })
+            }
         elif tool_name not in VALID_TOOL_NAMES:
-            result = _json({"error": f"Unknown tool: {tool_name}"})
+            result_obj = {"error": f"Unknown tool: {tool_name}"}
         elif (context_block := self._context_cipher_family_tool_block(tool_name, args)) is not None:
-            result = _json(context_block)
+            result_obj = context_block
         elif (handler := getattr(self, f"_tool_{tool_name}", None)) is None:
             # Backstop: a name in TOOL_DEFINITIONS without a matching handler.
-            result = _json({"error": f"Unknown tool: {tool_name}"})
+            result_obj = {"error": f"Unknown tool: {tool_name}"}
         else:
             try:
                 result_obj = handler(args)
-                result = _json(result_obj)
             except WorkspaceError as e:
-                result = _json({"error": f"Workspace error: {e}"})
+                result_obj = {"error": f"Workspace error: {e}"}
             except Exception as e:  # noqa: BLE001
-                result = _json({"error": f"{type(e).__name__}: {e}"})
+                result_obj = {"error": f"{type(e).__name__}: {e}"}
+        # A4 single choke point (F8): when an episode toolset is active, filter
+        # every next-tool hint on EVERY return path down to the toolset. Unset
+        # (v2 default) → the object is untouched and serialization is
+        # byte-identical.
+        if self.episode_toolset is not None:
+            result_obj = _filter_next_tool_hints(result_obj, self.episode_toolset)
+        result = _json(result_obj)
         elapsed_ms = int((time.time() - started) * 1000)
         self.call_log.append(
             ToolCall(
@@ -2794,6 +3049,7 @@ class WorkspaceToolExecutor:
                 arguments=dict(args),
                 result=result,
                 elapsed_ms=elapsed_ms,
+                episode_id=self.episode_id,
             )
         )
         return result
@@ -5291,14 +5547,18 @@ class WorkspaceToolExecutor:
         confidence = str(args.get("mode_confidence") or "medium").strip().lower()
         evidence_source = str(args.get("evidence_source") or "agent_inference").strip()
         branch = self.workspace.fork(new_name, from_branch=from_branch)
-        branch.metadata.update({
-            "cipher_mode": mode,
-            "mode_confidence": confidence,
-            "mode_status": "active",
-            "mode_evidence": rationale,
-            "hypothesis_notes": rationale,
-            "evidence_source": evidence_source,
-        })
+        # A10 single writer: route the card fields through the board (which
+        # mirrors them into branch.metadata); the non-card write (hypothesis_notes)
+        # stays here (F3).
+        self.hypothesis_board.create(
+            self.workspace, new_name,
+            cipher_mode=mode,
+            mode_confidence=confidence,
+            mode_status="active",
+            mode_evidence=rationale,
+            evidence_source=evidence_source,
+        )
+        branch.metadata["hypothesis_notes"] = rationale
         context_prior = None
         if evidence_source == "benchmark_context" and mode in self._POLY_MODE_NAMES:
             required = self._polyalphabetic_required_tools_for_mode(mode)
@@ -5323,6 +5583,8 @@ class WorkspaceToolExecutor:
                     "as a controlling cipher-family assumption."
                 ),
             }
+            # Non-card context writes stay direct (F3); the card field
+            # next_recommended_action routes through the board.
             branch.metadata.update({
                 "context_supported_mode": True,
                 "context_mode_prior": context_prior,
@@ -5331,12 +5593,15 @@ class WorkspaceToolExecutor:
                     "assumption is wrong, off-family searches may be suppressed."
                 ),
                 "required_tools_before_rejection": required,
-                "next_recommended_action": (
+            })
+            self.hypothesis_board.update(
+                self.workspace, new_name,
+                next_recommended_action=(
                     "Context-supported cipher family recorded. Use the "
                     "mode-specific playbook and run required tools before "
                     "rejecting or leaving this family."
                 ),
-            })
+            )
         self.workspace.tag(new_name, "hypothesis")
         self.workspace.tag(new_name, f"mode:{mode}")
         return {
@@ -5391,8 +5656,10 @@ class WorkspaceToolExecutor:
                     "acknowledge_pending_required_tools=true and explain why."
                 ),
             }
-        branch.metadata["mode_status"] = status
-        branch.metadata["rejection_reason"] = reason
+        # A10: card-field writes route through the board; the tag stays here.
+        self.hypothesis_board.reject(
+            self.workspace, branch_name, mode_status=status, rejection_reason=reason
+        )
         self.workspace.tag(branch_name, status)
         return {
             "status": "ok",
@@ -5408,13 +5675,17 @@ class WorkspaceToolExecutor:
         status = str(args.get("mode_status") or "active").strip().lower()
         if status not in {"active", "paused", "rejected", "superseded"}:
             return {"error": "mode_status must be active, paused, rejected, or superseded"}
+        # A10: card-field writes route through the board (mirrored into metadata,
+        # preserving the original write ordering); non-card context writes and
+        # tags stay direct (F3).
+        board = self.hypothesis_board
         if args.get("cipher_mode"):
             mode = str(args["cipher_mode"]).strip()
-            branch.metadata["cipher_mode"] = mode
+            board.update(self.workspace, branch_name, cipher_mode=mode)
             self.workspace.tag(branch_name, f"mode:{mode}")
         if args.get("evidence_source"):
             evidence_source = str(args["evidence_source"]).strip()
-            branch.metadata["evidence_source"] = evidence_source
+            board.update(self.workspace, branch_name, evidence_source=evidence_source)
             mode = str(branch.metadata.get("cipher_mode") or "").strip()
             if evidence_source == "benchmark_context" and mode in self._POLY_MODE_NAMES:
                 required = self._polyalphabetic_required_tools_for_mode(mode)
@@ -5448,14 +5719,18 @@ class WorkspaceToolExecutor:
                     "required_tools_before_rejection": required,
                 })
         if args.get("mode_confidence"):
-            branch.metadata["mode_confidence"] = str(args["mode_confidence"]).strip().lower()
+            board.update(self.workspace, branch_name,
+                         mode_confidence=str(args["mode_confidence"]).strip().lower())
         if args.get("evidence"):
-            branch.metadata["mode_evidence"] = str(args["evidence"]).strip()
+            board.update(self.workspace, branch_name,
+                         mode_evidence=str(args["evidence"]).strip())
         if args.get("counter_evidence"):
-            branch.metadata["mode_counter_evidence"] = str(args["counter_evidence"]).strip()
+            board.update(self.workspace, branch_name,
+                         mode_counter_evidence=str(args["counter_evidence"]).strip())
         if args.get("next_recommended_action"):
-            branch.metadata["next_recommended_action"] = str(args["next_recommended_action"]).strip()
-        branch.metadata["mode_status"] = status
+            board.update(self.workspace, branch_name,
+                         next_recommended_action=str(args["next_recommended_action"]).strip())
+        board.update(self.workspace, branch_name, mode_status=status)
         self.workspace.tag(branch_name, "hypothesis")
         if status in {"rejected", "superseded"}:
             self.workspace.tag(branch_name, status)
@@ -9394,67 +9669,12 @@ class WorkspaceToolExecutor:
     # ------------------------------------------------------------------
 
     def _search_declare_note(self, search_kind: str = "anneal") -> str:
-        """Return the post-search guidance note.
+        """Return the post-search guidance note (A4: via the declaration policy).
 
-        search_kind ∈ {"anneal", "hill_climb"}. Post-anneal: recommend
-        decode_diagnose_and_fix to fix all residual errors in one call.
-        Post-hill-climb: the branch has converged — fork + restart with
-        anneal if still stuck.
+        V2GatePolicy returns the v2 text (byte-identical); NoGatesPolicy returns
+        the neutral v3/episode text.
         """
-        no_boundaries = len(self.workspace.cipher_text.words) <= 1
-        if self._is_homophonic_cipher() and no_boundaries:
-            return (
-                f"{search_kind} has produced a candidate for a no-boundary "
-                "homophonic cipher. Be conservative: high dictionary_rate can "
-                "be a false positive because segmentation finds short words in "
-                "wrong text. Before declaring, call score_panel and "
-                "observe_homophone_distribution; if common letters are absent, "
-                "use decode_absent_letter_candidates on those letters. Declare "
-                "only when the full decoded stream reads as coherent prose, not "
-                "just scattered words."
-            )
-        if search_kind == "hill_climb":
-            if no_boundaries:
-                return (
-                    "hill_climb has converged. If the decoded_preview is "
-                    "readable, declare now. If still garbled, this branch's "
-                    "local-search has maxed out — fork a fresh branch and "
-                    "restart with search_anneal (stronger explorer)."
-                )
-            return (
-                "hill_climb has converged. If decoded text shows any "
-                f"coherent {self.language} phrases, consider declaring; a "
-                "few recognisable words alone are not enough if useful search "
-                "or repair tools remain. If still stuck, fork and restart "
-                "with search_anneal — it escapes local optima that hill_climb "
-                "can't."
-            )
-        # search_kind == "anneal"
-        if no_boundaries:
-            return (
-                "Read decoded_preview carefully. If you can segment most of it "
-                f"into {self.language} words, DECLARE NOW — chasing perfection "
-                "risks regression and zero score. If a few obvious letter errors "
-                "remain, call decode_diagnose_and_fix(branch) — it identifies the "
-                "culprit cipher symbol for EACH error and applies ALL fixes in one "
-                "call. You can also batch multiple act_set_mapping calls in a "
-                "single response. After targeted fixes, do one anchored polish "
-                "search with search_homophonic_anneal(preserve_existing=true, "
-                "solver_profile='zenith_native') and then read again. Do NOT "
-                "fix errors one per iteration; each iteration costs tokens and "
-                "grows the context."
-            )
-        return (
-            f"Read decoded_preview carefully. If coherent {self.language} "
-            "phrases appear, repair obvious residual errors and then consider "
-            "declaring. Do not declare early merely because a few recognizable "
-            "words appear; if useful tools remain, continued exploration beats "
-            "a low-confidence partial. If a few residual errors remain, "
-            "call decode_diagnose_and_fix(branch) to fix them all in one call, "
-            "then do one anchored polish run with "
-            "search_anneal(preserve_existing=true, score_fn='combined') before "
-            "declaring."
-        )
+        return self._declaration_policy.search_note(self, search_kind)
 
     def _build_score_fns(
         self, temp_session: Any, score_fn_name: str
@@ -9519,23 +9739,15 @@ class WorkspaceToolExecutor:
         ws = self.workspace
         branch = ws.get_branch(branch_name)
 
-        # Finalize-phase guard: once a branch has a comprehensibility score ≥ 7,
-        # running hill_climb risks overwriting a correct key with a locally-better
-        # but wrong one.  Require an explicit justification to proceed.
-        if self._is_finalize_phase(branch_name) and not args.get("justification"):
-            return {
-                "status": "blocked",
-                "reason": "finalize_phase",
-                "branch": branch_name,
-                "note": (
-                    "This branch is in finalize phase (comprehensibility score ≥ 7 "
-                    "recorded). Running hill_climb on a readable branch risks "
-                    "overwriting the correct key. Prefer meta_declare_solution. "
-                    "If further search is genuinely needed, re-call with "
-                    "justification=<reason>."
-                ),
-                "suggested_next_tools": ["meta_declare_solution"],
-            }
+        # Finalize-phase guard (A4): once a branch has a comprehensibility score
+        # ≥ 7, running hill_climb risks overwriting a correct key with a
+        # locally-better but wrong one. The block text is policy-injected —
+        # V2GatePolicy returns the v2 dict, NoGatesPolicy the neutral variant.
+        guard = self._declaration_policy.finalize_guard(
+            self, branch_name, "hill_climb", args
+        )
+        if guard is not None:
+            return guard
 
         import random as _random
         pt_size = ws.plaintext_alphabet.size
@@ -9593,23 +9805,13 @@ class WorkspaceToolExecutor:
         ws = self.workspace
         branch = ws.get_branch(branch_name)
 
-        # Finalize-phase guard (same as hill_climb): a readable branch should be
-        # declared, not re-annealed.  A wrong restart key can destroy a correct solution.
-        if self._is_finalize_phase(branch_name) and not args.get("justification"):
-            return {
-                "status": "blocked",
-                "reason": "finalize_phase",
-                "branch": branch_name,
-                "note": (
-                    "This branch is in finalize phase (comprehensibility score ≥ 7 "
-                    "recorded). Re-annealing a readable branch risks overwriting "
-                    "the correct key with a random-restart artifact. "
-                    "Prefer meta_declare_solution. "
-                    "If further search is genuinely needed, re-call with "
-                    "justification=<reason>."
-                ),
-                "suggested_next_tools": ["meta_declare_solution"],
-            }
+        # Finalize-phase guard (A4, same as hill_climb): a readable branch should
+        # be declared, not re-annealed. Block text is policy-injected.
+        guard = self._declaration_policy.finalize_guard(
+            self, branch_name, "anneal", args
+        )
+        if guard is not None:
+            return guard
 
         import random as _random
         pt_alpha = ws.plaintext_alphabet

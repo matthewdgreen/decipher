@@ -560,3 +560,32 @@ def test_v3_lead_context_never_sees_ground_truth():
     assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
     # Ground truth is never populated on the v3 artifact by the loop itself.
     assert artifact.ground_truth is None
+
+
+def test_v3_episode_surface_never_sees_ground_truth():
+    """Episodes get NO benchmark context; the rendered episode context and the
+    contract system prompt for a benchmark-backed cipher are ground-truth free."""
+    from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+    from investigation.episodes import (
+        EpisodeSpec,
+        _build_episode_workspace,
+        _episode_system_prompt,
+        build_episode_context,
+    )
+    from investigation.state import InvestigationState
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    state = InvestigationState(workspace=Workspace(ct), language="en")
+
+    spec = EpisodeSpec("survey", "diagnose the cipher",
+                       inputs={"branches": ["main"],
+                               "context_note": "manuscript register, no plaintext"})
+    ep_ws = _build_episode_workspace(state, ["main"])
+    executor = WorkspaceToolExecutor(ep_ws, "en", set(), [], {},
+                                     declaration_policy=NoGatesPolicy())
+    context_text = build_episode_context(spec, ep_ws, executor)
+    system_prompt = _episode_system_prompt(spec)
+
+    assert_no_ground_truth_leak([context_text, system_prompt], GROUND_TRUTH)

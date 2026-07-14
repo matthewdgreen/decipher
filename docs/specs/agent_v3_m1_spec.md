@@ -205,3 +205,17 @@ cache breakpoints (M2), deletion of anything v2.
 
 Files changed, suite counts, acceptance comparisons (the v2-vs-v3 table
 + prompt-size numbers), deviations. No commits.
+
+## Review follow-ups (deferred to M2 — recorded post-hoc; the M2 spec
+## reconstructed these from code before this note landed)
+
+- R7 test gaps: token_order/transform_pipeline state round-trip pin;
+  resume.py v3-refusal guard test; built-context -> Responses-converter
+  end-to-end test (merged [tool_results..., text] user-message shape).
+- R8 nits: max_iterations=0 NameError at run_complete emit; run_v3 uses
+  the language param over state.language on resume; live references from
+  messages.extend(exchanges[:-1]); resumed artifacts' totals include
+  prior-run spend (documented, accepted).
+- export_transcript upgrade: neutral blocks -> provider-native items.
+- Rehome the five loop_v2 helper imports used by loop_v3 (to
+  src/agent/loop_shared.py or similar) before v2 deletion.

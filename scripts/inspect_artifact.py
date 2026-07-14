@@ -300,6 +300,31 @@ def format_header(artifact: dict) -> str:
 # Tool usage summary
 # ---------------------------------------------------------------------------
 
+def format_episodes(artifact: dict) -> str:
+    """Minimal episodes table for v3 artifacts (M2). Empty string when none."""
+    episodes = artifact.get("episodes") or []
+    if not episodes:
+        return ""
+    lines = ["Episodes:"]
+    lines.append(
+        f"  {'kind':<10} {'status':<15} {'calls':>5}  {'snapshots':<24} summary"
+    )
+    for ep in episodes:
+        kind = str(ep.get("kind") or "?")
+        status = str(ep.get("status") or "?")
+        reason = ep.get("failure_reason")
+        if reason:
+            status = f"{status}:{reason}"
+        calls = ep.get("tool_call_count") or 0
+        snaps = ", ".join(
+            str(s.get("name")) for s in (ep.get("branch_snapshots") or [])
+            if isinstance(s, dict)
+        )
+        summary = str(ep.get("summary") or "").replace("\n", " ")[:60]
+        lines.append(f"  {kind:<10} {status:<15} {calls:>5}  {snaps:<24} {summary}")
+    return "\n".join(lines)
+
+
 def format_tool_summary(timeline: list[dict]) -> str:
     counts: Counter = Counter()
     gate_counts: Counter = Counter()
@@ -1017,6 +1042,10 @@ def inspect_one(
 
     print(format_header(artifact))
     print()
+    episodes_table = format_episodes(artifact)
+    if episodes_table:
+        print(episodes_table)
+        print()
     print(format_tool_summary(timeline))
     print()
     print(format_timing_summary(analyze_tool_timing(artifact)))

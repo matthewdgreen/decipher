@@ -15,6 +15,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from agent.finalist_sessions import FinalistSessionStore
+from investigation.board import HypothesisBoard
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
 from workspace import Workspace
@@ -149,33 +151,6 @@ def _serialize_branch(ws: Workspace, name: str) -> dict[str, Any]:
     }
 
 
-def hypothesis_board_from_workspace(ws: Workspace) -> list[dict[str, Any]]:
-    """Read-only projection of branch-metadata hypothesis cards (M1).
-
-    The single-writer hypothesis board is M2/A10; here we only READ the
-    existing ``workspace_*_hypothesis`` metadata for context.
-    """
-    board: list[dict[str, Any]] = []
-    for name in ws.branch_names():
-        branch = ws.get_branch(name)
-        metadata = branch.metadata
-        mode = metadata.get("cipher_mode")
-        if not mode and "hypothesis" not in branch.tags:
-            continue
-        board.append({
-            "branch": name,
-            "cipher_mode": mode or "unknown",
-            "mode_status": metadata.get("mode_status", "active"),
-            "mode_confidence": metadata.get("mode_confidence"),
-            "mode_evidence": metadata.get("mode_evidence")
-            or metadata.get("hypothesis_notes"),
-            "mode_counter_evidence": metadata.get("mode_counter_evidence"),
-            "next_recommended_action": metadata.get("next_recommended_action"),
-            "rejection_reason": metadata.get("rejection_reason"),
-        })
-    return board
-
-
 @dataclass
 class InvestigationState:
     """Everything durable about one v3 run (C1)."""
@@ -197,19 +172,41 @@ class InvestigationState:
     # Relocated durable repair agenda (F5). The executor is constructed to share
     # this list object so agenda edits are reflected in state.
     repair_agenda: list[dict[str, Any]] = field(default_factory=list)
-    # M2/M4 schema-only (present, empty).
-    episode_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # M4 schema-only (present, empty).
     experiment_queue: list[dict[str, Any]] = field(default_factory=list)
+    # M2: append-only ledger of completed episodes (one dict per episode).
+    episode_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # A1/A10: the state-owned finalist-session store (shared with the lead and
+    # every episode executor) and the single-writer hypothesis board. Both
+    # survive resume so a search episode's finalist session and the hypothesis
+    # trail are reviewable/installable after reload.
+    finalist_sessions: FinalistSessionStore = field(default_factory=FinalistSessionStore)
+    hypothesis_board: HypothesisBoard = field(default_factory=HypothesisBoard)
     turn: int = 0
     max_recent_exchanges: int = DEFAULT_RECENT_EXCHANGES
+
+    def __post_init__(self) -> None:
+        # Adopt any hypothesis branches already present in the workspace (a
+        # directly-populated workspace, or one restored from an artifact whose
+        # board did not carry every card — F4/F11). Existing cards are untouched.
+        self.hypothesis_board.sync_from_workspace(self.workspace)
 
     # --- convenience ---
     @property
     def cipher(self) -> CipherText:
         return self.workspace.cipher_text
 
-    def hypothesis_board(self) -> list[dict[str, Any]]:
-        return hypothesis_board_from_workspace(self.workspace)
+    def hypothesis_cards(self) -> list[dict[str, Any]]:
+        """Board cards for context rendering (A10).
+
+        Cards whose branch has since been deleted from the workspace are
+        filtered out here (stale-card handling); the board itself keeps them so
+        the full hypothesis trail still serializes into the artifact.
+        """
+        return [
+            card for card in self.hypothesis_board.cards()
+            if self.workspace.has_branch(str(card.get("branch") or ""))
+        ]
 
     # --- mutation helpers ---
     def add_evidence(self, kind: str, turn: int, summary: str = "", **data: Any) -> None:
@@ -288,13 +285,14 @@ class InvestigationState:
                     for name in self.workspace.branch_names()
                 ],
             },
-            "hypothesis_board": self.hypothesis_board(),
+            "hypothesis_board": self.hypothesis_board.to_dict(),
             "evidence_log": [entry.to_dict() for entry in self.evidence_log],
             "budget_ledger": [entry.to_dict() for entry in self.budget_ledger],
             "recent_exchanges": self.recent_exchanges,
             "repair_agenda": [dict(item) for item in self.repair_agenda],
             "episode_ledger": [dict(item) for item in self.episode_ledger],
             "experiment_queue": [dict(item) for item in self.experiment_queue],
+            "finalist_sessions": self.finalist_sessions.to_dict(),
             "turn": self.turn,
         }
 
@@ -313,6 +311,16 @@ class InvestigationState:
         for branch_data in data.get("workspace", {}).get("branches", []):
             _restore_branch_into(workspace, branch_data)
 
+        # F11: the M2 board serializes as ``{"cards": [...], "next_id": N}``.
+        # An M1-era artifact stored a projection LIST (or nothing) there; fall
+        # back to projecting from the restored workspace so the resume-identity
+        # test keeps passing unchanged.
+        board_data = data.get("hypothesis_board")
+        if isinstance(board_data, dict):
+            board = HypothesisBoard.from_dict(board_data)
+        else:
+            board = HypothesisBoard.from_workspace(workspace)
+
         state = cls(
             workspace=workspace,
             language=str(data.get("language") or "en"),
@@ -327,6 +335,10 @@ class InvestigationState:
             repair_agenda=[dict(item) for item in data.get("repair_agenda") or []],
             episode_ledger=[dict(item) for item in data.get("episode_ledger") or []],
             experiment_queue=[dict(item) for item in data.get("experiment_queue") or []],
+            finalist_sessions=FinalistSessionStore.from_dict(
+                data.get("finalist_sessions")
+            ),
+            hypothesis_board=board,
             turn=int(data.get("turn") or 0),
         )
         return state

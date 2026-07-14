@@ -18,6 +18,7 @@ class ToolCall:
     result: str                # raw JSON string returned to the model
     elapsed_ms: int = 0
     parent_tool_use_id: str | None = None  # non-None if invoked from a subagent
+    episode_id: str | None = None  # set when the call ran inside a v3 episode (M2)
 
 
 @dataclass
@@ -151,6 +152,7 @@ class RunArtifact:
     budget_by_category: dict[str, Any] = field(default_factory=dict)
     session_transcript: dict[str, Any] | None = None
     investigation_state: dict[str, Any] | None = None
+    episodes: list[dict[str, Any]] = field(default_factory=list)  # v3 episode ledger (M2)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""

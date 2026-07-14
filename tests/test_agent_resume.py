@@ -162,3 +162,21 @@ def test_run_v2_resume_uses_restored_state_without_preflight():
     assert next(b for b in artifact.branches if b.name == "main").decryption == "THE"
     first_message = api.messages_seen[0][0]["content"]
     assert "Do not restart from scratch" in first_message
+
+
+def test_r7_v2_resume_refuses_v3_artifact(tmp_path):
+    """R7: the v2 resume loader refuses a v3 (investigation) artifact."""
+    import json
+    import pytest
+    from agent.resume import load_artifact_dict
+
+    path = tmp_path / "v3.json"
+    path.write_text(json.dumps({"loop_version": "v3", "run_id": "x"}))
+    with pytest.raises(ValueError) as exc:
+        load_artifact_dict(str(path))
+    assert "v3" in str(exc.value)
+
+    # A v2 artifact still loads.
+    path2 = tmp_path / "v2.json"
+    path2.write_text(json.dumps({"loop_version": "v2", "run_id": "y"}))
+    assert load_artifact_dict(str(path2))["run_id"] == "y"

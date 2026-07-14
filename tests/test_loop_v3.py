@@ -205,6 +205,43 @@ def test_run_v3_resume_continues_from_state_turn_monotonic():
     assert kinds.count("diagnostic_preflight") == 1
 
 
+def test_run_v3_max_iterations_zero_no_nameerror():
+    """R8(c): max_iterations=0 must not raise a NameError at the run_complete
+    emit (the turn variable is pre-initialized)."""
+    ct, _alpha = _caesar_cipher("THE DOG")
+    art = run_v3(ct, session=ScriptedSession([[TextBlock(text="hi")]]),
+                 language="en", max_iterations=0, cipher_id="v3_zero")
+    # It finishes cleanly (exhausted → fallback), no exception.
+    assert art.status in {"exhausted", "fallback_declared"}
+
+
+def test_run_v3_resume_uses_state_language_not_param():
+    """R8(a): resuming a `de` state must load German resources, not English
+    (the language param is ignored in favor of state.language on resume)."""
+    from investigation.state import InvestigationState
+    from models.alphabet import Alphabet
+    from models.cipher_text import CipherText
+    from workspace import Workspace
+
+    raw = "ABCDEF"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    resume = InvestigationState(workspace=Workspace(ct), language="de")
+    resume.turn = 1
+
+    seen_langs = []
+
+    class LangSession(ScriptedSession):
+        pass
+
+    art = run_v3(ct, session=ScriptedSession([[TextBlock(text="done")]]),
+                 language="en",  # caller passes the WRONG language
+                 max_iterations=3, cipher_id="v3_lang", resume_state=resume)
+    # The run adopts the state's language, not the param.
+    assert art.language == "de"
+    assert art.investigation_state["language"] == "de"
+
+
 def test_run_v3_interrupt_pairs_all_tool_results(monkeypatch):
     """R5: a mid-batch interrupt pairs every tool_use with a stopped result."""
     from agent import tools_v2

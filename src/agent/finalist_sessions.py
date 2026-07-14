@@ -67,3 +67,34 @@ class FinalistSessionStore:
     def last_sessions(self, kind: str) -> Iterable[tuple[str, dict[str, Any]]]:
         """(session_id, payload) pairs for ``kind`` in reverse-insertion order."""
         return list(reversed(list(self._sessions.get(kind, {}).items())))
+
+    # --- serialization (v3 resume; F7) --------------------------------------
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the store to a JSON-safe dict.
+
+        Payloads are JSON-safe by construction (they render into tool results).
+        The per-kind counters are persisted so session ids do NOT restart after
+        resume. ``find_id`` stays identity-based, so a restored payload will not
+        be found by identity across a resume boundary (documented in F7).
+        """
+        return {
+            "sessions": {
+                kind: {sid: payload for sid, payload in sessions.items()}
+                for kind, sessions in self._sessions.items()
+            },
+            "counters": dict(self._counters),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "FinalistSessionStore":
+        store = cls()
+        if not data:
+            return store
+        sessions = data.get("sessions") or {}
+        for kind, kind_sessions in sessions.items():
+            store._sessions[str(kind)] = {
+                str(sid): dict(payload) for sid, payload in (kind_sessions or {}).items()
+            }
+        counters = data.get("counters") or {}
+        store._counters = {str(kind): int(count) for kind, count in counters.items()}
+        return store

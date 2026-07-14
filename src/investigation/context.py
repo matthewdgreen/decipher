@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agent.loop_v2 import _best_branch_for_auto_declare
+from agent.loop_shared import _best_branch_for_auto_declare
 from agent.prompts_v2 import LANGUAGE_NOTES
 from analysis import cipher_id as cipher_id_analysis
 from analysis import ic
@@ -31,6 +31,7 @@ _CIPHER_RENDER_CAP = 6000
 _FINGERPRINT_CAP = 2500
 _BRANCH_CARDS_CAP = 6000
 _BOARD_CAP = 2000
+_EPISODE_LEDGER_CAP = 2000
 _EVIDENCE_CAP = 2500
 _WINDOW_CAP = 4000
 _EXTERNAL_CAP = 4000
@@ -72,6 +73,19 @@ much larger than 26 is homophonic (several symbols per letter); its \
 constraint-satisfaction score is naturally below 1.0 and is not an error. \
 Judge a branch by whether its decode reads as language, not by any single \
 number.
+
+Delegating
+- If an existing branch already reads as solved (for example an installed \
+`automated_preflight`), verify it with a quick read and declare it directly — \
+do not spend budget on episodes first.
+- You can spin off a focused worker with `episode_run(kind, goal, branches, …)`. \
+Four kinds exist: `survey` (diagnose the cipher and suspected modes), `search` \
+(run one search tool and its review/install companions on a branch), `reading` \
+(draft a best reading of a branch), and `compare` (rank competing branches). An \
+episode runs in an isolated copy of the branches you name and returns a result \
+summary plus branch snapshots; nothing it does touches your workspace until you \
+call `episode_install_branch`. Integrate an episode's findings and snapshots \
+explicitly — they do not apply themselves.
 
 Finishing
 - When a branch reads as coherent {language_name}, call \
@@ -205,7 +219,7 @@ def _render_branch_cards(
 
 
 def _render_hypothesis_board(state: InvestigationState) -> str:
-    board = state.hypothesis_board()
+    board = state.hypothesis_cards()
     if not board:
         return "## Hypothesis board\n(no cipher-mode hypotheses recorded)"
     lines = []
@@ -220,6 +234,32 @@ def _render_hypothesis_board(state: InvestigationState) -> str:
             )
         )
     return _truncate("## Hypothesis board\n" + "\n".join(lines), _BOARD_CAP)
+
+
+def _render_episode_ledger(state: InvestigationState, n: int = 3) -> str:
+    """Render the last ``n`` completed episodes (C2 section between board and
+    recent evidence). Kind, goal, status, summary, and installed snapshot names.
+    """
+    ledger = state.episode_ledger[-n:]
+    if not ledger:
+        return ""
+    lines = []
+    for entry in ledger:
+        kind = entry.get("kind", "?")
+        status = entry.get("status", "?")
+        goal = str(entry.get("goal") or "").strip()
+        summary = str(entry.get("summary") or "").strip()
+        snaps = entry.get("branch_snapshots") or []
+        snap_names = ", ".join(
+            s.get("name", "?") for s in snaps if isinstance(s, dict)
+        )
+        head = f"- [{kind} {status}] {goal}".rstrip()
+        if summary:
+            head += f"\n    {summary}"
+        if snap_names:
+            head += f"\n    snapshots: {snap_names}"
+        lines.append(head)
+    return _truncate("## Recent episodes\n" + "\n".join(lines), _EPISODE_LEDGER_CAP)
 
 
 def _render_evidence(state: InvestigationState, n: int) -> str:
@@ -335,6 +375,19 @@ def _group_chars(groups: list[list[dict[str, Any]]]) -> int:
     return sum(len(json.dumps(m, default=str)) for g in groups for m in g)
 
 
+def _copy_message(message: dict[str, Any]) -> dict[str, Any]:
+    """Return a shallow copy of a native message dict with a copied content list.
+
+    Prevents the returned context from aliasing ``state.recent_exchanges`` so a
+    session that transforms the context in place cannot corrupt durable state
+    (R8b). Inner content blocks are shared (they are treated as immutable).
+    """
+    content = message.get("content")
+    if isinstance(content, list):
+        return {**message, "content": list(content)}
+    return dict(message)
+
+
 def build_lead_context(
     state: InvestigationState,
     executor: Any,
@@ -383,6 +436,11 @@ def build_lead_context(
         f"## Investigation state ({turn_marker})",
         _render_branch_cards(state, executor, branch_cards),
         _render_hypothesis_board(state),
+    ]
+    episode_section = _render_episode_ledger(state)
+    if episode_section:
+        view_sections.append(episode_section)
+    view_sections += [
         _render_evidence(state, evidence_entries),
         _render_window(state, executor, turn, window_tokens),
     ]
@@ -393,6 +451,10 @@ def build_lead_context(
     remaining = max(0, total_char_budget - len(prefix_text))
     view_text = _truncate(view_text, remaining)
     view_block = {"type": "text", "text": view_text}
+    # C2 stable-prefix breakpoint: mark the cacheable prefix text block. An
+    # AnthropicSession converts this ``cache_hint`` into a ``cache_control``
+    # breakpoint; every other send path strips it (no provider sees the field).
+    prefix_block = {"type": "text", "text": prefix_text, "cache_hint": True}
 
     # F1 budget rule (R2): the recent exchanges are rendered verbatim as
     # native dicts, so they carry their own weight. While the fully rendered
@@ -407,23 +469,23 @@ def build_lead_context(
     if not exchanges:
         # No prior exchanges: one user turn carrying prefix + view.
         return [
-            {"role": "user", "content": [
-                {"type": "text", "text": prefix_text}, view_block,
-            ]},
+            {"role": "user", "content": [prefix_block, view_block]},
         ]
 
     messages: list[dict[str, Any]] = [
-        {"role": "user", "content": [{"type": "text", "text": prefix_text}]},
+        {"role": "user", "content": [prefix_block]},
     ]
     # Section 6: exchanges verbatim, except the view is appended to the final
-    # user turn to keep roles alternating.
-    messages.extend(exchanges[:-1])
+    # user turn to keep roles alternating. R8(b): return COPIES of the state's
+    # exchange dicts — the caller/session must never alias (and thus mutate)
+    # ``state.recent_exchanges`` while transforming the context.
+    messages.extend(_copy_message(m) for m in exchanges[:-1])
     last = exchanges[-1]
     if last.get("role") == "user":
         last_content = last.get("content")
         base = list(last_content) if isinstance(last_content, list) else [last_content]
         messages.append({**last, "content": [*base, view_block]})
     else:
-        messages.append(last)
+        messages.append(_copy_message(last))
         messages.append({"role": "user", "content": [view_block]})
     return messages

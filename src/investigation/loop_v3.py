@@ -11,12 +11,13 @@ run; exhaustion / provider error fall back to the best available branch
 """
 from __future__ import annotations
 
+import copy
 import json
 import time
 import uuid
 from typing import Any
 
-from agent.loop_v2 import (
+from agent.loop_shared import (
     _best_branch_for_auto_declare,
     _branch_snapshot_for,
     _hypothesis_cards_for_artifact,
@@ -28,7 +29,14 @@ from agent.model_provider import (
     ensure_model_provider,
     _collect_assistant_blocks,
 )
-from agent.tools_v2 import TOOL_DEFINITIONS, NoGatesPolicy, WorkspaceToolExecutor
+from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+from investigation.board import CARD_MIRROR_KEYS
+from investigation.episodes import (
+    EPISODE_KINDS,
+    V3_LEAD_TOOL_DEFINITIONS,
+    EpisodeSpec,
+    run_episode,
+)
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
@@ -73,10 +81,26 @@ def run_v3(
     on_event: Any = None,
     token_budget: int = 20000,
     max_tokens: int = 8192,
+    episode_models: dict[str, str] | None = None,
 ) -> RunArtifact:
     """Run one v3 lead session against a cipher. Returns a full RunArtifact."""
 
     run_id = uuid.uuid4().hex[:12]
+
+    # F6: episode_models maps kind → model id, restricted to the same provider as
+    # the lead. Validate the kinds up front (same-provider is enforced by reusing
+    # the lead provider's client when cloning per model below).
+    if episode_models:
+        bad = sorted(set(episode_models) - set(EPISODE_KINDS))
+        if bad:
+            raise ValueError(f"episode_models has unknown kinds: {bad}")
+
+    # R8(a): on resume the serialized state owns the language. Preferring the
+    # `language` param would load English word/pattern resources for a resumed
+    # `de` run. Resolve the effective language BEFORE loading resources or
+    # building the system prompt.
+    if resume_state is not None:
+        language = resume_state.language
 
     # --- session / provider ---
     model_provider = None
@@ -114,16 +138,15 @@ def run_v3(
         pattern_dict=pattern_dict,
         benchmark_context=benchmark_context,
         declaration_policy=NoGatesPolicy(),
+        # F5/R8: the repair agenda, the hypothesis board (A10 single writer), and
+        # the finalist-session store (A1) all live in state; inject them at
+        # construction so the lead shares the state-owned objects (no attribute
+        # pokes) and they serialize on resume.
+        repair_agenda=state.repair_agenda,
+        hypothesis_board=state.hypothesis_board,
+        finalist_sessions=state.finalist_sessions,
     )
     executor.set_max_iterations(max_iterations)
-    # F5: the repair agenda lives in state; share the list object so agenda
-    # edits are reflected in state and serialize on resume.
-    executor.repair_agenda = state.repair_agenda
-    max_agenda_id = max(
-        (int(item.get("id") or 0) for item in state.repair_agenda),
-        default=0,
-    )
-    executor._next_repair_agenda_id = max_agenda_id + 1
 
     artifact = RunArtifact(
         run_id=run_id,
@@ -157,9 +180,15 @@ def run_v3(
             print(f"[{event}] {payload}")
 
     prior_budget = list(state.budget_ledger)
+    # Episode spend accumulates here across turns so it survives the per-turn
+    # ledger rebuild (run_episode also extends state.budget_ledger for direct
+    # callers; the rebuild below is the single source of truth for the lead run).
+    episode_budget: list[BudgetEntry] = []
 
     def sync_budget() -> None:
-        state.budget_ledger = prior_budget + list(session.usage_entries())
+        state.budget_ledger = (
+            prior_budget + episode_budget + list(session.usage_entries())
+        )
         artifact.total_input_tokens = sum(e.input_tokens for e in state.budget_ledger)
         artifact.total_output_tokens = sum(e.output_tokens for e in state.budget_ledger)
         artifact.total_cache_read_tokens = sum(
@@ -203,7 +232,129 @@ def run_v3(
             state.external_context = "\n\n".join(context_parts)
 
     start = time.time()
-    tools = TOOL_DEFINITIONS
+    tools = V3_LEAD_TOOL_DEFINITIONS
+
+    # Full episode ToolCalls accumulate here and merge into artifact.tool_calls
+    # at finalize (F10). The compact ledger summary lives in state.episode_ledger.
+    episode_tool_calls: list[Any] = []
+
+    def _provider_for_model(model_id: str | None) -> Any:
+        """Return a provider for an episode model id (same client, swapped model)."""
+        if model_provider is None or not model_id:
+            return model_provider
+        if getattr(model_provider, "model", None) == model_id:
+            return model_provider
+        clone = copy.copy(model_provider)
+        clone.model = model_id
+        return clone
+
+    def _dispatch_episode_run(tu: dict[str, Any], turn: int) -> str:
+        args = tu.get("input") or {}
+        kind = str(args.get("kind") or "")
+        try:
+            spec = EpisodeSpec(
+                kind=kind,
+                goal=str(args.get("goal") or ""),
+                inputs={
+                    "branches": list(args.get("branches") or []),
+                    "search_tool": args.get("search_tool"),
+                    "context_note": args.get("context_note"),
+                    "max_tool_calls": args.get("max_tool_calls"),
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 - bad spec → structured error
+            return json.dumps({"error": f"invalid episode_run: {exc}"})
+        ep_provider = _provider_for_model((episode_models or {}).get(kind))
+        result = run_episode(
+            spec, state, provider=ep_provider, language=language,
+            word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
+            launching_turn=turn,
+        )
+        episode_tool_calls.extend(result.tool_calls)
+        episode_budget.extend(
+            BudgetEntry.from_dict(b) for b in result.budget_entries
+        )
+        emit("episode_complete", {
+            "episode_id": result.episode_id, "kind": result.kind,
+            "status": result.status, "calls": result.tool_call_count,
+        }, outer_iteration=turn)
+        return json.dumps({
+            "episode_id": result.episode_id,
+            "kind": result.kind,
+            "status": result.status,
+            "failure_reason": result.failure_reason,
+            "result": result.result,
+            "summary": result.summary,
+            "snapshots": [s.get("name") for s in result.branch_snapshots],
+            "spend_usd": round(sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6),
+        }, ensure_ascii=False)
+
+    def _dispatch_episode_install(tu: dict[str, Any], turn: int) -> str:
+        args = tu.get("input") or {}
+        ep_id = str(args.get("episode_id") or "")
+        branch = str(args.get("branch") or "")
+        as_name = args.get("as_name")
+        entry = next(
+            (e for e in reversed(state.episode_ledger) if e.get("episode_id") == ep_id),
+            None,
+        )
+        if entry is None:
+            return json.dumps({"error": f"unknown episode_id: {ep_id}"})
+        snap = next(
+            (s for s in (entry.get("branch_snapshots") or []) if s.get("name") == branch),
+            None,
+        )
+        if snap is None:
+            return json.dumps({"error": f"episode {ep_id} has no branch {branch!r}"})
+        # Deep-copy the ledger snapshot before restore: restore_branch shallow-
+        # copies metadata/pipeline, so without this the installed live branch
+        # would alias nested dicts inside state.episode_ledger (the mirror-image
+        # of the F5 episode-side aliasing).
+        snap = copy.deepcopy(snap)
+        # F4 (spec-author amendment): strip the board-mirrored card keys from the
+        # restored metadata, then route their VALUES through board.update so the
+        # board re-mirrors them into metadata — single-writer preserved AND the
+        # episode branch's mode/status/evidence survive the install.
+        raw_metadata = snap.get("metadata") or {}
+        card_fields = {
+            k: v for k, v in raw_metadata.items() if k in CARD_MIRROR_KEYS
+        }
+        metadata = {
+            k: v for k, v in raw_metadata.items() if k not in CARD_MIRROR_KEYS
+        }
+        target = str(as_name) if as_name else f"{entry.get('kind')}_{ep_id[:6]}_{branch}"
+        name = target
+        suffix = 2
+        while workspace.has_branch(name):
+            name = f"{target}_{suffix}"
+            suffix += 1
+        install_snap = dict(snap)
+        install_snap["name"] = name
+        install_snap["metadata"] = metadata
+        install_snap["created_iteration"] = turn
+        from investigation.state import _restore_branch_into
+        _restore_branch_into(workspace, install_snap)
+        if card_fields:
+            state.hypothesis_board.update(workspace, name, **card_fields)
+        # Episode-local repair-agenda additions ride in the packet (A10): merge.
+        for item in entry.get("agenda_additions") or []:
+            merged = dict(item)
+            merged["branch"] = name
+            state.repair_agenda.append(merged)
+        return json.dumps({
+            "status": "ok",
+            "installed": name,
+            "from_episode": ep_id,
+            "from_branch": branch,
+        }, ensure_ascii=False)
+
+    def _dispatch_tool(tu: dict[str, Any], turn: int) -> str:
+        name = tu["name"]
+        if name == "episode_run":
+            return _dispatch_episode_run(tu, turn)
+        if name == "episode_install_branch":
+            return _dispatch_episode_install(tu, turn)
+        return executor.execute(name, tu["input"], tool_use_id=tu["id"])
 
     # R1: a resume continues from where the serialized state left off; a
     # fresh run starts at turn 1. ``turn`` is pre-initialized so the
@@ -215,6 +366,9 @@ def run_v3(
         state.turn = turn
         workspace.set_iteration(turn)
         executor.set_iteration(turn)
+        # F4: adopt hypothesis branches that gained metadata via an install last
+        # turn (or a resumed workspace) into the board once per turn.
+        state.hypothesis_board.sync_from_workspace(workspace)
         emit("iteration_start", {"iteration": turn}, outer_iteration=turn)
 
         messages = build_lead_context(
@@ -269,9 +423,7 @@ def run_v3(
                 outer_iteration=turn,
             )
             try:
-                result = executor.execute(
-                    tu["name"], tu["input"], tool_use_id=tu["id"]
-                )
+                result = _dispatch_tool(tu, turn)
             except KeyboardInterrupt:
                 artifact.status = "stopped"
                 artifact.error_message = (
@@ -381,7 +533,11 @@ def run_v3(
 
     # --- finalize ---
     artifact.finished_at = time.time()
-    artifact.tool_calls = list(executor.call_log)
+    # F10: full episode tool calls are merged into the artifact (with episode_id
+    # set and iteration = the launching lead turn); the compact ledger summary
+    # rides in artifact.episodes / state.
+    artifact.tool_calls = list(executor.call_log) + list(episode_tool_calls)
+    artifact.episodes = [dict(entry) for entry in state.episode_ledger]
     artifact.tool_requests = list(executor.tool_requests)
     artifact.repair_agenda = [dict(item) for item in state.repair_agenda]
     artifact.cipher_hypotheses = _hypothesis_cards_for_artifact(workspace)
