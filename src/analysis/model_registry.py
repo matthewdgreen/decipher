@@ -13,8 +13,10 @@ Resolution precedence (``resolve_language_model``):
       pin; returns the path if it exists, else ``None``).
   (b) explicit ``variant`` argument -- exact-slug registry match; a
       :class:`ModelVariantError` (listing available slugs) is raised if absent.
-  (c) default -- ``models/ngram5_<lang>.bin`` exactly as before, including the
-      English-only proprietary Zenith fallbacks.
+  (c) default -- an optional per-language default variant from
+      ``_DEFAULT_VARIANTS`` (resolved via the same registry scan as (b); a miss
+      falls through, never raises), then ``models/ngram5_<lang>.bin`` exactly as
+      before, including the English-only proprietary Zenith fallbacks.
 
 The registry never crashes on a missing or malformed sidecar: such a model is
 still listed with ``variant=None`` and a filename-derived label.
@@ -57,6 +59,19 @@ class ModelVariantError(ValueError):
             f"Unknown model variant {requested!r} for language {language!r}. "
             f"Available variants: {avail}."
         )
+
+
+# Per-language default variant. When there is no env override and no explicit
+# ``variant=`` argument, these languages resolve to a *named variant* (via the
+# same registry scan used for an explicit variant) instead of the bare
+# ``ngram5_<lang>.bin`` filename. A miss (the variant's model is absent) falls
+# through to the filename fallback so a default resolution never raises. Any
+# language absent from this table keeps today's byte-identical behavior.
+#
+# ``de`` -> ``historical_1600_1899`` (the DTA Kernkorpus model,
+# ``ngram5_de_dta.bin``): it beats the old Gutenberg ``literary_19c`` model on
+# every measured German workload (see docs/specs/dta_default_switch_spec.md).
+_DEFAULT_VARIANTS: dict[str, str] = {"de": "historical_1600_1899"}
 
 
 def _repo_root() -> Path:
@@ -179,7 +194,18 @@ def resolve_language_model(
         )
         raise ModelVariantError(lang_key, variant, available)
 
-    # (c) default -- models/ngram5_<lang>.bin, else the English-only fallbacks.
+    # (c) default -- an optional per-language default variant, then
+    # models/ngram5_<lang>.bin, else the English-only fallbacks. The default
+    # variant is resolved via the same scan as branch (b); a miss (the model is
+    # absent) falls through to the filename fallback below -- a default never
+    # raises.
+    default_variant = _DEFAULT_VARIANTS.get(lang_key)
+    if default_variant is not None:
+        for info in _scan(models_root):
+            if (info.language or "").lower() == lang_key and info.variant == default_variant:
+                return info.path
+        # miss -> fall through to the filename fallback (never raise for a default).
+
     candidate = models_root / f"ngram5_{lang_key}.bin"
     if candidate.exists():
         return candidate
@@ -207,7 +233,12 @@ def active_selection(
     """Describe which model is active for ``language`` and *why*.
 
     Returns a model-visible summary (label + variant + source) with NO paths or
-    shas. ``source`` is one of ``env`` / ``variant`` / ``default``.
+    shas. ``source`` is one of ``env`` / ``variant`` / ``default_variant`` /
+    ``default``. ``default_variant`` means the default resolved to a named
+    per-language variant (``_DEFAULT_VARIANTS``) rather than the bare
+    ``ngram5_<lang>.bin`` filename -- this keeps the report honest about *why*
+    the active model is a non-obvious file that the caller never explicitly
+    selected.
     """
     lang_key = (language or "en").strip().lower()
     if os.environ.get(f"DECIPHER_NGRAM_MODEL_{lang_key.upper()}"):
@@ -221,6 +252,18 @@ def active_selection(
             "variant": variant,
             "label": match.display_label if match else None,
         }
+
+    # Mirror resolve_language_model branch (c): a per-language default variant
+    # wins over the bare filename when its model is present; a miss falls through.
+    default_variant = _DEFAULT_VARIANTS.get(lang_key)
+    if default_variant is not None:
+        match = next((m for m in infos if m.variant == default_variant), None)
+        if match is not None:
+            return {
+                "source": "default_variant",
+                "variant": default_variant,
+                "label": match.display_label,
+            }
 
     default_name = f"ngram5_{lang_key}.bin"
     match = next((m for m in infos if m.path.name == default_name), None)
@@ -247,15 +290,20 @@ def format_registry_preflight_line(
         return None
     active = active_selection(language, variant, models_dir)
     active_variant = active.get("variant")
+    active_source = active.get("source")
     parts = []
     for m in labelled:
         marker = " (active)" if m.variant == active_variant else ""
         parts.append(f"{m.variant}{marker}")
-    active_desc = (
-        f"{active_variant} — {active.get('label')}"
-        if active_variant
-        else f"{active.get('label')} [{active.get('source')}]"
-    )
+    if active_variant:
+        active_desc = f"{active_variant} — {active.get('label')}"
+        if active_source == "default_variant":
+            # Make the WHY honest: this variant is the language default, not a
+            # caller/agent selection, so an agent isn't confused that "default"
+            # points at a non-obvious file.
+            active_desc += " [language default]"
+    else:
+        active_desc = f"{active.get('label')} [{active_source}]"
     return (
         f"Language models for {language}: {', '.join(parts)}. "
         f"Active: {active_desc}. "

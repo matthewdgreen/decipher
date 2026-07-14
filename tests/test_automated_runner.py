@@ -3771,6 +3771,16 @@ def test_run_homophonic_pool_rerank_can_override_best_anneal_seed(monkeypatch):
 
 
 def test_null_mask_bakeoff_promotes_top_validation_finalist(monkeypatch):
+    # This is a bakeoff-mechanics test (beam/neighborhood/consensus/confirm
+    # stages), not a language-model quality test. Pin the German model to the
+    # literary_19c model it was calibrated against so its consensus-polish
+    # expectations stay stable regardless of the platform default variant
+    # (the DTA historical model is now the de default and scores symbols
+    # differently, which changed fixed_symbol_count).
+    monkeypatch.setenv(
+        "DECIPHER_NGRAM_MODEL_DE",
+        str(Path(__file__).resolve().parents[1] / "models" / "ngram5_de.bin"),
+    )
     symbols = ["S001", "S002", "S003", "S004"] * 24
     cipher_text = parse_canonical_transcription(" ".join(symbols))
     base_key = {0: 4, 1: 4, 2: 4, 3: 13}

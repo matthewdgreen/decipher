@@ -106,10 +106,32 @@ def test_scan_missing_dir_returns_empty(tmp_path):
 # Resolution precedence: env > variant > default
 # ---------------------------------------------------------------------------
 
-def test_resolve_default_returns_base_model(tmp_path):
+def test_resolve_default_uses_language_default_variant(tmp_path):
+    """FLIP: `de` has a default variant (historical_1600_1899 -> DTA); the
+    default resolution now returns that model, not the bare ngram5_de.bin."""
+    _write_model(tmp_path, "ngram5_de", _sidecar("de", "literary_19c", "German"))
+    dta = _write_model(tmp_path, "ngram5_de_dta", _sidecar("de", "historical_1600_1899", "DTA"))
+    assert mr.resolve_language_model("de", models_dir=tmp_path) == dta
+
+
+def test_resolve_default_returns_base_model_for_untabled_language(tmp_path):
+    """A language absent from _DEFAULT_VARIANTS keeps the bare-filename default,
+    even when a historical_1600_1899 variant happens to exist for it."""
+    base = _write_model(tmp_path, "ngram5_fr", _sidecar("fr", "literary_19c", "French"))
+    _write_model(tmp_path, "ngram5_fr_dta", _sidecar("fr", "historical_1600_1899", "French DTA"))
+    assert mr.resolve_language_model("fr", models_dir=tmp_path) == base
+
+
+def test_default_variant_missing_falls_through_to_base(tmp_path):
+    """If the `de` default variant's model is absent, default resolution falls
+    through to ngram5_de.bin without raising (a default never raises); and
+    active_selection reports plain `default`, not `default_variant`."""
     base = _write_model(tmp_path, "ngram5_de", _sidecar("de", "literary_19c", "German"))
-    _write_model(tmp_path, "ngram5_de_dta", _sidecar("de", "historical_1600_1899", "DTA"))
+    # No ngram5_de_dta.bin present in this models dir.
     assert mr.resolve_language_model("de", models_dir=tmp_path) == base
+    active = mr.active_selection("de", models_dir=tmp_path)
+    assert active["source"] == "default"
+    assert active["variant"] == "literary_19c"
 
 
 def test_resolve_variant_selects_matching_slug(tmp_path):
@@ -139,18 +161,25 @@ def test_env_override_wins_over_variant_and_default(tmp_path, monkeypatch):
 
 
 def test_precedence_demonstration_env_variant_default(tmp_path, monkeypatch):
-    """The spec's headline: env > variant > default on `de`."""
+    """The spec's headline: env > variant > default on `de`, after the DTA flip.
+
+    The load-bearing property: env override and explicit-variant selection both
+    still win, even though the *default* now points at the DTA model.
+    """
     base = _write_model(tmp_path, "ngram5_de", _sidecar("de", "literary_19c", "German"))
     dta = _write_model(tmp_path, "ngram5_de_dta", _sidecar("de", "historical_1600_1899", "DTA"))
-    # default
-    assert mr.resolve_language_model("de", models_dir=tmp_path) == base
-    # variant beats default
+    # default now resolves to the DTA model (the `de` default variant).
+    assert mr.resolve_language_model("de", models_dir=tmp_path) == dta
+    # An explicit variant still wins over the default: literary_19c selects the
+    # OLD Gutenberg model back; historical_1600_1899 matches the new default path.
+    assert mr.resolve_language_model("de", "literary_19c", models_dir=tmp_path) == base
     assert mr.resolve_language_model("de", "historical_1600_1899", models_dir=tmp_path) == dta
-    # env beats variant
+    # env beats variant AND default.
     env_model = tmp_path / "env.bin"
     env_model.write_bytes(b"x")
     monkeypatch.setenv("DECIPHER_NGRAM_MODEL_DE", str(env_model))
-    assert mr.resolve_language_model("de", "historical_1600_1899", models_dir=tmp_path) == env_model
+    assert mr.resolve_language_model("de", "literary_19c", models_dir=tmp_path) == env_model
+    assert mr.resolve_language_model("de", models_dir=tmp_path) == env_model
 
 
 def test_non_english_missing_default_returns_none(tmp_path):
@@ -161,12 +190,24 @@ def test_non_english_missing_default_returns_none(tmp_path):
 # Back-compat pin: default resolution byte-identical against the real models.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("lang", ["en", "de", "la", "fr", "it"])
+@pytest.mark.parametrize("lang", ["en", "la", "fr", "it"])
 def test_default_resolution_pins_base_model(lang, monkeypatch):
+    """Every language WITHOUT a _DEFAULT_VARIANTS entry still resolves the bare
+    ngram5_<lang>.bin (byte-identical to before the DTA flip). `de` is covered
+    separately by test_default_resolution_pins_de_to_dta."""
     monkeypatch.delenv(f"DECIPHER_NGRAM_MODEL_{lang.upper()}", raising=False)
     resolved = mr.resolve_language_model(lang, models_dir=REAL_MODELS_DIR)
     assert resolved is not None
     assert resolved.name == f"ngram5_{lang}.bin"
+
+
+def test_default_resolution_pins_de_to_dta(monkeypatch):
+    """FLIP (replaces the prior `de default = ngram5_de.bin` pin): with no env
+    and no explicit variant, `de` now resolves to the DTA historical model."""
+    monkeypatch.delenv("DECIPHER_NGRAM_MODEL_DE", raising=False)
+    resolved = mr.resolve_language_model("de", models_dir=REAL_MODELS_DIR)
+    assert resolved is not None
+    assert resolved.name == "ngram5_de_dta.bin"
 
 
 def test_runner_delegates_default_byte_identical(monkeypatch):
@@ -353,8 +394,11 @@ def test_observe_language_models_lists_and_reports_active():
     out = ex._tool_observe_language_models({})
     variants = {m["variant"] for m in out["models"]}
     assert "historical_1600_1899" in variants and "literary_19c" in variants
-    assert out["active"]["source"] == "default"
-    assert out["active"]["variant"] == "literary_19c"
+    # After the DTA flip the `de` default resolves to the historical variant;
+    # the source is reported as `default_variant` so an agent understands WHY a
+    # variant is active without having selected one.
+    assert out["active"]["source"] == "default_variant"
+    assert out["active"]["variant"] == "historical_1600_1899"
 
 
 def test_act_set_model_variant_updates_selection_and_search_uses_it(monkeypatch):
@@ -527,7 +571,10 @@ def test_format_registry_preflight_line_content(monkeypatch):
     assert line is not None
     for slug in ("literary_19c", "literary_19c_small", "historical_1600_1899"):
         assert slug in line
-    assert "literary_19c (active)" in line
+    # After the DTA flip the default-active variant is the DTA historical model,
+    # and the line is honest that this is the language default (not a selection).
+    assert "historical_1600_1899 (active)" in line
+    assert "[language default]" in line
     assert "act_set_model_variant" in line and "observe_language_models" in line
     # A language with no discoverable models yields None (line omitted).
     assert mr.format_registry_preflight_line("zz") is None

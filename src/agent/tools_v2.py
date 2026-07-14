@@ -9977,7 +9977,10 @@ class WorkspaceToolExecutor:
             "active": active,
             "note": (
                 "Switch with act_set_model_variant(variant). Selection persists "
-                "for the run. Default (no selection) keeps today's model."
+                "for the run. With no selection the active model is the language "
+                "default; when active.source is 'default_variant' that default is "
+                "the named variant shown (e.g. German defaults to the DTA "
+                "historical model), not the bare ngram5_<lang> file."
             ),
         }
 

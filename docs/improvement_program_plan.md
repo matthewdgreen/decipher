@@ -514,3 +514,46 @@ misuse failures; net tool count drops by ~6.
    multipage route; V3-M3 through M5.
 6. Phase 4.1/4.2 runner-side reader (feeds V3-M5's verify episodes).
 7. V3-M6 bake-off, default switch, coercion-machinery deletion.
+   **GATED (2026-07-14): M6's live bake-off runs only on an explicit
+   "go" from Matthew** — network stability + plan review first. Spec
+   drafting/review for M6 may proceed; no live matrix runs.
+7b. **DTA default switch — APPROVED by Matthew (2026-07-14).** Lands as
+   a small slice immediately after the variant-registry slice: de's
+   default resolution becomes the `historical_1600_1899` variant
+   (ngram5_de_dta.bin), expressed through the registry; pin tests
+   updated (de default = DTA, all other languages unchanged); local
+   re-baseline of the Copiale packet recorded as the new reference.
+8. **CLI observability revamp (user-requested 2026-07-14):** the agentic
+   live display is hard to parse; target the Claude Code display
+   pattern: turn-by-turn narration surfacing the agent's stated
+   reasoning/decisions (not just state panels), tool calls rendered
+   one-per-line with compact args + status + elapsed, EPISODES rendered
+   as clearly nested sub-agent blocks (kind, goal, model tier, live
+   status, one-line result summary on completion), experiment-queue
+   status lines, a running cost/token ticker, and clear
+   declaration/fallback rendering. Applies to both loops but designed
+   around v3's turn/episode/experiment structure. Display-only — the
+   artifact stays the source of truth; the existing pretty/raw/verbose
+   modes gain a narrated default. ALWAYS print the artifact path at run
+   end in every mode (agentic v2/v3 pretty display currently omits it —
+   user-hit paper cut), plus a ready-to-paste
+   `scripts/inspect_artifact.py <path>` hint line and a compact end-of-
+   run summary (status, accuracy when scorable, turns, tokens, cost) so
+   casual debugging rarely needs the artifact at all. Sequenced after M5
+   (so episode + experiment + verification surfaces are final), before
+   the docs slice (which will screenshot it). Reviewed like any slice.
+9. **Docs & onboarding refresh (final slice, user-requested 2026-07-14):**
+   bring a new user from clone to a successful run with current reality.
+   README: fresh-checkout setup (venv, `pip install -e .`,
+   `scripts/setup_dev.sh` incl. the Rust build, API keys —
+   `.decipher_keys/` + keychain conventions, OpenAI as the billed
+   account), a worked quick-start (the benchmark `--split`/`--test-id`
+   + `--agentic --agent-loop v3` command shape — note `--split` is
+   required for synthetic ids, a discovered paper cut), model setup
+   (gpt-5.5 default, variant registry / `--model-variant`, DTA model),
+   the multipage group route, and `--homophonic-refinement` values incl.
+   `word_repair`. CLAUDE.md full refresh (the Phase 0.8 deferral):
+   current tool count, v3 architecture summary, retire stale
+   "Remaining Challenges". TOOLS.md count audit. Improve the
+   "No matching tests found" error to name the split searched (the UX
+   paper cut from live testing). Reviewed like any slice.
