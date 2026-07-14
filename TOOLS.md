@@ -1,6 +1,6 @@
 # Agent Tool Reference
 
-Complete reference for the 94 tools exposed to the v2 agentic loop
+Complete reference for the 95 tools exposed to the v2 agentic loop
 (`src/agent/tools_v2.py`). Tools are organized by namespace. Each entry gives
 the tool name, what it does, its key parameters, and usage notes.
 
@@ -223,6 +223,25 @@ cipher-mode suspicion scores.
 
 *Use before committing to a solver family. Re-run after applying a transform to
 see whether the underlying cipher type has changed.*
+
+---
+
+### `observe_diagnosis`
+Ranked cipher-**family** diagnosis (investigator INV-0). Runs the nine diagnostic
+panels over a branch's current token order and returns a `confident`/`uncertain`
+verdict, per-family evidence weights with mandatory counterevidence, a subtype
+breakdown, battery coverage, and a recommended next discriminator. Higher-level
+than `observe_cipher_id`: it scores whole families (mono/homophonic/periodic/
+transposition/numeric-book/hoax/…), names what would separate the top two, and
+weakens substitution families when the stream is numeric.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | defaults to `main` |
+| `max_period` | integer | maximum key period to probe (default 26) |
+
+*Use to decide WHICH family to pursue before committing to a solver. An
+`uncertain` verdict recommends a discriminator to run next.*
 
 ---
 

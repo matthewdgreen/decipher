@@ -315,6 +315,24 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "observe_diagnosis",
+        "description": (
+            "Ranked cipher-FAMILY diagnosis (investigator INV-0). Runs the nine "
+            "diagnostic panels over a branch's current token order and returns a "
+            "confident/uncertain verdict, per-family evidence weights with "
+            "counterevidence, subtype breakdown, battery coverage, and a "
+            "recommended next discriminator. Use this to decide WHICH family to "
+            "pursue before committing to a solver."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "branch": {"type": "string", "default": "main"},
+                "max_period": {"type": "integer", "default": 26},
+            },
+        },
+    },
+    {
         "name": "observe_cipher_shape",
         "description": (
             "Compact structural view of a branch before choosing a cipher "
@@ -6302,6 +6320,47 @@ class WorkspaceToolExecutor:
                 "These scores are evidence weights, not probabilities. Use "
                 "them to create mode-specific hypothesis branches and choose "
                 "diagnostic/search tools."
+            ),
+        }
+
+    def _tool_observe_diagnosis(self, args: dict) -> Any:
+        from investigation.diagnosis import diagnose, format_diagnosis
+
+        branch_name, branch_note = self._resolve_observation_branch(args.get("branch"))
+        tokens = list(self.workspace.effective_tokens(branch_name))
+        alpha = self._alpha()
+        max_period = int(args.get("max_period", 26))
+        symbols = [str(alpha.symbol_for(t)) for t in tokens]
+        uniq = set(symbols)
+        wgc = len(self.workspace.effective_word_spans(branch_name))
+        if uniq and all(s.isdigit() for s in uniq):
+            values = [int(s) for s in symbols]
+            order = {v: i for i, v in enumerate(sorted(set(values)))}
+            dense = [order[v] for v in values]
+            report = diagnose(
+                dense, alphabet_size=max(len(set(dense)), 26), alphabet_class="numeric",
+                language=self.language, numeric_values=values, max_period=max_period,
+            )
+        elif uniq and all(len(s) == 1 and "A" <= s.upper() <= "Z" for s in uniq):
+            rendering = "".join(s.upper() for s in symbols)
+            toks = [ord(c) - 65 for c in rendering]
+            report = diagnose(
+                toks, alphabet_size=26, alphabet_class="letters", language=self.language,
+                letter_rendering=rendering, word_group_count=wgc, max_period=max_period,
+            )
+        else:
+            report = diagnose(
+                tokens, alphabet_size=alpha.size, alphabet_class="symbols",
+                language=self.language, word_group_count=wgc, max_period=max_period,
+            )
+        return {
+            "branch": branch_name,
+            **branch_note,
+            "report": report.to_dict(),
+            "formatted": format_diagnosis(report),
+            "note": (
+                "Family diagnosis is an evidence-weighted ranking, not a solved "
+                "cipher. An 'uncertain' verdict recommends a discriminator to run next."
             ),
         }
 

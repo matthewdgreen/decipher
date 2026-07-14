@@ -167,3 +167,55 @@ def test_transform_finalist_evaluation_runs_confirmation_and_selection_callbacks
     assert calls == [["b", "a"]]
     assert report["confirmation"]["stage"] == "fake_confirmation"
     assert report["selection"]["selected_candidate_id"] == "b"
+
+
+# ---------------------------------------------------------------------------
+# INV-0 Part 7 — additive island_report wiring (pin test written FIRST)
+# ---------------------------------------------------------------------------
+
+# The pre-existing validation-block key set (pinned; many consumers depend on it).
+_PINNED_VALIDATION_KEYS = {
+    "letter_count", "quadgram_loglik_per_gram", "bigram_loglik_per_gram",
+    "segmentation", "strict_word_hit_score", "strict_word_hits",
+    "strict_word_hit_char_coverage", "integrity", "edge", "validation_score",
+    "validation_label", "recommendation", "scoring_note",
+}
+
+
+def test_validation_block_shape_is_byte_identical_minus_new_key():
+    coherent = validate_plaintext_finalist("THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG", language="en")
+    islands = validate_plaintext_finalist("XQZJKVBWPMTHEFOXQZJKV", language="en")
+
+    # only new top-level key is island_report; every pre-existing key remains.
+    assert set(coherent) - {"island_report"} == _PINNED_VALIDATION_KEYS
+    assert set(islands) - {"island_report"} == _PINNED_VALIDATION_KEYS
+
+    # the score/label/recommendation formulas are unchanged (byte-identical).
+    assert coherent["validation_score"] == 1.98748
+    assert coherent["validation_label"] == "plausible_candidate"
+    assert coherent["recommendation"] == "inspect_contextually"
+    assert islands["validation_score"] == -0.43377
+    assert islands["validation_label"] == "weak_word_islands"
+    assert islands["recommendation"] == "review_more_finalists_or_broaden_search"
+
+
+def test_island_report_key_present_with_verdict():
+    result = validate_plaintext_finalist("THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG", language="en")
+    assert "island_report" in result
+    assert result["island_report"]["verdict"] in {"coherent", "word_islands", "gibberish"}
+
+
+def test_island_report_reuses_precomputed_segmentation():
+    from analysis.coherence import island_report
+    from analysis.finalist_validation import _load_word_list, _load_word_set
+    from analysis.segment import segment_text
+
+    text = "THEQUICKBROWNFOXJUMPSOVERTHELAZYDOG"
+    word_set = _load_word_set("en")
+    freq_rank = {w.upper(): i for i, w in enumerate(_load_word_list("en"))}
+    segmented = segment_text(text, word_set, freq_rank=freq_rank)
+
+    result = validate_plaintext_finalist(text, language="en")
+    direct = island_report(text, language="en", word_set=word_set,
+                           freq_rank=freq_rank, segmented=segmented)
+    assert result["island_report"] == direct

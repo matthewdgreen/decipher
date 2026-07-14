@@ -741,3 +741,35 @@ def test_experiment_surfaces_never_leak_ground_truth():
         json.dumps(state.finalist_sessions.to_dict(), default=str),
     ]
     assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
+
+
+def test_diagnose_report_does_not_leak_ground_truth():
+    """INV-0: format_diagnosis + to_dict for a solved cipher never surface plaintext."""
+    from investigation.diagnosis import diagnose, format_diagnosis
+
+    rendering = CIPHERTEXT  # the ciphertext letters (never the plaintext)
+    tokens = [ord(c) - 65 for c in rendering]
+    report = diagnose(tokens, alphabet_size=26, alphabet_class="letters",
+                      language="en", letter_rendering=rendering)
+    haystacks = [format_diagnosis(report), json.dumps(report.to_dict(), default=str)]
+    assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
+
+
+def test_observe_diagnosis_dispatch_no_leak():
+    """INV-0: the observe_diagnosis tool dispatches and never surfaces plaintext."""
+    from agent.tools_v2 import WorkspaceToolExecutor
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    ex = WorkspaceToolExecutor(
+        workspace=Workspace(ct), language="en",
+        word_set={"THE"}, word_list=["THE"], pattern_dict={},
+    )
+    ex.set_iteration(1)
+    handler_result = ex._tool_observe_diagnosis({"branch": "main"})
+    assert "report" in handler_result and "formatted" in handler_result
+    assert handler_result["report"]["verdict"] in {"confident", "uncertain"}
+    dispatched = ex.execute("observe_diagnosis", {"branch": "main"})  # serialized envelope
+    haystacks = [json.dumps(handler_result, default=str), str(dispatched)]
+    assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)

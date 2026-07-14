@@ -110,10 +110,10 @@ def test_composite_names_disjoint_from_v2_and_tool_count_pinned():
         "hypothesis_apply_reading", "hypothesis_test_word", "branch_adjudicate"
     }
     assert COMPOSITE_TOOL_NAMES.isdisjoint(VALID_TOOL_NAMES)
-    # v2 tool surface is unchanged (composites live only on v3 surfaces).
-    # Pinned to the post-variant-registry count (main added the model-variant
-    # tools); composites still add zero to TOOL_DEFINITIONS.
-    assert len(TOOL_DEFINITIONS) == 94
+    # v2 tool surface is unchanged by composites (composites live only on v3
+    # surfaces). Pinned count updated for INV-0's additive observe_diagnosis tool
+    # (94 -> 95); composites still add zero to TOOL_DEFINITIONS.
+    assert len(TOOL_DEFINITIONS) == 95
 
 
 def test_v2_executor_never_sees_composites():

@@ -1310,6 +1310,108 @@ def cmd_testgen(args: argparse.Namespace) -> None:
         _maybe_write_artifact_analysis(result.artifact_path, args)
 
 
+def _diagnose_inputs_from_text(text: str):
+    """Return (tokens, alphabet_size, alphabet_class, letter_rendering,
+    numeric_values, word_group_count) for a raw ciphertext string."""
+    from analysis.numeric_code import is_numeric_ciphertext, parse_numeric_ciphertext
+
+    if is_numeric_ciphertext(text):
+        values = parse_numeric_ciphertext(text)
+        order = {v: i for i, v in enumerate(sorted(set(values)))}
+        tokens = [order[v] for v in values]
+        return tokens, max(len(set(tokens)), 26), "numeric", None, values, 0
+
+    non_ws = [ch for ch in text if not ch.isspace()]
+    is_pure_letters = bool(non_ws) and all("A" <= ch.upper() <= "Z" for ch in non_ws)
+    if is_pure_letters:
+        letters = "".join(ch.upper() for ch in text if ch.isalpha())
+        tokens = [ord(c) - 65 for c in letters]
+        word_group_count = len([w for w in text.split() if w]) if " " in text.strip() else 0
+        return tokens, 26, "letters", letters, None, word_group_count
+
+    # Symbol / S-token path — reuse the crack parsers.
+    from benchmark.loader import parse_canonical_transcription
+    from models.alphabet import Alphabet
+    from models.cipher_text import CipherText
+
+    if "S" in text.upper() and any(ch.isdigit() for ch in text):
+        ct = parse_canonical_transcription(text)
+    else:
+        alphabet = Alphabet.from_text(text, ignore_chars={" ", "\t", "\n", "\r"})
+        clean = " ".join(text.split())
+        ct = CipherText(raw=clean, alphabet=alphabet, source="cli", separator=" ")
+    return list(ct.tokens), ct.alphabet.size, "symbols", None, None, len(ct.words)
+
+
+def cmd_diagnose(args: argparse.Namespace) -> None:
+    import json as _json
+
+    from analysis.numeric_code import (
+        assert_not_solution_bearing,
+        is_numeric_ciphertext,
+        parse_numeric_ciphertext,
+        profile_for_related,
+    )
+    from investigation.diagnosis import diagnose, format_diagnosis
+
+    if getattr(args, "unsolved_id", None):
+        from benchmark.unsolved import load_unsolved_record
+
+        if not args.benchmark_root:
+            print("Error: --benchmark-root is required with --unsolved-id.", file=sys.stderr)
+            sys.exit(1)
+        record = load_unsolved_record(args.benchmark_root, args.unsolved_id)
+        if not record.canonical_text:
+            print(f"Error: no canonical text available for {args.unsolved_id}.", file=sys.stderr)
+            sys.exit(1)
+        text = record.canonical_text
+        language = args.language or record.metadata.get("plaintext_language") or "en"
+    else:
+        if args.input and args.input != "-":
+            with open(args.input, encoding="utf-8") as f:
+                text = f.read()
+        else:
+            text = sys.stdin.read()
+        language = args.language or "en"
+
+    if not text.strip():
+        print("Error: no input text provided.", file=sys.stderr)
+        sys.exit(1)
+
+    # Firewall: never diagnose a solution-bearing key text (finding 9).
+    try:
+        assert_not_solution_bearing(text, source=getattr(args, "input", None) or "input")
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    related_profile = None
+    if getattr(args, "related_profile", None):
+        with open(args.related_profile, encoding="utf-8") as f:
+            rp_text = f.read()
+        if is_numeric_ciphertext(rp_text):
+            related_profile = profile_for_related(parse_numeric_ciphertext(rp_text))
+
+    tokens, alphabet_size, alphabet_class, letter_rendering, numeric_values, wgc = (
+        _diagnose_inputs_from_text(text)
+    )
+    report = diagnose(
+        tokens,
+        alphabet_size=alphabet_size,
+        alphabet_class=alphabet_class,
+        language=language,
+        word_group_count=wgc,
+        numeric_values=numeric_values,
+        letter_rendering=letter_rendering,
+        related_profile=related_profile,
+        max_period=getattr(args, "max_period", 26),
+    )
+    if getattr(args, "json", False):
+        print(_json.dumps(report.to_dict(), indent=2, default=str))
+    else:
+        print(format_diagnosis(report))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="decipher",
@@ -1787,12 +1889,34 @@ def main() -> None:
         help="Use the older pre-zenith_native homophonic solver path for comparison.",
     )
 
+    # diagnose (INV-0): LLM-free local cipher-family diagnosis
+    diag = subparsers.add_parser(
+        "diagnose",
+        help="Diagnose the likely cipher family of an unknown ciphertext (no LLM/API).",
+    )
+    diag.add_argument(
+        "input",
+        nargs="?",
+        help="Input file, or '-' for stdin. Omit when using --unsolved-id.",
+    )
+    diag.add_argument("--unsolved-id", dest="unsolved_id",
+                      help="Diagnose a record from the benchmark unsolved area by id.")
+    diag.add_argument("--benchmark-root", dest="benchmark_root",
+                      help="Benchmark root directory (required with --unsolved-id).")
+    diag.add_argument("--language", "-l", default=None,
+                      help="Assumed plaintext language (default: en / record language).")
+    diag.add_argument("--json", action="store_true", help="Emit the full report as JSON.")
+    diag.add_argument("--related-profile", dest="related_profile",
+                      help="Numeric companion ciphertext file, profiled via the P8 battery.")
+    diag.add_argument("--max-period", dest="max_period", type=int, default=26,
+                      help="Maximum key period for periodic analysis (default 26).")
+
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         sys.exit(1)
-    if args.command != "doctor":
+    if args.command not in ("doctor", "diagnose"):
         _require_rust_fast_kernel()
 
     dispatch = {
@@ -1801,6 +1925,7 @@ def main() -> None:
         "crack": cmd_crack,
         "resume-artifact": cmd_resume_artifact,
         "testgen": cmd_testgen,
+        "diagnose": cmd_diagnose,
     }
     dispatch[args.command](args)
 

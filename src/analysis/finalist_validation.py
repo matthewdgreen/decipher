@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from analysis import dictionary, ngram
+from analysis.coherence import island_report
 from analysis.segment import segment_text
 
 
@@ -119,6 +120,17 @@ def validate_plaintext_finalist(
             "Validation score is a cheap reranking signal, not ground truth. "
             "It combines strict continuous word hits, segmentation quality, "
             "dictionary coverage, and pseudo-word burden."
+        ),
+        # INV-0 Part 7 (additive): order-sensitive word-island coherence. Reuses
+        # the already-computed `segmented` (finding 12 — no second segmentation on
+        # the finalist-menu hot path). Every pre-existing key/value above is
+        # unchanged; this is the only new top-level key.
+        "island_report": island_report(
+            letters,
+            language=language,
+            word_set=word_set,
+            freq_rank=freq_rank,
+            segmented=segmented,
         ),
     }
 
