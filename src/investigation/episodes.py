@@ -186,6 +186,27 @@ _COMPARE_SCHEMA = {
     "required": ["ranking", "verdicts", "winner"],
 }
 
+# M5 Part 1: the `verify` episode result schema. ``coherence`` is an int on a
+# 0-10 scale. The local validator has no min/max support, so the scale is
+# stated to the worker twice — in the contract prose and in the field
+# ``description`` below (the validator ignores ``description``; providers
+# render it in the tool schema) — and the dispatcher treats out-of-range
+# values as scale violations (see loop_v3._clamp_coherence).
+_VERIFY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "coherence": {
+            "type": "integer",
+            "description": "0 (gibberish) to 10 (fluent, natural text)",
+        },
+        "reader_accepts": {"type": "boolean"},
+        "gloss": {"type": "string"},
+        "anomalies": {"type": "array", "items": {"type": "string"}},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["coherence", "reader_accepts", "gloss", "anomalies", "confidence"],
+}
+
 
 @dataclass
 class EpisodeBudget:
@@ -276,6 +297,29 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "the score/decode tools, and report which edits you applied, the best "
             "resulting branch, per-action verdicts, collateral summaries, and "
             "notes. Nothing you fork lands until the lead installs it."
+        ),
+    },
+    # M5 Part 1: the independent-reader `verify` episode. EMPTY toolset (text-only
+    # judgement) and a one-send budget (wall clock is the real bound; F5). The
+    # ``{language}`` placeholder is formatted in ``_episode_system_prompt`` after
+    # the lead resolves the run language (contracts are otherwise static). No
+    # cryptanalysis framing (avoids the refusal the INV experiment hit) and no
+    # scores to anchor on — the whole value is independence.
+    "verify": {
+        "toolset": frozenset(),
+        "budget": EpisodeBudget(1, 1024, 90.0),
+        "result_schema": _VERIFY_SCHEMA,
+        "tier": "verify",
+        "contract": (
+            "You are a fluent reader of {language}. Below is a candidate "
+            "decipherment of a historical manuscript. Judge ONLY whether it "
+            "reads as real (possibly damaged or partial) {language}: gloss what "
+            "it says (a clause-level paraphrase), list anomalies (non-words, "
+            "broken syntax spans, wrong-language runs), rate coherence as an "
+            "integer from 0 (gibberish) to 10 (fluent, natural {language}), and "
+            "state whether a fluent reader would accept it as genuine, if "
+            "damaged, text. You have no other information and need none — do "
+            "not ask for the cipher, the key, or any score."
         ),
     },
 }
@@ -468,9 +512,14 @@ EPISODE_RUN_TOOL = {
     "description": (
         "Delegate a focused sub-task to an isolated worker episode. Kinds: "
         "survey (diagnose), search (run one search tool on a branch), reading "
-        "(draft a reading), compare (rank branches). Runs synchronously in a "
-        "copy of the named branches and returns a result summary + snapshots; "
-        "install a snapshot with episode_install_branch to adopt it."
+        "(draft a reading), compare (rank branches), repair (compile a "
+        "reading/word-hypotheses into edits on a fork), verify (an independent "
+        "fresh reader judges whether a branch's decode reads as real target-"
+        "language text — required before declaring a solution). Runs "
+        "synchronously in a copy of the named branches and returns a result "
+        "summary + snapshots; install a snapshot with episode_install_branch to "
+        "adopt it. A verify episode reads only the candidate plaintext and "
+        "writes an attestation the lead needs to declare."
     ),
     "input_schema": {
         "type": "object",
@@ -561,12 +610,49 @@ def _episode_branch_card_text(executor: WorkspaceToolExecutor, name: str) -> str
     return line
 
 
+def _build_verify_context(spec: EpisodeSpec) -> str:
+    """Verify-kind context: ONLY the candidate plaintext + language framing (F2).
+
+    No branch cards, no dict_rate/quad, no decode windows — scores in a verify
+    prompt defeat its independence and the ground-truth leak-assert cannot catch
+    them. The candidate is the SOLVER's output (rendered by the lead dispatcher
+    at dispatch time), never ground truth.
+
+    ``spec.goal`` is deliberately IGNORED here (review F-3): the goal is
+    lead-authored free text, and rendering it would let the lead shape the
+    "independent" reader's judgement (e.g. "be lenient about transcription
+    errors"). The task line is fixed; the goal still lands in the episode
+    ledger for observability.
+    """
+    from analysis.dictionary import LANGUAGE_NAMES
+
+    candidate = str(spec.inputs.get("candidate_text") or "")
+    language = str(spec.inputs.get("language") or "en")
+    language_name = LANGUAGE_NAMES.get(language, "the target language")
+    parts = [
+        (
+            "## Task\nJudge whether the candidate text below reads as real "
+            f"(possibly damaged or partial) {language_name}."
+        ),
+        (
+            f"## Candidate decipherment (language: {language_name})\n"
+            f"```\n{candidate}\n```"
+        ),
+    ]
+    text = "\n\n".join(parts)
+    if len(text) > _EPISODE_CONTEXT_CAP:
+        text = text[:_EPISODE_CONTEXT_CAP] + "\n…[truncated]"
+    return text
+
+
 def build_episode_context(
     spec: EpisodeSpec,
     workspace: Workspace,
     executor: WorkspaceToolExecutor,
 ) -> str:
     """Deterministic worker context: branch card(s), a decode window, note."""
+    if spec.kind == "verify":
+        return _build_verify_context(spec)
     branches = list(spec.inputs.get("branches") or [])
     parts: list[str] = [f"## Task\n{spec.goal}"]
     if branches:
@@ -605,11 +691,20 @@ def build_episode_context(
     return text
 
 
-def _episode_system_prompt(spec: EpisodeSpec) -> str:
+def _episode_system_prompt(spec: EpisodeSpec, language: str | None = None) -> str:
     budget = spec.budget
     schema_json = json.dumps(spec.result_schema, ensure_ascii=False)
+    # F5: EPISODE_KINDS contracts are static; the verify contract carries a
+    # ``{language}`` placeholder formatted here after the lead resolves the run
+    # language. Other contracts have no braces, so this is a no-op for them.
+    contract = spec.contract
+    if "{language}" in contract:
+        from analysis.dictionary import LANGUAGE_NAMES
+
+        language_name = LANGUAGE_NAMES.get(language or "en", "the target language")
+        contract = contract.format(language=language_name)
     return (
-        f"{spec.contract}\n\n"
+        f"{contract}\n\n"
         f"Available tools (and no others): {', '.join(sorted(spec.toolset))}.\n"
         f"Budget: up to {budget.max_tool_calls} tool calls, "
         f"{budget.wall_clock_seconds:.0f}s wall clock.\n"
@@ -722,7 +817,7 @@ def run_episode(
         executor.set_iteration(launching_turn)
 
         # (2) session from the kind registry (role episode:<kind>).
-        system_prompt = _episode_system_prompt(spec)
+        system_prompt = _episode_system_prompt(spec, language)
         if session is None:
             session = session_factory(f"episode:{kind}", provider, system_prompt)
 

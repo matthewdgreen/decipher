@@ -80,6 +80,10 @@ class SolutionDeclaration:
     reading_summary: str = ""
     further_iterations_helpful: bool | None = None
     further_iterations_note: str = ""
+    # M5 (v3): the verify AttestationRecord (dict) that gated this declaration.
+    # None for v2 declarations and for fallback/auto declarations. A weak-but-
+    # declared solve carries its coherence/anomalies here so it is visibly weak.
+    attestation: dict[str, Any] | None = None
 
 
 @dataclass
@@ -165,6 +169,7 @@ class RunArtifact:
     episodes: list[dict[str, Any]] = field(default_factory=list)  # v3 episode ledger (M2)
     readings: list[dict[str, Any]] = field(default_factory=list)  # v3 stored Readings (M3)
     experiments: list[dict[str, Any]] = field(default_factory=list)  # v3 experiment queue (M4)
+    attestations: list[dict[str, Any]] = field(default_factory=list)  # v3 verify attestations (M5)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""

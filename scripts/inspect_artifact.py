@@ -346,6 +346,41 @@ def format_readings(artifact: dict) -> str:
     return "\n".join(lines)
 
 
+def format_attestations(artifact: dict) -> str:
+    """Minimal verify-attestation table for v3 artifacts (M5). Empty when none.
+
+    Marks the declared branch's attestation so a weak-but-declared solve is
+    visible (coherence / reader_accepts / anomalies)."""
+    attestations = artifact.get("attestations") or []
+    if not attestations:
+        return ""
+    solution = artifact.get("solution") or {}
+    declared_branch = str(solution.get("branch") or "") if isinstance(solution, dict) else ""
+    declared_hash = ""
+    if isinstance(solution, dict) and isinstance(solution.get("attestation"), dict):
+        declared_hash = str(solution["attestation"].get("content_hash") or "")
+    lines = ["Verify attestations:"]
+    lines.append(
+        f"  {'branch':<18} {'coher':>5} {'accepts':>7} {'anoms':>5}  gloss"
+    )
+    for a in attestations:
+        branch = str(a.get("branch") or "?")
+        coher = a.get("coherence")
+        coher_s = str(coher) if isinstance(coher, int) else "n/a"
+        accepts = "yes" if a.get("reader_accepts") else "no"
+        anoms = len(a.get("anomalies") or [])
+        gloss = str(a.get("gloss") or "").replace("\n", " ")[:44]
+        is_declared = (
+            (declared_hash and a.get("content_hash") == declared_hash)
+            or (not declared_hash and branch == declared_branch)
+        )
+        marker = " *declared" if is_declared else ""
+        lines.append(
+            f"  {branch:<18} {coher_s:>5} {accepts:>7} {anoms:>5}  {gloss}{marker}"
+        )
+    return "\n".join(lines)
+
+
 def format_experiments(artifact: dict) -> str:
     """Minimal experiments table for v3 artifacts (M4). Empty string when none."""
     experiments = artifact.get("experiments") or []
@@ -1127,6 +1162,10 @@ def inspect_one(
     readings_table = format_readings(artifact)
     if readings_table:
         print(readings_table)
+        print()
+    attestations_table = format_attestations(artifact)
+    if attestations_table:
+        print(attestations_table)
         print()
     experiments_table = format_experiments(artifact)
     if experiments_table:

@@ -1091,6 +1091,14 @@ def _messages_to_openai_chat(
             }
             if tool_calls:
                 chat_message["tool_calls"] = tool_calls
+            elif chat_message["content"] is None:
+                # An assistant message with neither text nor tool_calls is
+                # rejected by the OpenAI chat API ("content: expected a string,
+                # got null"). This happens when a worker's turn produced no
+                # visible text and no tool call and the loop re-sends it after a
+                # nudge (e.g. a one-shot verify episode). Coerce to "" so the
+                # re-send is valid; well-formed messages are unaffected.
+                chat_message["content"] = ""
             out.append(chat_message)
         elif role == "user" and isinstance(content, list):
             text_parts = []

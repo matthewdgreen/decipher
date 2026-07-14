@@ -7,7 +7,10 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import pytest
+
 from agent.model_provider import ModelProviderError, ModelResponse, ModelUsage, TextBlock, ToolUseBlock
+from investigation import sessions as sessions_mod
 from investigation.loop_v3 import run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry
@@ -61,6 +64,46 @@ class ErrorSession(ScriptedSession):
         raise ModelProviderError("simulated API overload")
 
 
+class VerifyWorkerFake:
+    """M5: a verify episode worker that accepts the candidate as coherent English.
+
+    Registered per test via the ``verify_fake`` fixture; the run's
+    AttestationPolicy needs an attestation before meta_declare_solution is
+    allowed.
+    """
+
+    def __init__(self, provider=None, system="", role="episode:verify"):
+        self.model = "fake-luna"
+        self.provider_name = "openai"
+        self.capabilities = SessionCapabilities()
+        self._budget: list[BudgetEntry] = []
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(
+            BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0)
+        )
+        result = {"coherence": 9, "reader_accepts": True,
+                  "gloss": "reads as clear English", "anomalies": [],
+                  "confidence": "high"}
+        return ModelResponse(
+            content=[ToolUseBlock(id="v1", name="episode_submit_result",
+                                  input={"result": result, "summary": "reads well"})],
+            usage=ModelUsage(50, 10, 0))
+
+    def usage_entries(self):
+        return list(self._budget)
+
+    def export_transcript(self):
+        return {"provider": "openai", "model": self.model, "exchanges": []}
+
+
+@pytest.fixture
+def verify_fake():
+    sessions_mod.register_session_builder("episode:verify", VerifyWorkerFake)
+    yield
+    sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+
+
 def _solve_scripts(alpha):
     mapping = {
         alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
@@ -71,6 +114,11 @@ def _solve_scripts(alpha):
          ToolUseBlock(id="t1", name="act_bulk_set",
                       input={"branch": "main", "mappings": mapping})],
         [ToolUseBlock(id="t2", name="decode_show", input={"branch": "main"})],
+        # M5: a verify episode on `main` before declaring (the AttestationPolicy
+        # requires a fresh attestation).
+        [ToolUseBlock(id="tv", name="episode_run",
+                      input={"kind": "verify", "goal": "verify main",
+                             "branches": ["main"]})],
         [TextBlock(text="Reads as English."),
          ToolUseBlock(id="t3", name="meta_declare_solution",
                       input={"branch": "main",
@@ -79,11 +127,13 @@ def _solve_scripts(alpha):
     ]
 
 
-def test_run_v3_scripted_solve_and_declare_no_gates():
+def test_run_v3_scripted_solve_verify_then_declare(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     scripts = _solve_scripts(alpha)
     # Fork an extra branch on turn 1 so a v2 branch_cards gate WOULD block the
-    # declaration; under NoGatesPolicy it must be accepted immediately.
+    # declaration; M5's AttestationPolicy keeps only the one attestation check —
+    # with a fresh attestation from the verify episode the declaration is
+    # accepted immediately (no v2 cascade bounce).
     scripts[0].insert(
         1,
         ToolUseBlock(id="t0", name="workspace_fork",
@@ -104,12 +154,16 @@ def test_run_v3_scripted_solve_and_declare_no_gates():
     ]
     assert len(declare_results) == 1
     assert declare_results[0]["accepted"] is True
+    # The verify attestation gated + is carried into the declaration + artifact.
+    assert art.attestations and art.attestations[0]["reader_accepts"] is True
+    assert art.solution.attestation is not None
+    assert art.solution.attestation["coherence"] == 9
     # Decode is correct.
     main_decode = next(b.decryption for b in art.branches if b.name == "main")
     assert main_decode == "THE DOG"
 
 
-def test_run_v3_tool_iteration_is_lead_turn():
+def test_run_v3_tool_iteration_is_lead_turn(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
@@ -117,19 +171,25 @@ def test_run_v3_tool_iteration_is_lead_turn():
     by_name = {tc.tool_name: tc.iteration for tc in art.tool_calls}
     assert by_name["act_bulk_set"] == 1
     assert by_name["decode_show"] == 2
-    assert by_name["meta_declare_solution"] == 3
+    # The verify episode_run runs at lead turn 3 (episode_run is a lead-dispatch
+    # tool, not an executor ToolCall, so it does not appear in by_name); the
+    # declaration lands at turn 4.
+    assert by_name["meta_declare_solution"] == 4
 
 
-def test_run_v3_records_state_budget_and_transcript():
+def test_run_v3_records_state_budget_and_transcript(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
                  cipher_id="v3_state")
-    # Budget accounting flows from the session's per-send entries.
-    assert art.budget_by_category["lead"]["calls"] == 3
-    assert art.total_input_tokens == 3000
-    assert art.total_output_tokens == 150
-    assert art.total_cache_read_tokens == 300
+    # Budget accounting flows from the session's per-send entries. Four lead
+    # sends (bulk_set, decode_show, verify episode_run, declare) plus one
+    # episode:verify send (50/10/0).
+    assert art.budget_by_category["lead"]["calls"] == 4
+    assert art.budget_by_category["episode:verify"]["calls"] == 1
+    assert art.total_input_tokens == 4 * 1000 + 50
+    assert art.total_output_tokens == 4 * 50 + 10
+    assert art.total_cache_read_tokens == 4 * 100 + 0
     # Artifact carries the v3 additions.
     assert art.session_transcript["provider"] == "openai"
     assert art.investigation_state is not None
@@ -162,7 +222,155 @@ def test_run_v3_exhaustion_falls_back():
     assert art.solution is not None
 
 
-def test_run_v3_resume_from_state_continues():
+def test_run_v3_declare_without_verify_is_blocked_then_falls_back():
+    """M5: meta_declare_solution with no verify attestation is blocked; the run
+    exhausts to the fallback declaration, which itself needs no attestation."""
+    ct, alpha = _caesar_cipher("THE DOG")
+    mapping = {alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
+               for i in range(alpha.size)}
+    scripts = [
+        [ToolUseBlock(id="t1", name="act_bulk_set",
+                      input={"branch": "main", "mappings": mapping})],
+        [ToolUseBlock(id="d1", name="meta_declare_solution",
+                      input={"branch": "main", "rationale": "reads",
+                             "self_confidence": 0.9})],
+    ]
+    art = run_v3(ct, session=ScriptedSession(scripts), language="en",
+                 max_iterations=4, cipher_id="v3_no_verify")
+    declare_results = [json.loads(tc.result) for tc in art.tool_calls
+                       if tc.tool_name == "meta_declare_solution"]
+    assert declare_results
+    assert all(r.get("reason") == "attestation_required" for r in declare_results)
+    # Fallback path (needs no attestation).
+    assert art.status == "fallback_declared"
+    assert art.auto_declared is True
+    assert not art.attestations
+    # A fallback declaration carries no attestation.
+    assert art.solution is not None and art.solution.attestation is None
+
+
+class _WeakVerifyFake(VerifyWorkerFake):
+    """A verify worker that reports words-but-not-sentences (weak, not accepted)."""
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(
+            BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0))
+        result = {"coherence": 3, "reader_accepts": False,
+                  "gloss": "reads as words but not coherent sentences",
+                  "anomalies": ["non-word run", "broken clause"], "confidence": "low"}
+        return ModelResponse(
+            content=[ToolUseBlock(id="v1", name="episode_submit_result",
+                                  input={"result": result, "summary": "weak"})],
+            usage=ModelUsage(50, 10, 0))
+
+
+def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
+    """M5/C6: a WEAK attestation does not block a deliberate declaration; the
+    declaration carries the weakness so a weak-but-declared solve is visibly
+    weak in the artifact."""
+    sessions_mod.register_session_builder("episode:verify", _WeakVerifyFake)
+    try:
+        ct, alpha = _caesar_cipher("THE DOG")
+        art = run_v3(ct, session=ScriptedSession(_solve_scripts(alpha)),
+                     language="en", max_iterations=10, cipher_id="v3_weak")
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+    assert art.status == "solved"
+    assert art.solution is not None and art.solution.attestation is not None
+    assert art.solution.attestation["reader_accepts"] is False
+    assert art.solution.attestation["coherence"] == 3
+    assert art.solution.attestation["anomalies"] == ["non-word run", "broken clause"]
+
+
+class _OutOfScaleVerifyFake(VerifyWorkerFake):
+    """Review F-1: a reader answering coherence=12 — a scale violation (likely a
+    0-100-scale reading, i.e. LOW) — while REJECTING the text."""
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(
+            BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0))
+        result = {"coherence": 12, "reader_accepts": False,
+                  "gloss": "scattered words only",
+                  "anomalies": ["non-words throughout"], "confidence": "high"}
+        return ModelResponse(
+            content=[ToolUseBlock(id="v1", name="episode_submit_result",
+                                  input={"result": result, "summary": "rejected"})],
+            usage=ModelUsage(50, 10, 0))
+
+
+def test_run_v3_out_of_scale_coherence_records_floor_not_maximum():
+    """Review F-1: coherence > 10 violates the stated 0-10 scale and must NOT be
+    recorded as 10/10 (a 12 on a 0-100 scale is a LOW reading; recording 10
+    would mint a top-coherence attestation on a decode the reader rejected).
+    It is recorded as the conservative floor 0."""
+    sessions_mod.register_session_builder("episode:verify", _OutOfScaleVerifyFake)
+    try:
+        ct, alpha = _caesar_cipher("THE DOG")
+        art = run_v3(ct, session=ScriptedSession(_solve_scripts(alpha)),
+                     language="en", max_iterations=10, cipher_id="v3_scale")
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+    assert art.attestations, "verify episode should have produced an attestation"
+    att = art.attestations[0]
+    assert att["coherence"] != 10, "scale violation must not be recorded as maximum"
+    assert att["coherence"] == 0
+    assert att["reader_accepts"] is False
+    # The hash-gated declaration still proceeds (weak-doesn't-block, C6) and
+    # carries the conservative record.
+    assert art.status == "solved"
+    assert art.solution.attestation["coherence"] == 0
+
+
+def test_run_v3_post_declare_tools_in_same_batch_do_not_run():
+    """Review F-2: [meta_declare_solution, act_set_mapping] in ONE assistant
+    turn — the mutation after the accepted declaration must NOT execute (it
+    would void attested == declared == scored), the skipped tool_use still gets
+    a paired `run_terminated` tool_result, and the declaration keeps its
+    attestation."""
+    ct, alpha = _caesar_cipher("THE DOG")
+    mapping = {alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
+               for i in range(alpha.size)}
+    scripts = [
+        [ToolUseBlock(id="t1", name="act_bulk_set",
+                      input={"branch": "main", "mappings": mapping})],
+        [ToolUseBlock(id="tv", name="episode_run",
+                      input={"kind": "verify", "goal": "verify main",
+                             "branches": ["main"]})],
+        # One batch: declare THEN mutate the just-declared branch.
+        [ToolUseBlock(id="td", name="meta_declare_solution",
+                      input={"branch": "main", "rationale": "reads",
+                             "self_confidence": 0.9}),
+         ToolUseBlock(id="tm", name="act_set_mapping",
+                      input={"branch": "main",
+                             "cipher_symbol": alpha.symbol_for(0),
+                             "plain_letter": "Z"})],
+    ]
+    sessions_mod.register_session_builder("episode:verify", VerifyWorkerFake)
+    try:
+        art = run_v3(ct, session=ScriptedSession(scripts), language="en",
+                     max_iterations=10, cipher_id="v3_post_declare")
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+
+    assert art.status == "solved"
+    # The mutating tool never executed: no ToolCall logged for it, and the
+    # declared branch's decode is unchanged.
+    assert all(tc.tool_name != "act_set_mapping" for tc in art.tool_calls)
+    main_decode = next(b.decryption for b in art.branches if b.name == "main")
+    assert main_decode == "THE DOG"
+    # attested == declared == scored held: the attestation attached.
+    assert art.solution is not None and art.solution.attestation is not None
+    # The skipped tool_use got a paired synthesized run_terminated result.
+    results = {}
+    for m in art.messages:
+        for b in (m.get("content") or []):
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                results[b["tool_use_id"]] = b["content"]
+    assert "td" in results and "tm" in results  # one result per tool_use
+    assert json.loads(results["tm"])["status"] == "run_terminated"
+
+
+def test_run_v3_resume_from_state_continues(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
@@ -176,7 +384,7 @@ def test_run_v3_resume_from_state_continues():
     assert reloaded.language == "en"
 
 
-def test_run_v3_resume_continues_from_state_turn_monotonic():
+def test_run_v3_resume_continues_from_state_turn_monotonic(verify_fake):
     """R1: resume continues from state.turn + 1 with monotonic turn numbers."""
     from investigation.state import InvestigationState
     ct, alpha = _caesar_cipher("THE DOG")
@@ -363,6 +571,11 @@ class _RepairLead:
         elif step == 3:
             content = [ToolUseBlock(id="e4", name="branch_adjudicate", input={
                 "branches": ["main", "repaired"]})]
+        elif step == 4:
+            # M5: verify the branch before declaring it.
+            content = [ToolUseBlock(id="ev", name="episode_run", input={
+                "kind": "verify", "goal": "verify repaired",
+                "branches": ["repaired"]})]
         else:
             content = [ToolUseBlock(id="e5", name="meta_declare_solution", input={
                 "branch": "repaired", "rationale": "repaired reads well",
@@ -373,7 +586,7 @@ class _RepairLead:
     def export_transcript(self): return {"provider": "openai", "exchanges": []}
 
 
-def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end():
+def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end(verify_fake):
     sessions_mod.register_session_builder("episode:reading", ReadingWorkerFake)
     sessions_mod.register_session_builder("episode:repair", RepairWorkerFake)
     try:
@@ -388,9 +601,13 @@ def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end():
     assert art.readings and art.readings[0]["fragments"][0]["text"] == "CATTON"
     reading_id = art.readings[0]["reading_id"]
 
-    # Two episodes: reading (ok) then repair (ok).
-    assert [e["kind"] for e in art.episodes] == ["reading", "repair"]
+    # Three episodes: reading (ok), repair (ok), then verify (ok) before declare.
+    assert [e["kind"] for e in art.episodes] == ["reading", "repair", "verify"]
     assert all(e["status"] == "ok" for e in art.episodes)
+    # The declaration carries the verify attestation for `repaired`.
+    assert art.solution is not None and art.solution.branch == "repaired"
+    assert art.solution.attestation is not None
+    assert art.attestations and art.attestations[0]["branch"] == "repaired"
 
     # The repaired fork was installed into the lead workspace as `repaired`.
     assert any(b.name == "repaired" for b in art.branches)

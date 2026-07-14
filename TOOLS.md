@@ -1510,3 +1510,39 @@ solution.
 
 *The executor may block this while active cipher-family hypotheses still have
 required higher-level work pending and there is iteration budget left.*
+
+---
+
+## episode_run — V3 lead delegation (v3 loop only)
+
+The v3 investigation lead can delegate a focused sub-task to an isolated worker
+*episode* with `episode_run(kind, goal, branches, …)`. Each episode runs in a
+copy of the named branches with a hard-allowlisted toolset and no benchmark
+context; nothing it does touches the lead workspace until the lead calls
+`episode_install_branch`.
+
+| Kind | Purpose |
+|------|---------|
+| `survey` | Diagnose the cipher and suspected modes. |
+| `search` | Run one search tool (and its review/install companions) on a branch. |
+| `reading` | Draft the best plain-language reading of a branch's decode. |
+| `compare` | Rank competing branches by how well they read. |
+| `repair` | Compile a reading / word-hypotheses into applied edits on a fork. |
+| `verify` | An independent fresh reader judges whether a branch's decode reads as real target-language text. |
+
+### `verify` (M5)
+
+A `verify` episode has an EMPTY toolset and sees ONLY the candidate plaintext
+(rendered by the lead with the pinned `decoded_text_v1` renderer =
+`_decoded_text_for_panel`) plus the target language — never the cipher, key,
+scores, or ground truth. It returns `{coherence (0–10), reader_accepts,
+gloss, anomalies, confidence}`. On success the lead dispatcher writes an
+`AttestationRecord` (matched later by content hash).
+
+Under the v3 M5 `AttestationPolicy`, `meta_declare_solution` on a branch is
+allowed only when a verify attestation exists whose content hash matches the
+branch's current rendered text. A weak attestation (`reader_accepts=false` or
+low coherence) does NOT block — it is carried into the declaration so a
+weak-but-declared solve is visibly weak. Absent or stale (text changed since
+attestation) blocks with `reason: attestation_required | attestation_stale`.
+`meta_declare_unsolved` and the exhaustion/error fallback are NOT gated.

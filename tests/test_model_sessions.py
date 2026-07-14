@@ -13,6 +13,7 @@ from agent.model_provider import (
     ModelUsage,
     TextBlock,
     ToolUseBlock,
+    _messages_to_openai_chat,
     _reasoning_passback_enabled,
 )
 from investigation.sessions import (
@@ -306,3 +307,31 @@ def test_session_factory_registry():
         # keep the registry clean for other tests
         from investigation.sessions import _SESSION_BUILDERS
         _SESSION_BUILDERS.pop("probe", None)
+
+
+def test_openai_chat_empty_assistant_message_not_null_content():
+    """An assistant turn with no text and no tool_use (e.g. a one-shot verify
+    worker that emitted nothing) must not serialize to content=null with no
+    tool_calls — the OpenAI chat API rejects that on the nudge re-send. It is
+    coerced to an empty string; well-formed messages are unaffected."""
+    out = _messages_to_openai_chat([
+        {"role": "user", "content": [{"type": "text", "text": "ctx"}]},
+        {"role": "assistant", "content": []},                  # empty turn
+        {"role": "user", "content": [{"type": "text", "text": "nudge"}]},
+    ], system="sys")
+    assistant = out[2]
+    assert assistant["role"] == "assistant"
+    assert assistant["content"] == "" and "tool_calls" not in assistant
+
+    # Well-formed assistant text is unchanged.
+    text_out = _messages_to_openai_chat(
+        [{"role": "assistant", "content": [{"type": "text", "text": "hi"}]}]
+    )
+    assert text_out[0]["content"] == "hi"
+
+    # A tool-only assistant keeps null content + tool_calls (valid for OpenAI).
+    tool_out = _messages_to_openai_chat([
+        {"role": "assistant",
+         "content": [{"type": "tool_use", "id": "a", "name": "t", "input": {}}]}
+    ])
+    assert tool_out[0]["content"] is None and "tool_calls" in tool_out[0]

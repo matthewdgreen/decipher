@@ -78,16 +78,18 @@ number.
 
 Delegating
 - If an existing branch already reads as solved (for example an installed \
-`automated_preflight`), verify it with a quick read and declare it directly — \
-do not spend budget on episodes first.
+`automated_preflight`), read it to confirm, then run a `verify` episode on it \
+and declare — do not spend budget on other episodes first.
 - You can spin off a focused worker with `episode_run(kind, goal, branches, …)`. \
-Four kinds exist: `survey` (diagnose the cipher and suspected modes), `search` \
+Six kinds exist: `survey` (diagnose the cipher and suspected modes), `search` \
 (run one search tool and its review/install companions on a branch), `reading` \
-(draft a best reading of a branch), and `compare` (rank competing branches). An \
-episode runs in an isolated copy of the branches you name and returns a result \
-summary plus branch snapshots; nothing it does touches your workspace until you \
-call `episode_install_branch`. Integrate an episode's findings and snapshots \
-explicitly — they do not apply themselves.
+(draft a best reading of a branch), `compare` (rank competing branches), \
+`repair` (compile a reading or word-hypotheses into edits on a fork), and \
+`verify` (a fresh independent reader judges whether a branch's decode reads as \
+real {language_name}). An episode runs in an isolated copy of the branches you \
+name and returns a result summary plus branch snapshots; nothing it does \
+touches your workspace until you call `episode_install_branch`. Integrate an \
+episode's findings and snapshots explicitly — they do not apply themselves.
 - Readings are applied with `hypothesis_apply_reading` (one fork with the key \
 edits and word boundaries a reading implies), and individual words are tested \
 with `hypothesis_test_word` — reach for them instead of hand-editing when a \
@@ -100,8 +102,10 @@ Finishing
 - When a branch reads as coherent {language_name}, call \
 `meta_declare_solution` with that branch and your confidence. If the cipher \
 resists every hypothesis you can mount, call `meta_declare_unsolved` with your \
-best branch and what you tried. There are no gate prerequisites — declare when \
-the reading justifies it, and say so honestly if it is only a partial.
+best branch and what you tried. Before declaring a solution, run a `verify` \
+episode on your best branch — a fresh reader will tell you if it truly reads as \
+{language_name}. Declaration requires it. Say so honestly if it is only a \
+partial.
 {language_notes}"""
 
 
@@ -459,6 +463,37 @@ def _render_window(
     return _truncate(header + rendered, _WINDOW_CAP)
 
 
+def _render_late_turn_attestation_hint(
+    state: InvestigationState, executor: Any, turn: int, max_turns: int | None
+) -> str:
+    """F9: with ≤2 turns left and no fresh attestation on the best branch, remind
+    the lead to run verify now.
+
+    Mitigates the late-turn failure mode: a lead that first attempts declaration
+    on its final turn is blocked with zero turns left → fallback_declared
+    (strictly worse than M4 on that path). Empty string when it does not apply.
+    """
+    if not max_turns or (max_turns - turn) > 2:
+        return ""
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    best, _scores = _best_branch_for_auto_declare(
+        state.workspace, state.language, executor.word_set, executor._freq_rank
+    )
+    current_hash = _candidate_content_hash(
+        _decoded_text_for_panel(state.workspace, best)
+    )
+    if any(
+        a.get("content_hash") == current_hash for a in state.verify_attestations
+    ):
+        return ""
+    return (
+        "## Attestation reminder\n"
+        f"No attestation on `{best}`; run verify now if you intend to declare "
+        "(declaration requires a fresh verify attestation)."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Assembly
 # ---------------------------------------------------------------------------
@@ -544,8 +579,15 @@ def build_lead_context(
     # --- dynamic view (sections 3, 4, 5, 7) ---
     # R4: show the turn budget so the model knows its remaining runway.
     turn_marker = f"turn {turn} of {max_turns}" if max_turns else f"turn {turn}"
-    view_sections = [
-        f"## Investigation state ({turn_marker})",
+    view_sections = [f"## Investigation state ({turn_marker})"]
+    # F9: high-priority late-turn attestation reminder (near the top of the view
+    # so the global clamp never truncates it away).
+    attestation_hint = _render_late_turn_attestation_hint(
+        state, executor, turn, max_turns
+    )
+    if attestation_hint:
+        view_sections.append(attestation_hint)
+    view_sections += [
         _render_branch_cards(state, executor, branch_cards),
         _render_hypothesis_board(state),
     ]

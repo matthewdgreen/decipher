@@ -663,6 +663,89 @@ def test_v3_episode_surface_never_sees_ground_truth():
     assert_no_ground_truth_leak([context_text, system_prompt], GROUND_TRUTH)
 
 
+def test_v3_verify_episode_never_sees_ground_truth_or_scores():
+    """M5 Part 5: a verify episode's rendered prompt (candidate + language) and
+    contract carry no ground truth and no scores. The candidate is the SOLVER's
+    output (a deliberately WRONG decode here, so it is not the ground-truth
+    plaintext); the true benchmark plaintext must never reach the verify prompt
+    via any channel."""
+    from agent.loop_shared import _decoded_text_for_panel
+    from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+    from agent.model_provider import ModelResponse, ModelUsage, ToolUseBlock
+    from investigation.episodes import (
+        EpisodeSpec,
+        _build_episode_workspace,
+        _episode_system_prompt,
+        build_episode_context,
+        run_episode,
+    )
+    from investigation.sessions import SessionCapabilities
+    from investigation.state import BudgetEntry, InvestigationState
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    # A deliberately WRONG caesar key (shift 5, not the inverse -7): the decode is
+    # gibberish, never the ground-truth plaintext.
+    for token_id in range(alpha.size):
+        sym = alpha.symbol_for(token_id)
+        ws.set_mapping("main", token_id, pt.id_for(_caesar(sym, 5)))
+    state = InvestigationState(workspace=Workspace(ct), language="en")
+
+    # The candidate is what the lead dispatcher renders for the branch.
+    candidate = _decoded_text_for_panel(ws, "main")
+    assert _normalize(candidate) != _normalize(GROUND_TRUTH)  # solver output, not GT
+    spec = EpisodeSpec("verify", "judge the candidate",
+                       inputs={"candidate_text": candidate, "language": "en"})
+
+    # (a) rendered context + contract are leak-free and score-free.
+    ep_ws = _build_episode_workspace(state, [])
+    executor = WorkspaceToolExecutor(ep_ws, "en", set(), [], {},
+                                     declaration_policy=NoGatesPolicy(),
+                                     episode_toolset=set())
+    context_text = build_episode_context(spec, ep_ws, executor)
+    system_prompt = _episode_system_prompt(spec, "en")
+    assert_no_ground_truth_leak([context_text, system_prompt], GROUND_TRUTH)
+    for blob in (context_text, system_prompt):
+        assert "dict_rate" not in blob and "quad" not in blob
+
+    # (b) the blocks actually SENT to a verify worker carry no ground truth.
+    class _VerifyFake:
+        model = "fake-luna"
+        provider_name = "openai"
+
+        def __init__(self):
+            self.capabilities = SessionCapabilities()
+            self.blocks_seen: list = []
+            self._budget: list = []
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.blocks_seen.append(blocks)
+            self._budget.append(BudgetEntry("episode:verify", "openai", "fake-luna", 10, 2, 0))
+            return ModelResponse(
+                content=[ToolUseBlock(id="v1", name="episode_submit_result",
+                                      input={"result": {"coherence": 1,
+                                                        "reader_accepts": False,
+                                                        "gloss": "gibberish",
+                                                        "anomalies": ["not a language"],
+                                                        "confidence": "high"},
+                                             "summary": "no"})],
+                usage=ModelUsage(10, 2, 0))
+
+        def usage_entries(self):
+            return list(self._budget)
+
+        def export_transcript(self):
+            return {"provider": "openai", "model": self.model, "exchanges": []}
+
+    fake = _VerifyFake()
+    res = run_episode(spec, state, session=fake)
+    assert res.status == "ok"
+    assert_no_ground_truth_leak([json.dumps(fake.blocks_seen, default=str)], GROUND_TRUTH)
+
+
 # ---------------------------------------------------------------------------
 # M4 Part 6: experiment specs and results are leak-checked surfaces (C6).
 # ---------------------------------------------------------------------------

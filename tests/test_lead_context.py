@@ -7,6 +7,7 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+from agent.loop_shared import _best_branch_for_auto_declare
 from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
 from investigation.context import (
     CHARS_PER_TOKEN,
@@ -288,3 +289,35 @@ def test_truncate_never_exceeds_cap_and_reports_honest_count():
     assert _truncate(text, 0) == ""
     # No-op path unchanged.
     assert _truncate("short", 10) == "short"
+
+
+def test_late_turn_attestation_hint():
+    """F9: with ≤2 turns left and no fresh attestation on the best branch, the
+    view carries a one-line reminder to run verify now."""
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    state = _state()
+    ex = _executor(state)
+
+    def _joined(turn, max_turns):
+        return "\n".join(_texts(build_lead_context(state, ex, turn, 8000, max_turns)))
+
+    # Early turn: no hint.
+    assert "Attestation reminder" not in _joined(1, 20)
+    # Late turn (≤2 remaining), no attestation: hint present.
+    late = _joined(19, 20)
+    assert "Attestation reminder" in late
+    assert "run verify now" in late
+    # A fresh matching attestation on the best branch suppresses the hint.
+    best, _scores = _best_branch_for_auto_declare(
+        state.workspace, state.language, ex.word_set, ex._freq_rank
+    )
+    state.verify_attestations.append({
+        "branch": best,
+        "content_hash": _candidate_content_hash(
+            _decoded_text_for_panel(state.workspace, best)
+        ),
+    })
+    assert "Attestation reminder" not in _joined(19, 20)
+    # No max_turns -> no hint (nothing to bound against).
+    assert "Attestation reminder" not in _joined(19, None)

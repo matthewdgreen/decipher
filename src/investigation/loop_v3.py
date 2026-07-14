@@ -18,8 +18,11 @@ import uuid
 from typing import Any
 
 from agent.loop_shared import (
+    DECODED_TEXT_RENDERER_ID,
     _best_branch_for_auto_declare,
     _branch_snapshot_for,
+    _candidate_content_hash,
+    _decoded_text_for_panel,
     _hypothesis_cards_for_artifact,
     _install_automated_preflight_branch,
     _tool_result_summary,
@@ -29,7 +32,7 @@ from agent.model_provider import (
     ensure_model_provider,
     _collect_assistant_blocks,
 )
-from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+from agent.tools_v2 import AttestationPolicy, WorkspaceToolExecutor
 from investigation.board import CARD_MIRROR_KEYS
 from investigation.actions import COMPOSITE_TOOL_NAMES, execute_composite
 from investigation.episodes import (
@@ -51,7 +54,7 @@ from analysis import dictionary, pattern
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
 from investigation.context import build_lead_context, build_v3_system_prompt
 from investigation.sessions import ModelSession, session_factory
-from investigation.state import BudgetEntry, InvestigationState
+from investigation.state import AttestationRecord, BudgetEntry, InvestigationState
 from models.cipher_text import CipherText
 from workspace import Workspace
 
@@ -147,7 +150,12 @@ def run_v3(
         word_list=word_list,
         pattern_dict=pattern_dict,
         benchmark_context=benchmark_context,
-        declaration_policy=NoGatesPolicy(),
+        # M5 (A2/F4): declaration is gated on a fresh verify attestation. The
+        # policy holds a LIVE reference to state.verify_attestations (matched by
+        # content_hash at declare time); it subclasses NoGatesPolicy so the v3
+        # neutral finalize-phase guard is preserved and only check_declare_solution
+        # is overridden. meta_declare_unsolved / fallback are NOT gated.
+        declaration_policy=AttestationPolicy(attestations=state.verify_attestations),
         # F5/R8: the repair agenda, the hypothesis board (A10 single writer), and
         # the finalist-session store (A1) all live in state; inject them at
         # construction so the lead shares the state-owned objects (no attribute
@@ -270,9 +278,106 @@ def run_v3(
         clone.model = model_id
         return clone
 
+    def _clamp_coherence(value: Any) -> int:
+        """Coerce the verify coherence to the 0-10 int scale (F5 + review F-1).
+
+        A value ABOVE 10 is a scale violation (the contract states 0-10; a
+        reader answering e.g. 12 is using some other scale, likely 0-100 —
+        which would make 12 a LOW reading). Recording it as 10/10 would mint a
+        top-coherence attestation on a decode the reader may have rejected, so
+        out-of-scale values are recorded as the conservative floor 0 instead —
+        the verdict signal lives in reader_accepts/anomalies either way, and a
+        low coherence can never make a weak solve look strong. Negative and
+        unparseable values also floor to 0.
+        """
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError):
+            try:
+                coerced = int(float(value))
+            except (TypeError, ValueError):
+                return 0
+        if coerced > 10:
+            return 0  # scale violation -> conservative floor, never maximum
+        return max(0, coerced)
+
+    def _dispatch_verify_run(args: dict[str, Any], turn: int) -> str:
+        # F2: verify is a special episode kind. Render the candidate for the
+        # named branch AT DISPATCH TIME with the pinned renderer (the exact
+        # string BranchSnapshot.decryption / the benchmark score), compute the
+        # sha256 here, and build a spec whose inputs are ONLY the candidate text
+        # + language (branches=[] -> empty episode workspace). No scores reach
+        # the verify prompt.
+        branches = list(args.get("branches") or [])
+        branch = next((b for b in branches if workspace.has_branch(b)), None)
+        if branch is None:
+            return json.dumps(
+                {"error": "verify requires one existing branch in `branches`"}
+            )
+        candidate = _decoded_text_for_panel(workspace, branch)
+        content_hash = _candidate_content_hash(candidate)
+        try:
+            spec = EpisodeSpec(
+                kind="verify", goal=str(args.get("goal") or ""),
+                inputs={"candidate_text": candidate, "language": language},
+            )
+        except Exception as exc:  # noqa: BLE001 - bad spec -> structured error
+            return json.dumps({"error": f"invalid verify episode: {exc}"})
+        ep_provider = _provider_for_model((episode_models or {}).get("verify"))
+        result = run_episode(
+            spec, state, provider=ep_provider, language=language,
+            word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
+            launching_turn=turn,
+        )
+        episode_tool_calls.extend(result.tool_calls)
+        episode_budget.extend(
+            BudgetEntry.from_dict(b) for b in result.budget_entries
+        )
+        emit("episode_complete", {
+            "episode_id": result.episode_id, "kind": result.kind,
+            "status": result.status, "calls": result.tool_call_count,
+        }, outer_iteration=turn)
+        payload = {
+            "episode_id": result.episode_id,
+            "kind": result.kind,
+            "status": result.status,
+            "failure_reason": result.failure_reason,
+            "result": result.result,
+            "summary": result.summary,
+            "branch": branch,
+            "spend_usd": round(
+                sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
+            ),
+        }
+        # On success the DISPATCHER (not the lead model) writes the
+        # AttestationRecord with the pre-computed hash (A1 — workers never write
+        # state), mirroring the reading-compile precedent above.
+        if result.status == "ok" and isinstance(result.result, dict):
+            record = AttestationRecord(
+                branch=branch,
+                content_hash=content_hash,
+                renderer_id=DECODED_TEXT_RENDERER_ID,
+                episode_id=result.episode_id,
+                coherence=_clamp_coherence(result.result.get("coherence")),
+                reader_accepts=bool(result.result.get("reader_accepts")),
+                gloss=str(result.result.get("gloss") or ""),
+                anomalies=[str(a) for a in (result.result.get("anomalies") or [])],
+                created_turn=turn,
+            )
+            state.verify_attestations.append(record.to_dict())
+            payload["attestation"] = {
+                "branch": branch,
+                "coherence": record.coherence,
+                "reader_accepts": record.reader_accepts,
+                "anomalies": record.anomalies,
+            }
+        return json.dumps(payload, ensure_ascii=False)
+
     def _dispatch_episode_run(tu: dict[str, Any], turn: int) -> str:
         args = tu.get("input") or {}
         kind = str(args.get("kind") or "")
+        if kind == "verify":
+            return _dispatch_verify_run(args, turn)
         inputs: dict[str, Any] = {
             "branches": list(args.get("branches") or []),
             "search_tool": args.get("search_tool"),
@@ -553,6 +658,34 @@ def run_v3(
                 },
                 outer_iteration=turn,
             )
+            # Review F-2: an ACCEPTED declaration terminates the run — the
+            # remaining tool_uses in this same batch must NOT execute. Without
+            # this early-exit, [meta_declare_solution, act_set_mapping] in one
+            # turn would mutate the declared branch AFTER the AttestationPolicy
+            # allowed it, silently voiding attested == declared == scored (the
+            # attestation attach below would find no hash match). Synthesize a
+            # `run_terminated` tool_result for each skipped tool_use so the
+            # recorded exchange stays one-result-per-use (the R5 pairing rule).
+            if executor.terminated and idx + 1 < len(tool_uses):
+                terminated_content = json.dumps({
+                    "status": "run_terminated",
+                    "error": (
+                        f"Run terminated by `{tu['name']}` earlier in this "
+                        "turn; this tool was not executed."
+                    ),
+                })
+                for pending in tool_uses[idx + 1:]:
+                    tool_results_blocks.append({
+                        "type": "tool_result",
+                        "tool_use_id": pending["id"],
+                        "content": terminated_content,
+                    })
+                    summary_items.append(f"{pending['name']}:run_terminated")
+                emit("post_terminate_tools_skipped", {
+                    "terminating_tool": tu["name"],
+                    "skipped": [p["name"] for p in tool_uses[idx + 1:]],
+                }, outer_iteration=turn)
+                break
 
         tool_result_message = {"role": "user", "content": tool_results_blocks}
         artifact.messages.append(tool_result_message)
@@ -573,6 +706,22 @@ def run_v3(
                 })
             else:
                 artifact.status = "solved"
+                # M5: carry the matching verify attestation into the declaration
+                # so a weak-but-declared solve is visibly weak in the artifact.
+                # The declared branch is unchanged since the AttestationPolicy
+                # allowed it, so its rendered hash still matches an attestation.
+                sol = executor.solution
+                if sol is not None and workspace.has_branch(sol.branch):
+                    declared_hash = _candidate_content_hash(
+                        _decoded_text_for_panel(workspace, sol.branch)
+                    )
+                    match = next(
+                        (a for a in state.verify_attestations
+                         if a.get("content_hash") == declared_hash),
+                        None,
+                    )
+                    if match is not None:
+                        sol.attestation = dict(match)
                 emit("declared_solution", {
                     "branch": executor.solution.branch if executor.solution else None,
                     "confidence": (
@@ -644,6 +793,7 @@ def run_v3(
     # rides in artifact.episodes / state.
     artifact.tool_calls = list(executor.call_log) + list(episode_tool_calls)
     artifact.episodes = [dict(entry) for entry in state.episode_ledger]
+    artifact.attestations = [dict(a) for a in state.verify_attestations]
     artifact.readings = [dict(r) for r in state.readings.values()]
     artifact.tool_requests = list(executor.tool_requests)
     artifact.repair_agenda = [dict(item) for item in state.repair_agenda]

@@ -108,6 +108,58 @@ class EvidenceEntry:
         )
 
 
+@dataclass
+class AttestationRecord:
+    """An independent-reader verdict on a branch's decode (M5 spec Part 2, A6).
+
+    Produced by a ``verify`` episode and written to state by the lead DISPATCHER
+    (workers never write state, A1). ``content_hash`` is
+    ``_candidate_content_hash`` over ``renderer_id`` (``decoded_text_v1`` =
+    ``_decoded_text_for_panel``) applied to the branch at attest time; the
+    AttestationPolicy recomputes the same hash at declare time and requires a
+    match. ``branch`` is recorded for observability only — matching is by
+    ``content_hash`` (F11 branch-rename edge). ``coherence`` is clamped to 0-10
+    by the dispatcher (F5: the range is advisory).
+    """
+
+    branch: str
+    content_hash: str
+    renderer_id: str
+    episode_id: str
+    coherence: int = 0
+    reader_accepts: bool = False
+    gloss: str = ""
+    anomalies: list[str] = field(default_factory=list)
+    created_turn: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "branch": self.branch,
+            "content_hash": self.content_hash,
+            "renderer_id": self.renderer_id,
+            "episode_id": self.episode_id,
+            "coherence": self.coherence,
+            "reader_accepts": self.reader_accepts,
+            "gloss": self.gloss,
+            "anomalies": list(self.anomalies),
+            "created_turn": self.created_turn,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "AttestationRecord":
+        return cls(
+            branch=str(data.get("branch") or ""),
+            content_hash=str(data.get("content_hash") or ""),
+            renderer_id=str(data.get("renderer_id") or ""),
+            episode_id=str(data.get("episode_id") or ""),
+            coherence=int(data.get("coherence") or 0),
+            reader_accepts=bool(data.get("reader_accepts")),
+            gloss=str(data.get("gloss") or ""),
+            anomalies=[str(a) for a in (data.get("anomalies") or [])],
+            created_turn=int(data.get("created_turn") or 0),
+        )
+
+
 def _serialize_cipher(state: "InvestigationState") -> dict[str, Any]:
     """Serialize the full CipherText + plaintext alphabet (A3).
 
@@ -176,6 +228,12 @@ class InvestigationState:
     experiment_queue: list[dict[str, Any]] = field(default_factory=list)
     # M2: append-only ledger of completed episodes (one dict per episode).
     episode_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # M5: verify-attestation records (AttestationRecord.to_dict()). Written by
+    # the lead dispatcher on a completed ``verify`` episode; read by the
+    # AttestationPolicy at declare time (matched by content_hash). Named
+    # distinctly from v2's executor._reading_attestations (F11). Absent from
+    # pre-M5 artifacts -> empty on load (extends resume identity).
+    verify_attestations: list[dict[str, Any]] = field(default_factory=list)
     # M3: stored Readings (reading_id -> Reading.to_dict()). The lead compiles a
     # reading-kind episode result into a Reading here; workers never write it
     # (A1). Absent from M2 artifacts -> empty on load (extends resume identity).
@@ -322,6 +380,7 @@ class InvestigationState:
             "recent_exchanges": self.recent_exchanges,
             "repair_agenda": [dict(item) for item in self.repair_agenda],
             "episode_ledger": [dict(item) for item in self.episode_ledger],
+            "verify_attestations": [dict(item) for item in self.verify_attestations],
             "readings": {rid: dict(r) for rid, r in self.readings.items()},
             "experiment_queue": [dict(item) for item in self.experiment_queue],
             "finalist_sessions": self.finalist_sessions.to_dict(),
@@ -367,6 +426,9 @@ class InvestigationState:
             recent_exchanges=[dict(m) for m in data.get("recent_exchanges") or []],
             repair_agenda=[dict(item) for item in data.get("repair_agenda") or []],
             episode_ledger=[dict(item) for item in data.get("episode_ledger") or []],
+            verify_attestations=[
+                dict(item) for item in data.get("verify_attestations") or []
+            ],
             readings={
                 str(rid): dict(r)
                 for rid, r in (data.get("readings") or {}).items()

@@ -14,6 +14,7 @@ Only self-contained helpers with no dependency on v2 loop internals live here.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -21,6 +22,19 @@ from analysis import ngram
 from analysis import signals as sig
 from analysis.segment import segment_text
 from workspace import Workspace
+
+
+# The named renderer used for the M5 verify-attestation content hash (A6/F1).
+# ``_decoded_text_for_panel`` is the string that fills ``BranchSnapshot.decryption``
+# (the exact text the benchmark scores), so it is the string an attestation
+# certifies. Both attest-time (verify dispatch) and declare-time
+# (AttestationPolicy) call it and hash the result with ``_candidate_content_hash``.
+DECODED_TEXT_RENDERER_ID = "decoded_text_v1"
+
+
+def _candidate_content_hash(text: str) -> str:
+    """sha256 (hex) of the candidate string encoded as utf-8 (A6/F11)."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
 
 
 # ------------------------------------------------------------------

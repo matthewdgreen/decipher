@@ -2334,6 +2334,62 @@ class NoGatesPolicy(DeclarationPolicy):
         }
 
 
+class AttestationPolicy(NoGatesPolicy):
+    """M5 v3 policy (A2/A6/C6): declaration requires a fresh verify attestation.
+
+    ``meta_declare_solution`` on branch B is allowed iff an AttestationRecord
+    exists whose ``content_hash`` matches B's CURRENT rendered text (the same
+    named renderer, ``decoded_text_v1`` = ``_decoded_text_for_panel``). This is
+    ONE structural check, not the v2 cascade. Matching is primarily by
+    content_hash (F11 branch-rename edge); an attestation recorded under the same
+    branch name whose hash no longer matches is STALE.
+
+    A WEAK attestation (``reader_accepts`` false / low coherence) does NOT block
+    (design C6): a matching hash allows the declaration and its weakness is
+    carried into the artifact. Only ABSENT or STALE attestation blocks.
+    ``meta_declare_unsolved`` is NOT gated (base-class default), and the loop's
+    exhaustion/error fallback bypasses the tool entirely.
+
+    Subclasses ``NoGatesPolicy`` (not the bare base) so the v3 neutral
+    finalize-phase guard is preserved; only ``check_declare_solution`` is
+    overridden. The records list is the LIVE ``state.verify_attestations``
+    reference (constructor-injected per the repair_agenda/finalist precedent).
+    """
+
+    def __init__(self, attestations: list[dict[str, Any]]):
+        self._attestations = attestations
+
+    def check_declare_solution(
+        self, executor: "WorkspaceToolExecutor", args: dict
+    ) -> dict[str, Any] | None:
+        from agent.loop_shared import (
+            _candidate_content_hash,
+            _decoded_text_for_panel,
+        )
+
+        branch = args["branch"]
+        if not executor.workspace.has_branch(branch):
+            # Let the handler return its own "Branch not found" error.
+            return None
+        current_hash = _candidate_content_hash(
+            _decoded_text_for_panel(executor.workspace, branch)
+        )
+        matches = any(
+            a.get("content_hash") == current_hash for a in self._attestations
+        )
+        if matches:
+            return None  # fresh attestation exists -> declaration proceeds
+        stale = any(a.get("branch") == branch for a in self._attestations)
+        reason = "attestation_stale" if stale else "attestation_required"
+        return {
+            "status": "blocked",
+            "accepted": False,
+            "branch": branch,
+            "reason": reason,
+            "how": "run a verify episode on this branch, then declare",
+        }
+
+
 class V2GatePolicy(DeclarationPolicy):
     """v2 policy: the full declare-gate cascade, behavior-preserving.
 

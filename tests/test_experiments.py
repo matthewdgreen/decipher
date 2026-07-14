@@ -577,6 +577,7 @@ def test_orphan_resume_round_trip(_arbiter_env_guard):
 # run_v3-driven tests (scripted lead + finalize orphaning)
 # ---------------------------------------------------------------------------
 from agent.model_provider import ModelResponse, ModelUsage, TextBlock, ToolUseBlock
+from investigation import sessions as sessions_mod
 from investigation.loop_v3 import run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry
@@ -584,6 +585,30 @@ from investigation.state import BudgetEntry
 
 def _resp(content):
     return ModelResponse(content=content, usage=ModelUsage(100, 10, 0))
+
+
+class _VerifyFake:
+    """M5: a verify episode worker (empty toolset -> zero-tool submit)."""
+
+    def __init__(self, provider=None, system="", role="episode:verify"):
+        self.model = "fake-luna"
+        self.provider_name = "openai"
+        self.capabilities = SessionCapabilities()
+        self._budget = []
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:verify", "openai", "fake-luna", 40, 8, 0))
+        return _resp([ToolUseBlock(id="v1", name="episode_submit_result",
+                      input={"result": {"coherence": 8, "reader_accepts": True,
+                                        "gloss": "reads", "anomalies": [],
+                                        "confidence": "high"},
+                             "summary": "reads well"})])
+
+    def usage_entries(self):
+        return list(self._budget)
+
+    def export_transcript(self):
+        return {"provider": "openai", "model": self.model, "exchanges": []}
 
 
 def _experiment_ids_from_blocks(blocks):
@@ -632,6 +657,11 @@ class FlowLead:
         if step == 5:
             return _resp([ToolUseBlock(id="c2", name="experiment_collect",
                           input={"experiment_id": self._ids[1]})])
+        if step == 6:
+            # M5: verify `main` before declaring it.
+            return _resp([ToolUseBlock(id="ev", name="episode_run",
+                          input={"kind": "verify", "goal": "verify main",
+                                 "branches": ["main"]})])
         return _resp([TextBlock(text="done"),
                       ToolUseBlock(id="d1", name="meta_declare_solution",
                                    input={"branch": "main", "rationale": "reads",
@@ -648,11 +678,15 @@ def test_scripted_lead_flow(_arbiter_env_guard):
     gates = {"ga": threading.Event(), "gb": threading.Event()}
     calls = {"n": 0}
     ct, _state = _make_state()
-    with _registered_type("block", _counting_block_type(gates, calls)):
-        queue = ExperimentQueue(synchronous=False, workers=4, slots=2)
-        lead = FlowLead(queue, gates)
-        art = run_v3(ct, session=lead, language="en", max_iterations=8,
-                     cipher_id="v3_exp_flow", experiment_queue=queue)
+    sessions_mod.register_session_builder("episode:verify", _VerifyFake)
+    try:
+        with _registered_type("block", _counting_block_type(gates, calls)):
+            queue = ExperimentQueue(synchronous=False, workers=4, slots=2)
+            lead = FlowLead(queue, gates)
+            art = run_v3(ct, session=lead, language="en", max_iterations=9,
+                         cipher_id="v3_exp_flow", experiment_queue=queue)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
 
     # experiment_complete evidence entries (both experiments).
     completes = [e for e in art.investigation_state["evidence_log"]
