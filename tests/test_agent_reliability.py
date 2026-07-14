@@ -5104,6 +5104,65 @@ def test_meta_declare_blocks_boundary_damaged_branch_before_reading_workflow():
     assert ex.terminated is True
 
 
+def test_pin_full_reading_workflow_required_reason():
+    """A2 pin (pre-extraction): the reading-workflow declaration gate keeps its
+    exact reason string and suggested-tool order. This behavior must be
+    byte-identical before and after the DeclarationPolicy extraction."""
+    ex = _executor_for("AP PLY", separator=" ")
+    ex.set_max_iterations(10)
+    ex.set_iteration(4)
+
+    out = ex._tool_meta_declare_solution({
+        "branch": "main",
+        "rationale": "Readable text remains, but there are boundary issues.",
+        "self_confidence": 0.7,
+    })
+
+    assert out["status"] == "blocked"
+    assert out["accepted"] is False
+    assert out["reason"] == "full_reading_workflow_required"
+    assert out["suggested_next_tools"] == [
+        "decode_validate_reading_repair",
+        "act_resegment_by_reading",
+        "act_resegment_from_reading_repair",
+    ]
+    assert ex.terminated is False
+
+
+def test_pin_multi_prerequisite_declare_batch_shape():
+    """A2 pin (pre-extraction): when two quick prerequisites are unmet the
+    batch response collapses to reason `prerequisites_required`, reports all
+    unmet preconditions, appends meta_declare_solution to suggested tools, and
+    records the pending-declare state on the executor. Byte-identical across the
+    DeclarationPolicy extraction."""
+    ex = _executor_for("ABCABC", separator=None)
+    ex._tool_workspace_create_hypothesis_branch({
+        "new_name": "hyp_poly",
+        "cipher_mode": "periodic_polyalphabetic",
+        "rationale": "Periodic diagnostics should be tested.",
+    })
+    # Deliberately do NOT call workspace_branch_cards, so both
+    # branch_cards_required and hypothesis_next_steps_required are unmet.
+    blocked = ex._tool_meta_declare_solution({
+        "branch": "hyp_poly",
+        "rationale": "Declaring without prerequisites.",
+        "self_confidence": 0.7,
+        "further_iterations_helpful": False,
+    })
+
+    assert blocked["status"] == "blocked"
+    assert blocked["accepted"] is False
+    assert blocked["reason"] == "prerequisites_required"
+    assert blocked["preconditions_unmet"] == 2
+    reasons = {p["reason"] for p in blocked["preconditions"]}
+    assert reasons == {"branch_cards_required", "hypothesis_next_steps_required"}
+    assert blocked["suggested_next_tools"][-1] == "meta_declare_solution"
+    # Gate-state side effect is recorded on the executor (discharged elsewhere).
+    assert ex._pending_declare_branch == "hyp_poly"
+    assert ex._pending_declare_prerequisites == reasons
+    assert ex.terminated is False
+
+
 def test_meta_declare_blocks_unresolved_repair_agenda_until_item_resolved():
     raw = "ABC | ABD"
     alpha = Alphabet.from_text(raw, ignore_chars={" ", "|"})

@@ -145,6 +145,13 @@ class RunArtifact:
     word_accuracy: float | None = None
     preprocessing_applied: dict[str, Any] | None = None
 
+    # Loop provenance and v3 additions (schema-additive; v2 artifacts default
+    # to loop_version="v2" and empty/None for the rest).
+    loop_version: str = "v2"                     # "v2" | "v3"
+    budget_by_category: dict[str, Any] = field(default_factory=dict)
+    session_transcript: dict[str, Any] | None = None
+    investigation_state: dict[str, Any] | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
         def convert(o: Any) -> Any:

@@ -684,8 +684,9 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
             homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
+            agent_loop=getattr(args, "agent_loop", "v2"),
         )
-        mode_label = f"agentic ({provider}/{model})"
+        mode_label = f"agentic ({provider}/{model}, loop={getattr(args, 'agent_loop', 'v2')})"
 
     if not quiet_structured_display:
         print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
@@ -807,6 +808,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
     from agent.loop_v2 import run_v2
     from agent.display import make_agent_renderer
 
+    agent_loop = getattr(args, "agent_loop", "v2")
     _preflight_model_check(args)
     provider, model = _resolve_provider_and_model(args)
     api = _make_agent_provider(args)
@@ -875,18 +877,33 @@ def cmd_crack(args: argparse.Namespace) -> None:
         elif event in {"declared_solution", "run_complete", "error", "max_iterations_reached"}:
             print(f" [{event}]")
 
-    artifact = run_v2(
-        cipher_text=ct,
-        claude_api=api,
-        language=args.language,
-        max_iterations=args.max_iterations,
-        cipher_id=cipher_id,
-        prior_context=_read_external_context(args),
-        automated_preflight=automated_preflight,
-        verbose=args.verbose and display_mode == "off",
-        system_prompt_style=_resolve_system_prompt_style(args),
-        on_event=on_event,
-    )
+    if agent_loop == "v3":
+        from investigation.loop_v3 import run_v3
+
+        artifact = run_v3(
+            cipher_text=ct,
+            claude_api=api,
+            language=args.language,
+            max_iterations=args.max_iterations,
+            cipher_id=cipher_id,
+            prior_context=_read_external_context(args),
+            automated_preflight=automated_preflight,
+            verbose=args.verbose and display_mode == "off",
+            on_event=on_event,
+        )
+    else:
+        artifact = run_v2(
+            cipher_text=ct,
+            claude_api=api,
+            language=args.language,
+            max_iterations=args.max_iterations,
+            cipher_id=cipher_id,
+            prior_context=_read_external_context(args),
+            automated_preflight=automated_preflight,
+            verbose=args.verbose and display_mode == "off",
+            system_prompt_style=_resolve_system_prompt_style(args),
+            on_event=on_event,
+        )
 
     print(f"Status: {artifact.status}")
     if artifact.solution:
@@ -1366,6 +1383,16 @@ def main() -> None:
         help="Use the experimental LLM agent instead of the default automated solver.",
     )
     bench.add_argument(
+        "--agent-loop",
+        choices=["v2", "v3"],
+        default="v2",
+        dest="agent_loop",
+        help=(
+            "Agentic loop to use (default v2). v3 is the investigation lead loop: "
+            "state rebuilt each turn, provider-native sessions, no declare gates."
+        ),
+    )
+    bench.add_argument(
         "--automated-only",
         action="store_true",
         help=argparse.SUPPRESS,
@@ -1496,6 +1523,16 @@ def main() -> None:
         "--agentic",
         action="store_true",
         help="Use the experimental LLM agent instead of the default automated solver.",
+    )
+    crack.add_argument(
+        "--agent-loop",
+        choices=["v2", "v3"],
+        default="v2",
+        dest="agent_loop",
+        help=(
+            "Agentic loop to use (default v2). v3 is the investigation lead loop: "
+            "state rebuilt each turn, provider-native sessions, no declare gates."
+        ),
     )
     crack.add_argument("--automated-only", action="store_true", help=argparse.SUPPRESS)
     crack.add_argument("--no-automated-preflight", action="store_true",

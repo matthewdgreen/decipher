@@ -10,7 +10,6 @@ Differences from v1:
 """
 from __future__ import annotations
 
-import dataclasses
 import time
 import uuid
 import json
@@ -19,6 +18,7 @@ from typing import Any
 from agent.model_provider import (
     ModelProviderError,
     ModelResponse,
+    _collect_assistant_blocks,
     ensure_model_provider,
     estimate_provider_cost,
 )
@@ -560,58 +560,6 @@ def _mode_for_turn(
     if _is_reading_workflow_gate_turn(executor, iteration, max_iterations):
         return AgentMode.BOUNDARY_PROJECTION
     return AgentMode.EXPLORE
-
-
-def _opaque_block_to_dict(block: Any) -> dict[str, Any]:
-    """Serialize an unrecognized response block to a plain history dict."""
-    if isinstance(block, dict):
-        return dict(block)
-    if dataclasses.is_dataclass(block):
-        return dataclasses.asdict(block)
-    return {"type": getattr(block, "type", "unknown")}
-
-
-def _collect_assistant_blocks(
-    response: ModelResponse,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
-    assistant_blocks: list[dict[str, Any]] = []
-    tool_uses: list[dict[str, Any]] = []
-    text_parts: list[str] = []
-    for block in response.content:
-        block_type = (
-            block.get("type") if isinstance(block, dict)
-            else getattr(block, "type", None)
-        )
-        if block_type == "text":
-            text = block.get("text", "") if isinstance(block, dict) else block.text
-            assistant_blocks.append({"type": "text", "text": text})
-            text_parts.append(text)
-        elif block_type == "tool_use":
-            if isinstance(block, dict):
-                b_id, b_name, b_input = (
-                    block.get("id"),
-                    block.get("name"),
-                    block.get("input") or {},
-                )
-            else:
-                b_id, b_name, b_input = block.id, block.name, block.input
-            assistant_blocks.append({
-                "type": "tool_use",
-                "id": b_id,
-                "name": b_name,
-                "input": b_input,
-            })
-            tool_uses.append({
-                "id": b_id,
-                "name": b_name,
-                "input": b_input,
-            })
-        else:
-            # Opaque / unknown block (e.g. a provider_extra reasoning-passback
-            # block): preserve it verbatim in the assistant turn's history
-            # without treating it as text or a tool call.
-            assistant_blocks.append(_opaque_block_to_dict(block))
-    return assistant_blocks, tool_uses, text_parts
 
 
 def _parse_json_result(result: str) -> Any:

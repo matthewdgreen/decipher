@@ -2163,6 +2163,467 @@ _PREREQ_FIX_TOOL: dict[str, str] = {
 }
 
 
+# ------------------------------------------------------------------
+# Declaration policy (A2)
+# ------------------------------------------------------------------
+#
+# The declare-gate cascade that used to live inline in
+# _tool_meta_declare_solution / _tool_meta_declare_unsolved is factored behind
+# an injectable policy object on the executor. ``check_declare_solution`` /
+# ``check_declare_unsolved`` return a blocked-result dict (returned verbatim to
+# the model) or ``None`` to let the declaration proceed to the handler's accept
+# path. The policy is pure logic over executor-resident state; any gate
+# bookkeeping it does (``_pending_declare_*``) is written through the executor,
+# because other tools (workspace_branch_cards, workspace_hypothesis_next_steps,
+# act_resegment_by_reading) discharge that state and loop_v2 reads it for the
+# panel. The executor defaults to ``V2GatePolicy`` so existing callers/tests
+# that construct executors directly see byte-identical behavior; the v3 lead
+# loop injects ``NoGatesPolicy`` so declaration is always allowed.
+
+
+class DeclarationPolicy:
+    """Base policy: no gates (declaration always allowed)."""
+
+    def check_declare_solution(
+        self, executor: "WorkspaceToolExecutor", args: dict
+    ) -> dict[str, Any] | None:
+        return None
+
+    def check_declare_unsolved(
+        self, executor: "WorkspaceToolExecutor", args: dict
+    ) -> dict[str, Any] | None:
+        return None
+
+
+class NoGatesPolicy(DeclarationPolicy):
+    """v3 policy: declaration is always allowed; no coercion gates fire.
+
+    Confidence is still recorded by the handler's accept path; only the gate
+    cascade is bypassed. Non-declaration executor blocks (context-family,
+    null-mask, transform) are unaffected — they live in ``execute`` / handlers,
+    not in this policy.
+    """
+
+
+class V2GatePolicy(DeclarationPolicy):
+    """v2 policy: the full declare-gate cascade, behavior-preserving.
+
+    Extracted verbatim from the pre-A2 ``_tool_meta_declare_solution`` /
+    ``_tool_meta_declare_unsolved`` bodies with ``self`` rebound to
+    ``executor``. Pinned by the existing declare-gate tests plus the two
+    dedicated pin tests.
+    """
+
+    def check_declare_solution(
+        self, executor: "WorkspaceToolExecutor", args: dict
+    ) -> dict[str, Any] | None:
+        branch = args["branch"]
+        rationale = args["rationale"]
+        confidence = float(args["self_confidence"])
+        further_iterations_helpful = (
+            bool(args["further_iterations_helpful"])
+            if args.get("further_iterations_helpful") is not None else None
+        )
+        further_iterations_note = str(args.get("further_iterations_note") or "")
+        forced_partial = bool(args.get("forced_partial", False))
+        unresolved = executor._unresolved_repair_agenda_items(branch)
+        if unresolved:
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "repair_agenda_unresolved",
+                "unresolved_repair_agenda": unresolved,
+                "note": (
+                    "This branch has open/blocked repair agenda items. Before "
+                    "declaring, apply them or mark them held/rejected with "
+                    "repair_agenda_update. If your rationale already explains "
+                    "why the repair should not be applied, make that explicit "
+                    "in the agenda with status `held` or `rejected`, then call "
+                    "meta_declare_solution again."
+                ),
+                "suggested_next_tools": [
+                    "repair_agenda_list",
+                    "repair_agenda_update",
+                    "meta_declare_solution",
+                ],
+            }
+        unrated_transform = executor._unrated_transform_finalist_metadata(branch)
+        if unrated_transform is not None:
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "transform_finalist_readability_required",
+                "transform_finalist": unrated_transform,
+                "note": (
+                    "This branch came from transform finalist search, but the "
+                    "agent has not recorded its contextual readability score. "
+                    "Before declaring, call act_rate_transform_finalist for "
+                    "this search_session_id/rank. The rating should say "
+                    "whether the text is coherent prose, a partial clause, "
+                    "word islands, or garbage; numeric scores are not enough."
+                ),
+                "suggested_next_tools": [
+                    "act_rate_transform_finalist",
+                    "search_review_transform_finalists",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        # --- Quick-prerequisite batch: evaluate all three together and report
+        # all unmet ones in a single response.  This replaces the old sequential
+        # cascade (branch_cards → hypothesis_next_steps → word_boundary) which
+        # forced the agent to discover each gate one at a time.
+        quick_prerequisites: list[dict[str, Any]] = []
+
+        if len(executor.workspace.branch_names()) > 1 and not executor._has_seen_branch_cards(branch):
+            quick_prerequisites.append({
+                "reason": "branch_cards_required",
+                "fix_tool": "workspace_branch_cards",
+                "note": (
+                    "Multiple branches exist. Call workspace_branch_cards to "
+                    "compare readable excerpts and internal scores."
+                ),
+            })
+
+        null_mask_block = executor._pending_null_mask_followup_block()
+        if null_mask_block is not None:
+            quick_prerequisites.append({
+                "reason": null_mask_block["reason"],
+                "fix_tool": null_mask_block["suggested_next_tools"][0],
+                "fix_tool_args": null_mask_block.get("suggested_args", {}),
+                "note": null_mask_block["note"],
+                "details": {
+                    key: value for key, value in null_mask_block.items()
+                    if key not in {"status", "note", "suggested_next_tools", "suggested_args"}
+                },
+            })
+
+        hyp_block = executor._hypothesis_declaration_block(branch)
+        if hyp_block is not None:
+            quick_prerequisites.append({
+                "reason": "hypothesis_next_steps_required",
+                "fix_tool": "workspace_hypothesis_next_steps",
+                # Include the declaring branch explicitly so the agent calls the
+                # right branch and not an unrelated hypothesis branch.
+                "fix_tool_args": {"branch": branch},
+                "cipher_mode": hyp_block.get("cipher_mode"),
+                "note": (
+                    f"This branch ('{branch}') is a cipher-mode hypothesis. "
+                    f"Call workspace_hypothesis_next_steps(branch='{branch}') "
+                    "to record the playbook and tried tools."
+                ),
+            })
+
+        wb_block = executor._word_boundary_declaration_block(
+            branch,
+            confidence=confidence,
+            forced_partial=forced_partial,
+        )
+        if wb_block is not None:
+            quick_prerequisites.append({
+                "reason": "word_boundary_pass_required",
+                "fix_tool": "act_resegment_by_reading",
+                "decoded_stream_preview": wb_block.get("decoded_stream_preview"),
+                "note": (
+                    "No word-boundary overlay on a no-boundary cipher. "
+                    "Call act_resegment_by_reading with your proposed reading."
+                ),
+            })
+
+        if quick_prerequisites:
+            executor._pending_declare_prerequisites = {p["reason"] for p in quick_prerequisites}
+            executor._pending_declare_branch = branch
+            count = len(quick_prerequisites)
+            primary_reason = (
+                quick_prerequisites[0]["reason"]
+                if count == 1
+                else "prerequisites_required"
+            )
+            if count == 1:
+                action_note = (
+                    f"{quick_prerequisites[0]['note']} "
+                    "Then call meta_declare_solution."
+                )
+            else:
+                tools_list = ", ".join(p["fix_tool"] for p in quick_prerequisites)
+                action_note = (
+                    f"{count} prerequisites unmet. Address ALL of them "
+                    f"({tools_list}), then call meta_declare_solution ONCE — "
+                    "do not re-call it after each individual fix."
+                )
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": primary_reason,
+                "preconditions": quick_prerequisites,
+                "preconditions_unmet": count,
+                "note": action_note,
+                "suggested_next_tools": (
+                    [p["fix_tool"] for p in quick_prerequisites]
+                    + ["meta_declare_solution"]
+                ),
+            }
+
+        family_coverage_block = executor._family_coverage_declaration_block(
+            branch,
+            forced_partial=forced_partial,
+        )
+        if family_coverage_block is not None:
+            return family_coverage_block
+        if executor._should_guard_declaration_for_reading_workflow(branch, rationale):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "full_reading_workflow_required",
+                "note": (
+                    "Your rationale still mentions word-boundary/alignment "
+                    "issues, but this branch has not gone through the full-"
+                    "reading validation workflow. Before declaring, write your "
+                    "best complete target-language reading and call "
+                    "decode_validate_reading_repair. If it is character-"
+                    "preserving, follow with act_resegment_by_reading. If it "
+                    "changes letters but has the same character count, follow "
+                    "with act_resegment_from_reading_repair, then repair the "
+                    "reported mismatch spans with act_set_mapping/act_bulk_set."
+                ),
+                "suggested_next_tools": [
+                    "decode_validate_reading_repair",
+                    "act_resegment_by_reading",
+                    "act_resegment_from_reading_repair",
+                ],
+            }
+        if (
+            further_iterations_helpful is True
+            and executor._declaration_has_untried_transform_work(rationale, further_iterations_note)
+            and not forced_partial
+            and not (executor.max_iterations is not None and executor._current_iteration >= executor.max_iterations)
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "transform_work_untried",
+                "note": (
+                    "Your declaration says further iterations should try a "
+                    "transposition/period/poly-alphabetic style hypothesis, "
+                    "but this run has not used the available transform tools. "
+                    "Before declaring, inspect transform state and run the "
+                    "mode-appropriate transform screen: "
+                    "search_pure_transposition for transposition-only, or "
+                    "search_transform_homophonic for Zodiac/Z340-style "
+                    "transposition+homophonic. If that screen is not useful, "
+                    "declare again with that negative result in the rationale."
+                ),
+                "suggested_next_tools": [
+                    "observe_transform_pipeline",
+                    "observe_transform_suspicion",
+                    "search_pure_transposition",
+                    "search_transform_homophonic",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ],
+            }
+        if executor._should_guard_low_confidence_declaration(
+            confidence,
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "low_confidence_more_work_required",
+                "note": (
+                    "This is a low-confidence declaration and you also report "
+                    "that further iterations would likely help. Continue using "
+                    "the remaining budget instead of terminating early. Try a "
+                    "new hypothesis class, compare branches, or mark "
+                    "`further_iterations_helpful=false` only if the remaining "
+                    "work is unlikely to improve the decipherment. Use "
+                    "`forced_partial=true` only for an intentional early "
+                    "partial submission when no useful remaining tool action is "
+                    "available."
+                ),
+                "suggested_next_tools": executor._mode_scoped_suggestions(branch, [
+                    "observe_transform_pipeline",
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ]),
+            }
+        if executor._should_guard_more_work_declaration(
+            further_iterations_helpful is True,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "further_iterations_requested",
+                "note": (
+                    "Your declaration says further iterations would be helpful, "
+                    "and this run still has iteration budget. Continue working "
+                    "instead of terminating early. `forced_partial=true` does "
+                    "not override this: if you can name useful next work, take "
+                    "that bigger swing before submitting a partial/hypothesis "
+                    "result."
+                ),
+                "suggested_next_tools": executor._mode_scoped_suggestions(branch, [
+                    "workspace_branch_cards",
+                    "decode_diagnose",
+                    "search_homophonic_anneal",
+                    "observe_transform_suspicion",
+                    "meta_declare_solution",
+                ]),
+            }
+        if executor._should_guard_premature_partial_declaration(
+            confidence,
+            forced_partial,
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "partial_too_early",
+                "note": (
+                    "This is an early low-confidence partial declaration. "
+                    "Keep working and take a bigger swing before stopping: "
+                    "try a broader transform screen, promote/polish the best "
+                    "transformed branch, run a fresh automated route, or make "
+                    "a concrete reading-driven repair. Save forced partial "
+                    "declarations for the final stretch of the run unless the "
+                    "text is already plausibly readable."
+                ),
+                "suggested_next_tools": executor._mode_scoped_suggestions(branch, [
+                    "observe_transform_suspicion",
+                    "search_transform_homophonic",
+                    "search_homophonic_anneal",
+                    "search_automated_solver",
+                    "workspace_branch_cards",
+                    "meta_declare_solution",
+                ]),
+            }
+        return None
+
+    def check_declare_unsolved(
+        self, executor: "WorkspaceToolExecutor", args: dict
+    ) -> dict[str, Any] | None:
+        further_iterations_helpful = bool(args.get("further_iterations_helpful"))
+        if (
+            further_iterations_helpful
+            and executor.max_iterations is not None
+            and executor._current_iteration < executor.max_iterations
+        ):
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "unsolved_but_more_work_requested",
+                "note": (
+                    "You are trying to stop as unsolved while also saying more "
+                    "iterations would help and there is still iteration budget. "
+                    "Take the next high-leverage action instead, or call this "
+                    "again only when the remaining work is genuinely not useful."
+                ),
+                "suggested_next_tools": [
+                    "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                    "search_quagmire3_keyword_alphabet",
+                    "search_transform_homophonic",
+                ],
+            }
+        reports = []
+        for name in executor.workspace.branch_names():
+            if not executor.workspace.has_branch(name):
+                continue
+            branch = executor.workspace.get_branch(name)
+            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                continue
+            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            pending = executor._pending_required_tools_for_branch(name)
+            if pending["pending_required_tools"]:
+                reports.append({
+                    "branch": name,
+                    "cipher_mode": branch.metadata.get("cipher_mode"),
+                    **pending,
+                })
+        if reports and not (
+            executor.max_iterations is not None and executor._current_iteration >= executor.max_iterations
+        ):
+            pending_tools = sorted({
+                tool
+                for report in reports
+                for tool in report.get("pending_required_tools", [])
+            })
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "family_coverage_pending_before_unsolved",
+                "pending_family_coverage": reports,
+                "note": (
+                    "Do not declare the run unsolved while an active "
+                    "cipher-family hypothesis still has required higher-level "
+                    "work pending. Run the pending tools, then stop as unsolved "
+                    "if no coherent branch emerges."
+                ),
+                "suggested_next_tools": [
+                    *pending_tools,
+                    "workspace_hypothesis_next_steps",
+                    "workspace_branch_cards",
+                    "meta_declare_unsolved",
+                ],
+            }
+        null_mask_reports = []
+        for name in executor.workspace.branch_names():
+            if not executor.workspace.has_branch(name):
+                continue
+            branch = executor.workspace.get_branch(name)
+            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
+                continue
+            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            block = executor._pending_null_mask_followup_block(name)
+            if block is not None:
+                null_mask_reports.append({
+                    "branch": name,
+                    "cipher_mode": branch.metadata.get("cipher_mode"),
+                    **block,
+                })
+        if null_mask_reports and not (
+            executor.max_iterations is not None and executor._current_iteration >= executor.max_iterations
+        ):
+            suggested = []
+            for report in null_mask_reports:
+                for tool in report.get("suggested_next_tools", []):
+                    if tool not in suggested:
+                        suggested.append(tool)
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "reason": "null_mask_workflow_pending_before_unsolved",
+                "pending_null_mask_work": null_mask_reports,
+                "note": (
+                    "Do not declare unsolved while an active homophonic/"
+                    "nomenclator hypothesis still has structural null-mask "
+                    "work pending. Run or finish the null-mask review/install "
+                    "loop, compare branches, then stop as unsolved only if no "
+                    "coherent branch emerges."
+                ),
+                "suggested_next_tools": [
+                    *suggested,
+                    "workspace_branch_cards",
+                    "meta_declare_unsolved",
+                ],
+            }
+        return None
+
+
 class WorkspaceToolExecutor:
     """Dispatches v2 tool calls against a Workspace + language resources."""
 
@@ -2174,6 +2635,7 @@ class WorkspaceToolExecutor:
         word_list: list[str],
         pattern_dict: dict[str, list[str]],
         benchmark_context: ScopedBenchmarkContext | None = None,
+        declaration_policy: "DeclarationPolicy | None" = None,
     ) -> None:
         self.workspace = workspace
         self.language = language
@@ -2181,6 +2643,10 @@ class WorkspaceToolExecutor:
         self.word_list = word_list
         self.pattern_dict = pattern_dict
         self.benchmark_context = benchmark_context
+        # Injectable declare-gate policy (A2). Defaults to the full v2 gate
+        # cascade so existing callers/tests see byte-identical behavior; the v3
+        # lead loop injects NoGatesPolicy.
+        self._declaration_policy: DeclarationPolicy = declaration_policy or V2GatePolicy()
 
         # Frequency rank for lookup (1-based; lower = more common)
         self._freq_rank: dict[str, int] = {
@@ -12301,289 +12767,12 @@ class WorkspaceToolExecutor:
         forced_partial = bool(args.get("forced_partial", False))
         if not self.workspace.has_branch(branch):
             return {"error": f"Branch not found: {branch}"}
-        unresolved = self._unresolved_repair_agenda_items(branch)
-        if unresolved:
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "repair_agenda_unresolved",
-                "unresolved_repair_agenda": unresolved,
-                "note": (
-                    "This branch has open/blocked repair agenda items. Before "
-                    "declaring, apply them or mark them held/rejected with "
-                    "repair_agenda_update. If your rationale already explains "
-                    "why the repair should not be applied, make that explicit "
-                    "in the agenda with status `held` or `rejected`, then call "
-                    "meta_declare_solution again."
-                ),
-                "suggested_next_tools": [
-                    "repair_agenda_list",
-                    "repair_agenda_update",
-                    "meta_declare_solution",
-                ],
-            }
-        unrated_transform = self._unrated_transform_finalist_metadata(branch)
-        if unrated_transform is not None:
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "transform_finalist_readability_required",
-                "transform_finalist": unrated_transform,
-                "note": (
-                    "This branch came from transform finalist search, but the "
-                    "agent has not recorded its contextual readability score. "
-                    "Before declaring, call act_rate_transform_finalist for "
-                    "this search_session_id/rank. The rating should say "
-                    "whether the text is coherent prose, a partial clause, "
-                    "word islands, or garbage; numeric scores are not enough."
-                ),
-                "suggested_next_tools": [
-                    "act_rate_transform_finalist",
-                    "search_review_transform_finalists",
-                    "workspace_branch_cards",
-                    "meta_declare_solution",
-                ],
-            }
-        # --- Quick-prerequisite batch: evaluate all three together and report
-        # all unmet ones in a single response.  This replaces the old sequential
-        # cascade (branch_cards → hypothesis_next_steps → word_boundary) which
-        # forced the agent to discover each gate one at a time.
-        quick_prerequisites: list[dict[str, Any]] = []
-
-        if len(self.workspace.branch_names()) > 1 and not self._has_seen_branch_cards(branch):
-            quick_prerequisites.append({
-                "reason": "branch_cards_required",
-                "fix_tool": "workspace_branch_cards",
-                "note": (
-                    "Multiple branches exist. Call workspace_branch_cards to "
-                    "compare readable excerpts and internal scores."
-                ),
-            })
-
-        null_mask_block = self._pending_null_mask_followup_block()
-        if null_mask_block is not None:
-            quick_prerequisites.append({
-                "reason": null_mask_block["reason"],
-                "fix_tool": null_mask_block["suggested_next_tools"][0],
-                "fix_tool_args": null_mask_block.get("suggested_args", {}),
-                "note": null_mask_block["note"],
-                "details": {
-                    key: value for key, value in null_mask_block.items()
-                    if key not in {"status", "note", "suggested_next_tools", "suggested_args"}
-                },
-            })
-
-        hyp_block = self._hypothesis_declaration_block(branch)
-        if hyp_block is not None:
-            quick_prerequisites.append({
-                "reason": "hypothesis_next_steps_required",
-                "fix_tool": "workspace_hypothesis_next_steps",
-                # Include the declaring branch explicitly so the agent calls the
-                # right branch and not an unrelated hypothesis branch.
-                "fix_tool_args": {"branch": branch},
-                "cipher_mode": hyp_block.get("cipher_mode"),
-                "note": (
-                    f"This branch ('{branch}') is a cipher-mode hypothesis. "
-                    f"Call workspace_hypothesis_next_steps(branch='{branch}') "
-                    "to record the playbook and tried tools."
-                ),
-            })
-
-        wb_block = self._word_boundary_declaration_block(
-            branch,
-            confidence=confidence,
-            forced_partial=forced_partial,
-        )
-        if wb_block is not None:
-            quick_prerequisites.append({
-                "reason": "word_boundary_pass_required",
-                "fix_tool": "act_resegment_by_reading",
-                "decoded_stream_preview": wb_block.get("decoded_stream_preview"),
-                "note": (
-                    "No word-boundary overlay on a no-boundary cipher. "
-                    "Call act_resegment_by_reading with your proposed reading."
-                ),
-            })
-
-        if quick_prerequisites:
-            self._pending_declare_prerequisites = {p["reason"] for p in quick_prerequisites}
-            self._pending_declare_branch = branch
-            count = len(quick_prerequisites)
-            primary_reason = (
-                quick_prerequisites[0]["reason"]
-                if count == 1
-                else "prerequisites_required"
-            )
-            if count == 1:
-                action_note = (
-                    f"{quick_prerequisites[0]['note']} "
-                    "Then call meta_declare_solution."
-                )
-            else:
-                tools_list = ", ".join(p["fix_tool"] for p in quick_prerequisites)
-                action_note = (
-                    f"{count} prerequisites unmet. Address ALL of them "
-                    f"({tools_list}), then call meta_declare_solution ONCE — "
-                    "do not re-call it after each individual fix."
-                )
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": primary_reason,
-                "preconditions": quick_prerequisites,
-                "preconditions_unmet": count,
-                "note": action_note,
-                "suggested_next_tools": (
-                    [p["fix_tool"] for p in quick_prerequisites]
-                    + ["meta_declare_solution"]
-                ),
-            }
-
-        family_coverage_block = self._family_coverage_declaration_block(
-            branch,
-            forced_partial=forced_partial,
-        )
-        if family_coverage_block is not None:
-            return family_coverage_block
-        if self._should_guard_declaration_for_reading_workflow(branch, rationale):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "full_reading_workflow_required",
-                "note": (
-                    "Your rationale still mentions word-boundary/alignment "
-                    "issues, but this branch has not gone through the full-"
-                    "reading validation workflow. Before declaring, write your "
-                    "best complete target-language reading and call "
-                    "decode_validate_reading_repair. If it is character-"
-                    "preserving, follow with act_resegment_by_reading. If it "
-                    "changes letters but has the same character count, follow "
-                    "with act_resegment_from_reading_repair, then repair the "
-                    "reported mismatch spans with act_set_mapping/act_bulk_set."
-                ),
-                "suggested_next_tools": [
-                    "decode_validate_reading_repair",
-                    "act_resegment_by_reading",
-                    "act_resegment_from_reading_repair",
-                ],
-            }
-        if (
-            further_iterations_helpful is True
-            and self._declaration_has_untried_transform_work(rationale, further_iterations_note)
-            and not forced_partial
-            and not (self.max_iterations is not None and self._current_iteration >= self.max_iterations)
-        ):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "transform_work_untried",
-                "note": (
-                    "Your declaration says further iterations should try a "
-                    "transposition/period/poly-alphabetic style hypothesis, "
-                    "but this run has not used the available transform tools. "
-                    "Before declaring, inspect transform state and run the "
-                    "mode-appropriate transform screen: "
-                    "search_pure_transposition for transposition-only, or "
-                    "search_transform_homophonic for Zodiac/Z340-style "
-                    "transposition+homophonic. If that screen is not useful, "
-                    "declare again with that negative result in the rationale."
-                ),
-                "suggested_next_tools": [
-                    "observe_transform_pipeline",
-                    "observe_transform_suspicion",
-                    "search_pure_transposition",
-                    "search_transform_homophonic",
-                    "workspace_branch_cards",
-                    "meta_declare_solution",
-                ],
-            }
-        if self._should_guard_low_confidence_declaration(
-            confidence,
-            further_iterations_helpful is True,
-            forced_partial,
-        ):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "low_confidence_more_work_required",
-                "note": (
-                    "This is a low-confidence declaration and you also report "
-                    "that further iterations would likely help. Continue using "
-                    "the remaining budget instead of terminating early. Try a "
-                    "new hypothesis class, compare branches, or mark "
-                    "`further_iterations_helpful=false` only if the remaining "
-                    "work is unlikely to improve the decipherment. Use "
-                    "`forced_partial=true` only for an intentional early "
-                    "partial submission when no useful remaining tool action is "
-                    "available."
-                ),
-                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
-                    "observe_transform_pipeline",
-                    "observe_transform_suspicion",
-                    "search_transform_homophonic",
-                    "search_automated_solver",
-                    "workspace_branch_cards",
-                    "meta_declare_solution",
-                ]),
-            }
-        if self._should_guard_more_work_declaration(
-            further_iterations_helpful is True,
-            forced_partial,
-        ):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "further_iterations_requested",
-                "note": (
-                    "Your declaration says further iterations would be helpful, "
-                    "and this run still has iteration budget. Continue working "
-                    "instead of terminating early. `forced_partial=true` does "
-                    "not override this: if you can name useful next work, take "
-                    "that bigger swing before submitting a partial/hypothesis "
-                    "result."
-                ),
-                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
-                    "workspace_branch_cards",
-                    "decode_diagnose",
-                    "search_homophonic_anneal",
-                    "observe_transform_suspicion",
-                    "meta_declare_solution",
-                ]),
-            }
-        if self._should_guard_premature_partial_declaration(
-            confidence,
-            forced_partial,
-        ):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "branch": branch,
-                "reason": "partial_too_early",
-                "note": (
-                    "This is an early low-confidence partial declaration. "
-                    "Keep working and take a bigger swing before stopping: "
-                    "try a broader transform screen, promote/polish the best "
-                    "transformed branch, run a fresh automated route, or make "
-                    "a concrete reading-driven repair. Save forced partial "
-                    "declarations for the final stretch of the run unless the "
-                    "text is already plausibly readable."
-                ),
-                "suggested_next_tools": self._mode_scoped_suggestions(branch, [
-                    "observe_transform_suspicion",
-                    "search_transform_homophonic",
-                    "search_homophonic_anneal",
-                    "search_automated_solver",
-                    "workspace_branch_cards",
-                    "meta_declare_solution",
-                ]),
-            }
+        # A2: the declare-gate cascade lives behind the injected policy. v2
+        # callers get V2GatePolicy (full cascade, behavior-preserving); v3
+        # injects NoGatesPolicy (returns None → declaration proceeds).
+        gate_block = self._declaration_policy.check_declare_solution(self, args)
+        if gate_block is not None:
+            return gate_block
         self.solution = SolutionDeclaration(
             branch=branch,
             rationale=rationale,
@@ -12608,112 +12797,10 @@ class WorkspaceToolExecutor:
 
     def _tool_meta_declare_unsolved(self, args: dict) -> Any:
         further_iterations_helpful = bool(args.get("further_iterations_helpful"))
-        if (
-            further_iterations_helpful
-            and self.max_iterations is not None
-            and self._current_iteration < self.max_iterations
-        ):
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "reason": "unsolved_but_more_work_requested",
-                "note": (
-                    "You are trying to stop as unsolved while also saying more "
-                    "iterations would help and there is still iteration budget. "
-                    "Take the next high-leverage action instead, or call this "
-                    "again only when the remaining work is genuinely not useful."
-                ),
-                "suggested_next_tools": [
-                    "workspace_hypothesis_next_steps",
-                    "workspace_branch_cards",
-                    "search_quagmire3_keyword_alphabet",
-                    "search_transform_homophonic",
-                ],
-            }
-        reports = []
-        for name in self.workspace.branch_names():
-            if not self.workspace.has_branch(name):
-                continue
-            branch = self.workspace.get_branch(name)
-            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
-                continue
-            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
-                continue
-            pending = self._pending_required_tools_for_branch(name)
-            if pending["pending_required_tools"]:
-                reports.append({
-                    "branch": name,
-                    "cipher_mode": branch.metadata.get("cipher_mode"),
-                    **pending,
-                })
-        if reports and not (
-            self.max_iterations is not None and self._current_iteration >= self.max_iterations
-        ):
-            pending_tools = sorted({
-                tool
-                for report in reports
-                for tool in report.get("pending_required_tools", [])
-            })
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "reason": "family_coverage_pending_before_unsolved",
-                "pending_family_coverage": reports,
-                "note": (
-                    "Do not declare the run unsolved while an active "
-                    "cipher-family hypothesis still has required higher-level "
-                    "work pending. Run the pending tools, then stop as unsolved "
-                    "if no coherent branch emerges."
-                ),
-                "suggested_next_tools": [
-                    *pending_tools,
-                    "workspace_hypothesis_next_steps",
-                    "workspace_branch_cards",
-                    "meta_declare_unsolved",
-                ],
-            }
-        null_mask_reports = []
-        for name in self.workspace.branch_names():
-            if not self.workspace.has_branch(name):
-                continue
-            branch = self.workspace.get_branch(name)
-            if not branch.metadata.get("cipher_mode") and "hypothesis" not in branch.tags:
-                continue
-            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
-                continue
-            block = self._pending_null_mask_followup_block(name)
-            if block is not None:
-                null_mask_reports.append({
-                    "branch": name,
-                    "cipher_mode": branch.metadata.get("cipher_mode"),
-                    **block,
-                })
-        if null_mask_reports and not (
-            self.max_iterations is not None and self._current_iteration >= self.max_iterations
-        ):
-            suggested = []
-            for report in null_mask_reports:
-                for tool in report.get("suggested_next_tools", []):
-                    if tool not in suggested:
-                        suggested.append(tool)
-            return {
-                "status": "blocked",
-                "accepted": False,
-                "reason": "null_mask_workflow_pending_before_unsolved",
-                "pending_null_mask_work": null_mask_reports,
-                "note": (
-                    "Do not declare unsolved while an active homophonic/"
-                    "nomenclator hypothesis still has structural null-mask "
-                    "work pending. Run or finish the null-mask review/install "
-                    "loop, compare branches, then stop as unsolved only if no "
-                    "coherent branch emerges."
-                ),
-                "suggested_next_tools": [
-                    *suggested,
-                    "workspace_branch_cards",
-                    "meta_declare_unsolved",
-                ],
-            }
+        # A2: the declare-unsolved gate cascade lives behind the injected policy.
+        gate_block = self._declaration_policy.check_declare_unsolved(self, args)
+        if gate_block is not None:
+            return gate_block
         best_branch = str(args.get("best_branch") or "").strip() or None
         if best_branch and not self.workspace.has_branch(best_branch):
             return {"error": f"Branch not found: {best_branch}"}

@@ -482,3 +482,81 @@ def test_agent_word_repair_menu_tools_are_ground_truth_free(monkeypatch):
     assert_no_ground_truth_leak(results, GROUND_TRUTH)
     for result in results:
         assert "packet" not in result, "candidate packet leaked into a model-visible result"
+
+
+def test_v3_lead_context_never_sees_ground_truth():
+    """The v3 lead loop rebuilds context from state each turn. Everything it
+    sends to the model (rendered context blocks) and every tool result must be
+    ground-truth free, including under a benign benchmark context."""
+    from agent.model_provider import ModelResponse, ModelUsage, ToolUseBlock
+    from investigation.loop_v3 import run_v3
+    from investigation.sessions import SessionCapabilities
+    from investigation.state import BudgetEntry
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+
+    benchmark_context = ScopedBenchmarkContext(
+        policy="max",
+        prompt=(
+            "Related manuscript context: an 18th-century lodge document, "
+            "German Masonic register. No decrypted plaintext is provided."
+        ),
+    )
+
+    class _RecordingSession:
+        model = "fake-openai"
+        provider_name = "openai"
+
+        def __init__(self) -> None:
+            self.capabilities = SessionCapabilities()
+            self.blocks_seen: list = []
+            self._budget: list = []
+            self._n = 0
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.blocks_seen.append(blocks)
+            self._budget.append(BudgetEntry("lead", "openai", "fake-openai", 10, 2, 0))
+            self._n += 1
+            return ModelResponse(
+                content=[ToolUseBlock(id=f"d{self._n}", name="decode_show",
+                                      input={"branch": "main"})],
+                usage=ModelUsage(10, 2, 0),
+            )
+
+        def usage_entries(self):
+            return list(self._budget)
+
+        def export_transcript(self):
+            return {"provider": "openai", "model": "fake-openai", "exchanges": []}
+
+    session = _RecordingSession()
+    artifact = run_v3(
+        ct,
+        session=session,
+        language="en",
+        max_iterations=2,
+        cipher_id="firewall_v3",
+        prior_context=benchmark_context.prompt,
+        benchmark_context=benchmark_context,
+    )
+
+    assert session.blocks_seen, "session was never called"
+    assert artifact.tool_calls, "no tool calls executed"
+
+    haystacks: list[str] = [benchmark_context.prompt]
+    for blocks in session.blocks_seen:
+        for message in blocks:
+            content = message.get("content")
+            if isinstance(content, str):
+                haystacks.append(content)
+            elif isinstance(content, list):
+                for c in content:
+                    haystacks.append(json.dumps(c))
+    for tc in artifact.tool_calls:
+        haystacks.append(tc.result)
+    haystacks.append(json.dumps(artifact.investigation_state))
+
+    assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
+    # Ground truth is never populated on the v3 artifact by the loop itself.
+    assert artifact.ground_truth is None

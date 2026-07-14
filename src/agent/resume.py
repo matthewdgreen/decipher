@@ -17,6 +17,12 @@ def load_artifact_dict(path: str | Path) -> dict[str, Any]:
         data = json.load(f)
     if not isinstance(data, dict):
         raise ValueError(f"Artifact must be a JSON object: {path}")
+    if data.get("loop_version") == "v3":
+        raise ValueError(
+            "This is a v3 (investigation) artifact; the v2 resume path cannot "
+            "read it. v3 resume loads InvestigationState.from_artifact_dict "
+            "directly (the M6 v2-artifact adapter is out of scope for M1)."
+        )
     return data
 
 

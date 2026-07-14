@@ -61,6 +61,7 @@ class BenchmarkRunnerV2:
         homophonic_budget: str = "full",
         homophonic_refinement: str = "none",
         homophonic_solver: str = "zenith_native",
+        agent_loop: str = "v2",
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
@@ -75,6 +76,7 @@ class BenchmarkRunnerV2:
         self.homophonic_budget = homophonic_budget
         self.homophonic_refinement = homophonic_refinement
         self.homophonic_solver = homophonic_solver
+        self.agent_loop = agent_loop
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -195,19 +197,35 @@ class BenchmarkRunnerV2:
         else:
             auto_ctx = benchmark_ctx
 
-        artifact = run_v2(
-            cipher_text=cipher_text,
-            claude_api=self.api,
-            language=lang,
-            max_iterations=self.max_iterations,
-            cipher_id=test_id,
-            prior_context=prior_context or auto_ctx,
-            automated_preflight=automated_preflight,
-            benchmark_context=benchmark_context,
-            verbose=self.verbose,
-            system_prompt_style=self.system_prompt_style,
-            on_event=on_event,
-        )
+        if self.agent_loop == "v3":
+            from investigation.loop_v3 import run_v3
+
+            artifact = run_v3(
+                cipher_text=cipher_text,
+                claude_api=self.api,
+                language=lang,
+                max_iterations=self.max_iterations,
+                cipher_id=test_id,
+                prior_context=prior_context or auto_ctx,
+                automated_preflight=automated_preflight,
+                benchmark_context=benchmark_context,
+                verbose=self.verbose,
+                on_event=on_event,
+            )
+        else:
+            artifact = run_v2(
+                cipher_text=cipher_text,
+                claude_api=self.api,
+                language=lang,
+                max_iterations=self.max_iterations,
+                cipher_id=test_id,
+                prior_context=prior_context or auto_ctx,
+                automated_preflight=automated_preflight,
+                benchmark_context=benchmark_context,
+                verbose=self.verbose,
+                system_prompt_style=self.system_prompt_style,
+                on_event=on_event,
+            )
 
         # Post-hoc scoring against ground truth — all branches
         ground_truth = test_data.plaintext
