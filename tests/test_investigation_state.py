@@ -230,3 +230,48 @@ def test_resume_identity_holds_with_readings():
     assert ctx1 == ctx2
     # The readings section rendered into the context.
     assert "Recent readings" in json.dumps(ctx1, default=str)
+
+
+# ---------------------------------------------------------------------------
+# M4: experiment queue — load transition + budget bucket
+# ---------------------------------------------------------------------------
+def _state_with_experiment_records():
+    ct = parse_canonical_transcription("S001 S002 S003 | S004 S002 S005")
+    state = InvestigationState(workspace=Workspace(ct), language="en")
+    state.experiment_queue = [
+        {"experiment_id": "run1", "type": "automated_solver", "status": "running",
+         "started_at": 100.0, "elapsed_seconds": None, "branch": "main",
+         "dedup_key": "k1", "collected": False},
+        {"experiment_id": "pend1", "type": "automated_solver", "status": "pending",
+         "started_at": None, "branch": "main", "dedup_key": "k2", "collected": False},
+        {"experiment_id": "done1", "type": "automated_solver", "status": "completed",
+         "started_at": 50.0, "elapsed_seconds": 12.5, "branch": "main",
+         "dedup_key": "k3", "collected": False, "result": {"status": "completed"}},
+    ]
+    return state
+
+
+def test_experiment_records_load_transition_orphans_running_and_pending():
+    state = _state_with_experiment_records()
+    reloaded = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict())))
+    by_id = {r["experiment_id"]: r for r in reloaded.experiment_queue}
+    # running/pending -> orphaned(loaded); completed loads verbatim.
+    assert by_id["run1"]["status"] == "orphaned"
+    assert by_id["run1"]["orphan_reason"] == "loaded"
+    assert by_id["pend1"]["status"] == "orphaned"
+    assert by_id["pend1"]["orphan_reason"] == "loaded"
+    assert by_id["done1"]["status"] == "completed"
+    assert by_id["done1"]["result"] == {"status": "completed"}
+
+
+def test_experiment_budget_bucket_additive():
+    state = _state_with_experiment_records()
+    buckets = state.budget_by_category()
+    bucket = buckets["experiment:automated_solver"]
+    # calls counts records that reached running (started_at set) = run1 + done1.
+    assert bucket["calls"] == 2
+    # elapsed sums completed/failed records only = done1's 12.5.
+    assert bucket["elapsed_seconds"] == 12.5
+    assert bucket["input_tokens"] == 0
+    assert bucket["cost_usd"] == 0.0

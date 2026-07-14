@@ -32,6 +32,7 @@ _FINGERPRINT_CAP = 2500
 _BRANCH_CARDS_CAP = 6000
 _BOARD_CAP = 2000
 _EPISODE_LEDGER_CAP = 2000
+_EXPERIMENT_QUEUE_CAP = 1200
 _READINGS_CAP = 1200
 _EVIDENCE_CAP = 2500
 _WINDOW_CAP = 4000
@@ -91,6 +92,9 @@ explicitly — they do not apply themselves.
 edits and word boundaries a reading implies), and individual words are tested \
 with `hypothesis_test_word` — reach for them instead of hand-editing when a \
 branch mostly reads but has residual errors.
+- Long solver runs go through `experiment_submit` and run in the background \
+while you keep working. Check and adjudicate them with `experiment_collect`, \
+which polls the queue and installs a completed run's branch when you ask.
 
 Finishing
 - When a branch reads as coherent {language_name}, call \
@@ -284,6 +288,59 @@ def _render_episode_ledger(state: InvestigationState, n: int = 3) -> str:
             head += f"\n    snapshots: {snap_names}"
         lines.append(head)
     return _truncate("## Recent episodes\n" + "\n".join(lines), _EPISODE_LEDGER_CAP)
+
+
+def _experiment_config_digest(
+    config: dict[str, Any], defaults: dict[str, Any]
+) -> str:
+    """Non-default config keys, compactly. Skips the stamped ``language`` key and
+    an unset ``model_variant``."""
+    parts = []
+    for key in sorted(config):
+        if key == "language":
+            continue
+        value = config[key]
+        if key == "model_variant" and value is None:
+            continue
+        if key in defaults and defaults[key] == value:
+            continue
+        parts.append(f"{key}={value}")
+    return "{" + ", ".join(parts) + "}" if parts else ""
+
+
+def _render_experiment_queue(state: InvestigationState) -> str:
+    """Render the experiment queue (C2 section after the episode ledger; M4 F7).
+
+    One line per NON-COLLECTED record: id, type, status, source branch, config
+    digest (non-default keys), elapsed, and the summary for completed ones.
+    Empty string when there are no non-collected records so the caller can omit
+    the section.
+    """
+    records = [r for r in state.experiment_queue if not r.get("collected")]
+    if not records:
+        return ""
+    # Lazy import avoids any module-load cycle (experiments imports episodes,
+    # which is loaded before context in the loop_v3 import graph).
+    from investigation.experiments import EXPERIMENT_TYPES
+
+    lines = []
+    for record in records:
+        etype = str(record.get("type") or "?")
+        defaults = (EXPERIMENT_TYPES.get(etype) or {}).get("config_defaults") or {}
+        digest = _experiment_config_digest(record.get("config") or {}, defaults)
+        eid = str(record.get("experiment_id") or "?")
+        status = str(record.get("status") or "?")
+        branch = str(record.get("branch") or "?")
+        elapsed = record.get("elapsed_seconds")
+        el = f" {elapsed}s" if isinstance(elapsed, (int, float)) else ""
+        head = f"- `{eid}` {etype} [{status}] branch=`{branch}`"
+        if digest:
+            head += f" {digest}"
+        head += el
+        if status == "completed" and record.get("summary"):
+            head += f"\n    {record['summary']}"
+        lines.append(head)
+    return _truncate("## Experiment queue\n" + "\n".join(lines), _EXPERIMENT_QUEUE_CAP)
 
 
 def _render_readings(state: InvestigationState, n: int = 3) -> str:
@@ -495,6 +552,9 @@ def build_lead_context(
     episode_section = _render_episode_ledger(state)
     if episode_section:
         view_sections.append(episode_section)
+    experiment_section = _render_experiment_queue(state)
+    if experiment_section:
+        view_sections.append(experiment_section)
     readings_section = _render_readings(state)
     if readings_section:
         view_sections.append(readings_section)

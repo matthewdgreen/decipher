@@ -276,6 +276,28 @@ class InvestigationState:
             bucket["cache_read_tokens"] += entry.cache_read_tokens
             bucket["cost_usd"] += entry.cost()
             bucket["calls"] += 1
+        # M4/A7: experiments are token-free solver compute — no BudgetEntry rows.
+        # Append, additively, one ``experiment:<type>`` bucket per type present in
+        # the queue: ``calls`` counts records that reached running (started_at
+        # set); ``elapsed_seconds`` sums completed/failed records only (F6); token
+        # fields and cost stay 0.
+        for record in self.experiment_queue:
+            cat = f"experiment:{record.get('type') or 'unknown'}"
+            bucket = out.setdefault(
+                cat,
+                {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "cost_usd": 0.0,
+                    "calls": 0,
+                    "elapsed_seconds": 0.0,
+                },
+            )
+            if record.get("started_at") is not None:
+                bucket["calls"] += 1
+            if record.get("status") in {"completed", "failed"}:
+                bucket["elapsed_seconds"] += float(record.get("elapsed_seconds") or 0.0)
         return out
 
     def total_cost(self) -> float:
@@ -349,7 +371,9 @@ class InvestigationState:
                 str(rid): dict(r)
                 for rid, r in (data.get("readings") or {}).items()
             },
-            experiment_queue=[dict(item) for item in data.get("experiment_queue") or []],
+            experiment_queue=_normalize_loaded_experiment_records(
+                data.get("experiment_queue") or []
+            ),
             finalist_sessions=FinalistSessionStore.from_dict(
                 data.get("finalist_sessions")
             ),
@@ -362,6 +386,28 @@ class InvestigationState:
             turn=int(data.get("turn") or 0),
         )
         return state
+
+
+def _normalize_loaded_experiment_records(
+    records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """A9 load transition: any ``pending|running`` experiment record loaded from
+    an artifact becomes ``orphaned(loaded)`` (its worker thread did not survive
+    serialization). Completed/failed/orphaned records load verbatim — results,
+    sessions, and dedup keys stay live so resume-by-resubmission is cheap.
+
+    Implemented inline here (a helper in ``experiments.py`` would import-cycle:
+    experiments imports ``_serialize_branch``/``_restore_branch_into`` from this
+    module).
+    """
+    out: list[dict[str, Any]] = []
+    for item in records:
+        record = dict(item)
+        if record.get("status") in {"pending", "running"}:
+            record["status"] = "orphaned"
+            record["orphan_reason"] = "loaded"
+        out.append(record)
+    return out
 
 
 def _restore_branch_into(ws: Workspace, branch_data: dict[str, Any]) -> None:

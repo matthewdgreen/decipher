@@ -38,6 +38,13 @@ from investigation.episodes import (
     EpisodeSpec,
     run_episode,
 )
+from investigation.experiments import (
+    EXPERIMENT_TOOL_DEFINITIONS,
+    EXPERIMENT_TOOL_NAMES,
+    ExperimentQueue,
+    dispatch_experiment_collect,
+    dispatch_experiment_submit,
+)
 from investigation.reading import Reading
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
@@ -84,6 +91,7 @@ def run_v3(
     token_budget: int = 20000,
     max_tokens: int = 8192,
     episode_models: dict[str, str] | None = None,
+    experiment_queue: ExperimentQueue | None = None,
 ) -> RunArtifact:
     """Run one v3 lead session against a cipher. Returns a full RunArtifact."""
 
@@ -238,7 +246,15 @@ def run_v3(
             state.external_context = "\n\n".join(context_parts)
 
     start = time.time()
-    tools = V3_LEAD_TOOL_DEFINITIONS
+    # F7: assemble the FINAL lead tool list here (never append into episodes.py's
+    # constant — import cycle). The v3 lead sees the episode tools plus the two
+    # experiment-queue tools.
+    tools = V3_LEAD_TOOL_DEFINITIONS + EXPERIMENT_TOOL_DEFINITIONS
+
+    # M4: the experiment queue is constructed per run over the state records
+    # (never serialized). On resume, loaded pending|running records are already
+    # orphaned(loaded); this fresh queue owns no threads.
+    queue = experiment_queue if experiment_queue is not None else ExperimentQueue()
 
     # Full episode ToolCalls accumulate here and merge into artifact.tool_calls
     # at finalize (F10). The compact ledger summary lives in state.episode_ledger.
@@ -384,6 +400,30 @@ def run_v3(
             return _dispatch_episode_run(tu, turn)
         if name == "episode_install_branch":
             return _dispatch_episode_install(tu, turn)
+        # M4: experiment-queue lead tools are routed before executor.execute (the
+        # episode_* pattern); they cannot change the model variant, so they
+        # early-return WITHOUT the mirror below.
+        if name in EXPERIMENT_TOOL_NAMES:
+            args = tu.get("input") or {}
+            # F-4: an unexpected exception (e.g. collect(install=true) over a
+            # corrupted loaded snapshot) must become a structured tool error, not
+            # propagate out of run_v3 and lose the artifact — matching
+            # executor.execute and the episode_* dispatchers. KeyboardInterrupt
+            # still propagates so the R5 interrupt pairing runs.
+            try:
+                if name == "experiment_submit":
+                    result_obj = dispatch_experiment_submit(
+                        queue, state, workspace, executor, args, turn
+                    )
+                else:
+                    result_obj = dispatch_experiment_collect(
+                        queue, state, workspace, executor, args, turn
+                    )
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                result_obj = {"error": f"experiment tool {name} failed: {exc}"}
+            return json.dumps(result_obj, ensure_ascii=False)
         # M3: the lead hosts the composites too (Part 2). state.readings is the
         # lead's readings map; execute_composite logs the ToolCall + returns the
         # dict, which we serialize for the tool_result. Composites cannot change
@@ -415,6 +455,9 @@ def run_v3(
         # F4: adopt hypothesis branches that gained metadata via an install last
         # turn (or a resumed workspace) into the board once per turn.
         state.hypothesis_board.sync_from_workspace(workspace)
+        # M4: harvest completed experiments each turn so they surface as evidence
+        # + context without the lead having to ask (promotes pending -> running).
+        queue.poll(state, turn)
         emit("iteration_start", {"iteration": turn}, outer_iteration=turn)
 
         messages = build_lead_context(
@@ -579,6 +622,23 @@ def run_v3(
 
     # --- finalize ---
     artifact.finished_at = time.time()
+
+    # M4/A9 experiment-queue finalize — ordering pinned (F6). (1) one last poll
+    # WITHOUT promotion (harvest already-completed results — this makes
+    # post-resume resubmission cheap), (2) flip every remaining pending|running
+    # record to orphaned, (3) guarded env restore — ALL before artifact.experiments
+    # and artifact.investigation_state are set.
+    queue.poll(state, turn, promote=False)
+    orphan_reason = "interrupted" if artifact.status == "stopped" else "run_ended"
+    for record in state.experiment_queue:
+        if record.get("status") in {"pending", "running"}:
+            record["status"] = "orphaned"
+            record["orphan_reason"] = orphan_reason
+    env_warning = queue.finalize_env_restore()
+    if env_warning:
+        emit("experiment_env_override_retained", {"message": env_warning})
+    artifact.experiments = [dict(record) for record in state.experiment_queue]
+
     # F10: full episode tool calls are merged into the artifact (with episode_id
     # set and iteration = the launching lead turn); the compact ledger summary
     # rides in artifact.episodes / state.

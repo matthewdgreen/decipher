@@ -661,3 +661,83 @@ def test_v3_episode_surface_never_sees_ground_truth():
     system_prompt = _episode_system_prompt(spec)
 
     assert_no_ground_truth_leak([context_text, system_prompt], GROUND_TRUTH)
+
+
+# ---------------------------------------------------------------------------
+# M4 Part 6: experiment specs and results are leak-checked surfaces (C6).
+# ---------------------------------------------------------------------------
+def test_experiment_surfaces_never_leak_ground_truth():
+    from analysis import dictionary, pattern
+    from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+    from investigation.context import _render_experiment_queue
+    from investigation.experiments import (
+        EXPERIMENT_TYPES,
+        ExperimentQueue,
+        dispatch_experiment_collect,
+        dispatch_experiment_submit,
+        register_experiment_type,
+    )
+    from investigation.state import InvestigationState
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    ws = Workspace(cipher_text=ct)
+    state = InvestigationState(workspace=ws, language="en")
+    # A benign benchmark context (never the plaintext answer).
+    state.external_context = (
+        "Related manuscript context: an 18th-century lodge document. "
+        "No decrypted plaintext is provided."
+    )
+
+    dict_path = dictionary.get_dictionary_path("en")
+    word_set = dictionary.load_word_set(dict_path) if dict_path else set()
+    word_list = pattern.load_word_list(dict_path) if dict_path else []
+    executor = WorkspaceToolExecutor(
+        workspace=ws, language="en", word_set=word_set, word_list=word_list,
+        pattern_dict=pattern.build_pattern_dictionary(word_list),
+        declaration_policy=NoGatesPolicy(),
+        finalist_sessions=state.finalist_sessions,
+    )
+
+    null_step = {
+        "name": "search_null_masks", "status": "completed",
+        "selected": {"decryption": "BENIGN READING", "mask": [1],
+                     "validation_score_v2": 0.5, "selection_score": 0.4},
+        "top_finalists": [
+            {"mask": [1], "status": "completed", "decryption": "BENIGN READING",
+             "validation_score_v2": 0.5, "selection_score": 0.4, "candidate_id": "m1"},
+        ],
+        "evaluated_rows": [], "candidate_symbols": [],
+        "packet": {"secret": "artifact-only"},
+    }
+
+    def runner(cipher, snapshot, config):
+        return {"status": "completed", "solver": "zenith_native",
+                "final_decryption": "BENIGN READING", "error_message": "",
+                "key": {"0": 0}, "steps": [{"name": "route_automated_solver"}, null_step]}
+
+    register_experiment_type("fw", {"config_schema": {"type": "object", "properties": {}},
+                                    "config_defaults": {}, "runner": runner, "description": "fw"})
+    try:
+        q = ExperimentQueue(synchronous=True)
+        sub = dispatch_experiment_submit(q, state, ws, executor,
+                                         {"type": "fw", "branch": "main"}, 1)
+        # (a) rendered queue section, (b) submit result.
+        queue_section = _render_experiment_queue(state)
+        # (c) collect packet with an installed null-mask case.
+        packet = dispatch_experiment_collect(
+            q, state, ws, executor,
+            {"experiment_id": sub["experiment_id"], "install": True}, 2)
+    finally:
+        EXPERIMENT_TYPES.pop("fw", None)
+
+    haystacks = [
+        queue_section,
+        json.dumps(sub, default=str),
+        json.dumps(packet, default=str),
+        # (d) raw record dicts.
+        json.dumps(state.experiment_queue, default=str),
+        json.dumps(state.finalist_sessions.to_dict(), default=str),
+    ]
+    assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)

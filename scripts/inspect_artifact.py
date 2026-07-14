@@ -346,6 +346,29 @@ def format_readings(artifact: dict) -> str:
     return "\n".join(lines)
 
 
+def format_experiments(artifact: dict) -> str:
+    """Minimal experiments table for v3 artifacts (M4). Empty string when none."""
+    experiments = artifact.get("experiments") or []
+    if not experiments:
+        return ""
+    lines = ["Experiments:"]
+    lines.append(
+        f"  {'id':<14} {'type':<18} {'status':<12} {'elapsed':>8}  summary"
+    )
+    for exp in experiments:
+        eid = str(exp.get("experiment_id") or "?")
+        etype = str(exp.get("type") or "?")
+        status = str(exp.get("status") or "?")
+        reason = exp.get("orphan_reason") or exp.get("error")
+        if status in {"orphaned", "failed"} and reason:
+            status = f"{status}:{str(reason)[:10]}"
+        elapsed = exp.get("elapsed_seconds")
+        el = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "n/a"
+        summary = str(exp.get("summary") or "").replace("\n", " ")[:50]
+        lines.append(f"  {eid:<14} {etype:<18} {status:<12} {el:>8}  {summary}")
+    return "\n".join(lines)
+
+
 # v3 composite actions (M3): rendered alongside the tool summary so their usage
 # and residence (lead turn vs episode) is visible in the inspector.
 _COMPOSITE_TOOL_NAMES = ("hypothesis_apply_reading", "hypothesis_test_word",
@@ -1104,6 +1127,10 @@ def inspect_one(
     readings_table = format_readings(artifact)
     if readings_table:
         print(readings_table)
+        print()
+    experiments_table = format_experiments(artifact)
+    if experiments_table:
+        print(experiments_table)
         print()
     composite_table = format_composite_calls(artifact)
     if composite_table:

@@ -154,6 +154,7 @@ class RunArtifact:
     investigation_state: dict[str, Any] | None = None
     episodes: list[dict[str, Any]] = field(default_factory=list)  # v3 episode ledger (M2)
     readings: list[dict[str, Any]] = field(default_factory=list)  # v3 stored Readings (M3)
+    experiments: list[dict[str, Any]] = field(default_factory=list)  # v3 experiment queue (M4)
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
