@@ -52,11 +52,58 @@ from investigation.reading import Reading
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
-from investigation.context import build_lead_context, build_v3_system_prompt
+from investigation.context import (
+    build_lead_context,
+    build_v3_system_prompt,
+    late_turn_attestation_target,
+)
 from investigation.sessions import ModelSession, session_factory
 from investigation.state import AttestationRecord, BudgetEntry, InvestigationState
 from models.cipher_text import CipherText
 from workspace import Workspace
+
+
+def _resync_attestation_branch_on_rename(
+    workspace: Workspace,
+    attestations: list[dict[str, Any]],
+    target: str,
+    name: str,
+) -> None:
+    """M6 F5: re-point verify-attestation ``branch`` labels after a rename.
+
+    ``episode_install_branch`` renames the branch it installs from its intended
+    ``target`` to ``name`` when ``target`` is already taken (collision). The
+    dispatcher owns both that rename and the verify-attestation writes; those
+    records are matched at declare time PRIMARILY by ``content_hash`` — the
+    ``branch`` field is the observability label and the source of the
+    stale-vs-required message.
+
+    When a rename moved attested content onto ``name``, re-point ONLY the records
+    whose hash matches the freshly-installed branch AND no longer matches the
+    (different, or now-absent) branch still holding ``target``. This never steals
+    a label from a branch that legitimately still owns its attested content — so
+    the stale-vs-required label and the declaration-carried attestation keep
+    naming a live branch, with no mislabel. Pure over its arguments (mutates the
+    passed-in records list in place).
+    """
+    if name == target:
+        return
+    installed_hash = _candidate_content_hash(
+        _decoded_text_for_panel(workspace, name)
+    )
+    target_hash = (
+        _candidate_content_hash(_decoded_text_for_panel(workspace, target))
+        if workspace.has_branch(target)
+        else None
+    )
+    if installed_hash == target_hash:
+        return
+    for record in attestations:
+        if (
+            record.get("branch") == target
+            and record.get("content_hash") == installed_hash
+        ):
+            record["branch"] = name
 
 
 def _tool_status(result: str) -> str:
@@ -308,11 +355,26 @@ def run_v3(
         # sha256 here, and build a spec whose inputs are ONLY the candidate text
         # + language (branches=[] -> empty episode workspace). No scores reach
         # the verify prompt.
+        #
+        # M6 F6: a verify episode attests EXACTLY ONE branch — the attestation it
+        # writes is keyed to that branch's decoded content. Silently picking the
+        # first EXISTING name out of a multi-name list (the old
+        # ``next(has_branch)`` behavior) mislabels the attestation when the lead
+        # meant a different, mistyped, or not-yet-created branch (e.g.
+        # ``["typo", "main"]`` would attest ``main``). Require arity 1 and
+        # existence, both as structured errors.
         branches = list(args.get("branches") or [])
-        branch = next((b for b in branches if workspace.has_branch(b)), None)
-        if branch is None:
+        if len(branches) != 1:
             return json.dumps(
-                {"error": "verify requires one existing branch in `branches`"}
+                {"error": (
+                    "verify requires exactly one branch in `branches`; got "
+                    f"{len(branches)}: {branches}"
+                )}
+            )
+        branch = branches[0]
+        if not workspace.has_branch(branch):
+            return json.dumps(
+                {"error": f"verify branch {branch!r} does not exist"}
             )
         candidate = _decoded_text_for_panel(workspace, branch)
         content_hash = _candidate_content_hash(candidate)
@@ -481,6 +543,12 @@ def run_v3(
         _restore_branch_into(workspace, install_snap)
         if card_fields:
             state.hypothesis_board.update(workspace, name, **card_fields)
+        # M6 F5: this dispatcher owns BOTH the collision-rename above AND the
+        # verify-attestation writes; keep attestation branch labels in sync when a
+        # rename moved attested content to a new name (see the helper's docstring).
+        _resync_attestation_branch_on_rename(
+            workspace, state.verify_attestations, target, name
+        )
         # Episode-local repair-agenda additions ride in the packet (A10): merge
         # ONLY the residuals targeting the branch being installed (F5), remapped
         # to the installed name. A blanket re-append + relabel would duplicate an
@@ -568,6 +636,25 @@ def run_v3(
         messages = build_lead_context(
             state, executor, turn, token_budget, max_iterations
         )
+
+        # M6 F7: make the F9 late-turn attestation hint artifact-visible for the
+        # bake-off. The context builder RENDERS the reminder (render-only, no
+        # emitter); the LOOP re-evaluates the SAME predicate (shared pure helper —
+        # no context->loop back-channel) and emits the LoopEvent itself so the
+        # analysis can see when the lead was reminded to verify with turns to
+        # spare.
+        hint_branch = late_turn_attestation_target(
+            state, executor, turn, max_iterations
+        )
+        if hint_branch is not None:
+            emit(
+                "late_turn_attestation_hint",
+                {
+                    "branch": hint_branch,
+                    "turns_remaining": max_iterations - turn,
+                },
+                outer_iteration=turn,
+            )
 
         try:
             response = session.send(messages, tools=tools, max_tokens=max_tokens)

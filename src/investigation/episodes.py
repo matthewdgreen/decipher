@@ -526,7 +526,13 @@ EPISODE_RUN_TOOL = {
         "properties": {
             "kind": {"type": "string", "enum": list(EPISODE_KINDS.keys())},
             "goal": {"type": "string"},
-            "branches": {"type": "array", "items": {"type": "string"}},
+            "branches": {
+                "type": "array", "items": {"type": "string"},
+                "description": (
+                    "Branch name(s) the episode operates on. A `verify` episode "
+                    "requires EXACTLY ONE existing branch (the candidate to attest)."
+                ),
+            },
             "search_tool": {"type": "string"},
             "context_note": {"type": "string"},
             "max_tool_calls": {"type": "integer"},

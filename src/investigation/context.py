@@ -463,18 +463,19 @@ def _render_window(
     return _truncate(header + rendered, _WINDOW_CAP)
 
 
-def _render_late_turn_attestation_hint(
+def late_turn_attestation_target(
     state: InvestigationState, executor: Any, turn: int, max_turns: int | None
-) -> str:
-    """F9: with ≤2 turns left and no fresh attestation on the best branch, remind
-    the lead to run verify now.
+) -> str | None:
+    """F9/M6-F7 predicate (pure): the best branch that lacks a fresh attestation
+    when ≤2 turns remain, else ``None``.
 
-    Mitigates the late-turn failure mode: a lead that first attempts declaration
-    on its final turn is blocked with zero turns left → fallback_declared
-    (strictly worse than M4 on that path). Empty string when it does not apply.
+    Factored out so the render below AND the v3 loop evaluate the SAME predicate.
+    Per M6 F7 the LOOP re-evaluates this and emits the ``late_turn_attestation_hint``
+    LoopEvent itself — context.py stays render-only, with no context->loop
+    back-channel (the loop simply calls this pure function).
     """
     if not max_turns or (max_turns - turn) > 2:
-        return ""
+        return None
     from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
 
     best, _scores = _best_branch_for_auto_declare(
@@ -486,6 +487,22 @@ def _render_late_turn_attestation_hint(
     if any(
         a.get("content_hash") == current_hash for a in state.verify_attestations
     ):
+        return None
+    return best
+
+
+def _render_late_turn_attestation_hint(
+    state: InvestigationState, executor: Any, turn: int, max_turns: int | None
+) -> str:
+    """F9: with ≤2 turns left and no fresh attestation on the best branch, remind
+    the lead to run verify now.
+
+    Mitigates the late-turn failure mode: a lead that first attempts declaration
+    on its final turn is blocked with zero turns left → fallback_declared
+    (strictly worse than M4 on that path). Empty string when it does not apply.
+    """
+    best = late_turn_attestation_target(state, executor, turn, max_turns)
+    if not best:
         return ""
     return (
         "## Attestation reminder\n"

@@ -1535,9 +1535,11 @@ context; nothing it does touches the lead workspace until the lead calls
 A `verify` episode has an EMPTY toolset and sees ONLY the candidate plaintext
 (rendered by the lead with the pinned `decoded_text_v1` renderer =
 `_decoded_text_for_panel`) plus the target language — never the cipher, key,
-scores, or ground truth. It returns `{coherence (0–10), reader_accepts,
-gloss, anomalies, confidence}`. On success the lead dispatcher writes an
-`AttestationRecord` (matched later by content hash).
+scores, or ground truth. It requires EXACTLY ONE existing branch in `branches`
+(the candidate to attest); an arity ≠ 1 list or a missing branch is a structured
+error (it never silently attests the wrong branch). It returns `{coherence
+(0–10), reader_accepts, gloss, anomalies, confidence}`. On success the lead
+dispatcher writes an `AttestationRecord` (matched later by content hash).
 
 Under the v3 M5 `AttestationPolicy`, `meta_declare_solution` on a branch is
 allowed only when a verify attestation exists whose content hash matches the
