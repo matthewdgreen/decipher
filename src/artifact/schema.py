@@ -140,6 +140,16 @@ class RunArtifact:
     total_cache_read_tokens: int = 0
     estimated_cost_usd: float = 0.0
 
+    # Served-model / safety-gate provenance (schema-additive; eval integrity).
+    # ``model`` above is the REQUESTED model. ``served_models`` records the
+    # distinct model ids actually served across all API calls (from
+    # ``ModelResponse.raw.model``, when the provider exposes it), in first-seen
+    # order. ``safety_gate_fired`` is True when any served model does not match
+    # the requested model (e.g. requested claude-fable-5, served claude-opus-*)
+    # — such runs are excluded from the model-comparison table as contaminated.
+    served_models: list[str] = field(default_factory=list)
+    safety_gate_fired: bool = False
+
     # Post-hoc scoring (filled by benchmark runner against ground truth)
     ground_truth: str | None = None
     char_accuracy: float | None = None

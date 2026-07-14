@@ -1338,6 +1338,53 @@ def test_run_v2_returns_partial_artifact_on_keyboard_interrupt():
     assert any(event.event == "interrupted" for event in artifact.loop_events)
 
 
+class _ServedModelAPI:
+    """Fake ClaudeAPI whose response advertises a (possibly different) served model."""
+
+    def __init__(self, requested: str, served: str) -> None:
+        self.model = requested
+        self._served = served
+
+    def send_message(self, messages, tools=None, system="", max_tokens=4096):
+        return SimpleNamespace(
+            model=self._served,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=2),
+            content=[SimpleNamespace(type="text", text="thinking, no declaration yet.")],
+        )
+
+
+def test_run_v2_records_served_model_without_gate_when_matching():
+    # Served model matches the requested model -> recorded, no safety gate (F7).
+    alpha = Alphabet.from_text("ABCABC")
+    ct = CipherText(raw="ABCABC", alphabet=alpha, separator=None)
+    api = _ServedModelAPI("claude-sonnet-4-6", "claude-sonnet-4-6-20260101")
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="served_ok",
+    )
+    assert artifact.served_models == ["claude-sonnet-4-6-20260101"]
+    assert artifact.safety_gate_fired is False
+
+
+def test_run_v2_flags_safety_gate_when_served_model_differs():
+    # Requested Fable but served Opus -> the safety gate fired; flag it (F7).
+    alpha = Alphabet.from_text("ABCABC")
+    ct = CipherText(raw="ABCABC", alphabet=alpha, separator=None)
+    api = _ServedModelAPI("claude-fable-5", "claude-opus-4-8")
+    artifact = run_v2(
+        cipher_text=ct,
+        claude_api=api,  # type: ignore[arg-type]
+        language="en",
+        max_iterations=1,
+        cipher_id="served_gate",
+    )
+    assert artifact.served_models == ["claude-opus-4-8"]
+    assert artifact.safety_gate_fired is True
+
+
 def test_workspace_panel_shows_metadata_decoded_branches():
     alpha = Alphabet.from_text("ABCABC")
     workspace = Workspace(CipherText(raw="ABCABC", alphabet=alpha, separator=None))

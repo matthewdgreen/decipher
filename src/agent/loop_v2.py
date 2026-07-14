@@ -21,6 +21,8 @@ from agent.model_provider import (
     _collect_assistant_blocks,
     ensure_model_provider,
     estimate_provider_cost,
+    served_model_from_response,
+    served_model_matches,
 )
 from agent.loop_shared import (
     _best_branch_for_auto_declare,
@@ -1094,6 +1096,16 @@ def run_v2(
             artifact.total_output_tokens,
             artifact.total_cache_read_tokens,
         )
+        # Served-model / safety-gate provenance (F7). record_usage is the single
+        # choke point called after BOTH send sites (the main send and the
+        # retry), so hooking it here covers every API call in the run. The gate
+        # is context-dependent, so this is a per-call runtime check.
+        served = served_model_from_response(response)
+        if served is not None:
+            if served not in artifact.served_models:
+                artifact.served_models.append(served)
+            if not served_model_matches(model_provider.model, served):
+                artifact.safety_gate_fired = True
 
     for iteration in range(1, max_iterations + 1):
         workspace.set_iteration(iteration)

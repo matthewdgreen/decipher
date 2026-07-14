@@ -83,6 +83,46 @@ class ModelResponse:
     raw: Any = None
 
 
+def served_model_from_response(response: Any) -> str | None:
+    """Return the model id the provider actually served, if it exposes one.
+
+    All three primary providers (Anthropic Message, OpenAI ChatCompletion /
+    Responses objects) expose ``.model`` on their raw response. ``ModelResponse``
+    round-trips the raw object via ``.raw``. Returns ``None`` when unavailable
+    (e.g. a provider that does not surface it) so callers treat "unknown" as
+    "not a gate hit" rather than a false positive.
+    """
+    if response is None:
+        return None
+    raw = response.raw if isinstance(response, ModelResponse) else response
+    served = getattr(raw, "model", None)
+    if served is None and isinstance(raw, dict):
+        served = raw.get("model")
+    if served is None:
+        return None
+    served = str(served).strip()
+    return served or None
+
+
+def served_model_matches(requested: str, served: str | None) -> bool:
+    """Whether a served model id matches the requested one (no safety gate).
+
+    Providers routinely append a date/build suffix to the served id
+    (``gpt-5.5`` -> ``gpt-5.5-2026-01-01``; ``claude-fable-5`` ->
+    ``claude-fable-5-20260101``), so a prefix relationship in either direction
+    counts as a match. A missing served id is treated as a match (unknown, not a
+    gate hit). A genuinely different family (``claude-fable-5`` served as
+    ``claude-opus-4-8``) does not match -> the gate fired.
+    """
+    if not served:
+        return True
+    req = (requested or "").strip().lower()
+    srv = served.strip().lower()
+    if not req:
+        return True
+    return req == srv or srv.startswith(req) or req.startswith(srv)
+
+
 class AgentModelProvider(Protocol):
     """Minimal model-provider surface needed by the agent harness."""
 
