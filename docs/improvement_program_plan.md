@@ -484,6 +484,48 @@ misuse failures; net tool count drops by ~6.
 
 ---
 
+## Investigator-mode structured model experiments (user-requested 2026-07-14)
+
+When INV mode reaches its structured/ablation experiments (the
+playbook-vs-no-playbook and model-tier study — see the investigator
+design's calibration layer and the "scaffold as structure" analysis),
+compare three models: **`claude-fable-5`, `gpt-5.6-sol`, `gpt-5.5`**.
+This tests the model-tier-dependence hypothesis (playbook value likely
+scales inversely with capability) on fresh testgen analogs, not
+memorization-poisoned famous ciphers.
+
+**Fable prerequisites — a hard gate before any Fable numbers are
+trustworthy:**
+
+1. **Verify Anthropic support end-to-end in the decipher harness.** The
+   whole program has run on OpenAI; the Anthropic path (v2
+   `ClaudeModelProvider`, v3 `AnthropicSession` — the latter was
+   fake-test-only through M2 for lack of credits) must be exercised
+   live. Blocker: the Anthropic account had no credits this session —
+   confirm credits + that `claude-fable-5` routes to the Anthropic
+   provider and completes a real agentic run.
+2. **Served-model safety-gate detection (evaluation-integrity
+   requirement).** The Anthropic safety gate can silently downgrade
+   Fable→Opus; a contaminated "Fable" run must never enter the bake-off
+   as Fable. Mechanism: capture the *served* model from each Anthropic
+   response (`response.model` reflects what actually served, not what we
+   requested) through `ModelResponse` into the artifact — per-call and as
+   a run-level `safety_gate_fired`/`served_model_mismatch` flag set when
+   served ≠ requested (e.g. requested `claude-fable-5`, served
+   `claude-opus-*`). This is the harness-internal automation of the
+   manual sub-agent transcript grep (`grep '"model"' … | uniq -c`) the
+   orchestration strategy already uses. Then: benchmark/experiment
+   summaries surface the flag prominently, and the model bake-off
+   EXCLUDES gate-fired runs (or reports them as a separate
+   contaminated-Fable bucket) so the comparison measures Fable, not a
+   mix. Add a test: a fake Anthropic response whose `model` differs from
+   the request sets the flag; a matching one does not. Reusable for any
+   future Fable-in-harness run, not just INV.
+
+Scope: this is a prerequisite slice for the INV model experiments, not
+part of INV-0 itself; sequence it when the INV experiment harness is
+built.
+
 ## Deferred / explicitly out of scope for this program
 
 - Logogram/reading-holes/phrase-hypothesis promotion (revisit after Phase 4).
