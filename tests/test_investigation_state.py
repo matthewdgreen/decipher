@@ -182,3 +182,51 @@ def test_finalist_sessions_and_board_survive_roundtrip():
         "a": 1, "packets": []}
     cards = {c["branch"]: c for c in restored.hypothesis_cards()}
     assert cards["h"]["cipher_mode"] == "substitution"
+
+
+def test_readings_round_trip_and_m2_artifact_loads():
+    """M3: state.readings round-trips; an M2 artifact (no readings key) loads."""
+    from investigation.reading import Reading, ReadingFragment
+    ct = parse_canonical_transcription("S001 S002 | S003 S002")
+    state = InvestigationState(workspace=Workspace(ct), language="en")
+    reading = Reading(branch="main", source="episode:e1", created_turn=2,
+                      fragments=[ReadingFragment(text="HELLO", start=0, end=5)],
+                      holes=["tail"], overall_confidence=0.8)
+    state.readings[reading.reading_id] = reading.to_dict()
+
+    restored = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict()))
+    )
+    assert reading.reading_id in restored.readings
+    rd = Reading.from_dict(restored.readings[reading.reading_id])
+    assert rd.branch == "main"
+    assert rd.fragments[0].start == 0
+    assert rd.overall_confidence == 0.8
+
+    # An M2 artifact predating the readings key loads with an empty map.
+    m2_dict = state.to_artifact_dict()
+    del m2_dict["readings"]
+    reloaded = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(m2_dict))
+    )
+    assert reloaded.readings == {}
+
+
+def test_resume_identity_holds_with_readings():
+    """Resume identity (M1) extends over the readings section (M3)."""
+    from investigation.reading import Reading, ReadingFragment
+    state = _rich_state()
+    reading = Reading(branch="main", source="lead", created_turn=3,
+                      fragments=[ReadingFragment(text="HELLO WORLD")],
+                      overall_confidence=0.6)
+    state.readings[reading.reading_id] = reading.to_dict()
+    ex1 = _executor_for(state)
+    ctx1 = build_lead_context(state, ex1, turn=5, token_budget=8000)
+    reloaded = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict()))
+    )
+    ex2 = _executor_for(reloaded)
+    ctx2 = build_lead_context(reloaded, ex2, turn=5, token_budget=8000)
+    assert ctx1 == ctx2
+    # The readings section rendered into the context.
+    assert "Recent readings" in json.dumps(ctx1, default=str)

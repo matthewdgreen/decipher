@@ -270,6 +270,21 @@ def hamming_distance(left: str, right: str) -> int:
     return sum(1 for a, b in zip(left, right) if a != b)
 
 
+def _rank_bonus(dictionary_rank: int) -> float:
+    """Rank bonus ``1/rank^0.35`` with the A1 non-dictionary guard.
+
+    Defined ONCE (M3 A1): when ``dictionary_rank < 1`` (an injected,
+    non-dictionary word probed by ``hypothesis_test_word``) the bonus is 0.0 —
+    never a fractional power of a non-positive rank, which yields a complex
+    number and crashes ``max()``. For ``rank >= 1`` this is byte-identical to the
+    previous inline ``1.0 / max(1.0, dictionary_rank ** 0.35)``, so every existing
+    ``propose_word_repairs`` caller is unchanged.
+    """
+    if dictionary_rank < 1:
+        return 0.0
+    return 1.0 / max(1.0, dictionary_rank ** 0.35)
+
+
 def load_dictionary(path: Path, min_len: int, max_len: int) -> dict[int, list[tuple[str, int]]]:
     """Load a frequency-ordered word list bucketed by length (rank == line no.)."""
     words_by_len: dict[int, list[tuple[str, int]]] = {}
@@ -413,7 +428,7 @@ def generate_word_hypotheses(
                         if key in seen:
                             continue
                         seen.add(key)
-                        rank_bonus = 1.0 / max(1.0, dictionary_rank ** 0.35)
+                        rank_bonus = _rank_bonus(dictionary_rank)
                         score = length - distance * 1.7 + rank_bonus * 3.0 + float(window.get("damage_score") or 0.0)
                         local_rows.append(
                             WordHypothesis(
@@ -677,7 +692,7 @@ def max_word_evidence_distance(length: int) -> int:
 def word_evidence_score(*, length: int, distance: int, rank: int) -> float:
     if distance > max_word_evidence_distance(length):
         return 0.0
-    rank_bonus = 1.0 / max(1.0, rank ** 0.35)
+    rank_bonus = _rank_bonus(rank)
     # Exact short function words should count, but near long content words
     # should be allowed to compete because these candidates are damaged basins.
     raw = length - 2.25 * distance
@@ -1624,3 +1639,170 @@ def propose_word_repairs(
     for rank, row in enumerate(edited, start=1):
         packets.append(packet_from_word_repair_row(row, rank=rank, source_branch=source_branch))
     return packets
+
+
+def score_injected_word_hypothesis(
+    *,
+    pages: list[PageBundle],
+    shared_key: dict[int, int],
+    dictionary_path: str | Path,
+    start: int,
+    end: int,
+    target: str,
+    language: str = "de",
+    config: WordRepairConfig | None = None,
+    mask: tuple[str, ...] = (),
+    consensus: dict[str, dict[str, Any]] | None = None,
+    alphabet: Alphabet | None = None,
+    source_branch: str | None = None,
+    model_path: Any = _MODEL_PATH_UNSET,
+) -> dict[str, Any]:
+    """Score ONE injected ``(start, end, target)`` word hypothesis (M3 A1).
+
+    Additive agent-face entry point for ``hypothesis_test_word``'s injected path
+    — a word the damaged-window menu did not itself propose. The candidate is
+    built against the FIRST page's projection (``project_text_sources``, the
+    projection-coordinate stream), converted to per-symbol edits with the SAME
+    :func:`implied_edits` the menu uses, then flows through the IDENTICAL
+    :func:`_score_variant_row` / :func:`adjudicate_repair` / acceptance / packet
+    plumbing as :func:`propose_word_repairs`. The composite re-composes no
+    scoring outside this library.
+
+    Parity details (A1): ``consensus`` defaults empty (the menu path passes an
+    empty consensus); the collateral word-island index is built from
+    ``load_dictionary(path, 3, max_word_len)`` (min_len 3), NOT the hypothesis
+    dictionary; non-dictionary rank semantics live in :func:`_rank_bonus`
+    (``rank < 1`` -> bonus 0.0). ``adjudicate_repair`` already calls
+    ``target_word_repairs`` internally, so no separate call is made here.
+
+    Returns ``{"verdict", "packet", "in_dictionary", "dictionary_rank",
+    "observed", "target", "edits"}``. ``verdict`` is ``"no_valid_edits"`` when
+    the implied edit set is empty (masked / stable symbol, conflicting
+    assignment, or the span already reads as ``target``); otherwise ``"accept"``
+    / ``"hold_for_review"`` from the library acceptance verdict. ``packet`` is a
+    :class:`CandidatePacket` (``None`` on ``no_valid_edits``).
+    """
+    config = config or WordRepairConfig()
+    consensus = consensus or {}
+    if alphabet is None:
+        alphabet = alphabet_from_pages(pages)
+    baseline_key = dict(shared_key)
+    baseline_mask = tuple(sorted(str(symbol) for symbol in mask))
+
+    page = pages[0]
+    text, sources = project_text_sources(page, baseline_key, baseline_mask)
+    observed = text[start:end]
+
+    # Dictionary rank (length-bucketed, rank == 1-based line number). A word not
+    # in the hypothesis dictionary gets rank 0 (< 1 -> non-dictionary path).
+    hypothesis_dictionary = load_dictionary(
+        dictionary_path, config.min_word_len, config.max_word_len
+    )
+    dictionary_rank = 0
+    for word, rank in hypothesis_dictionary.get(len(target), []):
+        if word == target:
+            dictionary_rank = rank
+            break
+    in_dictionary = dictionary_rank >= 1
+
+    edits = implied_edits(
+        observed=observed,
+        target=target,
+        sources=sources[start:end],
+        consensus=consensus,
+        alphabet=alphabet,
+        baseline_key=baseline_key,
+        baseline_mask=baseline_mask,
+        allow_stable_edits=config.allow_stable_edits,
+    )
+    distance = hamming_distance(observed, target)
+    if not edits:
+        return {
+            "verdict": "no_valid_edits",
+            "packet": None,
+            "in_dictionary": in_dictionary,
+            "dictionary_rank": dictionary_rank,
+            "observed": observed,
+            "target": target,
+            "edits": [],
+        }
+
+    length = len(target)
+    local_score = length - distance * 1.7 + _rank_bonus(dictionary_rank) * 3.0
+    hypothesis = WordHypothesis(
+        test_id=str(page.test_id),
+        window_start=start,
+        start=start,
+        end=end,
+        observed=observed,
+        target=target,
+        edits=edits,
+        distance=distance,
+        dictionary_rank=dictionary_rank,
+        local_score=round(local_score, 6),
+    )
+    hypothesis_set = (hypothesis,)
+    edit_support = build_edit_support([hypothesis])
+
+    collateral_dictionary = load_dictionary(dictionary_path, 3, config.max_word_len)
+    collateral_index = build_word_evidence_index(collateral_dictionary)
+
+    # Apply the edit set to a fresh key (baseline_key never mutated).
+    key = dict(baseline_key)
+    variant_mask = set(baseline_mask)
+    edit_labels: list[str] = []
+    edit_map = dict(edits)
+    for symbol, letter in sorted(edit_map.items()):
+        token_id = next_token_id(pages, symbol)
+        before = current_assignment(symbol, token_id, key, tuple(sorted(variant_mask)))
+        apply_assignment(symbol, token_id, letter, key, variant_mask)
+        edit_labels.append(f"{symbol}:{before}->{letter}")
+
+    baseline_variant = _score_variant_row(
+        pages=pages, key=baseline_key, mask=baseline_mask, edits=[],
+        hypothesis_set=(), language=language, model_path=model_path,
+    )
+    variant = _score_variant_row(
+        pages=pages, key=key, mask=tuple(sorted(variant_mask)), edits=edit_labels,
+        hypothesis_set=hypothesis_set, language=language, model_path=model_path,
+    )
+    adjudication = adjudicate_repair(
+        pages=pages, before_key=baseline_key, after_key=key,
+        mask=tuple(sorted(variant_mask)), hypotheses=hypothesis_set,
+        edits=edit_map, word_index=collateral_index,
+        edit_support=edit_support, language=language,
+    )
+    adjudication["word_hypothesis_score"] = variant["word_hypothesis_score"]
+    adjudication["adjudication_score"] = round(
+        adjudication_score(adjudication, variant["word_hypothesis_score"]), 6
+    )
+    adjudication["adjudication_no_target_score"] = round(
+        adjudication_no_target_score(adjudication), 6
+    )
+    adjudication["target_leverage_score"] = round(
+        float(adjudication["adjudication_score"])
+        - float(adjudication["adjudication_no_target_score"]),
+        6,
+    )
+    variant["repair_adjudication"] = adjudication
+
+    annotate_acceptance(
+        [variant],
+        baseline=baseline_variant,
+        robust_margin=config.acceptance_margin,
+        min_page_drop=config.min_page_drop,
+        max_illusion_increase=config.max_illusion_increase,
+        allow_pair_acceptance=config.allow_pair_acceptance,
+    )
+    annotate_repair_evidence([variant], baseline=baseline_variant)
+    packet = packet_from_word_repair_row(variant, rank=1, source_branch=source_branch)
+    accepted = bool((variant.get("repair_acceptance") or {}).get("accepted"))
+    return {
+        "verdict": "accept" if accepted else "hold_for_review",
+        "packet": packet,
+        "in_dictionary": in_dictionary,
+        "dictionary_rank": dictionary_rank,
+        "observed": observed,
+        "target": target,
+        "edits": list(edit_labels),
+    }

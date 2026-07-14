@@ -32,6 +32,12 @@ from agent.tools_v2 import (
     VALID_TOOL_NAMES,
     NoGatesPolicy,
     WorkspaceToolExecutor,
+    _json,
+)
+from investigation.actions import (
+    COMPOSITE_TOOL_DEFINITIONS,
+    COMPOSITE_TOOL_NAMES,
+    execute_composite,
 )
 from investigation.sessions import session_factory
 from investigation.state import (
@@ -124,6 +130,10 @@ _READING_SCHEMA = {
             "type": "object",
             "properties": {
                 "window": {"type": "string"},
+                # A8: optional nullable-integer token indices alongside the M2
+                # `window` string. `required` stays ["text"] (additive schema).
+                "start": {"type": ["integer", "null"]},
+                "end": {"type": ["integer", "null"]},
                 "text": {"type": "string"},
                 "confidence": {"type": ["number", "string"]},
             },
@@ -133,6 +143,29 @@ _READING_SCHEMA = {
         "overall_confidence": {"type": "number"},
     },
     "required": ["reading_text", "fragments", "holes", "overall_confidence"],
+}
+
+# M3 Part 6: the `repair` episode result schema.
+_REPAIR_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "applied": {"type": "boolean"},
+        "best_branch": {"type": ["string", "null"]},
+        "edits": {"type": "array", "items": {"type": "string"}},
+        "verdicts": {"type": "array", "items": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string"},
+                "target": {"type": "string"},
+                "verdict": {"type": "string"},
+                "rationale": {"type": "string"},
+            },
+            "required": ["action", "target", "verdict"],
+        }},
+        "collateral": {"type": "object"},
+        "notes": {"type": "string"},
+    },
+    "required": ["applied", "best_branch", "edits", "verdicts", "notes"],
 }
 
 _COMPARE_SCHEMA = {
@@ -208,12 +241,14 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "You are a READING worker. Draft the best plain-language reading of "
             "the given branch's decode: report the reading text, per-window "
             "fragments with confidence, remaining holes, and an overall "
-            "confidence. You do NOT change the key — you only read it."
+            "confidence. Report each fragment's start/end token indices when you "
+            "know them. You do NOT change the key — you only read it."
         ),
     },
     "compare": {
         "toolset": frozenset({
             "decode_show", "score_panel", "score_dictionary", "workspace_compare",
+            "branch_adjudicate",
         }),
         "budget": EpisodeBudget(8, 2048, 120.0),
         "result_schema": _COMPARE_SCHEMA,
@@ -222,6 +257,25 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "You are a COMPARE worker. Rank the given branches by how well their "
             "decodes read as the target language; report a ranking, a verdict and "
             "rationale per branch, and the winner (or null if none is convincing)."
+        ),
+    },
+    "repair": {
+        "toolset": frozenset({
+            "hypothesis_test_word", "hypothesis_apply_reading", "branch_adjudicate",
+            "decode_show", "decode_letter_stats", "decode_unmapped_report",
+            "corpus_lookup_word", "corpus_word_candidates",
+            "score_panel", "score_dictionary",
+        }),
+        "budget": EpisodeBudget(12, 4096, 240.0),
+        "result_schema": _REPAIR_SCHEMA,
+        "tier": "repair",
+        "contract": (
+            "You are a REPAIR worker. Compile the given reading / word hypotheses "
+            "into applied edits on FORKS with hypothesis_apply_reading and "
+            "hypothesis_test_word, verify collateral with branch_adjudicate and "
+            "the score/decode tools, and report which edits you applied, the best "
+            "resulting branch, per-action verdicts, collateral summaries, and "
+            "notes. Nothing you fork lands until the lead installs it."
         ),
     },
 }
@@ -243,6 +297,11 @@ def episode_toolset_for(kind: str, inputs: dict[str, Any]) -> set[str]:
 
 def _validate_episode_toolset(toolset: set[str]) -> None:
     for name in sorted(toolset):
+        # M3: v3 composite actions are valid episode tools (they clear the
+        # _FORBIDDEN_PREFIXES / excluded / hypothesis-handler checks by
+        # construction, so accept them before the v2 allowlist check).
+        if name in COMPOSITE_TOOL_NAMES:
+            continue
         if name not in VALID_TOOL_NAMES:
             raise ValueError(f"episode toolset has unknown tool: {name!r}")
         if name in EPISODE_EXCLUDED_TOOLS:
@@ -422,6 +481,8 @@ EPISODE_RUN_TOOL = {
             "search_tool": {"type": "string"},
             "context_note": {"type": "string"},
             "max_tool_calls": {"type": "integer"},
+            # A1/M3: hand a stored Reading to a (repair) episode by id.
+            "reading_id": {"type": "string"},
         },
         "required": ["kind", "goal", "branches"],
     },
@@ -445,9 +506,13 @@ EPISODE_INSTALL_TOOL = {
     },
 }
 
-# The lead sees the full v2 toolset PLUS the two episode lead tools (v2 never
-# sees these).
-V3_LEAD_TOOL_DEFINITIONS = TOOL_DEFINITIONS + [EPISODE_RUN_TOOL, EPISODE_INSTALL_TOOL]
+# The lead sees the full v2 toolset PLUS the two episode lead tools AND the v3
+# composite actions (v2 never sees any of these).
+V3_LEAD_TOOL_DEFINITIONS = (
+    TOOL_DEFINITIONS
+    + [EPISODE_RUN_TOOL, EPISODE_INSTALL_TOOL]
+    + COMPOSITE_TOOL_DEFINITIONS
+)
 
 
 def _submit_result_tool_def(result_schema: dict[str, Any]) -> dict[str, Any]:
@@ -515,6 +580,22 @@ def build_episode_context(
             parts.append(
                 f"## Decode window (branch `{first}`)\n```\n{window}\n```"
             )
+    reading = spec.inputs.get("reading")
+    if isinstance(reading, dict) and reading.get("reading_id"):
+        # Part 6: a compiled reading summary for the repair worker (id,
+        # confidence, holes, <=400-char text). Firewall-covered (proposed
+        # plaintext only, never ground truth).
+        from investigation.reading import Reading
+        compiled = Reading.from_dict(reading)
+        holes = compiled.holes
+        holes_text = ("; ".join(holes)[:200]) if holes else "(none)"
+        parts.append(
+            "## Reading to apply\n"
+            f"- id `{compiled.reading_id}` on branch `{compiled.branch}` "
+            f"(overall_confidence={compiled.overall_confidence})\n"
+            f"- holes: {holes_text}\n"
+            f"- text: {compiled.full_text[:400]}"
+        )
     note = str(spec.inputs.get("context_note") or "").strip()
     if note:
         parts.append("## Note\n" + note)
@@ -604,6 +685,14 @@ def run_episode(
     branches = list(spec.inputs.get("branches") or [])
     toolset = set(spec.toolset)
 
+    # A1/M3: an episode-LOCAL readings map, seeded from the injected reading DICT
+    # (Part 6). Workers never see or write state.readings; composites inside the
+    # episode read/apply readings only from this local map.
+    episode_readings: dict[str, dict[str, Any]] = {}
+    injected_reading = spec.inputs.get("reading")
+    if isinstance(injected_reading, dict) and injected_reading.get("reading_id"):
+        episode_readings[str(injected_reading["reading_id"])] = injected_reading
+
     # A9: episode SETUP runs inside the crash guard too — a malformed branch
     # snapshot, a raising session builder (F6), or a _branch_card failure while
     # rendering the context must become episode_failed(runner_error), never a
@@ -637,8 +726,11 @@ def run_episode(
         if session is None:
             session = session_factory(f"episode:{kind}", provider, system_prompt)
 
-        # tool defs = toolset tools + the virtual submit tool.
-        tool_defs = [d for d in TOOL_DEFINITIONS if d["name"] in toolset]
+        # tool defs = toolset tools (v2 + v3 composites) + the virtual submit tool.
+        tool_defs = [
+            d for d in (TOOL_DEFINITIONS + COMPOSITE_TOOL_DEFINITIONS)
+            if d["name"] in toolset
+        ]
         tool_defs = tool_defs + [_submit_result_tool_def(spec.result_schema)]
 
         context_text = build_episode_context(spec, episode_ws, executor)
@@ -787,6 +879,24 @@ def run_episode(
                             "episode_failed", failure_reason="schema_mismatch",
                             raw_text=json.dumps(proposed, ensure_ascii=False, default=str),
                         )
+                    if name in COMPOSITE_TOOL_NAMES and name in toolset:
+                        # Part 2/A4: dispatch a composite ONLY when it is in this
+                        # episode's toolset; the ToolCall log + hint filtering
+                        # happen inside execute_composite. Anything else falls
+                        # through to executor.execute (the M2 neutral off-toolset
+                        # rejection + _gate_hits telemetry apply for free).
+                        result_obj = execute_composite(
+                            name, args, executor=executor,
+                            state_readings=episode_readings,
+                            turn=launching_turn, tool_use_id=tu["id"],
+                        )
+                        tool_call_count += 1
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tu["id"],
+                            "content": _json(result_obj),
+                        })
+                        continue
                     # Ordinary tool: executor turns handler exceptions into error
                     # JSON already (A9); call count is checked below.
                     result = executor.execute(name, args, tool_use_id=tu["id"])

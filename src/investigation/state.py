@@ -176,6 +176,10 @@ class InvestigationState:
     experiment_queue: list[dict[str, Any]] = field(default_factory=list)
     # M2: append-only ledger of completed episodes (one dict per episode).
     episode_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # M3: stored Readings (reading_id -> Reading.to_dict()). The lead compiles a
+    # reading-kind episode result into a Reading here; workers never write it
+    # (A1). Absent from M2 artifacts -> empty on load (extends resume identity).
+    readings: dict[str, dict[str, Any]] = field(default_factory=dict)
     # A1/A10: the state-owned finalist-session store (shared with the lead and
     # every episode executor) and the single-writer hypothesis board. Both
     # survive resume so a search episode's finalist session and the hypothesis
@@ -296,6 +300,7 @@ class InvestigationState:
             "recent_exchanges": self.recent_exchanges,
             "repair_agenda": [dict(item) for item in self.repair_agenda],
             "episode_ledger": [dict(item) for item in self.episode_ledger],
+            "readings": {rid: dict(r) for rid, r in self.readings.items()},
             "experiment_queue": [dict(item) for item in self.experiment_queue],
             "finalist_sessions": self.finalist_sessions.to_dict(),
             "model_variant": self.model_variant,
@@ -340,6 +345,10 @@ class InvestigationState:
             recent_exchanges=[dict(m) for m in data.get("recent_exchanges") or []],
             repair_agenda=[dict(item) for item in data.get("repair_agenda") or []],
             episode_ledger=[dict(item) for item in data.get("episode_ledger") or []],
+            readings={
+                str(rid): dict(r)
+                for rid, r in (data.get("readings") or {}).items()
+            },
             experiment_queue=[dict(item) for item in data.get("experiment_queue") or []],
             finalist_sessions=FinalistSessionStore.from_dict(
                 data.get("finalist_sessions")

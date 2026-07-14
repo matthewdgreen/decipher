@@ -95,6 +95,50 @@ def test_episode_spec_validates_toolset():
                         toolset=["decode_show", bad])
 
 
+def test_repair_kind_toolset_includes_composites():
+    spec = EpisodeSpec("repair", "compile the reading",
+                       inputs={"branches": ["main"]})
+    assert "hypothesis_apply_reading" in spec.toolset
+    assert "hypothesis_test_word" in spec.toolset
+    assert "branch_adjudicate" in spec.toolset
+    assert spec.budget.max_tool_calls == 12
+    assert EPISODE_KINDS["repair"]["tier"] == "repair"
+
+
+def test_compare_kind_gained_branch_adjudicate():
+    spec = EpisodeSpec("compare", "rank", inputs={"branches": ["main"]})
+    assert "branch_adjudicate" in spec.toolset
+
+
+def test_reading_schema_accepts_optional_start_end():
+    ok = {
+        "reading_text": "HELLO",
+        "fragments": [
+            {"window": "w1", "start": 0, "end": 5, "text": "HELLO", "confidence": 0.9},
+            {"text": "WORLD"},  # start/end omitted -> still valid (required=[text])
+        ],
+        "holes": [],
+        "overall_confidence": 0.6,
+    }
+    assert validate_against_schema(ok, EPISODE_KINDS["reading"]["result_schema"]) == []
+    bad = {"reading_text": "X", "fragments": [{"start": "no", "text": "Y"}],
+           "holes": [], "overall_confidence": 0.5}
+    errs = validate_against_schema(bad, EPISODE_KINDS["reading"]["result_schema"])
+    assert any("start" in e for e in errs)
+
+
+def test_repair_schema_shape():
+    schema = EPISODE_KINDS["repair"]["result_schema"]
+    ok = {"applied": True, "best_branch": "reading_x_main", "edits": ["c=R"],
+          "verdicts": [{"action": "apply_reading", "target": "main", "verdict": "kept"}],
+          "collateral": {}, "notes": "done"}
+    assert validate_against_schema(ok, schema) == []
+    bad = {"applied": "yes", "best_branch": 3, "edits": "x",
+           "verdicts": [{"action": "a"}], "notes": "n"}
+    errs = validate_against_schema(bad, schema)
+    assert errs  # multiple type/required failures
+
+
 def test_search_toolset_includes_companions():
     ts = episode_toolset_for("search", {"search_tool": "search_pure_transposition"})
     assert "search_pure_transposition" in ts
@@ -667,6 +711,91 @@ def test_episode_fakes_assert_contract_and_no_lead_bleed():
     # Toolset listed.
     for name in spec.toolset:
         assert name in system
+
+
+def _cat_on_state():
+    """A keyed monoalphabetic state whose `main` decodes to CAT ON."""
+    raw = "abc de"
+    alpha = Alphabet.from_text(raw, ignore_chars={" "})
+    ct = CipherText(raw=raw, alphabet=alpha, separator=" ")
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    for sym, letter in {"a": "C", "b": "A", "c": "T", "d": "O", "e": "N"}.items():
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+    return InvestigationState(workspace=ws, language="en")
+
+
+def test_repair_episode_applies_reading_via_composite():
+    """A scripted repair worker compiles an injected reading onto a fork with
+    hypothesis_apply_reading; the composite ToolCall is episode_id-stamped and
+    the fork rides out as a branch snapshot."""
+    from investigation.reading import Reading, ReadingFragment
+    state = _cat_on_state()
+    reading = Reading(branch="main", source="lead", created_turn=1,
+                      fragments=[ReadingFragment(text="CAR ON")])  # c: T->R
+    reading_dict = reading.to_dict()
+    spec = EpisodeSpec("repair", "apply the reading",
+                       inputs={"branches": ["main"], "reading": reading_dict})
+    repair_result = {
+        "applied": True, "best_branch": None, "edits": ["c=R"],
+        "verdicts": [{"action": "apply_reading", "target": "main", "verdict": "kept"}],
+        "collateral": {}, "notes": "applied CAR ON",
+    }
+    scripts = [
+        [ToolUseBlock(id="r1", name="hypothesis_apply_reading",
+                      input={"branch": "main", "reading_id": reading.reading_id})],
+        [_submit(repair_result, tid="r2")],
+    ]
+    res = run_episode(spec, state, session=EpisodeFake(scripts, role="episode:repair"))
+    assert res.status == "ok"
+    assert res.result["edits"] == ["c=R"]
+    # The composite ToolCall was logged and episode_id-stamped (A11).
+    composite = next(tc for tc in res.tool_calls
+                     if tc.tool_name == "hypothesis_apply_reading")
+    assert composite.episode_id == res.episode_id
+    payload = json.loads(composite.result)
+    assert payload["status"] == "ok" and payload["edits"] == ["c=R"]
+    fork = payload["fork"]
+    # The reading fork rides out as a branch snapshot (nothing lands in the lead).
+    assert any(s["name"] == fork for s in res.branch_snapshots)
+    assert not state.workspace.has_branch(fork)  # lead workspace untouched
+
+
+def test_repair_episode_context_renders_injected_reading():
+    from investigation.reading import Reading, ReadingFragment
+    from investigation.episodes import build_episode_context, _build_episode_workspace
+    from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+    state = _cat_on_state()
+    reading = Reading(branch="main", source="lead", created_turn=1,
+                      fragments=[ReadingFragment(text="CAR ON")],
+                      holes=["h1"], overall_confidence=0.55)
+    spec = EpisodeSpec("repair", "apply", inputs={
+        "branches": ["main"], "reading": reading.to_dict()})
+    ep_ws = _build_episode_workspace(state, ["main"])
+    ex = WorkspaceToolExecutor(ep_ws, "en", set(), [], {},
+                               declaration_policy=NoGatesPolicy())
+    text = build_episode_context(spec, ep_ws, ex)
+    assert "Reading to apply" in text
+    assert reading.reading_id in text
+    assert "CAR ON" in text
+
+
+def test_off_toolset_composite_falls_through_to_executor_rejection():
+    """A composite NOT in the episode's toolset falls through to executor.execute
+    and gets the M2 neutral off-toolset rejection + _gate_hits telemetry."""
+    state = _cat_on_state()
+    good = {"findings": [], "suspected_modes": [], "recommended_next": []}
+    # survey toolset has no composites.
+    scripts = [
+        [ToolUseBlock(id="t1", name="hypothesis_test_word",
+                      input={"branch": "main", "word": "CAT"})],
+        [_submit(good, tid="b")],
+    ]
+    res = run_episode(EpisodeSpec("survey", "g", inputs={"branches": ["main"]}),
+                      state, session=EpisodeFake(scripts))
+    reject = next(tc for tc in res.tool_calls if tc.tool_name == "hypothesis_test_word")
+    payload = json.loads(reject.result)
+    assert "not in this episode's toolset" in payload["error"]
 
 
 def test_episode_context_has_no_lead_transcript_bleed():

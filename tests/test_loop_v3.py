@@ -242,6 +242,177 @@ def test_run_v3_resume_uses_state_language_not_param():
     assert art.investigation_state["language"] == "de"
 
 
+# ---------------------------------------------------------------------------
+# M3: reading -> repair -> install -> branch_adjudicate -> declare (end-to-end)
+# ---------------------------------------------------------------------------
+import re
+
+from investigation import sessions as sessions_mod
+from workspace import Workspace
+
+
+BOUNDARY_ACTUATORS = {
+    "act_split_cipher_word", "act_merge_cipher_words", "act_merge_decoded_words",
+    "act_apply_boundary_candidate", "act_resegment_by_reading",
+    "act_resegment_from_reading_repair", "act_resegment_window_by_reading",
+}
+
+
+def _keyed_catton_state():
+    raw = "abcde"  # single word, decodes to CATON
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    from investigation.state import InvestigationState
+    for sym, letter in {"a": "C", "b": "A", "c": "T", "d": "O", "e": "N"}.items():
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+    state = InvestigationState(workspace=ws, language="en")
+    state.turn = 0
+    return ct, state
+
+
+def _episode_id_from_blocks(blocks, kind):
+    for m in blocks:
+        for b in (m.get("content") or []):
+            if isinstance(b, dict) and b.get("type") == "tool_result":
+                try:
+                    data = json.loads(b.get("content") or "")
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if isinstance(data, dict) and data.get("kind") == kind:
+                    return data
+    return None
+
+
+class ReadingWorkerFake:
+    def __init__(self, provider, system, role):
+        self.model = "fake-reader"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []; self._n = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:reading", "openai", "fake-reader", 10, 5, 0))
+        step = self._n; self._n += 1
+        if step == 0:
+            content = [ToolUseBlock(id="rd0", name="decode_show", input={"branch": "main"})]
+        else:
+            content = [ToolUseBlock(id="rd1", name="episode_submit_result", input={
+                "result": {"reading_text": "CATTON",
+                           "fragments": [{"text": "CATTON"}],
+                           "holes": ["extra T"], "overall_confidence": 0.6},
+                "summary": "read as CATTON",
+            })]
+        return ModelResponse(content=content, usage=ModelUsage(10, 5, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+class RepairWorkerFake:
+    """Reads the injected reading id from its context and applies it."""
+
+    def __init__(self, provider, system, role):
+        self.model = "fake-repair"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []; self._n = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:repair", "openai", "fake-repair", 10, 5, 0))
+        step = self._n; self._n += 1
+        if step == 0:
+            text = json.dumps(blocks, default=str)
+            m = re.search(r"id `([0-9a-f]{12})`", text)
+            rid = m.group(1) if m else None
+            content = [ToolUseBlock(id="rp0", name="hypothesis_apply_reading",
+                                    input={"branch": "main", "reading_id": rid})]
+        else:
+            content = [ToolUseBlock(id="rp1", name="episode_submit_result", input={
+                "result": {"applied": True, "best_branch": None, "edits": [],
+                           "verdicts": [{"action": "apply_reading", "target": "main",
+                                         "verdict": "kept"}],
+                           "collateral": {}, "notes": "applied reading fork"},
+                "summary": "applied the reading",
+            })]
+        return ModelResponse(content=content, usage=ModelUsage(10, 5, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+class _RepairLead:
+    def __init__(self):
+        self.model = "fake-lead"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []; self._step = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("lead", "openai", "fake-lead", 100, 10, 0))
+        step = self._step; self._step += 1
+        if step == 0:
+            content = [ToolUseBlock(id="e1", name="episode_run", input={
+                "kind": "reading", "goal": "read main", "branches": ["main"]})]
+        elif step == 1:
+            reading = _episode_id_from_blocks(blocks, "reading")
+            content = [ToolUseBlock(id="e2", name="episode_run", input={
+                "kind": "repair", "goal": "apply reading", "branches": ["main"],
+                "reading_id": reading["reading_id"]})]
+        elif step == 2:
+            repair = _episode_id_from_blocks(blocks, "repair")
+            fork = next(s for s in repair["snapshots"] if s.startswith("reading_"))
+            content = [ToolUseBlock(id="e3", name="episode_install_branch", input={
+                "episode_id": repair["episode_id"], "branch": fork,
+                "as_name": "repaired"})]
+        elif step == 3:
+            content = [ToolUseBlock(id="e4", name="branch_adjudicate", input={
+                "branches": ["main", "repaired"]})]
+        else:
+            content = [ToolUseBlock(id="e5", name="meta_declare_solution", input={
+                "branch": "repaired", "rationale": "repaired reads well",
+                "self_confidence": 0.8})]
+        return ModelResponse(content=content, usage=ModelUsage(100, 10, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end():
+    sessions_mod.register_session_builder("episode:reading", ReadingWorkerFake)
+    sessions_mod.register_session_builder("episode:repair", RepairWorkerFake)
+    try:
+        ct, state = _keyed_catton_state()
+        art = run_v3(ct, session=_RepairLead(), language="en", max_iterations=8,
+                     cipher_id="v3_repair", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:reading", None)
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    # Reading was compiled + stored by the lead (A1: workers never write it).
+    assert art.readings and art.readings[0]["fragments"][0]["text"] == "CATTON"
+    reading_id = art.readings[0]["reading_id"]
+
+    # Two episodes: reading (ok) then repair (ok).
+    assert [e["kind"] for e in art.episodes] == ["reading", "repair"]
+    assert all(e["status"] == "ok" for e in art.episodes)
+
+    # The repaired fork was installed into the lead workspace as `repaired`.
+    assert any(b.name == "repaired" for b in art.branches)
+
+    # The composite ran inside the repair episode (episode_id-stamped) AND on the
+    # lead (branch_adjudicate, iteration = lead turn 4).
+    apply_calls = [tc for tc in art.tool_calls if tc.tool_name == "hypothesis_apply_reading"]
+    assert apply_calls and apply_calls[0].episode_id is not None
+    adjudicate = next(tc for tc in art.tool_calls if tc.tool_name == "branch_adjudicate")
+    assert adjudicate.episode_id is None and adjudicate.iteration == 4
+
+    # The repair episode's residual agenda merged into state.repair_agenda on
+    # install, remapped to the installed branch name.
+    residual = [i for i in art.repair_agenda if i.get("kind") == "reading_residual"]
+    assert residual and residual[0]["branch"] == "repaired"
+
+    # No v2 boundary actuator was ever called across the whole v3 run.
+    called = {tc.tool_name for tc in art.tool_calls}
+    assert BOUNDARY_ACTUATORS.isdisjoint(called)
+    assert art.status == "solved"
+
+
 def test_run_v3_interrupt_pairs_all_tool_results(monkeypatch):
     """R5: a mid-batch interrupt pairs every tool_use with a stopped result."""
     from agent import tools_v2

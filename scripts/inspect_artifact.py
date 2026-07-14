@@ -325,6 +325,61 @@ def format_episodes(artifact: dict) -> str:
     return "\n".join(lines)
 
 
+def format_readings(artifact: dict) -> str:
+    """Minimal readings table for v3 artifacts (M3). Empty string when none."""
+    readings = artifact.get("readings") or []
+    if not readings:
+        return ""
+    lines = ["Readings:"]
+    lines.append(f"  {'id':<14} {'branch':<18} {'conf':>5} {'holes':>5}  preview")
+    for r in readings:
+        rid = str(r.get("reading_id") or "?")
+        branch = str(r.get("branch") or "?")
+        conf = r.get("overall_confidence")
+        conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "n/a"
+        holes = len(r.get("holes") or [])
+        preview = " ".join(
+            str(f.get("text") or "") for f in (r.get("fragments") or [])
+            if isinstance(f, dict)
+        ).replace("\n", " ")[:50]
+        lines.append(f"  {rid:<14} {branch:<18} {conf_s:>5} {holes:>5}  {preview}")
+    return "\n".join(lines)
+
+
+# v3 composite actions (M3): rendered alongside the tool summary so their usage
+# and residence (lead turn vs episode) is visible in the inspector.
+_COMPOSITE_TOOL_NAMES = ("hypothesis_apply_reading", "hypothesis_test_word",
+                         "branch_adjudicate")
+
+
+def format_composite_calls(artifact: dict) -> str:
+    """Compact rendering of every v3 composite-action call. Empty when none."""
+    calls = [
+        tc for tc in (artifact.get("tool_calls") or [])
+        if str(tc.get("tool_name") or "") in _COMPOSITE_TOOL_NAMES
+    ]
+    if not calls:
+        return ""
+    lines = ["Composite actions:"]
+    for tc in calls:
+        name = str(tc.get("tool_name") or "?")
+        where = f"episode {tc.get('episode_id')}" if tc.get("episode_id") else f"lead t{tc.get('iteration')}"
+        try:
+            result = json.loads(tc.get("result") or "")
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        status = result.get("status") or result.get("verdict") or "?"
+        extra = ""
+        if name == "hypothesis_apply_reading":
+            extra = f"edits={result.get('edits')} fork={result.get('fork')}"
+        elif name == "hypothesis_test_word":
+            extra = f"verdict={result.get('verdict')} menu_backed={result.get('menu_backed')}"
+        elif name == "branch_adjudicate":
+            extra = f"ranking={result.get('ranking')}"
+        lines.append(f"  {name:<26} [{where}] {status}  {extra}")
+    return "\n".join(lines)
+
+
 def format_tool_summary(timeline: list[dict]) -> str:
     counts: Counter = Counter()
     gate_counts: Counter = Counter()
@@ -1045,6 +1100,14 @@ def inspect_one(
     episodes_table = format_episodes(artifact)
     if episodes_table:
         print(episodes_table)
+        print()
+    readings_table = format_readings(artifact)
+    if readings_table:
+        print(readings_table)
+        print()
+    composite_table = format_composite_calls(artifact)
+    if composite_table:
+        print(composite_table)
         print()
     print(format_tool_summary(timeline))
     print()

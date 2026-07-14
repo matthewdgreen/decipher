@@ -32,6 +32,7 @@ _FINGERPRINT_CAP = 2500
 _BRANCH_CARDS_CAP = 6000
 _BOARD_CAP = 2000
 _EPISODE_LEDGER_CAP = 2000
+_READINGS_CAP = 1200
 _EVIDENCE_CAP = 2500
 _WINDOW_CAP = 4000
 _EXTERNAL_CAP = 4000
@@ -86,6 +87,10 @@ episode runs in an isolated copy of the branches you name and returns a result \
 summary plus branch snapshots; nothing it does touches your workspace until you \
 call `episode_install_branch`. Integrate an episode's findings and snapshots \
 explicitly — they do not apply themselves.
+- Readings are applied with `hypothesis_apply_reading` (one fork with the key \
+edits and word boundaries a reading implies), and individual words are tested \
+with `hypothesis_test_word` — reach for them instead of hand-editing when a \
+branch mostly reads but has residual errors.
 
 Finishing
 - When a branch reads as coherent {language_name}, call \
@@ -281,6 +286,37 @@ def _render_episode_ledger(state: InvestigationState, n: int = 3) -> str:
     return _truncate("## Recent episodes\n" + "\n".join(lines), _EPISODE_LEDGER_CAP)
 
 
+def _render_readings(state: InvestigationState, n: int = 3) -> str:
+    """Render the last ``n`` stored Readings (M3 Part 1; after the episode ledger).
+
+    Id, branch, overall_confidence, hole count, and a <=120-char preview. Empty
+    string when there are no readings so the caller can omit the section.
+    """
+    readings = sorted(
+        state.readings.values(),
+        key=lambda r: (int(r.get("created_turn") or 0), str(r.get("reading_id") or "")),
+    )[-n:]
+    if not readings:
+        return ""
+    lines = []
+    for reading in readings:
+        rid = str(reading.get("reading_id") or "?")
+        branch = str(reading.get("branch") or "?")
+        conf = reading.get("overall_confidence")
+        holes = reading.get("holes") or []
+        fragments = reading.get("fragments") or []
+        preview = " ".join(
+            str(f.get("text") or "") for f in fragments if isinstance(f, dict)
+        ).strip()[:120]
+        head = (
+            f"- `{rid}` branch=`{branch}` confidence={conf} holes={len(holes)}"
+        )
+        if preview:
+            head += f"\n    {preview}"
+        lines.append(head)
+    return _truncate("## Recent readings\n" + "\n".join(lines), _READINGS_CAP)
+
+
 def _render_evidence(state: InvestigationState, n: int) -> str:
     entries = state.evidence_log[-n:]
     if not entries:
@@ -459,6 +495,9 @@ def build_lead_context(
     episode_section = _render_episode_ledger(state)
     if episode_section:
         view_sections.append(episode_section)
+    readings_section = _render_readings(state)
+    if readings_section:
+        view_sections.append(readings_section)
     view_sections += [
         _render_evidence(state, evidence_entries),
         _render_window(state, executor, turn, window_tokens),

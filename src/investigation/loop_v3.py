@@ -31,12 +31,14 @@ from agent.model_provider import (
 )
 from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
 from investigation.board import CARD_MIRROR_KEYS
+from investigation.actions import COMPOSITE_TOOL_NAMES, execute_composite
 from investigation.episodes import (
     EPISODE_KINDS,
     V3_LEAD_TOOL_DEFINITIONS,
     EpisodeSpec,
     run_episode,
 )
+from investigation.reading import Reading
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
@@ -255,17 +257,22 @@ def run_v3(
     def _dispatch_episode_run(tu: dict[str, Any], turn: int) -> str:
         args = tu.get("input") or {}
         kind = str(args.get("kind") or "")
+        inputs: dict[str, Any] = {
+            "branches": list(args.get("branches") or []),
+            "search_tool": args.get("search_tool"),
+            "context_note": args.get("context_note"),
+            "max_tool_calls": args.get("max_tool_calls"),
+        }
+        # A1/M3: hand a stored Reading to the episode by id (repair kind). The
+        # reading DICT is injected as inputs["reading"]; unknown id → error.
+        reading_id = args.get("reading_id")
+        if reading_id is not None:
+            stored = state.readings.get(str(reading_id))
+            if stored is None:
+                return json.dumps({"error": f"unknown reading_id: {reading_id!r}"})
+            inputs["reading"] = stored
         try:
-            spec = EpisodeSpec(
-                kind=kind,
-                goal=str(args.get("goal") or ""),
-                inputs={
-                    "branches": list(args.get("branches") or []),
-                    "search_tool": args.get("search_tool"),
-                    "context_note": args.get("context_note"),
-                    "max_tool_calls": args.get("max_tool_calls"),
-                },
-            )
+            spec = EpisodeSpec(kind=kind, goal=str(args.get("goal") or ""), inputs=inputs)
         except Exception as exc:  # noqa: BLE001 - bad spec → structured error
             return json.dumps({"error": f"invalid episode_run: {exc}"})
         ep_provider = _provider_for_model((episode_models or {}).get(kind))
@@ -282,7 +289,7 @@ def run_v3(
             "episode_id": result.episode_id, "kind": result.kind,
             "status": result.status, "calls": result.tool_call_count,
         }, outer_iteration=turn)
-        return json.dumps({
+        payload = {
             "episode_id": result.episode_id,
             "kind": result.kind,
             "status": result.status,
@@ -291,7 +298,20 @@ def run_v3(
             "summary": result.summary,
             "snapshots": [s.get("name") for s in result.branch_snapshots],
             "spend_usd": round(sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6),
-        }, ensure_ascii=False)
+        }
+        # Part 1: the lead compiles a reading-kind result into a stored Reading
+        # (A1 — workers never write state.readings) and returns its id.
+        if result.kind == "reading" and result.status == "ok" and isinstance(result.result, dict):
+            branch = next(iter(spec.inputs.get("branches") or []), "main")
+            reading = Reading.from_episode_result(
+                result.result,
+                branch=str(branch),
+                source=f"episode:{result.episode_id}",
+                created_turn=turn,
+            )
+            state.readings[reading.reading_id] = reading.to_dict()
+            payload["reading_id"] = reading.reading_id
+        return json.dumps(payload, ensure_ascii=False)
 
     def _dispatch_episode_install(tu: dict[str, Any], turn: int) -> str:
         args = tu.get("input") or {}
@@ -340,8 +360,14 @@ def run_v3(
         _restore_branch_into(workspace, install_snap)
         if card_fields:
             state.hypothesis_board.update(workspace, name, **card_fields)
-        # Episode-local repair-agenda additions ride in the packet (A10): merge.
+        # Episode-local repair-agenda additions ride in the packet (A10): merge
+        # ONLY the residuals targeting the branch being installed (F5), remapped
+        # to the installed name. A blanket re-append + relabel would duplicate an
+        # episode's residuals across every install and mislabel residuals that
+        # belong to a different fork the same episode produced.
         for item in entry.get("agenda_additions") or []:
+            if str(item.get("branch") or "") != branch:
+                continue
             merged = dict(item)
             merged["branch"] = name
             state.repair_agenda.append(merged)
@@ -358,6 +384,17 @@ def run_v3(
             return _dispatch_episode_run(tu, turn)
         if name == "episode_install_branch":
             return _dispatch_episode_install(tu, turn)
+        # M3: the lead hosts the composites too (Part 2). state.readings is the
+        # lead's readings map; execute_composite logs the ToolCall + returns the
+        # dict, which we serialize for the tool_result. Composites cannot change
+        # the model variant, so they early-return WITHOUT the mirror below
+        # (consistent with the episode_run / episode_install early returns).
+        if name in COMPOSITE_TOOL_NAMES:
+            result_obj = execute_composite(
+                name, tu.get("input") or {}, executor=executor,
+                state_readings=state.readings, turn=turn, tool_use_id=tu["id"],
+            )
+            return json.dumps(result_obj, ensure_ascii=False)
         result = executor.execute(name, tu["input"], tool_use_id=tu["id"])
         # Mirror the executor's model-variant selection into state so episodes
         # inherit it and it serializes for resume (act_set_model_variant is the
@@ -547,6 +584,7 @@ def run_v3(
     # rides in artifact.episodes / state.
     artifact.tool_calls = list(executor.call_log) + list(episode_tool_calls)
     artifact.episodes = [dict(entry) for entry in state.episode_ledger]
+    artifact.readings = [dict(r) for r in state.readings.values()]
     artifact.tool_requests = list(executor.tool_requests)
     artifact.repair_agenda = [dict(item) for item in state.repair_agenda]
     artifact.cipher_hypotheses = _hypothesis_cards_for_artifact(workspace)

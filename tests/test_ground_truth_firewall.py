@@ -566,6 +566,74 @@ def test_v3_lead_context_never_sees_ground_truth():
     assert artifact.ground_truth is None
 
 
+def test_v3_repair_episode_and_composites_never_see_ground_truth():
+    """M3: the repair-episode contract + rendered context (incl. the injected
+    reading section) and all three composites' result packets are ground-truth
+    free for a benchmark-backed cipher."""
+    from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+    from investigation.actions import execute_composite
+    from investigation.episodes import (
+        EPISODE_KINDS,
+        EpisodeSpec,
+        _build_episode_workspace,
+        _episode_system_prompt,
+        build_episode_context,
+    )
+    from investigation.reading import Reading, ReadingFragment
+    from investigation.state import InvestigationState
+    from workspace import Workspace
+
+    alpha = Alphabet.from_text(CIPHERTEXT, ignore_chars=set())
+    ct = CipherText(raw=CIPHERTEXT, alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    # A deliberately WRONG caesar key on main (shift 5, not the inverse -7), so
+    # the decode is gibberish — never the ground-truth plaintext.
+    for token_id in range(alpha.size):
+        sym = alpha.symbol_for(token_id)
+        ws.set_mapping("main", token_id, pt.id_for(_caesar(sym, 5)))
+    ws.fork("alt", "main")
+    state = InvestigationState(workspace=ws, language="en")
+
+    # A benign reading (proposed plaintext the worker drafted — never GT).
+    reading = Reading(branch="main", source="episode:e1", created_turn=1,
+                      fragments=[ReadingFragment(text="A PROPOSED READING")],
+                      holes=["unresolved tail"], overall_confidence=0.5)
+    reading_dict = reading.to_dict()
+
+    spec = EpisodeSpec("repair", "compile the reading", inputs={
+        "branches": ["main"], "reading": reading_dict,
+        "context_note": "manuscript register, no plaintext"})
+    ep_ws = _build_episode_workspace(state, ["main"])
+    executor = WorkspaceToolExecutor(ep_ws, "en", set(), [], {},
+                                     declaration_policy=NoGatesPolicy(),
+                                     episode_toolset=set(EPISODE_KINDS["repair"]["toolset"]))
+    executor.episode_id = "ep_repair"
+    executor.set_iteration(1)
+
+    context_text = build_episode_context(spec, ep_ws, executor)
+    system_prompt = _episode_system_prompt(spec)
+
+    readings = {reading.reading_id: reading_dict}
+    haystacks = [context_text, system_prompt]
+    haystacks.append(json.dumps(execute_composite(
+        "hypothesis_apply_reading",
+        {"branch": "main", "reading_id": reading.reading_id, "dry_run": True},
+        executor=executor, state_readings=readings, turn=1), default=str))
+    haystacks.append(json.dumps(execute_composite(
+        "hypothesis_test_word",
+        {"branch": "main", "char_start": 0, "word": CIPHERTEXT[:5]},
+        executor=executor, state_readings=readings, turn=1), default=str))
+    haystacks.append(json.dumps(execute_composite(
+        "branch_adjudicate",
+        {"branches": ["main", "alt"], "include_window": True},
+        executor=executor, state_readings=readings, turn=1), default=str))
+    for tc in executor.call_log:
+        haystacks.append(tc.result)
+
+    assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
+
+
 def test_v3_episode_surface_never_sees_ground_truth():
     """Episodes get NO benchmark context; the rendered episode context and the
     contract system prompt for a benchmark-backed cipher are ground-truth free."""
