@@ -42,7 +42,7 @@ def _test_data() -> BenchmarkTestData:
 
 
 def test_automated_benchmark_runner_writes_no_llm_artifact(tmp_path, monkeypatch):
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",
@@ -92,7 +92,7 @@ def test_cli_crack_defaults_to_automated_solver_and_bypasses_api_key(tmp_path, m
     def forbidden_api_key():
         raise AssertionError("get_api_key must not be called")
 
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native"):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",
@@ -1601,6 +1601,7 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
         homophonic_budget="full",
         homophonic_refinement="none",
         homophonic_solver="zenith_native",
+        model_variant=None,
     ):
         seen["language"] = language
         seen["test_id"] = test_id
@@ -1608,6 +1609,7 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
         seen["homophonic_budget"] = homophonic_budget
         seen["homophonic_refinement"] = homophonic_refinement
         seen["homophonic_solver"] = homophonic_solver
+        seen["model_variant"] = model_variant
         return {
             "enabled": True,
             "status": "completed",
@@ -1662,8 +1664,57 @@ def test_benchmark_runner_preflight_runs_without_ground_truth(monkeypatch, tmp_p
     assert seen["homophonic_budget"] == "screen"
     assert seen["homophonic_refinement"] == "null_masks"
     assert seen["homophonic_solver"] == "legacy"
+    # Default: no --model-variant → preflight resolves with None (unchanged).
+    assert seen["model_variant"] is None
     assert seen["automated_preflight"]["summary"] == "preflight summary"
     assert seen["benchmark_context"].policy == "max"
+
+
+def test_benchmark_runner_v2_threads_model_variant_into_preflight(monkeypatch, tmp_path):
+    """Agentic benchmark path: --model-variant reaches the automated preflight
+    (resolved per test; 'auto' maps a copiale test to the German DTA variant)."""
+    seen = {}
+
+    class FakeAPI:
+        model = "fake-model"
+
+    def fake_preflight(cipher_text, language, test_id, cipher_system, **kwargs):
+        seen["model_variant"] = kwargs.get("model_variant")
+        return {"enabled": True, "status": "completed", "solver": "fake_native",
+                "summary": "s", "key": {}, "estimated_cost_usd": 0.0,
+                "total_input_tokens": 0, "total_output_tokens": 0}
+
+    def fake_run_v2(**kwargs):
+        from artifact.schema import RunArtifact
+
+        return RunArtifact(
+            run_id="run123", cipher_id=kwargs["cipher_id"], model="fake-model",
+            language=kwargs["language"], status="solved",
+        )
+
+    monkeypatch.setattr(runner_v2, "_run_automated_preflight", fake_preflight)
+    monkeypatch.setattr(runner_v2, "run_v2", fake_run_v2)
+
+    test_data = BenchmarkTestData(
+        test=BenchmarkTest(
+            test_id="copiale_variant_demo",
+            track="transcription2plaintext",
+            cipher_system="homophonic",
+            target_records=[],
+            context_records=[],
+            description="variant demo",
+        ),
+        canonical_transcription="A B C",
+        plaintext="THE",
+        plaintext_language="de",
+    )
+    runner = BenchmarkRunnerV2(
+        claude_api=FakeAPI(),  # type: ignore[arg-type]
+        artifact_dir=tmp_path,
+        model_variant="auto",
+    )
+    runner.run_test(test_data, language="de")
+    assert seen["model_variant"] == "historical_1600_1899"
 
 
 def test_collapsed_plaintext_detector_flags_single_letter_failure():

@@ -454,7 +454,11 @@ def test_agent_word_repair_menu_tools_are_ground_truth_free(monkeypatch):
         return WordRepairMenu(packets=[packet], baseline_validation=1.0, page=None, alphabet=alpha)
 
     monkeypatch.setattr(tools_v2.automated_runner, "build_word_repair_menu", fake_build)
-    monkeypatch.setattr(tools_v2.automated_runner, "zenith_native_model_path", lambda _lang: None)
+    monkeypatch.setattr(
+        tools_v2.automated_runner,
+        "zenith_native_model_path",
+        lambda _lang, variant=None: None,
+    )
 
     results: list[str] = []
     menu = ex._tool_search_word_repair_menu({"branch": "main", "top_n": 8})

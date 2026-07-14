@@ -624,6 +624,10 @@ def run_episode(
             episode_toolset=toolset,
             finalist_sessions=state.finalist_sessions,
             repair_agenda=[],
+            # The lead's act_set_model_variant selection is mirrored into state
+            # by the lead loop; seed this fresh episode executor with it so
+            # episode search tools resolve the same binary model.
+            model_variant=state.model_variant,
         )
         executor.episode_id = episode_id
         executor.set_iteration(launching_turn)

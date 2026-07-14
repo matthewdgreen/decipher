@@ -145,6 +145,10 @@ def run_v3(
         repair_agenda=state.repair_agenda,
         hypothesis_board=state.hypothesis_board,
         finalist_sessions=state.finalist_sessions,
+        # The model-variant selection lives in state (serialized for resume);
+        # seed the lead executor from it and mirror it back after each
+        # dispatched tool call (see _dispatch_tool).
+        model_variant=state.model_variant,
     )
     executor.set_max_iterations(max_iterations)
 
@@ -354,7 +358,12 @@ def run_v3(
             return _dispatch_episode_run(tu, turn)
         if name == "episode_install_branch":
             return _dispatch_episode_install(tu, turn)
-        return executor.execute(name, tu["input"], tool_use_id=tu["id"])
+        result = executor.execute(name, tu["input"], tool_use_id=tu["id"])
+        # Mirror the executor's model-variant selection into state so episodes
+        # inherit it and it serializes for resume (act_set_model_variant is the
+        # only writer; mirroring unconditionally keeps them in lock-step).
+        state.model_variant = executor._model_variant
+        return result
 
     # R1: a resume continues from where the serialized state left off; a
     # fresh run starts at turn 1. ``turn`` is pre-initialized so the

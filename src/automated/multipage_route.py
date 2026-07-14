@@ -231,6 +231,7 @@ def run_automated_multipage(
     language: str | None = None,
     artifact_dir: str | Path = "artifacts",
     write_artifacts: bool = True,
+    model_variant: str | None = None,
 ) -> MultipageRunResult:
     """Run the multipage shared-key route for one page group.
 
@@ -270,6 +271,12 @@ def run_automated_multipage(
     solve_refinement, run_word_repair = _split_refinement(homophonic_refinement)
     group_cipher_id = f"multipage_{group_name}_{run_id}"
 
+    # Resolve ``"auto"`` against the group's benchmark source (first test-id
+    # prefix) gated on the group language; a concrete slug or ``None`` passes
+    # through unchanged.
+    group_source = (str(group.get("source")) if group.get("source") else test_ids[0].split("_")[0])
+    resolved_variant = _runner.resolve_model_variant(model_variant, group_source, lang)
+
     solve_started = time.time()
     # Ground truth is intentionally withheld from the solve: per-page grading is
     # post-hoc only (attach_page_scores below).
@@ -282,6 +289,7 @@ def run_automated_multipage(
         homophonic_budget=homophonic_budget,
         homophonic_refinement=solve_refinement,
         homophonic_solver=homophonic_solver,
+        model_variant=resolved_variant,
     )
     combined_solve_seconds = time.time() - solve_started
     combined_artifact = dict(combined_result.artifact)

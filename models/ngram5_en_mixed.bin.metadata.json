@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_en_mixed.bin",
+  "variant": "mixed",
+  "display_label": "English (mixed: BNC + Gutenberg + OANC + MASC)",
   "sha256": "6016954f7beef22e3fdd6b43d0ec1e68455311e735eaa6c81b5d566d0698b398",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

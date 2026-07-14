@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_la.bin",
+  "variant": "gutenberg",
+  "display_label": "Latin (Gutenberg)",
   "sha256": "b2b92f631982e5dbabf0946ed8aa59268a31f8b08568ec689836953e2c73890c",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

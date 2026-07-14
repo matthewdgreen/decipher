@@ -450,6 +450,19 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "observe_language_models",
+        "description": "List the language-model variants available for the run language (label, variant slug, distinct n-grams, corpus characters) and report which model is currently active and why (env / variant / default). Use before act_set_model_variant to see the choices.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "language": {
+                    "type": "string",
+                    "description": "Optional language code override; defaults to the run language.",
+                },
+            },
+        },
+    },
+    {
         "name": "search_transform_candidates",
         "description": "Generate and score transposition transform candidates for a branch. Returns ranked finalists for review via search_review_transform_finalists.",
         "input_schema": {
@@ -1636,6 +1649,20 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 },
             },
             "required": ["search_session_id", "ranks"],
+        },
+    },
+    {
+        "name": "act_set_model_variant",
+        "description": "Select the language-model variant used by every search tool that resolves the binary n-gram model (e.g. 'historical_1600_1899' for period German). The selection persists for the rest of the run until changed. Validates against the registry; call observe_language_models first to see available slugs.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "variant": {
+                    "type": "string",
+                    "description": "Variant slug to activate for the run language.",
+                },
+            },
+            "required": ["variant"],
         },
     },
     {
@@ -2841,6 +2868,7 @@ class WorkspaceToolExecutor:
         finalist_sessions: "FinalistSessionStore | None" = None,
         hypothesis_board: "Any | None" = None,
         repair_agenda: list[dict[str, Any]] | None = None,
+        model_variant: str | None = None,
     ) -> None:
         self.workspace = workspace
         self.language = language
@@ -2937,6 +2965,17 @@ class WorkspaceToolExecutor:
         # A11: set by run_episode so tool calls made inside an episode are logged
         # with their originating episode id (additive ToolCall field).
         self.episode_id: str | None = None
+
+        # Executor-level language-model variant selection (act_set_model_variant).
+        # ``None`` == default resolution. Consumed by every search tool that
+        # resolves the binary n-gram model. Changed only by selecting again.
+        # v3 propagation mechanism (episodes build FRESH executors, so nothing
+        # is literally shared): the lead loop mirrors this attribute into
+        # ``InvestigationState.model_variant`` after every dispatched tool call,
+        # ``run_episode`` seeds each fresh episode executor from state via this
+        # constructor param, and the state field serializes/restores so a v3
+        # resume keeps the selection.
+        self._model_variant: str | None = model_variant
 
     def set_iteration(self, n: int) -> None:
         self._current_iteration = n
@@ -9912,6 +9951,78 @@ class WorkspaceToolExecutor:
             "note": self._search_declare_note("anneal"),
         }
 
+    def _tool_observe_language_models(self, args: dict) -> Any:
+        """List available model variants + the active selection for a language.
+
+        Model-visible output carries labels/variants/corpus sizes only — never
+        paths or shas (F: registry surfaces are leak-checked).
+        """
+        from analysis import model_registry
+
+        language = str(args.get("language") or self.language).strip().lower()
+        infos = model_registry.list_language_models(language)
+        models = [
+            {
+                "variant": m.variant,
+                "label": m.display_label,
+                "distinct_ngrams": m.distinct_ngrams,
+                "chars": m.chars,
+            }
+            for m in infos
+        ]
+        active = model_registry.active_selection(language, self._model_variant)
+        return {
+            "language": language,
+            "models": models,
+            "active": active,
+            "note": (
+                "Switch with act_set_model_variant(variant). Selection persists "
+                "for the run. Default (no selection) keeps today's model."
+            ),
+        }
+
+    def _tool_act_set_model_variant(self, args: dict) -> Any:
+        """Select the run's language-model variant (validated against registry)."""
+        from analysis import model_registry
+
+        variant = args.get("variant")
+        if not isinstance(variant, str) or not variant.strip():
+            return {"error": "`variant` is required (a variant slug string)."}
+        variant = variant.strip()
+        infos = model_registry.list_language_models(self.language)
+        available = sorted({m.variant for m in infos if m.variant})
+        if variant not in available:
+            return {
+                "error": f"Unknown model variant {variant!r} for language {self.language!r}.",
+                "reason": "unknown_variant",
+                "requested": variant,
+                "available_variants": available,
+            }
+        self._model_variant = variant
+        active = model_registry.active_selection(self.language, variant)
+        result: dict[str, Any] = {
+            "status": "ok",
+            "language": self.language,
+            "active": active,
+        }
+        if active.get("source") == "env":
+            # An environment override wins at every resolution site (registry
+            # precedence (a)), so the selection is recorded but has no effect
+            # while the override is in force.
+            result["warning"] = "environment_override_active"
+            result["note"] = (
+                "Selection recorded but INERT: an environment override "
+                f"(DECIPHER_NGRAM_MODEL_{self.language.upper()}) wins at every "
+                "model-resolution site, so searches will keep using the "
+                "override model until it is unset."
+            )
+        else:
+            result["note"] = (
+                "Every search tool that resolves the binary n-gram model will "
+                "now use this variant until you select another."
+            )
+        return result
+
     def _tool_search_homophonic_anneal(self, args: dict) -> Any:
         branch_name = args["branch"]
         solver_profile = str(args.get("solver_profile", "zenith_native")).strip().lower()
@@ -9958,7 +10069,9 @@ class WorkspaceToolExecutor:
             if model_path and str(model_path).strip().lower() != "word_list":
                 bin_path = Path(str(model_path)).expanduser()
             else:
-                bin_path = automated_runner._zenith_native_model_path(self.language)
+                bin_path = automated_runner._zenith_native_model_path(
+                    self.language, variant=self._model_variant
+                )
             if bin_path is None:
                 return {
                     "error": (
@@ -10128,6 +10241,7 @@ class WorkspaceToolExecutor:
             homophonic_budget=homophonic_budget,
             homophonic_refinement=homophonic_refinement,
             homophonic_solver=homophonic_solver,
+            model_variant=self._model_variant,
         )
         if result.error_message:
             return {
@@ -11218,7 +11332,9 @@ class WorkspaceToolExecutor:
             }
         mask = self._branch_word_repair_mask(branch)
         config = self._word_repair_menu_config(args)
-        resolved_model = automated_runner.zenith_native_model_path(self.language)
+        resolved_model = automated_runner.zenith_native_model_path(
+            self.language, variant=self._model_variant
+        )
         try:
             menu = automated_runner.build_word_repair_menu(
                 cipher_text=self.workspace.cipher_text,
@@ -12394,6 +12510,7 @@ class WorkspaceToolExecutor:
                     cipher_system="homophonic_substitution",
                     homophonic_budget=homophonic_budget,
                     homophonic_solver="zenith_native",
+                    model_variant=self._model_variant,
                 )
             except Exception as exc:  # noqa: BLE001
                 skipped.append({

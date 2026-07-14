@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_la_500.bin",
+  "variant": "gutenberg_small",
+  "display_label": "Latin (Gutenberg, 500-book)",
   "sha256": "d45c6d5c069b956a09eb2f1553d1f3bc9ab0112a558a895b485b0bade3ecb595",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

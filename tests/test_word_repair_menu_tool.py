@@ -89,7 +89,7 @@ def _patch_menu(monkeypatch, packets, *, baseline: float = 1.0) -> None:
         )
 
     monkeypatch.setattr(tools_v2.automated_runner, "build_word_repair_menu", fake_build)
-    monkeypatch.setattr(tools_v2.automated_runner, "zenith_native_model_path", lambda _lang: None)
+    monkeypatch.setattr(tools_v2.automated_runner, "zenith_native_model_path", lambda _lang, variant=None: None)
 
 
 # ---------------------------------------------------------------------------

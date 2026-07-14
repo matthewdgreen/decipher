@@ -1041,6 +1041,13 @@ def run_v2(
     )
     artifact.cipher_id_report = fingerprint.to_dict()
     cipher_id_context = cipher_id_analysis.format_fingerprint_for_context(fingerprint)
+    # Additive: surface the language-model variant choice (env/default resolution
+    # kept stable here so the choice is visible without touching the mid-run
+    # executor selection).
+    from analysis import model_registry as _model_registry
+    _variant_line = _model_registry.format_registry_preflight_line(language)
+    if _variant_line:
+        cipher_id_context = f"{cipher_id_context}\n\n{_variant_line}"
 
     # Compute mode filter once — stays fixed for the whole run so caching is stable.
     # Skip filtering on very short ciphers where the fingerprint is unreliable.

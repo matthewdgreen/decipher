@@ -587,6 +587,7 @@ def _run_multipage_group_benchmark(args: argparse.Namespace, agentic: bool) -> N
             homophonic_solver=homophonic_solver,
             language=args.language,
             artifact_dir=artifact_dir,
+            model_variant=getattr(args, "model_variant", None),
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -656,6 +657,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             homophonic_budget=args.homophonic_budget,
             homophonic_refinement=args.homophonic_refinement,
             homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
+            model_variant=getattr(args, "model_variant", None),
             transform_search=args.transform_search,
             transform_search_profile=args.transform_search_profile,
             transform_search_max_generated_candidates=args.transform_search_max_generated_candidates,
@@ -670,6 +672,25 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         _preflight_model_check(args)
         provider, model = _resolve_provider_and_model(args)
         api = _make_agent_provider(args)
+        if getattr(args, "model_variant", None):
+            # Honest scope note: in agentic runs the flag reaches only the
+            # automated (no-LLM) preflight solve inside BenchmarkRunnerV2; the
+            # agent controls its own model variant via act_set_model_variant.
+            if args.no_automated_preflight:
+                print(
+                    "Note: --model-variant is IGNORED for agentic runs with "
+                    "--no-automated-preflight (it only affects the automated "
+                    "preflight solve). The agent can still switch mid-run via "
+                    "act_set_model_variant.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "Note: --model-variant applies to the automated (no-LLM) "
+                    "preflight solve only in agentic runs; the agent can switch "
+                    "its own model variant mid-run via act_set_model_variant.",
+                    file=sys.stderr,
+                )
         runner = BenchmarkRunnerV2(
             claude_api=api,
             max_iterations=args.max_iterations,
@@ -685,6 +706,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             homophonic_refinement=args.homophonic_refinement,
             homophonic_solver="legacy" if args.legacy_homophonic else "zenith_native",
             agent_loop=getattr(args, "agent_loop", "v2"),
+            model_variant=getattr(args, "model_variant", None),
         )
         mode_label = f"agentic ({provider}/{model}, loop={getattr(args, 'agent_loop', 'v2')})"
 
@@ -775,6 +797,10 @@ def cmd_crack(args: argparse.Namespace) -> None:
         print("Running automated solver (no LLM API calls)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
+        # No benchmark source in `crack`; "auto" degrades to default (None).
+        crack_variant = getattr(args, "model_variant", None)
+        if crack_variant == "auto":
+            crack_variant = None
         run_kwargs = {
             "cipher_text": ct,
             "language": args.language,
@@ -782,6 +808,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": "legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
+            "model_variant": crack_variant,
         }
         if getattr(args, "transform_search", "off") != "off":
             run_kwargs["transform_search"] = args.transform_search
@@ -832,6 +859,10 @@ def cmd_crack(args: argparse.Namespace) -> None:
             print("Running automated preflight (no LLM access)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
+        # No benchmark source in `crack`; "auto" degrades to default (None).
+        crack_variant = getattr(args, "model_variant", None)
+        if crack_variant == "auto":
+            crack_variant = None
         run_kwargs = {
             "cipher_text": ct,
             "language": args.language,
@@ -839,6 +870,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             "homophonic_budget": homophonic_budget,
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": "legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
+            "model_variant": crack_variant,
         }
         if getattr(args, "transform_search", "off") != "off":
             run_kwargs["transform_search"] = args.transform_search
@@ -1334,6 +1366,15 @@ def main() -> None:
     )
     bench.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"])
     bench.add_argument(
+        "--model-variant",
+        default=None,
+        help=(
+            "Language-model variant slug for the automated solver (e.g. "
+            "'historical_1600_1899'). Default None keeps today's model. Use "
+            "'auto' to map by benchmark source (copiale -> German DTA)."
+        ),
+    )
+    bench.add_argument(
         "--context",
         metavar="TEXT",
         help=(
@@ -1496,6 +1537,14 @@ def main() -> None:
     )
     crack.add_argument("--language", "-l", choices=["en", "la", "de", "fr", "it", "unknown"],
                        default="en")
+    crack.add_argument(
+        "--model-variant",
+        default=None,
+        help=(
+            "Language-model variant slug for the automated solver/preflight "
+            "(e.g. 'literary_19c'). Default None keeps today's model."
+        ),
+    )
     crack.add_argument(
         "--context",
         metavar="TEXT",

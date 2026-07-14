@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_de.bin",
+  "variant": "literary_19c",
+  "display_label": "German (19th-c literary, Gutenberg)",
   "sha256": "3fefceea86d468a87773a12976b35145764bac96eec3a93875f50a9c22333577",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

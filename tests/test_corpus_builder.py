@@ -202,6 +202,33 @@ def test_build_model_roundtrip_and_metadata(tmp_path: Path):
     assert metadata["language"] == "en"
     assert metadata["output_file"] == "ngram5_en.bin"
     assert metadata["corpus_stats"]["raw_files"] == 2
+    # No variant/label passthrough -> those keys stay absent (default unchanged).
+    assert "variant" not in metadata and "display_label" not in metadata
+
+
+def test_build_model_writes_variant_and_display_label(tmp_path: Path):
+    corpus_dir = tmp_path / "corpus"
+    corpus_dir.mkdir()
+    (corpus_dir / "a.txt").write_text("hello world there hello world", encoding="utf-8")
+
+    output = tmp_path / "ngram5_en.bin"
+    stats = build_model(
+        language="en",
+        corpus_dir=corpus_dir,
+        output_path=output,
+        variant="test_variant",
+        display_label="English (test)",
+    )
+
+    metadata = json.loads(stats.metadata_path.read_text(encoding="utf-8"))
+    assert metadata["variant"] == "test_variant"
+    assert metadata["display_label"] == "English (test)"
+    # Placed right after output_file (matches the hand-authored sidecars).
+    keys = list(metadata.keys())
+    assert keys[keys.index("output_file") + 1:keys.index("output_file") + 3] == [
+        "variant",
+        "display_label",
+    ]
 
 
 def test_zenith_native_model_path_prefers_repo_model(tmp_path: Path, monkeypatch):

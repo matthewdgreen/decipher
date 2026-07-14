@@ -160,6 +160,22 @@ def _build_v2_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="N-gram order for a --alphabet (v2) build. Defaults to 5.",
     )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default=None,
+        help=(
+            "Optional variant slug written to the model sidecar (e.g. "
+            "'historical_1600_1899'). Used by the model registry to select "
+            "among per-language models."
+        ),
+    )
+    parser.add_argument(
+        "--display-label",
+        type=str,
+        default=None,
+        help="Optional human-readable label written to the model sidecar.",
+    )
 
 
 def _validate_v2_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -205,6 +221,8 @@ def main(argv: list[str] | None = None) -> int:
             sources=manifest.get("sources") or None,
             alphabet=args.alphabet,
             order=args.order,
+            variant=args.variant,
+            display_label=args.display_label,
         )
         print(f"Built {output} from {stats.raw_files} files")
         print(f"Metadata: {stats.metadata_path}")
@@ -236,6 +254,8 @@ def main(argv: list[str] | None = None) -> int:
             sources=manifest.get("sources") or None,
             alphabet=args.alphabet,
             order=args.order,
+            variant=args.variant,
+            display_label=args.display_label,
         )
         verify_model(output)
         print(f"Built and verified {output}")

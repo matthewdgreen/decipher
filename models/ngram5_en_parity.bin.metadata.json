@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_en_parity.bin",
+  "variant": "parity",
+  "display_label": "English (parity: BNC + OANC + MASC + Gutenberg)",
   "sha256": "bfb8e7278668caa3be8f3486dcbbcd88fa15484a75d186704bd63d6d0d54b919",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

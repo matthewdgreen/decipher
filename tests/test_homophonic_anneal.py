@@ -880,7 +880,7 @@ def test_search_homophonic_anneal_can_use_zenith_native_profile(monkeypatch):
 
     monkeypatch.setattr("analysis.zenith_solver.load_zenith_binary_model", lambda path: FakeModel())
     monkeypatch.setattr("analysis.zenith_solver.zenith_solve", lambda **kwargs: result)
-    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language: Path("models/ngram5_en.bin"))
+    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language, variant=None: Path("models/ngram5_en.bin"))
 
     out = ex._tool_search_homophonic_anneal({
         "branch": "main",
@@ -939,7 +939,7 @@ def test_search_homophonic_anneal_preserve_existing_passes_fixed_cipher_ids(monk
 
     monkeypatch.setattr("analysis.zenith_solver.load_zenith_binary_model", lambda path: FakeModel())
     monkeypatch.setattr("analysis.zenith_solver.zenith_solve", fake_zenith_solve)
-    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language: Path("models/ngram5_en.bin"))
+    monkeypatch.setattr("automated.runner._zenith_native_model_path", lambda language, variant=None: Path("models/ngram5_en.bin"))
     monkeypatch.setattr("automated.runner._maybe_repair_zenith_native_key", lambda **kwargs: {"applied": False, "reason": "test", "key": dict(kwargs["key"]), "plaintext": kwargs["plaintext"]})
     monkeypatch.setattr("automated.runner._maybe_anchor_refine_zenith_native", lambda **kwargs: {"applied": False, "reason": "test", "key": dict(kwargs["key"]), "plaintext": kwargs["plaintext"], "score": kwargs["anneal_score"]})
 

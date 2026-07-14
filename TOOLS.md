@@ -1,6 +1,6 @@
 # Agent Tool Reference
 
-Complete reference for the 92 tools exposed to the v2 agentic loop
+Complete reference for the 94 tools exposed to the v2 agentic loop
 (`src/agent/tools_v2.py`). Tools are organized by namespace. Each entry gives
 the tool name, what it does, its key parameters, and usage notes.
 
@@ -346,6 +346,20 @@ recommendation.
 
 *Use before spending solver budget on `search_pure_transposition` or
 `search_transform_homophonic`.*
+
+---
+
+### `observe_language_models`
+List the language-model variants available for the run language and report which
+model is currently active and why (`env` / `variant` / `default`). Model-visible
+output carries labels, variant slugs, and corpus sizes only — never paths or shas.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `language` | string | optional language-code override; defaults to the run language |
+
+*Call before `act_set_model_variant` to see the available slugs (e.g.
+`historical_1600_1899` period German, `literary_19c` 19th-c German).*
 
 ---
 
@@ -1305,6 +1319,22 @@ transform finalists. It works for both `search_transform_homophonic` and
 | `label` | string | **required** — `coherent_plaintext`, `partial_clause`, `word_islands_with_some_structure`, `word_islands_only`, `garbage` |
 | `rationale` | string | **required** — quote or paraphrase what it appears to say |
 | `coherent_clause` | string | optional paraphrasable clause if one exists |
+
+---
+
+### `act_set_model_variant`
+Select the language-model variant used by every search tool that resolves the
+binary n-gram model (`search_automated_solver`, `search_homophonic_anneal`, the
+word-repair menu, and the transform paths). The selection persists for the rest
+of the run and is cleared only by selecting another variant. Validated against
+the registry; an unknown slug returns a structured error listing the available
+variants for the run language.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `variant` | string | **required** — a variant slug for the run language |
+
+*The result echoes the active selection (label + source) with no paths or shas.*
 
 ---
 

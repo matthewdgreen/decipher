@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_de_dta.bin",
+  "variant": "historical_1600_1899",
+  "display_label": "German (1600–1899, DTA Kernkorpus)",
   "sha256": "288888db9f55227e9321c01d4c16c8398d6411c646b7cd823540b2a39c6d1afa",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

@@ -265,3 +265,26 @@ def test_context_budget_drops_oldest_whole_exchange():
     results = {b["tool_use_id"] for m in msgs for b in _blocks(m)
                if b.get("type") == "tool_result"}
     assert uses == results == {"new"}
+
+
+def test_truncate_never_exceeds_cap_and_reports_honest_count():
+    from investigation.context import _truncate
+
+    text = "x" * 500
+    # Ordinary truncation: result fits the cap and the marker reports the
+    # actual number of dropped characters (len(text) - kept prefix).
+    for cap in (400, 100, 50):
+        out = _truncate(text, cap)
+        assert len(out) <= cap
+        kept = out.index("\n") if "\n" in out else len(out)
+        reported = int(out.split("truncated ")[1].split(" ")[0])
+        assert reported == len(text) - kept
+
+    # Tiny caps (cap < marker length): the marker head only, never overshoot.
+    for cap in (10, 3, 1):
+        out = _truncate(text, cap)
+        assert len(out) <= cap
+    # cap=0 → empty.
+    assert _truncate(text, 0) == ""
+    # No-op path unchanged.
+    assert _truncate("short", 10) == "short"

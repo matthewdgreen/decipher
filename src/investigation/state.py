@@ -182,6 +182,11 @@ class InvestigationState:
     # trail are reviewable/installable after reload.
     finalist_sessions: FinalistSessionStore = field(default_factory=FinalistSessionStore)
     hypothesis_board: HypothesisBoard = field(default_factory=HypothesisBoard)
+    # Active language-model variant selection (act_set_model_variant). The lead
+    # loop mirrors the lead executor's selection here after each dispatched tool
+    # call; run_episode seeds each fresh episode executor from this field; it
+    # serializes/restores so a v3 resume keeps the selection. ``None`` = default.
+    model_variant: str | None = None
     turn: int = 0
     max_recent_exchanges: int = DEFAULT_RECENT_EXCHANGES
 
@@ -293,6 +298,7 @@ class InvestigationState:
             "episode_ledger": [dict(item) for item in self.episode_ledger],
             "experiment_queue": [dict(item) for item in self.experiment_queue],
             "finalist_sessions": self.finalist_sessions.to_dict(),
+            "model_variant": self.model_variant,
             "turn": self.turn,
         }
 
@@ -339,6 +345,11 @@ class InvestigationState:
                 data.get("finalist_sessions")
             ),
             hypothesis_board=board,
+            model_variant=(
+                str(data["model_variant"])
+                if data.get("model_variant") is not None
+                else None
+            ),
             turn=int(data.get("turn") or 0),
         )
         return state

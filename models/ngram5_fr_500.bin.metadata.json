@@ -3,6 +3,8 @@
   "order": 5,
   "format": "zenith_binary_v1",
   "output_file": "ngram5_fr_500.bin",
+  "variant": "gutenberg_small",
+  "display_label": "French (Gutenberg, 500-book)",
   "sha256": "8294171cebaf330c7cfb4b5381cf24f7ae74024226699ed1a677e78c05943574",
   "array_length": 11881376,
   "unknown_log_prob": -20.723266,

@@ -245,6 +245,8 @@ def write_metadata(
     array_length: int = ARRAY_LEN,
     alphabet: str | None = None,
     normalization: dict | None = None,
+    variant: str | None = None,
+    display_label: str | None = None,
 ) -> None:
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -252,6 +254,12 @@ def write_metadata(
         "order": order,
         "format": fmt,
         "output_file": output_path.name,
+    }
+    if variant is not None:
+        payload["variant"] = variant
+    if display_label is not None:
+        payload["display_label"] = display_label
+    payload |= {
         "sha256": sha256,
         "array_length": array_length,
         "unknown_log_prob": round(unknown_log_prob, 6),
@@ -284,6 +292,8 @@ def build_model(
     floor_probability: float = 1e-9,
     alphabet: str | None = None,
     order: int | None = None,
+    variant: str | None = None,
+    display_label: str | None = None,
 ) -> BuildStats:
     """Build a Zenith binary n-gram model.
 
@@ -303,6 +313,8 @@ def build_model(
             order=ORDER if order is None else order,
             sources=sources,
             floor_probability=floor_probability,
+            variant=variant,
+            display_label=display_label,
         )
 
     counts, letter_counts, raw_files, normalized_characters = _count_ngrams_and_letters(
@@ -332,6 +344,8 @@ def build_model(
         normalized_characters=normalized_characters,
         distinct_seen_ngrams=int((counts > 0).sum()),
         sources=sources,
+        variant=variant,
+        display_label=display_label,
     )
     return BuildStats(
         language=language,
@@ -354,6 +368,8 @@ def _build_model_v2(
     order: int,
     sources: list[dict[str, str]] | None = None,
     floor_probability: float = 1e-9,
+    variant: str | None = None,
+    display_label: str | None = None,
 ) -> BuildStats:
     if len(alphabet) < 1:
         raise ValueError("alphabet must contain at least one symbol")
@@ -408,6 +424,8 @@ def _build_model_v2(
         array_length=array_len,
         alphabet=alphabet,
         normalization={"lowercase": True, "alphabet_filter": True},
+        variant=variant,
+        display_label=display_label,
     )
     return BuildStats(
         language=language,

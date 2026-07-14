@@ -20,7 +20,7 @@ from typing import Any
 from agent.loop_shared import _best_branch_for_auto_declare
 from agent.prompts_v2 import LANGUAGE_NOTES
 from analysis import cipher_id as cipher_id_analysis
-from analysis import ic
+from analysis import ic, model_registry
 from analysis.dictionary import LANGUAGE_NAMES
 from investigation.state import InvestigationState
 
@@ -109,7 +109,20 @@ def build_v3_system_prompt(language: str = "en") -> str:
 def _truncate(text: str, cap: int) -> str:
     if len(text) <= cap:
         return text
-    return text[:cap] + f"\n…[truncated {len(text) - cap} chars]"
+    # Reserve room for the marker so the result never EXCEEDS ``cap`` — the
+    # global budget clamp in build_lead_context truncates the view to the
+    # remaining budget and must not overshoot it (the marker used to be appended
+    # on top of ``cap``). Sizing uses the worst-case (longest) count first, then
+    # the marker is recomputed with the HONEST number of characters actually
+    # dropped (len(text) - keep, not len(text) - cap).
+    worst_marker = f"\n…[truncated {len(text)} chars]"
+    keep = max(0, cap - len(worst_marker))
+    marker = f"\n…[truncated {len(text) - keep} chars]"
+    if len(marker) > cap:
+        # Tiny cap: no room for even the marker — return its head (possibly
+        # empty at cap=0) rather than overshooting.
+        return marker[:cap]
+    return text[:keep] + marker
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +170,12 @@ def _render_fingerprint(state: InvestigationState) -> str:
         word_group_count=len(ct.words),
     )
     text = cipher_id_analysis.format_fingerprint_for_context(fp)
+    # Additive: list the available model variants + the active (env/default)
+    # selection. Kept turn-INDEPENDENT (no mutable executor selection) so this
+    # section stays part of the byte-stable cacheable prefix.
+    variant_line = model_registry.format_registry_preflight_line(state.language)
+    if variant_line:
+        text = f"{text}\n\n{variant_line}"
     return "## Diagnostic fingerprint\n" + _truncate(text, _FINGERPRINT_CAP)
 
 

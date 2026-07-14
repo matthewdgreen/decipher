@@ -76,7 +76,7 @@ src/
     runner.py             — Automated-only/no-LLM runner; zenith_native profile dispatch
   agent/
     prompts_v2.py         — V2 brief-style system prompt (no rigid phases)
-    tools_v2.py           — V2: 92 tools across 11 namespaces + WorkspaceToolExecutor
+    tools_v2.py           — V2: 94 tools across 11 namespaces + WorkspaceToolExecutor
     loop_v2.py            — V2 agent loop with workspace integration
     model_provider.py     — Provider-neutral model interface: Anthropic, OpenAI, Gemini,
                             Ollama, OpenRouter adapters + live pricing fetch

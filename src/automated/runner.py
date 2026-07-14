@@ -14,6 +14,7 @@ import json
 import math
 import os
 import random
+import threading
 import time
 import uuid
 from collections import Counter, defaultdict
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from analysis import cipher_id as cipher_id_analysis
-from analysis import dictionary, homophonic, ic, ngram, pattern, polyalphabetic
+from analysis import dictionary, homophonic, ic, model_registry, ngram, pattern, polyalphabetic
 from analysis.candidate_packet import (
     packet_from_null_mask_row,
     packet_from_pure_transposition_row,
@@ -109,6 +110,7 @@ class AutomatedBenchmarkRunner:
         transform_promote_artifact: str | None = None,
         transform_promote_candidate_ids: list[str] | None = None,
         transform_promote_top_n: int | None = None,
+        model_variant: str | None = None,
     ) -> None:
         self.artifact_dir = Path(artifact_dir)
         self.default_language = language
@@ -122,6 +124,8 @@ class AutomatedBenchmarkRunner:
         self.transform_promote_artifact = transform_promote_artifact
         self.transform_promote_candidate_ids = transform_promote_candidate_ids or []
         self.transform_promote_top_n = transform_promote_top_n
+        # ``None`` (default) / concrete slug / ``"auto"`` (source-mapped per test).
+        self.model_variant = model_variant
 
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
@@ -142,6 +146,11 @@ class AutomatedBenchmarkRunner:
                 solver="automated_only",
             )
 
+        # Resolve ``"auto"`` against the test's benchmark source (test-id prefix)
+        # gated on the resolved run language; a concrete slug or ``None`` passes
+        # through unchanged.
+        source = test_id.split("_")[0]
+        resolved_variant = resolve_model_variant(self.model_variant, source, lang)
         run_kwargs = {
             "cipher_text": cipher_text,
             "language": lang,
@@ -151,6 +160,7 @@ class AutomatedBenchmarkRunner:
             "homophonic_budget": self.homophonic_budget,
             "homophonic_refinement": self.homophonic_refinement,
             "homophonic_solver": self.homophonic_solver,
+            "model_variant": resolved_variant,
         }
         if test_data.solver_hints:
             run_kwargs["solver_hints"] = test_data.solver_hints
@@ -261,6 +271,42 @@ class _AutomatedInternalResult:
         }
 
 
+SOURCE_MODEL_VARIANTS: dict[str, tuple[str, str]] = {
+    # Benchmark-context mapping consulted ONLY when ``model_variant == "auto"``
+    # (explicit opt-in). Maps a benchmark source to (language, variant slug).
+    "copiale": ("de", "historical_1600_1899"),
+}
+
+
+def resolve_model_variant(
+    model_variant: str | None,
+    source: str | None = None,
+    language: str | None = None,
+) -> str | None:
+    """Turn a CLI/runner ``model_variant`` value into a concrete slug or None.
+
+    ``None`` stays ``None`` (default resolution). ``"auto"`` consults
+    :data:`SOURCE_MODEL_VARIANTS` for ``source``; the mapping applies only when
+    the mapping's language matches the run ``language`` (when one is supplied) —
+    e.g. copiale forced to ``--language la`` must NOT auto-select the German DTA
+    model, so the mapping is skipped and default resolution applies. A source
+    with no mapping also yields ``None``. Any other value is an explicit slug
+    passed through unchanged.
+    """
+    if model_variant is None:
+        return None
+    if model_variant == "auto":
+        mapping = SOURCE_MODEL_VARIANTS.get((source or "").strip().lower())
+        if mapping is None:
+            return None
+        mapped_language, mapped_variant = mapping
+        if language is not None and language.strip().lower() != mapped_language:
+            # Clear skip: auto-mapping is language-gated (see docstring).
+            return None
+        return mapped_variant
+    return model_variant
+
+
 def run_automated(
     cipher_text: CipherText,
     language: str = "en",
@@ -278,6 +324,61 @@ def run_automated(
     transform_promote_artifact: str | None = None,
     transform_promote_candidate_ids: list[str] | None = None,
     transform_promote_top_n: int | None = None,
+    model_variant: str | None = None,
+) -> AutomatedRunResult:
+    """Run the automated pipeline, selecting an optional language-model variant.
+
+    ``model_variant`` (default ``None`` == today's default resolution) is set as
+    the calling thread's active selection for the duration of the run and
+    restored afterward, so every internal ``_zenith_native_model_path`` choke
+    point picks up the chosen variant without a signature change (the slot is a
+    ``threading.local``, so concurrent runs on other threads are unaffected).
+    ``"auto"`` is resolved by the caller (benchmark context); this entry point
+    expects a concrete slug or ``None``.
+    """
+    prev_variant = set_active_model_variant(model_variant)
+    try:
+        return _run_automated_impl(
+            cipher_text=cipher_text,
+            language=language,
+            cipher_id=cipher_id,
+            ground_truth=ground_truth,
+            cipher_system=cipher_system,
+            solver_hints=solver_hints,
+            transform_pipeline=transform_pipeline,
+            homophonic_budget=homophonic_budget,
+            homophonic_refinement=homophonic_refinement,
+            homophonic_solver=homophonic_solver,
+            transform_search=transform_search,
+            transform_search_profile=transform_search_profile,
+            transform_search_max_generated_candidates=transform_search_max_generated_candidates,
+            transform_promote_artifact=transform_promote_artifact,
+            transform_promote_candidate_ids=transform_promote_candidate_ids,
+            transform_promote_top_n=transform_promote_top_n,
+            model_variant=model_variant,
+        )
+    finally:
+        set_active_model_variant(prev_variant)
+
+
+def _run_automated_impl(
+    cipher_text: CipherText,
+    language: str = "en",
+    cipher_id: str = "cli",
+    ground_truth: str | None = None,
+    cipher_system: str = "",
+    solver_hints: dict[str, Any] | None = None,
+    transform_pipeline: dict[str, Any] | None = None,
+    homophonic_budget: str = "full",
+    homophonic_refinement: str = "none",
+    homophonic_solver: str = "zenith_native",
+    transform_search: str = "off",
+    transform_search_profile: str = "broad",
+    transform_search_max_generated_candidates: int | None = None,
+    transform_promote_artifact: str | None = None,
+    transform_promote_candidate_ids: list[str] | None = None,
+    transform_promote_top_n: int | None = None,
+    model_variant: str | None = None,
 ) -> AutomatedRunResult:
     """Run the best available local techniques without any LLM call."""
     started = time.time()
@@ -459,6 +560,22 @@ def run_automated(
             "transform_pipeline": parsed_transform.to_raw() if parsed_transform else None,
             "transform_search": transform_search_report,
         })
+        if model_variant is not None:
+            # Provenance policy (spec-author sign-off, review round 2): EVERY
+            # ``binary_ngram_model`` record — including on default runs — now
+            # carries the two additive sidecar-sourced keys ``variant`` and
+            # ``display_label`` (via ``_zenith_native_model_metadata``); that is
+            # desirable, not a regression of the spec Part-4 "default None
+            # byte-identical" pin, which covers resolution and the pre-existing
+            # artifact fields, minus these two additive keys. The route-step
+            # ``model_variant`` field below (the *requested* selection) remains
+            # conditional: it is recorded only when a variant was explicitly
+            # requested.
+            steps[-1]["model_variant"] = model_variant
+            resolved = _zenith_native_model_path(language)
+            steps[-1]["binary_ngram_model"] = (
+                _zenith_native_model_metadata(str(resolved)) if resolved else None
+            )
         if transform_search_report is not None:
             steps.append({
                 "name": "screen_transform_candidates",
@@ -6953,30 +7070,50 @@ def _default_homophonic_model_path() -> Path | None:
     return None
 
 
-def _zenith_native_model_path(language: str = "en") -> Path | None:
-    """Locate the binary model file for the ``zenith_native`` profile."""
-    lang_key = (language or "en").strip().lower()
-    env_path = os.environ.get(f"DECIPHER_NGRAM_MODEL_{lang_key.upper()}")
-    if env_path:
-        p = Path(env_path).expanduser()
-        return p if p.exists() else None
-    repo_root = Path(__file__).resolve().parents[2]
-    candidate = repo_root / "models" / f"ngram5_{lang_key}.bin"
-    if candidate.exists():
-        return candidate
-    if lang_key != "en":
-        return None
-    env_path = os.environ.get("DECIPHER_ZENITH_BINARY_MODEL")
-    if env_path:
-        p = Path(env_path).expanduser()
-        return p if p.exists() else None
-    for candidate in [
-        repo_root / "other_tools" / "zenith-2026.2" / "zenith-model.array.bin",
-        repo_root / "other_tools" / "zenith" / "zenith-model.array.bin",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
+# Per-THREAD active model-variant selection. Consulted by
+# ``_zenith_native_model_path`` when no explicit ``variant`` is passed, so a run
+# can select a non-default variant without threading the slug through every deep
+# solver call site. ``run_automated`` sets the calling thread's slot from its
+# ``model_variant`` param and restores the prior value in a ``finally`` (see the
+# wrapper below); the agent's ``act_set_model_variant`` passes its selection
+# explicitly at the direct call sites. A ``threading.local`` (not a plain
+# global) so concurrent ``run_automated`` calls on different threads cannot
+# clobber each other's selection; every internal resolution site runs on the
+# thread that called ``run_automated`` (seed workers receive the already-
+# resolved ``model_path``). ``None`` == default resolution (byte-identical to
+# before). Fresh threads start at ``None``.
+_ACTIVE_MODEL_VARIANT_SLOT = threading.local()
+
+
+def _get_active_model_variant() -> str | None:
+    """Return the calling thread's active model variant (default ``None``)."""
+    return getattr(_ACTIVE_MODEL_VARIANT_SLOT, "value", None)
+
+
+def set_active_model_variant(variant: str | None) -> str | None:
+    """Set the calling thread's active model variant; return the previous value."""
+    prev = _get_active_model_variant()
+    _ACTIVE_MODEL_VARIANT_SLOT.value = variant
+    return prev
+
+
+def _zenith_native_model_path(
+    language: str = "en", variant: str | None = None
+) -> Path | None:
+    """Locate the binary model file for the ``zenith_native`` profile.
+
+    Delegates to :mod:`analysis.model_registry`. ``variant=None`` falls back to
+    the calling thread's active selection (see ``set_active_model_variant``);
+    passing ``variant`` explicitly overrides it. The models directory is
+    anchored on this module's ``__file__`` (not the registry's) so tests that
+    monkeypatch ``automated_runner.__file__`` keep pinning the resolver.
+    """
+    if variant is None:
+        variant = _get_active_model_variant()
+    models_dir = Path(__file__).resolve().parents[2] / "models"
+    return model_registry.resolve_language_model(
+        language, variant=variant, models_dir=models_dir
+    )
 
 
 @functools.lru_cache(maxsize=16)
@@ -7008,6 +7145,8 @@ def _zenith_native_model_metadata(path_text: str) -> dict[str, Any]:
     }
     for key in (
         "language",
+        "variant",
+        "display_label",
         "order",
         "format",
         "output_file",
