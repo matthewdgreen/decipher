@@ -3785,6 +3785,206 @@ def _word_repair_adopt_enabled() -> bool:
     return raw.strip().lower() in _WORD_REPAIR_ADOPT_TRUE_VALUES
 
 
+# ---------------------------------------------------------------------------
+# Opt-in LLM finalist reranker (improvement program Phase 4a, item 4.2).
+#
+# ``DECIPHER_FINALIST_READER`` turns on an LLM "reader" that scores the finalist
+# menu (null-mask bakeoff, word-repair) purely by text quality and records a
+# ``finalist_reader`` block on the step. It ANNOTATES by default; only when
+# ``DECIPHER_FINALIST_READER_SELECTS=1`` may the reader's top pick override the
+# scalar selection — and only on the null-mask route (mirroring the menu-only
+# lesson: measure first). The reranker is entirely lazy-imported and degrades
+# gracefully: a missing key/network or any reader error becomes a skipped/error
+# block, never a failed run.
+# ---------------------------------------------------------------------------
+
+_FINALIST_READER_SELECTS_TRUE_VALUES = {"1", "true", "yes", "on"}
+
+
+@dataclass(frozen=True)
+class _FinalistReaderSpec:
+    provider: str
+    model: str
+
+
+def _parse_finalist_reader_spec() -> _FinalistReaderSpec | None:
+    """Strict, fail-closed parse of ``DECIPHER_FINALIST_READER``.
+
+    Unset/empty means the reader is off (returns ``None``). A non-empty value
+    must look like ``llm:MODEL`` (provider inferred from the model id) or
+    ``llm:PROVIDER:MODEL`` (explicit provider); anything else raises
+    ``ValueError`` so a typo fails loudly at the parse boundary rather than
+    silently running a wrong config. The runner hook wraps this call so a bad
+    value still cannot crash a run.
+    """
+    from agent.model_provider import canonical_provider, infer_provider_from_model
+
+    raw = os.environ.get("DECIPHER_FINALIST_READER", "").strip()
+    if not raw:
+        return None
+    prefix, sep, rest = raw.partition(":")
+    if prefix.strip().lower() != "llm" or not sep:
+        raise ValueError(
+            "DECIPHER_FINALIST_READER must look like 'llm:MODEL' or "
+            f"'llm:PROVIDER:MODEL', got {raw!r}"
+        )
+    rest = rest.strip()
+    if not rest:
+        raise ValueError("DECIPHER_FINALIST_READER is missing a model id")
+
+    provider: str | None = None
+    model = rest
+    maybe_provider, colon, maybe_model = rest.partition(":")
+    if colon and maybe_model.strip():
+        try:
+            provider = canonical_provider(maybe_provider.strip())
+            model = maybe_model.strip()
+        except ValueError:
+            provider = None
+            model = rest
+    if provider is None:
+        provider = infer_provider_from_model(model)
+    return _FinalistReaderSpec(provider=provider, model=model)
+
+
+def _finalist_reader_selects_enabled() -> bool:
+    """Strict, fail-closed parse of ``DECIPHER_FINALIST_READER_SELECTS``.
+
+    Selection override enables ONLY on an explicit affirmative value; unset,
+    empty, or garbage all mean annotate-only (the safe default).
+    """
+    raw = os.environ.get("DECIPHER_FINALIST_READER_SELECTS", "")
+    return raw.strip().lower() in _FINALIST_READER_SELECTS_TRUE_VALUES
+
+
+def _finalist_reader_api_key(provider: str) -> str:
+    """Resolve the reader's API key via the existing CLI pathway, silently.
+
+    Uses ``cli._probe_api_key`` (the non-exiting sibling of
+    ``cli.get_api_key``) so a missing key degrades to graceful skip instead of
+    ``get_api_key``'s ``sys.exit(1)``.
+    """
+    from agent.model_provider import canonical_provider
+
+    resolved = canonical_provider(provider)
+    if resolved == "ollama":
+        return ""
+    try:
+        from cli import _probe_api_key
+
+        return _probe_api_key(resolved)
+    except Exception:  # noqa: BLE001 — never fail the run over key resolution
+        return ""
+
+
+def _finalist_reader_rank(
+    packets: list[Any],
+    *,
+    language: str,
+    allow_select: bool,
+) -> tuple[dict[str, Any] | None, int | None]:
+    """Run the opt-in reader over ``packets`` and build a ``finalist_reader`` block.
+
+    Returns ``(block, override_index)``. ``block`` is ``None`` iff the reader is
+    disabled (env unset). ``override_index`` is the 0-based index into
+    ``packets`` the reader prefers, but only when ``allow_select`` and
+    ``DECIPHER_FINALIST_READER_SELECTS=1`` and the pick differs from the scalar
+    winner (index 0); otherwise ``None``. Any error yields a skipped/error block
+    and no override — the reader can never fail the run.
+    """
+    try:
+        spec = _parse_finalist_reader_spec()
+    except ValueError as exc:
+        return (
+            {
+                "status": "error",
+                "enabled": True,
+                "reason": f"invalid_env: {exc}",
+            },
+            None,
+        )
+    if spec is None:
+        return None, None
+
+    selects_enabled = _finalist_reader_selects_enabled()
+    mode = "select" if (allow_select and selects_enabled) else "annotate"
+    base_block: dict[str, Any] = {
+        "enabled": True,
+        "provider": spec.provider,
+        "model": spec.model,
+        "mode": mode,
+        "selects_enabled": selects_enabled,
+        "allow_select": allow_select,
+    }
+
+    if not packets:
+        return {**base_block, "status": "skipped", "reason": "no_candidates"}, None
+
+    api_key = _finalist_reader_api_key(spec.provider)
+    if not api_key and spec.provider != "ollama":
+        return (
+            {**base_block, "status": "skipped", "reason": "no_api_key"},
+            None,
+        )
+
+    try:
+        from analysis.llm_reader import (
+            LLMReaderConfig,
+            _candidate_original_id,
+            rank_candidates,
+        )
+
+        config = LLMReaderConfig(
+            provider=spec.provider,
+            model=spec.model,
+            language=language,
+        )
+        result = rank_candidates(packets, config, api_key=api_key)
+    except Exception as exc:  # noqa: BLE001 — never fail the run over the reader
+        return (
+            {**base_block, "status": "skipped", "reason": f"reader_error: {exc}"},
+            None,
+        )
+
+    result_dict = result.to_dict()
+    block: dict[str, Any] = {
+        **base_block,
+        "status": "completed" if result.parse_ok else "unparsed",
+        "top_n": len(result.scores),
+        "scores": result_dict["scores"],
+        "ranking": result_dict["ranking"],
+        "reader_best_candidate_id": result.best_candidate_id,
+        "reader_best_index": result.best_index,
+        "usage": result_dict["usage"],
+        "parse_ok": result.parse_ok,
+        "unscored": result_dict["unscored"],
+        "reader_error": result.error,
+    }
+
+    # Resolve the override into ``packets`` by matching the reader's mapped-back
+    # candidate id, NOT ``result.best_index``. ``best_index`` indexes the PREPARED
+    # list (after textless candidates are silently dropped), which is misaligned
+    # with ``packets`` whenever a dropped candidate precedes the reader's pick;
+    # indexing ``packets``/``top_finalists`` by it would install the wrong row.
+    override_index: int | None = None
+    if (
+        allow_select
+        and selects_enabled
+        and result.parse_ok
+        and result.best_candidate_id is not None
+    ):
+        for original_index, packet in enumerate(packets):
+            if _candidate_original_id(packet, original_index) == result.best_candidate_id:
+                if original_index != 0:
+                    override_index = original_index
+                break
+    block["selection_overridden"] = override_index is not None
+    if override_index is not None:
+        block["overridden_from_index"] = 0
+        block["overridden_to_index"] = override_index
+    return block, override_index
+
+
 def _parse_word_repair_edit_label(label: str) -> tuple[str, str] | None:
     """Parse a ``"<symbol>:<before>-><target>"`` variant edit label.
 
@@ -4294,6 +4494,19 @@ def _word_repair_refinement_on_pages(
         "candidate_menu": [packet.to_dict() for packet in packets],
         "elapsed_seconds": round(time.time() - started, 3),
     }
+
+    # Opt-in LLM finalist reader (Phase 4a item 4.2): the word-repair route is
+    # ANNOTATE-ONLY (selection override is the null-mask route only), so the
+    # reader records evidence beside the composed gate without changing
+    # would_adopt. Disabled reader -> no key added.
+    finalist_reader_block, _ = _finalist_reader_rank(
+        list(packets),
+        language=language,
+        allow_select=False,
+    )
+    if finalist_reader_block is not None:
+        step["finalist_reader"] = finalist_reader_block
+
     return step, adopted_result
 
 
@@ -5556,6 +5769,32 @@ def _run_null_mask_bakeoff(
         finalist_row_dict["packet"] = packet_from_null_mask_row(
             finalist_row_dict, rank=finalist_rank
         ).to_dict()
+
+    # Opt-in LLM finalist reader (Phase 4a item 4.2): annotate by default, and
+    # override the scalar winner only under DECIPHER_FINALIST_READER_SELECTS.
+    finalist_reader_block, reader_override_index = _finalist_reader_rank(
+        [row.get("packet") for row in top_finalists],
+        language=language,
+        allow_select=True,
+    )
+    if reader_override_index is not None and 0 <= reader_override_index < len(top_finalists):
+        chosen = top_finalists[reader_override_index]
+        if isinstance(finalist_reader_block, dict):
+            finalist_reader_block["scalar_selected_candidate_id"] = (
+                selected.get("candidate_id") if isinstance(selected, dict) else None
+            )
+            finalist_reader_block["reader_selected_candidate_id"] = chosen.get("candidate_id")
+            # The override index is resolved by candidate id (Phase 4a F2), so the
+            # finalist actually installed must be the one whose candidate id the
+            # reader returned as best. A mismatch means the prepared/packets
+            # alignment regressed and the wrong row would be selected.
+            assert (
+                finalist_reader_block["reader_selected_candidate_id"]
+                == finalist_reader_block["reader_best_candidate_id"]
+            ), "finalist reader selected/best candidate id mismatch"
+        selected = chosen
+        selected_mask = tuple(chosen.get("mask") or [])
+
     return {
         "name": "search_null_masks",
         "status": "completed" if completed else "error",
@@ -5604,6 +5843,7 @@ def _run_null_mask_bakeoff(
         "diagnostics": diagnostics,
         "selected_mask": list(selected_mask),
         "selected": selected,
+        "finalist_reader": finalist_reader_block,
         "top_finalists": top_finalists,
         "evaluated_rows": compact_rows,
         "baseline_rank": next(
