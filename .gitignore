@@ -23,5 +23,6 @@ models/*
 !models/ngram5_*.bin
 !models/ngram5_*.bin.metadata.json
 corpus_data/
+corpora/
 other_tools/
 external_baselines/local*.json

@@ -1,0 +1,53 @@
+{
+  "language": "de",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_de_dta.bin",
+  "sha256": "288888db9f55227e9321c01d4c16c8398d6411c646b7cd823540b2a39c6d1afa",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.723266,
+  "build_timestamp_utc": "2026-07-13T21:12:20.658872+00:00",
+  "builder_version": 1,
+  "sources": [
+    {
+      "name": "dta_kernkorpus_1600-1699",
+      "language": "de",
+      "license": "CC BY-SA 4.0",
+      "url": "https://www.deutschestextarchiv.de/media/download/dtak/2020-10-23/original/1600-1699.zip",
+      "redistributable": true,
+      "text_files": 237,
+      "export_version": "2020-10-23",
+      "variant": "original"
+    },
+    {
+      "name": "dta_kernkorpus_1700-1799",
+      "language": "de",
+      "license": "CC BY-SA 4.0",
+      "url": "https://www.deutschestextarchiv.de/media/download/dtak/2020-10-23/original/1700-1799.zip",
+      "redistributable": true,
+      "text_files": 526,
+      "export_version": "2020-10-23",
+      "variant": "original"
+    },
+    {
+      "name": "dta_kernkorpus_1800-1899",
+      "language": "de",
+      "license": "CC BY-SA 4.0",
+      "url": "https://www.deutschestextarchiv.de/media/download/dtak/2020-10-23/original/1800-1899.zip",
+      "redistributable": true,
+      "text_files": 684,
+      "export_version": "2020-10-23",
+      "variant": "original"
+    }
+  ],
+  "corpus_stats": {
+    "raw_files": 1447,
+    "normalized_characters": 664841331,
+    "distinct_seen_5grams": 2292009
+  },
+  "normalization": {
+    "lowercase": true,
+    "strip_non_alpha": true
+  },
+  "redistribution_status": "redistributable"
+}
