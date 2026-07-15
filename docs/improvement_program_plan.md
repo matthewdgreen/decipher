@@ -610,9 +610,16 @@ and char-tied with v2 (wins Copiale), but trails on Borg word accuracy
 because every v3 Borg run ended in best-branch fallback instead of an
 explicit declaration (data: artifacts/m6_bakeoff/summary.jsonl, local).
 
-**Next up (needs go): M5.1 declaration-trigger fix** —
-`docs/specs/agent_v3_m5_1_declaration_trigger_spec.md` (self-contained:
-evidence, forensics plan, four-part fix, tests, acceptance targets). If
-its acceptance targets are met, re-open the M6 switch decision with a
-focused Borg-only v2-vs-v3 re-run (~$25). After a switch: v2 retirement
-one release later (deletion list in agent_v3_design.md).
+**Implemented locally; paid validation deferred: revised M5.1 recovery,
+adjudication, and declaration** -
+`docs/specs/agent_v3_m5_1_declaration_trigger_spec.md`. M6 artifact
+forensics showed that declaration timing is not the only Borg deficit:
+the Reading-to-repair handoff rejected realistic punctuation/hole markers,
+negative verification did not trigger repair, one fallback selected a much
+weaker available branch, and the bake-off summary omitted unattached negative
+attestations. M5.1 now fixes those surfaces in ordered local slices before its
+focused paid acceptance. Passing the focused gate reopens M6 but does not
+switch the default; a complete post-fix paired matrix is still required. After
+a switch: v2 retirement one release later (deletion list in
+agent_v3_design.md). The local targeted gate is green; no focused Stage-1 or
+full bake-off was run during implementation in order to control token cost.

@@ -56,12 +56,131 @@ from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
 from investigation.context import (
     build_lead_context,
     build_v3_system_prompt,
-    late_turn_attestation_target,
+    workflow_hint_candidates,
+    DECLARE_COHERENCE,
 )
 from investigation.sessions import ModelSession, session_factory
 from investigation.state import AttestationRecord, BudgetEntry, InvestigationState
 from models.cipher_text import CipherText
 from workspace import Workspace
+
+
+def _is_positive_attestation(attestation: dict[str, Any]) -> bool:
+    return bool(attestation.get("reader_accepts")) and int(
+        attestation.get("coherence") or 0
+    ) >= DECLARE_COHERENCE
+
+
+def _branch_hash(workspace: Workspace, branch: str) -> str:
+    return _candidate_content_hash(_decoded_text_for_panel(workspace, branch))
+
+
+def _active_branch(workspace: Workspace, branch: str) -> bool:
+    return workspace.has_branch(branch) and workspace.get_branch(branch).metadata.get(
+        "mode_status", "active"
+    ) not in {"rejected", "superseded"}
+
+
+def _fresh_compare_winner(
+    state: InvestigationState,
+) -> tuple[str, dict[str, Any]] | None:
+    """Return the newest compare winner whose complete hash binding is fresh."""
+    for entry in reversed(state.episode_ledger):
+        if entry.get("kind") != "compare" or entry.get("status") != "ok":
+            continue
+        binding = entry.get("comparison_binding")
+        if not isinstance(binding, dict):
+            continue
+        hashes = binding.get("branch_hashes") or {}
+        winner = str(binding.get("winner") or "")
+        if not winner or winner not in hashes or not _active_branch(state.workspace, winner):
+            continue
+        if any(
+            not state.workspace.has_branch(name)
+            or _branch_hash(state.workspace, name) != expected_hash
+            for name, expected_hash in hashes.items()
+        ):
+            continue
+        if binding.get("winner_hash") != _branch_hash(state.workspace, winner):
+            continue
+        result = entry.get("result") or {}
+        verdict = next(
+            (
+                str(item.get("verdict") or "")
+                for item in (result.get("verdicts") or [])
+                if str(item.get("branch") or "") == winner
+            ),
+            "",
+        ).lower()
+        if "reject" in verdict or verdict in {"invalid", "not viable"}:
+            continue
+        return winner, binding
+    return None
+
+
+def _select_v3_fallback(
+    state: InvestigationState,
+    executor: WorkspaceToolExecutor,
+) -> tuple[str, dict[str, Any]]:
+    """Select a fallback using only solver-derived, hash-bound evidence."""
+    workspace = state.workspace
+    shortlist: list[dict[str, Any]] = []
+    for name in workspace.branch_names():
+        if not _active_branch(workspace, name):
+            continue
+        content_hash = _branch_hash(workspace, name)
+        attestations = [
+            a for a in state.verify_attestations
+            if a.get("content_hash") == content_hash and _is_positive_attestation(a)
+        ]
+        latest_positive = max(
+            attestations,
+            key=lambda a: (int(a.get("coherence") or 0), int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
+            default=None,
+        )
+        shortlist.append({
+            "branch": name,
+            "content_hash": content_hash,
+            "positive_attestation": dict(latest_positive) if latest_positive else None,
+            "scores": executor._compute_quick_scores(name),
+        })
+
+    positively_attested = [item for item in shortlist if item["positive_attestation"]]
+    if positively_attested:
+        chosen = max(
+            positively_attested,
+            key=lambda item: (
+                int(item["positive_attestation"].get("coherence") or 0),
+                int(item["positive_attestation"].get("created_turn") or 0),
+                str(item["branch"]),
+            ),
+        )
+        return str(chosen["branch"]), {
+            "tier": "fresh_positive_attestation",
+            "rationale": "Selected a branch with a fresh positive independent-reader attestation.",
+            "attestation": chosen["positive_attestation"],
+            "shortlist": shortlist,
+        }
+
+    compare = _fresh_compare_winner(state)
+    if compare is not None:
+        winner, binding = compare
+        return winner, {
+            "tier": "fresh_compare_winner",
+            "rationale": "Selected the winner of the newest hash-fresh compare episode.",
+            "comparison_binding": dict(binding),
+            "shortlist": shortlist,
+        }
+
+    branch, scores = _best_branch_for_auto_declare(
+        workspace, state.language, executor.word_set, executor._freq_rank
+    )
+    return branch, {
+        "tier": "scalar_fallback",
+        "rationale": "No fresh positive attestation or fresh compare winner was available.",
+        "scores": scores,
+        "shortlist": shortlist,
+    }
 
 
 def _resync_attestation_branch_on_rename(
@@ -457,6 +576,15 @@ def run_v3(
             "context_note": args.get("context_note"),
             "max_tool_calls": args.get("max_tool_calls"),
         }
+        compare_branch_hashes = (
+            {
+                name: _branch_hash(workspace, name)
+                for name in inputs["branches"]
+                if workspace.has_branch(name)
+            }
+            if kind == "compare"
+            else None
+        )
         # A1/M3: hand a stored Reading to the episode by id (repair kind). The
         # reading DICT is injected as inputs["reading"]; unknown id → error.
         reading_id = args.get("reading_id")
@@ -498,6 +626,34 @@ def run_v3(
             "snapshots": [s.get("name") for s in result.branch_snapshots],
             "spend_usd": spend_usd,
         }
+        if kind == "compare" and isinstance(result.result, dict):
+            winner = result.result.get("winner")
+            binding = {
+                "branch_hashes": compare_branch_hashes or {},
+                "winner": winner,
+                "winner_hash": (
+                    (compare_branch_hashes or {}).get(str(winner))
+                    if winner is not None else None
+                ),
+                "created_turn": turn,
+                "episode_id": result.episode_id,
+            }
+            ledger_entry = next(
+                (entry for entry in reversed(state.episode_ledger)
+                 if entry.get("episode_id") == result.episode_id),
+                None,
+            )
+            if ledger_entry is not None:
+                ledger_entry["comparison_binding"] = binding
+            payload["comparison_binding"] = binding
+        ledger_entry = next(
+            (entry for entry in reversed(state.episode_ledger)
+             if entry.get("episode_id") == result.episode_id),
+            None,
+        )
+        if ledger_entry is not None:
+            ledger_entry["launching_turn"] = turn
+            ledger_entry["input_branches"] = list(inputs.get("branches") or [])
         # Part 1: the lead compiles a reading-kind result into a stored Reading
         # (A1 — workers never write state.readings) and returns its id.
         if result.kind == "reading" and result.status == "ok" and isinstance(result.result, dict):
@@ -659,16 +815,11 @@ def run_v3(
         # no context->loop back-channel) and emits the LoopEvent itself so the
         # analysis can see when the lead was reminded to verify with turns to
         # spare.
-        hint_branch = late_turn_attestation_target(
-            state, executor, turn, max_iterations
-        )
-        if hint_branch is not None:
+        for hint in workflow_hint_candidates(state, executor, turn, max_iterations):
+            state.workflow_hint_keys.append(str(hint["key"]))
             emit(
-                "late_turn_attestation_hint",
-                {
-                    "branch": hint_branch,
-                    "turns_remaining": max_iterations - turn,
-                },
+                str(hint["event"]),
+                {key: value for key, value in hint.items() if key not in {"event", "key", "message"}},
                 outer_iteration=turn,
             )
 
@@ -849,10 +1000,16 @@ def run_v3(
                     declared_hash = _candidate_content_hash(
                         _decoded_text_for_panel(workspace, sol.branch)
                     )
-                    match = next(
-                        (a for a in state.verify_attestations
-                         if a.get("content_hash") == declared_hash),
-                        None,
+                    match = max(
+                        (
+                            a for a in state.verify_attestations
+                            if a.get("content_hash") == declared_hash
+                        ),
+                        key=lambda a: (
+                            int(a.get("created_turn") or 0),
+                            str(a.get("episode_id") or ""),
+                        ),
+                        default=None,
                     )
                     if match is not None:
                         sol.attestation = dict(match)
@@ -880,8 +1037,11 @@ def run_v3(
         and executor.solution is None
         and getattr(executor, "unsolved_declaration", None) is None
     ):
-        best_branch, best_scores = _best_branch_for_auto_declare(
-            workspace, language, word_set, executor._freq_rank
+        best_branch, fallback_selection = _select_v3_fallback(state, executor)
+        best_scores = next(
+            (item.get("scores") for item in fallback_selection.get("shortlist", [])
+             if item.get("branch") == best_branch),
+            fallback_selection.get("scores") or {},
         )
         if artifact.status == "error":
             reason = (
@@ -898,14 +1058,29 @@ def run_v3(
             branch=best_branch,
             rationale=(
                 f"{reason}Selected the highest-scoring available branch by "
-                f"internal dictionary and quadgram signals: {best_scores}."
+                f"the `{fallback_selection['tier']}` policy: "
+                f"{fallback_selection['rationale']} Scores: {best_scores}."
             ),
-            self_confidence=0.0,
+            self_confidence=(
+                float(fallback_selection["attestation"].get("coherence") or 0) / 10.0
+                if fallback_selection.get("attestation") else 0.0
+            ),
             declared_at_iteration=max_iterations,
+            attestation=(
+                dict(fallback_selection["attestation"])
+                if fallback_selection.get("attestation") else None
+            ),
         )
         artifact.status = "fallback_declared"
         artifact.auto_declared = True
-        emit("auto_declared_solution", {"branch": best_branch, "scores": best_scores})
+        artifact.attested_fallback = fallback_selection["tier"] == "fresh_positive_attestation"
+        artifact.fallback_selection = fallback_selection
+        emit("auto_declared_solution", {
+            "branch": best_branch,
+            "scores": best_scores,
+            "selection_tier": fallback_selection["tier"],
+            "attested_fallback": artifact.attested_fallback,
+        })
 
     # --- finalize ---
     artifact.finished_at = time.time()

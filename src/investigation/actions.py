@@ -46,7 +46,10 @@ HYPOTHESIS_APPLY_READING_TOOL = {
         "changes in ONE step, on a NEW fork (never in place). Give a stored "
         "reading_id, or an inline reading_text / fragments. `window` {start,end} "
         "scopes the whole call to a token range; each fragment can scope itself "
-        "with its own start/end. Auto-detects letter fixes from the reading; "
+        "with its own start/end. Human-facing `text` may contain prose; use "
+        "`repair_text` (letters, spaces, and ? wildcards only) for conservative "
+        "machine repair. Low-confidence or ambiguous fragments are skipped. "
+        "Auto-detects letter fixes from the reading; "
         "when the letters already match it is boundaries-only. Use dry_run=true "
         "to preview edits/conflicts/holes without creating anything."
     ),
@@ -64,6 +67,7 @@ HYPOTHESIS_APPLY_READING_TOOL = {
                         "start": {"type": ["integer", "null"]},
                         "end": {"type": ["integer", "null"]},
                         "text": {"type": "string"},
+                        "repair_text": {"type": ["string", "null"]},
                         "confidence": {"type": ["number", "string"]},
                         "label": {"type": "string"},
                     },
@@ -225,16 +229,40 @@ def _unsupported_branch_state(branch_obj: Any) -> str | None:
     return None
 
 
-def _normalize_reading_words(text: str, pt_alpha: Any) -> tuple[list[str] | None, str | None]:
-    """Uppercase + collapse whitespace + split; validate the plaintext alphabet.
+MIN_REPAIR_FRAGMENT_CONFIDENCE = 0.65
+_SAFE_LEGACY_READING_PUNCTUATION = frozenset(".,;:!\n\r\t")
+
+
+def _normalize_reading_words(
+    text: str,
+    pt_alpha: Any,
+    *,
+    explicit_repair_text: bool = False,
+) -> tuple[list[str] | None, str | None]:
+    """Normalize one fragment into machine-actionable words.
 
     Returns ``(words, None)`` on success or ``(None, offending_char)`` if any
-    non-space character is not a single-character plaintext symbol.
+    character is unsafe. Explicit ``repair_text`` accepts alphabet symbols,
+    whitespace, and ``?``. Legacy human text additionally treats conservative
+    sentence punctuation as whitespace; editorial notation remains unsafe.
     """
-    words = str(text).upper().split()
+    raw = str(text).upper()
+    if not explicit_repair_text and ".." in raw:
+        return None, "."
+    normalized: list[str] = []
+    for ch in raw:
+        if ch.isspace():
+            normalized.append(" ")
+        elif ch == "?" or pt_alpha.has_symbol(ch):
+            normalized.append(ch)
+        elif not explicit_repair_text and ch in _SAFE_LEGACY_READING_PUNCTUATION:
+            normalized.append(" ")
+        else:
+            return None, ch
+    words = "".join(normalized).split()
     for word in words:
         for ch in word:
-            if not pt_alpha.has_symbol(ch):
+            if ch != "?" and not pt_alpha.has_symbol(ch):
                 return None, ch
     return words, None
 
@@ -267,7 +295,11 @@ def _banded_alignment(
                 continue
             best = inf
             if i > 0 and j > 0 and dp[i - 1][j - 1] != inf:
-                sub = 0 if (proposed[i - 1] == decoded[j - 1] or decoded[j - 1] == "?") else 1
+                sub = 0 if (
+                    proposed[i - 1] == decoded[j - 1]
+                    or proposed[i - 1] == "?"
+                    or decoded[j - 1] == "?"
+                ) else 1
                 best = min(best, dp[i - 1][j - 1] + sub)
             if i > 0 and dp[i - 1][j] != inf:
                 best = min(best, dp[i - 1][j] + 2)
@@ -293,7 +325,11 @@ def _banded_alignment(
             j -= 1
             took = True
         if not took and i > 0 and j > 0 and dp[i - 1][j - 1] != inf:
-            sub = 0 if (proposed[i - 1] == decoded[j - 1] or decoded[j - 1] == "?") else 1
+            sub = 0 if (
+                proposed[i - 1] == decoded[j - 1]
+                or proposed[i - 1] == "?"
+                or decoded[j - 1] == "?"
+            ) else 1
             if cur == dp[i - 1][j - 1] + sub:
                 ops.append((i - 1, j - 1))
                 i -= 1
@@ -367,9 +403,16 @@ def _hypothesis_apply_reading(
             for item in inline_fragments:
                 if not isinstance(item, dict):
                     continue
-                fragments.append(ReadingFragment.from_dict(item))
+                fragment = ReadingFragment.from_dict(item)
+                # Backward compatibility: direct lead-authored fragments
+                # predate confidence. Worker-produced stored Readings always
+                # pass through Reading.from_episode_result, where an omitted
+                # confidence remains the conservative 0.5 default.
+                if item.get("confidence") is None:
+                    fragment.confidence = 1.0
+                fragments.append(fragment)
         if reading_text is not None:
-            fragments.append(ReadingFragment(text=str(reading_text)))
+            fragments.append(ReadingFragment(text=str(reading_text), confidence=1.0))
         # A5d: an inline reading gets an ephemeral id for fork naming only.
         id6 = new_reading_id()[:6]
 
@@ -409,11 +452,19 @@ def _hypothesis_apply_reading(
     total_gaps = 0
     total_mismatches = 0
     fragment_reports: list[dict[str, Any]] = []
+    skipped_fragments: list[dict[str, Any]] = []
 
     for idx, frag in enumerate(fragments):
+        if frag.confidence < MIN_REPAIR_FRAGMENT_CONFIDENCE:
+            skipped_fragments.append({
+                "fragment_index": idx,
+                "reason": "confidence_below_threshold",
+                "confidence": frag.confidence,
+                "minimum_confidence": MIN_REPAIR_FRAGMENT_CONFIDENCE,
+            })
+            continue
         f_start = frag.start if frag.start is not None else win_start
         f_end = frag.end if frag.end is not None else win_end
-        # A5c: a fragment extending outside the call-level window is an error.
         if f_start < win_start or f_end > win_end:
             return _err(
                 "fragment extends outside the window",
@@ -428,13 +479,20 @@ def _hypothesis_apply_reading(
                 fragment_bounds=[f_start, f_end],
                 total=total,
             )
-        words, bad = _normalize_reading_words(frag.text, pt_alpha)
+        source_text = frag.repair_text if frag.repair_text is not None else frag.text
+        words, bad = _normalize_reading_words(
+            source_text,
+            pt_alpha,
+            explicit_repair_text=frag.repair_text is not None,
+        )
         if words is None:
-            return _err(
-                "reading contains a non-plaintext-alphabet character",
-                fragment_index=idx,
-                character=bad,
-            )
+            skipped_fragments.append({
+                "fragment_index": idx,
+                "reason": "unsafe_repair_text",
+                "character": bad,
+                "used_explicit_repair_text": frag.repair_text is not None,
+            })
+            continue
         proposed = "".join(words)
         decoded = "".join(
             _decoded_char(pt_alpha, key, eff_tokens[t]) for t in range(f_start, f_end)
@@ -451,25 +509,25 @@ def _hypothesis_apply_reading(
             ops = _banded_alignment(proposed, decoded, band)
             mode = "banded"
             if ops is None:
-                return _err(
-                    "no banded alignment path",
-                    fragment_index=idx,
-                    proposed_len=len(proposed),
-                    span_len=span_len,
-                )
+                skipped_fragments.append({
+                    "fragment_index": idx,
+                    "reason": "no_banded_alignment_path",
+                    "proposed_len": len(proposed),
+                    "span_len": span_len,
+                })
+                continue
         else:
             first_div = _first_divergence(proposed, decoded)
-            return {
-                "status": "error",
-                "kind": "reading_application",
-                "error": "count_mismatch_too_large",
+            skipped_fragments.append({
                 "fragment_index": idx,
+                "reason": "count_mismatch_too_large",
                 "proposed_len": len(proposed),
                 "span_len": span_len,
                 "delta": delta,
                 "tolerance": tolerance,
                 "first_divergence": first_div,
-            }
+            })
+            continue
 
         # p_to_token[i] = token index where proposed char i starts.
         p_to_token: dict[int, int] = {}
@@ -483,7 +541,7 @@ def _hypothesis_apply_reading(
                 d_consumed = dj + 1
                 proposed_char = proposed[pi]
                 decoded_char = decoded[dj]
-                if proposed_char != decoded_char:
+                if proposed_char != "?" and proposed_char != decoded_char:
                     frag_mismatches += 1
                     symbol = cipher_alpha.symbol_for(eff_tokens[token_index])
                     edit_votes.setdefault(symbol, {})
@@ -527,7 +585,23 @@ def _hypothesis_apply_reading(
             "proposed_len": len(proposed),
             "gaps": frag_gaps,
             "mismatches": frag_mismatches,
+            "used_explicit_repair_text": frag.repair_text is not None,
         })
+
+    if not fragment_reports:
+        return {
+            "status": "ok",
+            "kind": "reading_application",
+            "branch": branch,
+            "fork": None,
+            "dry_run": bool(args.get("dry_run", False)),
+            "no_actionable_fragments": True,
+            "actionable_fragment_count": 0,
+            "skipped_fragments": skipped_fragments,
+            "edits": [],
+            "conflicts": [],
+            "holes": [],
+        }
 
     # --- resolve edit votes (majority; tie -> drop) ---
     edits: list[tuple[str, str]] = []
@@ -660,6 +734,9 @@ def _hypothesis_apply_reading(
         "boundary_change_count": boundary_change_count,
         "alignment": {"gaps": total_gaps, "mismatches": total_mismatches},
         "fragments": fragment_reports,
+        "actionable_fragment_count": len(fragment_reports),
+        "skipped_fragments": skipped_fragments,
+        "no_actionable_fragments": False,
         "scores_before": before_scores,
         "scores_after": after_scores,
         "diff_preview": diff_preview,

@@ -1531,6 +1531,33 @@ you cannot attest a reading you did not actually read.*
 
 ---
 
+## hypothesis_* — V3 reading repair (v3 loop only)
+
+### `hypothesis_apply_reading`
+Compile a stored or inline Reading into key edits and word boundaries on a new
+fork. Human-facing fragment `text` may contain prose, but automatic repair uses
+`repair_text` when supplied. `repair_text` accepts plaintext letters, spaces,
+and `?` (one unknown token that casts no mapping vote). Fragments below 0.65
+confidence or containing ambiguous editorial notation are reported as skipped;
+one skipped fragment does not discard actionable peers.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | **required** source branch |
+| `reading_id` | string | stored Reading; mutually exclusive with inline text/fragments |
+| `reading_text` | string | legacy inline plaintext reading |
+| `fragments` | array[object] | inline `{start,end,text,repair_text,confidence,label}` fragments |
+| `window` | object | optional `{start,end}` token range for the whole call |
+| `as_name` | string | requested fork name |
+| `dry_run` | boolean | compute edits and diagnostics without retaining a fork |
+
+The result includes `actionable_fragment_count`, `skipped_fragments`, and
+`no_actionable_fragments`, plus the existing edits/conflicts/holes and score
+comparison. Do not put glosses, expanded abbreviations, or unknown-length holes
+in `repair_text`.
+
+---
+
 ## episode_run — V3 lead delegation (v3 loop only)
 
 The v3 investigation lead can delegate a focused sub-task to an isolated worker

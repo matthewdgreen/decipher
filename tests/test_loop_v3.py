@@ -11,7 +11,7 @@ import pytest
 
 from agent.model_provider import ModelProviderError, ModelResponse, ModelUsage, TextBlock, ToolUseBlock
 from investigation import sessions as sessions_mod
-from investigation.loop_v3 import run_v3
+from investigation.loop_v3 import _fresh_compare_winner, run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry
 from models.alphabet import Alphabet
@@ -220,6 +220,57 @@ def test_run_v3_exhaustion_falls_back():
     assert art.status == "fallback_declared"
     assert art.auto_declared is True
     assert art.solution is not None
+
+
+def test_run_v3_positive_attestation_drives_attested_fallback(verify_fake):
+    ct, alpha = _caesar_cipher("THE DOG")
+    mapping = {
+        alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
+        for i in range(alpha.size)
+    }
+    scripts = [
+        [ToolUseBlock(id="set", name="act_bulk_set",
+                      input={"branch": "main", "mappings": mapping})],
+        [ToolUseBlock(id="verify", name="episode_run",
+                      input={"kind": "verify", "goal": "verify main",
+                             "branches": ["main"]})],
+    ]
+    art = run_v3(ct, session=ScriptedSession(scripts), language="en",
+                 max_iterations=2, cipher_id="v3_attested_fallback")
+    assert art.status == "fallback_declared"
+    assert art.auto_declared is True
+    assert art.attested_fallback is True
+    assert art.fallback_selection["tier"] == "fresh_positive_attestation"
+    assert art.solution.attestation["reader_accepts"] is True
+    assert art.solution.self_confidence == 0.9
+
+
+def test_fresh_compare_winner_rejects_stale_hash_binding():
+    ct, state = _keyed_catton_state()
+    ws = state.workspace
+    ws.fork("alternate", from_branch="main")
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    hashes = {
+        name: _candidate_content_hash(_decoded_text_for_panel(ws, name))
+        for name in ("main", "alternate")
+    }
+    state.episode_ledger.append({
+        "episode_id": "cmp1",
+        "kind": "compare",
+        "status": "ok",
+        "comparison_binding": {
+            "branch_hashes": hashes,
+            "winner": "alternate",
+            "winner_hash": hashes["alternate"],
+        },
+    })
+    assert _fresh_compare_winner(state)[0] == "alternate"
+
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+    ws.set_mapping("alternate", alpha.id_for("a"), pt.id_for("Z"))
+    assert _fresh_compare_winner(state) is None
 
 
 def test_run_v3_declare_without_verify_is_blocked_then_falls_back():

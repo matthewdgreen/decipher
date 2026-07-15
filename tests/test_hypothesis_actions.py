@@ -20,6 +20,7 @@ from automated import runner as automated_runner
 from investigation.actions import (
     COMPOSITE_TOOL_DEFINITIONS,
     COMPOSITE_TOOL_NAMES,
+    _normalize_reading_words,
     execute_composite,
 )
 from investigation.episodes import EPISODE_KINDS
@@ -248,10 +249,12 @@ def test_phase6_d_banded_miscount_reports_hole_no_cascade():
 def test_phase6_e_count_mismatch_too_large():
     ex = _synthetic_executor(raw="abcde", sep=None)  # span_len 5, tolerance 2
     res = _apply(ex, {"branch": "main", "reading_text": "CATONABCDEFGHIJK"})
-    assert res["status"] == "error"
-    assert res["error"] == "count_mismatch_too_large"
-    assert res["span_len"] == 5 and res["proposed_len"] == 16
-    assert "first_divergence" in res
+    assert res["status"] == "ok"
+    assert res["no_actionable_fragments"] is True
+    skipped = res["skipped_fragments"][0]
+    assert skipped["reason"] == "count_mismatch_too_large"
+    assert skipped["span_len"] == 5 and skipped["proposed_len"] == 16
+    assert "first_divergence" in skipped
 
 
 def test_phase6_f_multisym_guard():
@@ -315,6 +318,84 @@ def test_apply_reading_from_stored_reading_id():
     assert res["status"] == "ok"
     assert res["edits"] == ["c=R"]
     assert res["fork"].startswith(f"reading_{reading.reading_id[:6]}_main")
+
+
+def test_apply_reading_legacy_sentence_punctuation_is_safe():
+    ex = _synthetic_executor()
+    res = _apply(ex, {"branch": "main", "reading_text": "CAR. ON!"})
+    assert res["status"] == "ok"
+    assert res["edits"] == ["c=R"]
+    assert res["actionable_fragment_count"] == 1
+
+
+def test_apply_reading_skips_unsafe_fragment_but_keeps_actionable_peer():
+    ex = _synthetic_executor()
+    res = _apply(ex, {
+        "branch": "main",
+        "fragments": [
+            {"start": 0, "end": 3, "text": "CAR", "confidence": 0.9},
+            {"start": 3, "end": 5, "text": "(ON/IN)", "confidence": 0.9},
+        ],
+    })
+    assert res["status"] == "ok"
+    assert res["edits"] == ["c=R"]
+    assert res["actionable_fragment_count"] == 1
+    assert res["skipped_fragments"][0]["reason"] == "unsafe_repair_text"
+
+
+@pytest.mark.parametrize("unsafe", ["CAT [---] ON", "CAT [CAR/CAN?] ON", "CAT ... ON"])
+def test_apply_reading_ambiguous_editorial_notation_is_non_actionable(unsafe):
+    ex = _synthetic_executor()
+    res = _apply(ex, {
+        "branch": "main",
+        "fragments": [{"text": unsafe, "confidence": 0.9}],
+    })
+    assert res["status"] == "ok"
+    assert res["no_actionable_fragments"] is True
+    assert res["skipped_fragments"][0]["reason"] == "unsafe_repair_text"
+
+
+def test_m6_0109_reading_failure_shapes_normalize_without_old_period_error():
+    ex = _synthetic_executor()
+    pt = ex.workspace.plaintext_alphabet
+    safe, bad = _normalize_reading_words(
+        "ET BREUITER UT PLURES MANERENT VIVI;", pt
+    )
+    assert bad is None
+    assert safe == ["ET", "BREUITER", "UT", "PLURES", "MANERENT", "VIVI"]
+
+    ambiguous, bad = _normalize_reading_words(
+        "ET DIE PRO CERTO [experi-/examin-?]", pt
+    )
+    assert ambiguous is None
+    assert bad == "["
+
+
+def test_apply_reading_explicit_repair_text_supports_wildcard():
+    ex = _synthetic_executor()
+    res = _apply(ex, {
+        "branch": "main",
+        "fragments": [{
+            "text": "CAR, unknown.",
+            "repair_text": "CAR ??",
+            "confidence": 0.9,
+        }],
+    })
+    assert res["status"] == "ok"
+    assert res["edits"] == ["c=R"]
+    assert res["alignment"]["mismatches"] == 1
+
+
+def test_apply_reading_low_confidence_returns_no_actionable_fragments():
+    ex = _synthetic_executor()
+    res = _apply(ex, {
+        "branch": "main",
+        "fragments": [{"text": "CAR ON", "confidence": 0.4}],
+    })
+    assert res["status"] == "ok"
+    assert res["fork"] is None
+    assert res["no_actionable_fragments"] is True
+    assert res["skipped_fragments"][0]["reason"] == "confidence_below_threshold"
 
 
 def test_apply_reading_fragment_outside_window_is_error():

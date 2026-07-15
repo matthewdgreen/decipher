@@ -14,6 +14,7 @@ function_call pairing (F1).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -45,6 +46,11 @@ DEFAULT_WINDOW_TOKENS = 400
 DEFAULT_EVIDENCE_ENTRIES = 6
 # How many branch cards to render (top-K by internal scoring).
 DEFAULT_BRANCH_CARDS = 4
+
+DECLARE_COHERENCE = 7
+REPAIRABLE_COHERENCE_MIN = 2
+LATE_VERIFY_TURNS = 4
+POST_ATTEST_PATIENCE = 2
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +105,10 @@ while you keep working. Check and adjudicate them with `experiment_collect`, \
 which polls the queue and installs a completed run's branch when you ask.
 
 Finishing
+- Verify the leading branch by mid-budget, not only on the final turn. Do not \
+re-verify unchanged content. A positive fresh verification should be followed \
+by declaration; a weak but partly coherent verification should trigger a \
+focused reading/repair pass on its anomalies before another verification.
 - When a branch reads as coherent {language_name}, call \
 `meta_declare_solution` with that branch and your confidence. If the cipher \
 resists every hypothesis you can mount, call `meta_declare_unsolved` with your \
@@ -463,32 +473,144 @@ def _render_window(
     return _truncate(header + rendered, _WINDOW_CAP)
 
 
-def late_turn_attestation_target(
-    state: InvestigationState, executor: Any, turn: int, max_turns: int | None
-) -> str | None:
-    """F9/M6-F7 predicate (pure): the best branch that lacks a fresh attestation
-    when ≤2 turns remain, else ``None``.
-
-    Factored out so the render below AND the v3 loop evaluate the SAME predicate.
-    Per M6 F7 the LOOP re-evaluates this and emits the ``late_turn_attestation_hint``
-    LoopEvent itself — context.py stays render-only, with no context->loop
-    back-channel (the loop simply calls this pure function).
-    """
-    if not max_turns or (max_turns - turn) > 2:
-        return None
+def _branch_content_hash(state: InvestigationState, branch: str) -> str:
     from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    return _candidate_content_hash(_decoded_text_for_panel(state.workspace, branch))
+
+
+def _fresh_attestation(
+    state: InvestigationState, branch: str
+) -> dict[str, Any] | None:
+    content_hash = _branch_content_hash(state, branch)
+    matches = [
+        a for a in state.verify_attestations
+        if a.get("content_hash") == content_hash
+    ]
+    return max(
+        matches,
+        key=lambda a: (int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
+        default=None,
+    )
+
+
+def _positive(attestation: dict[str, Any] | None) -> bool:
+    return bool(attestation and attestation.get("reader_accepts")) and int(
+        attestation.get("coherence") or 0
+    ) >= DECLARE_COHERENCE
+
+
+def workflow_hint_candidates(
+    state: InvestigationState, executor: Any, turn: int, max_turns: int | None
+) -> list[dict[str, Any]]:
+    """Return unseen, state-derived workflow hints for the current turn."""
+    if not max_turns:
+        return []
 
     best, _scores = _best_branch_for_auto_declare(
         state.workspace, state.language, executor.word_set, executor._freq_rank
     )
-    current_hash = _candidate_content_hash(
-        _decoded_text_for_panel(state.workspace, best)
-    )
-    if any(
-        a.get("content_hash") == current_hash for a in state.verify_attestations
+    current_hash = _branch_content_hash(state, best)
+    attestation = _fresh_attestation(state, best)
+    turns_remaining = max_turns - turn
+    late_window = min(LATE_VERIFY_TURNS, max(2, max_turns // 2))
+    hints: list[dict[str, Any]] = []
+
+    def add(event: str, message: str, *, identity: str = current_hash) -> None:
+        key = f"{event}:{identity}"
+        if key not in state.workflow_hint_keys:
+            hints.append({
+                "event": event,
+                "key": key,
+                "branch": best,
+                "content_hash": current_hash,
+                "turns_remaining": turns_remaining,
+                "message": message,
+            })
+
+    repair_addressed = False
+    if attestation is not None:
+        attested_turn = int(attestation.get("created_turn") or 0)
+        repair_addressed = any(
+            entry.get("kind") == "repair"
+            and int(entry.get("launching_turn") or 0) > attested_turn
+            and best in (entry.get("input_branches") or [])
+            for entry in state.episode_ledger
+        ) or any(
+            call.tool_name == "hypothesis_apply_reading"
+            and int(call.iteration or 0) > attested_turn
+            and str(call.arguments.get("branch") or "") == best
+            for call in executor.call_log
+        )
+
+    if _positive(attestation):
+        if turn - int(attestation.get("created_turn") or 0) >= POST_ATTEST_PATIENCE:
+            add(
+                "positive_attestation_declare_hint",
+                f"`{best}` has a fresh positive verification; declare it now unless "
+                "you have concrete contradictory evidence.",
+            )
+    elif (
+        attestation is not None
+        and not repair_addressed
+        and (
+            int(attestation.get("coherence") or 0) >= REPAIRABLE_COHERENCE_MIN
+            or bool(attestation.get("gloss")) and bool(attestation.get("anomalies"))
+        )
     ):
-        return None
-    return best
+        anomalies = "; ".join(str(a) for a in (attestation.get("anomalies") or []))
+        suffix = f" Reported anomalies: {anomalies}." if anomalies else ""
+        add(
+            "negative_verify_repair_hint",
+            f"`{best}` was not accepted but has partial coherence. Run a focused "
+            f"reading/repair pass before verifying changed content.{suffix}",
+        )
+    elif attestation is None:
+        if turns_remaining <= late_window:
+            add(
+                "late_turn_attestation_hint",
+                f"No verification exists for `{best}`; run verify now if it may "
+                "be your final candidate.",
+            )
+        elif turn >= max(2, (max_turns + 1) // 2):
+            add(
+                "mid_budget_verify_hint",
+                f"Half the turn budget is spent. Verify `{best}` now to learn "
+                "whether to declare, repair, or change hypotheses.",
+            )
+
+    # A late compare is useful only when current, non-rejected branch contents
+    # are actually distinct and no positive attestation already settles one.
+    if turns_remaining <= late_window:
+        active_hashes: set[str] = set()
+        any_positive = False
+        for name in state.workspace.branch_names():
+            branch = state.workspace.get_branch(name)
+            if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
+                continue
+            active_hashes.add(_branch_content_hash(state, name))
+            any_positive = any_positive or _positive(_fresh_attestation(state, name))
+        if len(active_hashes) > 1 and not any_positive:
+            shortlist_hash = hashlib.sha256(
+                "\n".join(sorted(active_hashes)).encode("utf-8")
+            ).hexdigest()
+            add(
+                "late_branch_adjudication_hint",
+                "Several materially distinct finalists remain. Run one compare "
+                "episode before the turn limit so fallback can use a fresh winner.",
+                identity=shortlist_hash,
+            )
+    return hints
+
+
+def late_turn_attestation_target(
+    state: InvestigationState, executor: Any, turn: int, max_turns: int | None
+) -> str | None:
+    """Backward-compatible projection of the late verify hint predicate."""
+    for hint in workflow_hint_candidates(state, executor, turn, max_turns):
+        if hint["event"] == "late_turn_attestation_hint":
+            return str(hint["branch"])
+    return None
 
 
 def _render_late_turn_attestation_hint(
@@ -501,13 +623,11 @@ def _render_late_turn_attestation_hint(
     on its final turn is blocked with zero turns left → fallback_declared
     (strictly worse than M4 on that path). Empty string when it does not apply.
     """
-    best = late_turn_attestation_target(state, executor, turn, max_turns)
-    if not best:
+    hints = workflow_hint_candidates(state, executor, turn, max_turns)
+    if not hints:
         return ""
-    return (
-        "## Attestation reminder\n"
-        f"No attestation on `{best}`; run verify now if you intend to declare "
-        "(declaration requires a fresh verify attestation)."
+    return "## Attestation reminder / workflow guidance\n" + "\n".join(
+        f"- {hint['message']}" for hint in hints
     )
 
 

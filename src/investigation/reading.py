@@ -53,15 +53,18 @@ class ReadingFragment:
     """One positioned (or whole-text) fragment of a Reading.
 
     ``start``/``end`` are token indices into the branch's effective token stream
-    (``None`` = the whole text). ``text`` is proposed plaintext (A-Z + spaces).
-    ``label`` is an optional window tag (the M2 reading proto's ``window``
-    string survives here).
+    (``None`` = the whole text). ``text`` is the human-facing reading and may
+    contain ordinary prose punctuation. ``repair_text`` is the optional
+    machine-actionable form (plaintext alphabet symbols, spaces, and ``?``
+    wildcards). ``label`` is an optional window tag (the M2 reading proto's
+    ``window`` string survives here).
     """
 
     text: str
+    repair_text: str | None = None
     start: int | None = None
     end: int | None = None
-    confidence: float = 0.5
+    confidence: float = 1.0
     label: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -69,6 +72,7 @@ class ReadingFragment:
             "start": self.start,
             "end": self.end,
             "text": self.text,
+            "repair_text": self.repair_text,
             "confidence": self.confidence,
             "label": self.label,
         }
@@ -77,6 +81,11 @@ class ReadingFragment:
     def from_dict(cls, data: dict[str, Any]) -> "ReadingFragment":
         return cls(
             text=str(data.get("text") or ""),
+            repair_text=(
+                str(data["repair_text"])
+                if data.get("repair_text") is not None
+                else None
+            ),
             start=_coerce_span(data.get("start")),
             end=_coerce_span(data.get("end")),
             confidence=coerce_confidence(data.get("confidence")),
@@ -159,6 +168,11 @@ class Reading:
             fragments.append(
                 ReadingFragment(
                     text=str(item.get("text") or ""),
+                    repair_text=(
+                        str(item["repair_text"])
+                        if item.get("repair_text") is not None
+                        else None
+                    ),
                     start=_coerce_span(item.get("start")),
                     end=_coerce_span(item.get("end")),
                     confidence=coerce_confidence(item.get("confidence")),
@@ -169,6 +183,12 @@ class Reading:
                     ),
                 )
             )
+            if item.get("confidence") is None:
+                # Legacy reading workers were not required to emit per-fragment
+                # confidence. Preserve those artifacts as actionable; the new
+                # contract supplies an explicit value that the repair threshold
+                # can enforce.
+                fragments[-1].confidence = 1.0
         # When the worker gave no fragments but did give reading_text, keep the
         # whole-text reading as a single fragment so the reading is applicable.
         if not fragments:

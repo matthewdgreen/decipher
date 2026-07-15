@@ -64,6 +64,7 @@ def _executor_for(state: InvestigationState) -> WorkspaceToolExecutor:
 
 def test_state_roundtrip_is_json_safe_and_faithful():
     state = _rich_state()
+    state.workflow_hint_keys.append("mid_budget_verify_hint:abc")
     data = state.to_artifact_dict()
     # Must be JSON-serializable (it lands in the artifact).
     roundtripped = json.loads(json.dumps(data))
@@ -83,6 +84,7 @@ def test_state_roundtrip_is_json_safe_and_faithful():
     assert restored.external_context == state.external_context
     assert restored.repair_agenda == state.repair_agenda
     assert restored.recent_exchanges == state.recent_exchanges
+    assert restored.workflow_hint_keys == ["mid_budget_verify_hint:abc"]
     assert [e.kind for e in restored.evidence_log] == ["diagnostic_preflight", "turn_summary"]
     assert len(restored.budget_ledger) == 1
 

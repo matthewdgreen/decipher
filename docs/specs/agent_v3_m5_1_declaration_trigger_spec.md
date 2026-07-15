@@ -1,9 +1,15 @@
 # Spec: Agent Loop v3 - M5.1 (Recovery, Adjudication, and Declaration)
 
-Status: REVISED AFTER M6 FORENSICS - READY FOR IMPLEMENTATION IN ORDERED
-SLICES. This revision supersedes the original declaration-trigger-only M5.1
-spec. The original positive-declaration work remains, but it is no longer the
-first implementation step.
+Status: IMPLEMENTED LOCALLY 2026-07-15; TARGETED PAID ACCEPTANCE AND THE FULL
+M6 RERUN ARE DEFERRED. This revision supersedes the original
+declaration-trigger-only M5.1 spec.
+
+Implementation verification used only local, no-LLM tests: 194 targeted tests
+passed. The existing 22-row M6 summary was refreshed offline to
+`artifacts/m6_bakeoff/summary.m5_1_refreshed.jsonl` with
+`telemetry_version=2`. The corrected v3 telemetry reports verify on 10/11
+stored rows, declaration-attached attestations on 3/11, and positive
+attestations on 3/11. No paid Stage-1 or complete bake-off runs were launched.
 
 Parent documents:
 

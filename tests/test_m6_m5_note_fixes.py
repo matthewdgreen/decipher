@@ -217,7 +217,8 @@ def test_f7_late_turn_attestation_hint_emitted_as_loop_event():
     hints = [e for e in art.loop_events if e.event == "late_turn_attestation_hint"]
     assert hints, "expected the late-turn attestation hint LoopEvent in the artifact"
     assert all(e.outer_iteration >= 3 for e in hints)   # last-2-turns window only
-    assert any(e.outer_iteration == 5 for e in hints)   # fires on the final turn
+    # M5.1 deduplicates the reminder per unchanged content hash.
+    assert len(hints) == 1
     assert all(e.payload["branch"] == "main" for e in hints)
     assert all(e.payload["turns_remaining"] <= 2 for e in hints)
 

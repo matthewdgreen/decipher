@@ -36,14 +36,15 @@ def test_reading_roundtrip_and_full_text_order():
         source="episode:abc123",
         created_turn=4,
         fragments=[
-            ReadingFragment(text="WORLD", start=6, end=11, confidence=0.8, label="w2"),
+            ReadingFragment(text="WORLD.", repair_text="WORLD", start=6, end=11,
+                            confidence=0.8, label="w2"),
             ReadingFragment(text="HELLO", start=0, end=5, confidence=0.9, label="w1"),
         ],
         holes=["gap@3"],
         overall_confidence=0.85,
     )
     # full_text joins in start order.
-    assert reading.full_text == "HELLO WORLD"
+    assert reading.full_text == "HELLO WORLD."
     data = json.loads(json.dumps(reading.to_dict()))
     restored = Reading.from_dict(data)
     assert restored.branch == "main"
@@ -51,8 +52,9 @@ def test_reading_roundtrip_and_full_text_order():
     assert restored.created_turn == 4
     assert restored.holes == ["gap@3"]
     assert restored.overall_confidence == 0.85
-    assert [f.text for f in restored.fragments] == ["WORLD", "HELLO"]
+    assert [f.text for f in restored.fragments] == ["WORLD.", "HELLO"]
     assert restored.fragments[0].start == 6
+    assert restored.fragments[0].repair_text == "WORLD"
     assert restored.fragments[1].label == "w1"
 
 
@@ -60,7 +62,8 @@ def test_from_episode_result_carries_window_and_bounds():
     result = {
         "reading_text": "HELLO WORLD",
         "fragments": [
-            {"window": "w1", "start": 0, "end": 5, "text": "HELLO", "confidence": "0.9"},
+            {"window": "w1", "start": 0, "end": 5, "text": "Hello.",
+             "repair_text": "HELLO", "confidence": "0.9"},
             {"window": "w2", "text": "WORLD", "confidence": 0.4},
         ],
         "holes": ["unresolved tail"],
@@ -77,6 +80,7 @@ def test_from_episode_result_carries_window_and_bounds():
     assert reading.fragments[0].end == 5
     assert reading.fragments[0].label == "w1"
     assert reading.fragments[0].confidence == 0.9
+    assert reading.fragments[0].repair_text == "HELLO"
     assert reading.fragments[1].start is None
     assert reading.holes == ["unresolved tail"]
     assert reading.overall_confidence == 0.7

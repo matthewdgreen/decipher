@@ -152,9 +152,51 @@ def test_build_summary_row_v3_extracts_attestation_and_hint():
     assert row["cache_read_tokens"] == 300
     assert row["declared"] is True and row["fallback"] is False
     assert row["attested"] is True
+    assert row["declaration_attested"] is True
+    assert row["verify_ran"] is True and row["verify_count"] == 1
     assert row["verify_reader_accepts"] is True and row["verify_coherence"] == 8
     assert row["verify_created_turn"] == 19
     assert row["late_turn_hint_fired"] is True
+
+
+def test_build_summary_row_v3_keeps_unattached_negative_verification():
+    cell = bake.Cell("v3", "borg_single_B_borg_0109v", True, 1)
+    artifact = {
+        "run_id": "neg1",
+        "solution": {"branch": "main", "attestation": None},
+        "attestations": [
+            {"branch": "other", "reader_accepts": False, "coherence": 1,
+             "created_turn": 8, "episode_id": "a"},
+            {"branch": "main", "reader_accepts": False, "coherence": 2,
+             "created_turn": 12, "episode_id": "b"},
+        ],
+    }
+    row = bake.build_summary_row(
+        cell, _fake_result(status="fallback_declared"), artifact
+    )
+    assert row["attested"] is False
+    assert row["declaration_attested"] is False
+    assert row["verify_ran"] is True and row["verify_count"] == 2
+    assert row["verify_branch"] == "main"
+    assert row["verify_reader_accepts"] is False
+    assert row["verify_coherence"] == 2
+    assert row["positive_attestation_available"] is False
+
+
+def test_refresh_summary_rows_is_artifact_only(tmp_path):
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    (artifact_root / "run1.json").write_text(json.dumps({
+        "run_id": "run1",
+        "solution": {"branch": "main", "attestation": None},
+        "attestations": [{"branch": "main", "reader_accepts": True,
+                          "coherence": 8, "created_turn": 10}],
+    }))
+    rows = [{"loop": "v3", "run_id": "run1", "char_accuracy": 0.5}]
+    refreshed = bake.refresh_summary_rows_from_artifacts(rows, artifact_root)
+    assert refreshed[0]["char_accuracy"] == 0.5
+    assert refreshed[0]["verify_ran"] is True
+    assert refreshed[0]["positive_attestation_available"] is True
 
 
 def test_build_summary_row_v2_has_no_attestation_and_flags_fallback():

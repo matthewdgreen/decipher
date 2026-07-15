@@ -254,27 +254,121 @@ def build_summary_row(
         "iterations": int(getattr(result, "iterations_used", 0) or 0),
         "wall_clock_seconds": float(getattr(result, "elapsed_seconds", 0.0) or 0.0),
         "self_confidence": getattr(result, "self_confidence", None),
-        # v3 attestation fields (None for v2).
+        "telemetry_version": 2,
+        # v3 attestation fields (None for v2). ``attested`` remains the legacy
+        # declaration-attached meaning; verify telemetry below is sourced from
+        # the complete top-level attestation ledger.
         "attested": None,
+        "declaration_attested": None,
+        "verify_ran": None,
+        "verify_count": None,
+        "verify_branch": None,
         "verify_reader_accepts": None,
         "verify_coherence": None,
         "verify_created_turn": None,
+        "positive_attestation_available": None,
+        "attested_fallback": None,
         "late_turn_hint_fired": False,
     }
     if cell.loop == "v3":
-        solution = artifact.get("solution") or {}
-        att = solution.get("attestation") if isinstance(solution, dict) else None
-        row["attested"] = att is not None
-        if isinstance(att, dict):
-            row["verify_reader_accepts"] = att.get("reader_accepts")
-            row["verify_coherence"] = att.get("coherence")
-            row["verify_created_turn"] = att.get("created_turn")
-        events = artifact.get("loop_events") or []
-        row["late_turn_hint_fired"] = any(
-            isinstance(e, dict) and e.get("event") == "late_turn_attestation_hint"
-            for e in events
-        )
+        _apply_v3_telemetry(row, artifact)
     return row
+
+
+def _attestation_sort_key(attestation: dict[str, Any]) -> tuple[int, str]:
+    return (
+        int(attestation.get("created_turn") or 0),
+        str(attestation.get("episode_id") or ""),
+    )
+
+
+def _is_positive_attestation(attestation: dict[str, Any]) -> bool:
+    return bool(attestation.get("reader_accepts")) and int(
+        attestation.get("coherence") or 0
+    ) >= 7
+
+
+def _apply_v3_telemetry(row: dict[str, Any], artifact: dict[str, Any]) -> None:
+    """Populate v3 verification fields without changing outcome metrics."""
+    solution = artifact.get("solution") or {}
+    solution = solution if isinstance(solution, dict) else {}
+    attached = solution.get("attestation")
+    declaration_attested = isinstance(attached, dict)
+    attestations = [
+        a for a in (artifact.get("attestations") or []) if isinstance(a, dict)
+    ]
+    selected_branch = str(solution.get("branch") or "")
+    selected_attestations = [
+        a for a in attestations if str(a.get("branch") or "") == selected_branch
+    ]
+    latest = max(selected_attestations or attestations, key=_attestation_sort_key, default=None)
+
+    row["attested"] = declaration_attested
+    row["declaration_attested"] = declaration_attested
+    row["verify_ran"] = bool(attestations) or declaration_attested
+    row["verify_count"] = len(attestations) or (1 if declaration_attested else 0)
+    row["positive_attestation_available"] = any(
+        _is_positive_attestation(a) for a in attestations
+    ) or (declaration_attested and _is_positive_attestation(attached))
+    row["attested_fallback"] = bool(artifact.get("attested_fallback"))
+    if latest is not None:
+        row["verify_branch"] = latest.get("branch")
+        row["verify_reader_accepts"] = latest.get("reader_accepts")
+        row["verify_coherence"] = latest.get("coherence")
+        row["verify_created_turn"] = latest.get("created_turn")
+    elif declaration_attested:
+        # Older artifacts may carry only the declaration-attached attestation.
+        row["verify_branch"] = attached.get("branch")
+        row["verify_reader_accepts"] = attached.get("reader_accepts")
+        row["verify_coherence"] = attached.get("coherence")
+        row["verify_created_turn"] = attached.get("created_turn")
+    events = artifact.get("loop_events") or []
+    row["late_turn_hint_fired"] = any(
+        isinstance(e, dict) and e.get("event") == "late_turn_attestation_hint"
+        for e in events
+    )
+
+
+def refresh_summary_rows_from_artifacts(
+    rows: list[dict[str, Any]], artifact_root: str | Path
+) -> list[dict[str, Any]]:
+    """Refresh additive v3 telemetry from saved artifacts only (no API use)."""
+    root = Path(artifact_root)
+    refreshed: list[dict[str, Any]] = []
+    for original in rows:
+        row = dict(original)
+        row["telemetry_version"] = 2
+        for field, default in {
+            "declaration_attested": None,
+            "verify_ran": None,
+            "verify_count": None,
+            "verify_branch": None,
+            "positive_attestation_available": None,
+            "attested_fallback": None,
+        }.items():
+            row.setdefault(field, default)
+        if row.get("loop") != "v3" or not row.get("run_id"):
+            refreshed.append(row)
+            continue
+        matches = sorted(root.glob(f"**/{row['run_id']}.json"))
+        if len(matches) != 1:
+            raise FileNotFoundError(
+                f"expected exactly one artifact for run_id={row['run_id']!r}; "
+                f"found {len(matches)} under {root}"
+            )
+        artifact = json.loads(matches[0].read_text(encoding="utf-8"))
+        _apply_v3_telemetry(row, artifact)
+        refreshed.append(row)
+    return refreshed
+
+
+def write_summary_rows(path: str | Path, rows: list[dict[str, Any]]) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+        encoding="utf-8",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -841,6 +935,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Print the matrix + per-cell cost estimate and exit.")
     p.add_argument("--report", action="store_true",
                    help="Re-aggregate the summary JSONL into the Part-C table.")
+    p.add_argument("--refresh-summary", action="store_true",
+                   help="Refresh v3 verification telemetry from artifacts only; "
+                        "does not initialize a model provider or run cases.")
+    p.add_argument("--refresh-output",
+                   help="Output JSONL for --refresh-summary (required unless "
+                        "--refresh-overwrite is used).")
+    p.add_argument("--refresh-overwrite", action="store_true",
+                   help="Allow --refresh-summary to replace --summary in place.")
     p.add_argument("--replicates", type=int, default=len(REPLICATES),
                    help="Replicates per cell (default 3). Lower for a "
                         "breadth-first pass that covers every case×loop×"
@@ -858,6 +960,8 @@ def _normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.artifact_root = str(Path(args.artifact_root).expanduser())
     args.summary = str(Path(args.summary).expanduser())
     args.cache_dir = str(Path(args.cache_dir).expanduser())
+    if args.refresh_output:
+        args.refresh_output = str(Path(args.refresh_output).expanduser())
     return args
 
 
@@ -871,6 +975,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.report:
         rows = load_summary_rows(args.summary)
         print(format_report(aggregate(rows)))
+        return EXIT_OK
+    if args.refresh_summary:
+        if args.refresh_overwrite:
+            output = args.summary
+        elif args.refresh_output:
+            output = args.refresh_output
+        else:
+            raise SystemExit(
+                "--refresh-summary requires --refresh-output or --refresh-overwrite"
+            )
+        rows = load_summary_rows(args.summary)
+        refreshed = refresh_summary_rows_from_artifacts(rows, args.artifact_root)
+        write_summary_rows(output, refreshed)
+        print(f"Wrote {output} ({len(refreshed)} rows; no model calls).")
         return EXIT_OK
     return _run_matrix(args)
 

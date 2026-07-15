@@ -163,6 +163,7 @@ _READING_SCHEMA = {
                 "start": {"type": ["integer", "null"]},
                 "end": {"type": ["integer", "null"]},
                 "text": {"type": "string"},
+                "repair_text": {"type": ["string", "null"]},
                 "confidence": {"type": ["number", "string"]},
             },
             "required": ["text"],
@@ -291,7 +292,10 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "the given branch's decode: report the reading text, per-window "
             "fragments with confidence, remaining holes, and an overall "
             "confidence. Report each fragment's start/end token indices when you "
-            "know them. You do NOT change the key — you only read it."
+            "know them. Keep `text` human-readable. When a fragment is confident "
+            "enough to drive key repair, also provide `repair_text` using only "
+            "plaintext letters, spaces, and `?` for one unknown token. You do NOT "
+            "change the key — you only read it."
         ),
     },
     "compare": {
