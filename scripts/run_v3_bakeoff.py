@@ -46,6 +46,7 @@ EXIT_CHECKPOINT_STOP = 3
 EXIT_CACHE_MISS = 4          # in-run cache miss OR upfront data validation failure
 EXIT_SUMMARY_EXISTS = 5      # summary file already exists and --resume not passed
 EXIT_API_UNFUNDED = 6        # funding/reachability probe failed before any run
+EXIT_BUDGET_STOP = 7         # focused run stopped before exceeding its cost ceiling
 EXIT_INTERRUPTED = 130       # a run returned status="stopped" (Ctrl-C mid-run)
 
 DEFAULT_MODEL = "gpt-5.5"
@@ -142,6 +143,36 @@ def enumerate_cells(
         for loop in loops:
             for rep in replicates:
                 cells.append(Cell(loop, case.name, False, rep))
+    return cells
+
+
+def select_cells(
+    *,
+    case_names: Iterable[str] | None = None,
+    loops: Iterable[str] | None = None,
+    replicates: int = len(REPLICATES),
+    preflight: str = "both",
+) -> list[Cell]:
+    """Build a safely filtered matrix for focused acceptance runs."""
+    names = list(case_names or CASE_BY_NAME)
+    unknown = [name for name in names if name not in CASE_BY_NAME]
+    if unknown:
+        raise ValueError(f"unknown case(s): {', '.join(unknown)}")
+    selected_loops = list(loops or LOOPS)
+    invalid_loops = [loop for loop in selected_loops if loop not in LOOPS]
+    if invalid_loops:
+        raise ValueError(f"unknown loop(s): {', '.join(invalid_loops)}")
+    if preflight not in {"on", "off", "both"}:
+        raise ValueError("preflight must be on, off, or both")
+    cells = enumerate_cells(
+        cases=[CASE_BY_NAME[name] for name in names],
+        loops=selected_loops,
+        replicates=range(1, replicates + 1),
+    )
+    if preflight == "on":
+        cells = [cell for cell in cells if cell.preflight]
+    elif preflight == "off":
+        cells = [cell for cell in cells if not cell.preflight]
     return cells
 
 
@@ -821,7 +852,22 @@ def _run_matrix(args: argparse.Namespace) -> int:
         return EXIT_SUMMARY_EXISTS
 
     # Reviewer fix 4a: validate all data sources BEFORE any run / any spend.
-    problems = validate_all_cases(args.benchmark_root, args.cache_dir)
+    try:
+        all_cells = select_cells(
+            case_names=args.cases,
+            loops=args.loops,
+            replicates=args.replicates,
+            preflight=args.preflight,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_CACHE_MISS
+    selected_cases = [CASE_BY_NAME[name] for name in dict.fromkeys(
+        cell.case for cell in all_cells
+    )]
+    problems = validate_all_cases(
+        args.benchmark_root, args.cache_dir, cases=selected_cases
+    )
     if problems:
         print(
             "ERROR: upfront data-source validation failed; no runs launched:",
@@ -831,7 +877,6 @@ def _run_matrix(args: argparse.Namespace) -> int:
             print(f"  - {problem}", file=sys.stderr)
         return EXIT_CACHE_MISS
 
-    all_cells = enumerate_cells(replicates=range(1, args.replicates + 1))
     artifact_root = Path(args.artifact_root)
 
     done_keys: set[tuple[str, str, bool, int]] = set()
@@ -862,6 +907,19 @@ def _run_matrix(args: argparse.Namespace) -> int:
             return EXIT_API_UNFUNDED
 
     for idx, cell in enumerate(todo, 1):
+        spent = sum(float(row.get("cost_usd") or 0.0) for row in completed_rows)
+        if (
+            args.max_total_cost is not None
+            and spent + args.budget_reserve_per_run > args.max_total_cost
+        ):
+            print(
+                f"[budget-stop] spent=${spent:.2f}; launching another run with "
+                f"the ${args.budget_reserve_per_run:.2f} reserve would exceed "
+                f"the ${args.max_total_cost:.2f} ceiling. Resume later with a "
+                "higher ceiling if authorized.",
+                file=sys.stderr,
+            )
+            return EXIT_BUDGET_STOP
         case = CASE_BY_NAME[cell.case]
         print(
             f"[{idx}/{len(todo)}] loop={cell.loop} case={cell.case} "
@@ -948,6 +1006,19 @@ def build_parser() -> argparse.ArgumentParser:
                         "breadth-first pass that covers every case×loop×"
                         "preflight before adding replicates; combine with "
                         "--resume to fill in only the uncovered cells.")
+    p.add_argument("--case", dest="cases", action="append",
+                   choices=sorted(CASE_BY_NAME),
+                   help="Run only this case (repeatable). Default: all cases.")
+    p.add_argument("--loop", dest="loops", action="append", choices=LOOPS,
+                   help="Run only this loop (repeatable). Default: v2 and v3.")
+    p.add_argument("--preflight", choices=("on", "off", "both"), default="both",
+                   help="Select automated-preflight cells. Default: both.")
+    p.add_argument("--max-total-cost", type=float,
+                   help="Stop before another run when spend plus the per-run "
+                        "reserve would exceed this dollar ceiling.")
+    p.add_argument("--budget-reserve-per-run", type=float, default=0.0,
+                   help="Conservative next-run reserve used with "
+                        "--max-total-cost (default 0).")
     p.add_argument("--skip-funding-probe", action="store_true",
                    help="Skip the pre-run 1-token funding/reachability probe.")
     p.add_argument("--verbose", action="store_true")
@@ -969,8 +1040,10 @@ def main(argv: list[str] | None = None) -> int:
     args = _normalize_args(build_parser().parse_args(argv))
 
     if args.dry_run:
-        print(format_matrix_table(
-            enumerate_cells(replicates=range(1, args.replicates + 1))))
+        print(format_matrix_table(select_cells(
+            case_names=args.cases, loops=args.loops,
+            replicates=args.replicates, preflight=args.preflight,
+        )))
         return EXIT_OK
     if args.report:
         rows = load_summary_rows(args.summary)

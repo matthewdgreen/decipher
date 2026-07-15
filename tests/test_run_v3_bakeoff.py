@@ -49,6 +49,29 @@ def test_cell_artifact_subdir_layout():
     assert on.key() != off.key()
 
 
+def test_select_cells_focused_v3_preflight_on():
+    cells = bake.select_cells(
+        case_names=["borg_single_B_borg_0109v", "borg_single_B_borg_0045v"],
+        loops=["v3"], replicates=3, preflight="on",
+    )
+    assert len(cells) == 6
+    assert {cell.loop for cell in cells} == {"v3"}
+    assert all(cell.preflight for cell in cells)
+    assert {cell.case for cell in cells} == {
+        "borg_single_B_borg_0109v", "borg_single_B_borg_0045v"
+    }
+    assert [cell.replicate for cell in cells] == [1, 2, 3, 1, 2, 3]
+
+
+def test_select_cells_rejects_unknown_inputs():
+    import pytest
+
+    with pytest.raises(ValueError, match="unknown case"):
+        bake.select_cells(case_names=["not_a_case"])
+    with pytest.raises(ValueError, match="unknown loop"):
+        bake.select_cells(loops=["v4"])
+
+
 def test_per_cell_estimate_and_total():
     cells = bake.enumerate_cells()
     total = sum(bake.per_cell_estimate(c) for c in cells)
