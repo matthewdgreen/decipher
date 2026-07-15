@@ -166,7 +166,12 @@ _READING_SCHEMA = {
                 "repair_text": {"type": ["string", "null"]},
                 "confidence": {"type": ["number", "string"]},
             },
-            "required": ["text"],
+            # M5.1 review fix: confidence is REQUIRED from reading workers.
+            # Omitted confidence is bumped to fully-actionable 1.0 for LEGACY
+            # stored artifacts (Reading.from_episode_result), so a NEW worker
+            # staying silent would silently bypass the
+            # MIN_REPAIR_FRAGMENT_CONFIDENCE repair threshold.
+            "required": ["text", "confidence"],
         }},
         "holes": {"type": "array", "items": {"type": "string"}},
         "overall_confidence": {"type": "number"},

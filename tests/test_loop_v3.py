@@ -557,7 +557,7 @@ class ReadingWorkerFake:
         else:
             content = [ToolUseBlock(id="rd1", name="episode_submit_result", input={
                 "result": {"reading_text": "CATTON",
-                           "fragments": [{"text": "CATTON"}],
+                           "fragments": [{"text": "CATTON", "confidence": 0.9}],
                            "holes": ["extra T"], "overall_confidence": 0.6},
                 "summary": "read as CATTON",
             })]

@@ -243,8 +243,13 @@ def _normalize_reading_words(
 
     Returns ``(words, None)`` on success or ``(None, offending_char)`` if any
     character is unsafe. Explicit ``repair_text`` accepts alphabet symbols,
-    whitespace, and ``?``. Legacy human text additionally treats conservative
-    sentence punctuation as whitespace; editorial notation remains unsafe.
+    whitespace, and ``?`` (a token-consuming wildcard). Legacy human text
+    additionally treats conservative sentence punctuation as whitespace;
+    editorial notation remains unsafe — and so does ``?``: a prose question
+    mark is punctuation, and giving it wildcard (token-consuming) semantics
+    would shift the alignment of everything after it, exactly the
+    false-global-mapping hazard the M5.1 spec bans. Wildcards exist only in
+    explicit ``repair_text``.
     """
     raw = str(text).upper()
     if not explicit_repair_text and ".." in raw:
@@ -253,7 +258,9 @@ def _normalize_reading_words(
     for ch in raw:
         if ch.isspace():
             normalized.append(" ")
-        elif ch == "?" or pt_alpha.has_symbol(ch):
+        elif pt_alpha.has_symbol(ch):
+            normalized.append(ch)
+        elif ch == "?" and explicit_repair_text:
             normalized.append(ch)
         elif not explicit_repair_text and ch in _SAFE_LEGACY_READING_PUNCTUATION:
             normalized.append(" ")
@@ -404,10 +411,12 @@ def _hypothesis_apply_reading(
                 if not isinstance(item, dict):
                     continue
                 fragment = ReadingFragment.from_dict(item)
-                # Backward compatibility: direct lead-authored fragments
-                # predate confidence. Worker-produced stored Readings always
-                # pass through Reading.from_episode_result, where an omitted
-                # confidence remains the conservative 0.5 default.
+                # Lead-authored inline fragments are deliberate commands:
+                # omitted confidence means full confidence (1.0). Worker
+                # fragments cannot reach this branch without confidence —
+                # the reading episode schema REQUIRES it (M5.1 review fix);
+                # only LEGACY stored Readings get the 1.0 bump in
+                # Reading.from_episode_result.
                 if item.get("confidence") is None:
                     fragment.confidence = 1.0
                 fragments.append(fragment)

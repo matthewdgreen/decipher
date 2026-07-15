@@ -667,3 +667,19 @@ def test_composite_defs_have_schemas():
     for d in COMPOSITE_TOOL_DEFINITIONS:
         assert "name" in d and "description" in d and "input_schema" in d
         assert d["input_schema"]["type"] == "object"
+
+
+def test_apply_reading_legacy_question_mark_is_not_a_wildcard():
+    # M5.1 review fix: a prose "?" in legacy human text must NOT gain
+    # token-consuming wildcard semantics (it would shift the alignment of
+    # everything after it — the false-global-mapping hazard). The fragment
+    # is skipped as unsafe; wildcards exist only in explicit repair_text.
+    ex = _synthetic_executor()
+    res = _apply(ex, {
+        "branch": "main",
+        "fragments": [{"text": "CAR ON?", "confidence": 0.9}],
+    })
+    assert res["status"] == "ok"
+    assert res["no_actionable_fragments"] is True
+    assert res["skipped_fragments"][0]["reason"] == "unsafe_repair_text"
+    assert res["skipped_fragments"][0]["character"] == "?"
