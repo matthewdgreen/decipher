@@ -56,6 +56,19 @@ clone can run automated solves immediately. No API key is required for the
 default automated workflows. See [Build Language Models](#build-language-models)
 to add or replace models.
 
+If you prefer to set up by hand instead of running the script:
+
+```bash
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -e .                 # installs the `decipher` entry point
+scripts/build_rust_fast.sh       # build the required decipher_fast Rust kernel
+```
+
+For architecture, orchestration, and design depth see
+[CLAUDE.md](CLAUDE.md); for the full agent-tool reference see
+[TOOLS.md](TOOLS.md).
+
 ## Unit Tests
 
 ```bash
@@ -98,12 +111,14 @@ decipher benchmark fixtures/benchmarks/zodiac340_known_replay \
 or a transform-search profile — see [Cipher Support](#transposition--homophonic).)
 
 **Run the same English Borg analog with the agentic LLM solver** (requires
-an API key — see [API key setup](#api-key-setup)):
+an API key — see [API key setup](#api-key-setup)). `--agent-loop v3` selects the
+newer investigation lead loop; agentic runs render as a scrolling `narrate`
+transcript by default (`--display` selects `pretty`/`raw`/`jsonl` instead):
 
 ```bash
 decipher benchmark fixtures/benchmarks/english_borg_analog \
   --split english_borg_analog.jsonl \
-  --agentic --model claude-sonnet-4-6
+  --agentic --agent-loop v3 --model gpt-5.5
 ```
 
 For more cipher families and tuning options, see
@@ -132,6 +147,18 @@ decipher benchmark /path/to/cipher_benchmark/benchmark \
   --test-id borg_single_B_borg_0045v --verbose
 ```
 
+`--split` defaults to auto-detect (`<source>_tests.jsonl`, else `all_tests.jsonl`).
+Synthetic single-substitution tests live in their own split and are **not** in
+`all_tests.jsonl`, so a synthetic `--test-id` needs an explicit `--split`:
+
+```bash
+decipher benchmark /path/to/cipher_benchmark/benchmark \
+  --split en_ss_synth_nb_tests.jsonl --test-id synth_en_200honb_s6
+```
+
+(If a filter matches nothing, `benchmark` now prints the split it searched, the
+filters applied, and this hint.)
+
 To crack an arbitrary cipher from a file or stdin, use `decipher crack`:
 
 ```bash
@@ -144,6 +171,27 @@ echo "T H E | Q U I C K | F O X" | decipher crack --language en
 # Canonical S-token transcription
 echo "S025 S012 S006 | S003 S007" | decipher crack --canonical --language la
 ```
+
+## Diagnose an Unknown Cipher (no LLM)
+
+`decipher diagnose` is a local, LLM-free cipher-*family* triage (investigator
+mode INV-0). It runs nine statistical panels — scored against shuffle/parametric
+nulls, a numeric Beale/book-cipher battery, and a word-island coherence guard —
+and prints a `confident`/`uncertain` verdict with per-family evidence and a
+recommended next discriminator. It never sees plaintext, keys, or context.
+
+```bash
+# From a file
+decipher diagnose cipher.txt
+
+# From stdin, full report as JSON
+echo "S001 S002 S003 | S004 S005" | decipher diagnose - --json
+
+# A numeric (book-cipher-style) stream
+decipher diagnose beale_numbers.txt
+```
+
+The same battery is exposed to the agent as the `observe_diagnosis` tool.
 
 ## Experimental Agentic Solving
 
@@ -163,6 +211,17 @@ decipher benchmark /path/to/cipher_benchmark/benchmark \
 
 The automated solver runs as a free preflight pass before the agent starts, so
 `--agentic` strictly adds capability on top of the automated path.
+
+**Agent loops.** `--agent-loop v2` (default) is the flat tool loop. `--agent-loop v3`
+is the newer *investigation lead* loop: state is rebuilt from a serializable
+`InvestigationState` each turn, the lead delegates focused sub-tasks to isolated
+worker *episodes*, queues long-running solver *experiments* in the background, and
+declaration is gated by an independent verification/attestation of the reading.
+
+```bash
+decipher benchmark /path/to/cipher_benchmark/benchmark \
+  --source borg --agentic --agent-loop v3 --model gpt-5.5 --max-iterations 25
+```
 
 Agentic runs receive the automated preflight branch by default. The v2 tool
 loop can invoke the local automated stack directly via `search_automated_solver`
@@ -305,8 +364,8 @@ needed.
 # Anthropic
 decipher crack -f cipher.txt --agentic --model claude-sonnet-4-6
 
-# OpenAI
-decipher crack -f cipher.txt --agentic --model gpt-5.4
+# OpenAI (gpt-5.5 is the confirmed agent model; spend bills the OpenAI account)
+decipher crack -f cipher.txt --agentic --model gpt-5.5
 
 # Gemini
 decipher crack -f cipher.txt --agentic --model gemini-3-flash-preview
@@ -319,8 +378,11 @@ decipher crack -f cipher.txt --agentic --model qwen/qwen3-30b-a3b
 decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
-Recommended for historical manuscript analysis: `claude-sonnet-4-6`. OpenRouter
-models offer cost savings (5–40× cheaper per token) at some quality trade-off.
+Confirmed agent model (head-to-head, 2026-07): `gpt-5.5` (OpenAI) — agentic API
+spend bills the OpenAI account (`.decipher_keys/openai_api_key` or `OPENAI_API_KEY`).
+`claude-sonnet-4-6` is the strongest Anthropic option for historical manuscript
+analysis. OpenRouter models offer cost savings (5–40× cheaper per token) at some
+quality trade-off. See [CLAUDE.md](CLAUDE.md#model-selection) for the full rationale.
 
 > **OpenRouter tool-calling note:** Not all OpenRouter models reliably emit
 > structured tool calls or reason well enough for agentic cipher-cracking.
@@ -354,16 +416,20 @@ models offer cost savings (5–40× cheaper per token) at some quality trade-off
 
 ### Terminal display mode
 
-Agentic runs support four display modes via `--display`:
+Agentic runs support five display modes via `--display`. The default is
+**`narrate`**: a readable, scrolling, Claude-Code-style transcript (one line per
+tool call, indented `↳` lines for v3 episode internals, a cumulative cost/token
+ticker) that works in scrollback, pipes, and CI logs.
 
 | Mode | Description |
 |------|-------------|
-| `auto` | `pretty` on an interactive terminal, `raw` when piped (default) |
+| `narrate` | **Default.** Scrolling, pipe-safe transcript renderer |
+| `auto` | Resolves to `narrate` |
 | `pretty` | Rich terminal UI with live iteration and tool panels |
 | `raw` | Plain-text streaming output |
 | `jsonl` | Machine-readable JSONL event stream |
 
-`--verbose` overrides to a verbose text stream.
+`--verbose` adds detail inside the active renderer.
 
 ### API key setup
 
@@ -373,7 +439,7 @@ you intend to use.
 | Provider | `--provider` value | Environment variable(s) | Default model |
 |----------|--------------------|------------------------|---------------|
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
-| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.4` |
+| OpenAI | `openai` | `OPENAI_API_KEY` | `gpt-5.5` |
 | Google Gemini | `gemini` | `GEMINI_API_KEY` or `GOOGLE_API_KEY` | `gemini-3-flash-preview` |
 | OpenRouter | `openrouter` or `or` | `OPENROUTER_API_KEY` | `meta-llama/llama-3.3-70b-instruct` |
 | Ollama (local) | `ollama` | *(none — no key required)* | `qwen3:14b` |
@@ -419,14 +485,15 @@ an agentic run (the preflight is generally cheap and useful).
 
 ### Agent tool namespaces
 
-The v2 agent loop exposes tools across several namespaces. See
+The v2 agent loop exposes 95 tools across 11 namespaces. See
 [TOOLS.md](TOOLS.md) for the complete reference with per-tool parameter
-tables and usage notes.
+tables and usage notes (including the v3 lead-only `episode_*`/`experiment_*`
+delegation tools).
 
 | Namespace | Representative tools | Purpose |
 |-----------|---------------------|---------|
 | `workspace_*` | fork, fork_best, create_hypothesis_branch, reject_hypothesis, hypothesis_cards, list_branches, branch_cards, delete, compare, merge | Branch and hypothesis management |
-| `observe_*` | frequency, ic, isomorph_clusters, cipher_id, cipher_shape, periodic_ic, kasiski, phase_frequency, periodic_shift_candidates, homophone_distribution, transform_pipeline, transform_suspicion | Statistical observation |
+| `observe_*` | frequency, ic, isomorph_clusters, cipher_id, diagnosis, cipher_shape, periodic_ic, kasiski, phase_frequency, periodic_shift_candidates, homophone_distribution, transform_pipeline, transform_suspicion, language_models | Statistical observation (incl. INV-0 family diagnosis) |
 | `decode_*` | show, show_phases, unmapped_report, ngram_heatmap, letter_stats, ambiguous_letter, absent_letter_candidates, diagnose, diagnose_and_fix, repair_no_boundary, validate_reading_repair, plan_word_repair, plan_word_repair_menu | Decryption display and diagnosis |
 | `score_*` | panel, quadgram, dictionary | Multi-signal scoring |
 | `corpus_*` | lookup_word, word_candidates | Dictionary and corpus lookup |
@@ -435,7 +502,7 @@ tables and usage notes.
 | `repair_agenda_*` | list, update | Durable reading-repair bookkeeping |
 | `inspect_*` / `list_*` | inspect_benchmark_context, list_related_records, inspect_related_transcription, inspect_related_solution, list_associated_documents, inspect_associated_document | Benchmark context examination |
 | `run_python` | (one tool) | Escape hatch with required justification |
-| `meta_*` | request_tool, declare_solution | Run control |
+| `meta_*` | request_tool, declare_solution, declare_unsolved, attest_reading_comprehensibility | Run control and verification-gated declaration |
 
 ## Cipher Support
 

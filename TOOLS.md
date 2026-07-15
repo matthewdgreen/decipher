@@ -1513,6 +1513,24 @@ required higher-level work pending and there is iteration budget left.*
 
 ---
 
+### `meta_attest_reading_comprehensibility`
+Record a first-person reading-comprehensibility score for a branch, after
+reading its decoded text end-to-end. A strong attestation (score ≥ 8) unlocks
+`meta_declare_solution` even when an automated cipher-family coverage check would
+otherwise block it.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `branch` | string | **required** — branch whose decoded text you are rating |
+| `comprehensibility_score` | integer | **required** — 1–10 (8–10 = natural connected prose; 5–7 = partial; 1–4 = garbled/word-island) |
+| `verbatim_excerpt` | string | **required** — ≥4 words / 20 chars quoted verbatim from the decode; must be found in the branch text (inflation guard) |
+| `reading_notes` | string | optional — uncertain words, topic, register, quality |
+
+*The call fails if `verbatim_excerpt` cannot be located in the decoded text, so
+you cannot attest a reading you did not actually read.*
+
+---
+
 ## episode_run — V3 lead delegation (v3 loop only)
 
 The v3 investigation lead can delegate a focused sub-task to an isolated worker
@@ -1548,3 +1566,65 @@ low coherence) does NOT block — it is carried into the declaration so a
 weak-but-declared solve is visibly weak. Absent or stale (text changed since
 attestation) blocks with `reason: attestation_required | attestation_stale`.
 `meta_declare_unsolved` and the exhaustion/error fallback are NOT gated.
+
+---
+
+### `episode_run`
+Delegate a focused sub-task to an isolated worker episode (see the kinds table
+above). The worker runs in a copy of the named branches with a hard-allowlisted
+toolset and no benchmark context.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `kind` | string | **required** — `survey` / `search` / `reading` / `compare` / `repair` / `verify` |
+| `goal` | string | **required** — what the episode should accomplish |
+| `branches` | array[string] | **required** — branch name(s); `verify` requires EXACTLY ONE |
+| `search_tool` | string | for `search` episodes: which `search_*` tool to run |
+| `context_note` | string | optional guidance passed to the worker |
+| `max_tool_calls` | integer | optional per-episode tool-call cap |
+| `reading_id` | string | for `repair`: the reading to compile |
+
+---
+
+### `episode_install_branch`
+Adopt a branch snapshot produced by an episode into your workspace under a fresh
+name. Nothing from an episode touches the lead workspace until you install it.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `episode_id` | string | **required** — the completed episode |
+| `branch` | string | **required** — which of its branches to adopt |
+| `as_name` | string | optional new branch name |
+
+---
+
+## experiment_* — V3 background solver queue (v3 loop only)
+
+The v3 lead can queue long-running automated-solver compute that runs in the
+BACKGROUND while it keeps working, then adjudicate the results later.
+
+### `experiment_submit`
+Queue a long-running automated-solver experiment on a branch. Type
+`automated_solver` runs the no-LLM solver stack (homophonic anneal, transform
+screens, null-mask bake-offs).
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `type` | string | **required** — e.g. `automated_solver` |
+| `branch` | string | branch to run on |
+| `config` | object | solver configuration overrides |
+| `note` | string | optional label |
+| `resubmit` | string | optional prior experiment id to re-run |
+
+---
+
+### `experiment_collect`
+Adjudicate queued experiments. With no id: poll the queue and return one status
+line per outstanding experiment plus summaries of any that just completed. With
+`experiment_id`: return the result packet and mark it collected.
+
+| Parameter | Type | Notes |
+|-----------|------|-------|
+| `experiment_id` | string | specific experiment to collect; omit to poll all |
+| `install` | boolean | install the result as a new branch |
+| `as_name` | string | branch name when `install=true` |

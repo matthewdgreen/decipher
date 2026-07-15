@@ -645,7 +645,39 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     if args.limit:
         tests = tests[: args.limit]
     if not tests:
-        print("No matching tests found.", file=sys.stderr)
+        if Path(split_file).is_absolute():
+            searched = str(Path(split_file))
+        else:
+            searched = str(loader.root / "splits" / split_file)
+        if args.split:
+            origin = "specified via --split"
+        elif args.source:
+            origin = f"auto-detected from --source {args.source}"
+        else:
+            origin = "default (no --source or --split given)"
+        applied = []
+        if args.source:
+            applied.append(f"--source {args.source}")
+        if args.test_id:
+            applied.append(f"--test-id {args.test_id}")
+        if args.track:
+            applied.append(f"--track {args.track}")
+        if args.limit:
+            applied.append(f"--limit {args.limit}")
+        filters = ", ".join(applied) if applied else "(none)"
+        print(
+            f"No matching tests found in split '{split_file}' ({origin}).",
+            file=sys.stderr,
+        )
+        print(f"  Searched: {searched}", file=sys.stderr)
+        print(f"  Filters applied: {filters}", file=sys.stderr)
+        if not args.split:
+            print(
+                "  Hint: synthetic test ids (e.g. 'synth_en_...') live in a "
+                "dedicated split and need an explicit --split, e.g. "
+                "'--split en_ss_synth_nb_tests.jsonl'.",
+                file=sys.stderr,
+            )
         sys.exit(1)
 
     if not agentic:
