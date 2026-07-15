@@ -297,6 +297,29 @@ def test_format_report_and_matrix_render_without_error():
 # ---------------------------------------------------------------------------
 # Review fix 1 — a "stopped" run records nothing and exits 130
 # ---------------------------------------------------------------------------
+def test_funding_probe_ok_returns_none():
+    from agent.model_provider import ModelResponse, ModelUsage
+
+    class _OKApi:
+        def send(self, **kw):
+            return ModelResponse(content=[], usage=ModelUsage())
+
+    assert bake.probe_model_funding(_OKApi()) is None
+
+
+def test_funding_probe_reports_provider_error():
+    from agent.model_provider import ModelProviderError
+
+    class _BrokeApi:
+        def send(self, **kw):
+            raise ModelProviderError(
+                "Error code: 429 - insufficient_quota: exceeded your current quota"
+            )
+
+    reason = bake.probe_model_funding(_BrokeApi())
+    assert reason is not None and "insufficient_quota" in reason
+
+
 def test_process_completed_run_stopped_records_nothing_and_exits_130(tmp_path, capsys):
     cell = bake.Cell("v3", "borg_single_B_borg_0109v", True, 1)
     summary = tmp_path / "summary.jsonl"

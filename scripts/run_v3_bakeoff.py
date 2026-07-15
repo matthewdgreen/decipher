@@ -45,6 +45,7 @@ EXIT_OK = 0
 EXIT_CHECKPOINT_STOP = 3
 EXIT_CACHE_MISS = 4          # in-run cache miss OR upfront data validation failure
 EXIT_SUMMARY_EXISTS = 5      # summary file already exists and --resume not passed
+EXIT_API_UNFUNDED = 6        # funding/reachability probe failed before any run
 EXIT_INTERRUPTED = 130       # a run returned status="stopped" (Ctrl-C mid-run)
 
 DEFAULT_MODEL = "gpt-5.5"
@@ -630,6 +631,28 @@ def _build_model_api(model: str) -> Any:
     )
 
 
+def probe_model_funding(api: Any) -> str | None:
+    """Cheap 1-token send to confirm the account is funded/reachable BEFORE the
+    matrix spends real money. Returns None on success, else a short reason.
+    Motivated by the 2026-07-14 run where an unfunded OpenAI account
+    (insufficient_quota) failed all 39 remaining cells on turn 1 — a probe
+    here fails at run 0 instead. Any provider error (quota, auth, network)
+    counts as a failed probe."""
+    from agent.model_provider import ModelProviderError
+
+    try:
+        api.send(
+            messages=[{"role": "user", "content": "Reply with the word OK."}],
+            system="",
+            max_tokens=5,
+        )
+    except ModelProviderError as exc:
+        return str(exc)[:300]
+    except Exception as exc:  # noqa: BLE001 - a probe failure must not be fatal-by-crash
+        return f"{type(exc).__name__}: {str(exc)[:280]}"
+    return None
+
+
 def validate_all_cases(
     benchmark_root: str,
     cache_dir: str,
@@ -727,6 +750,19 @@ def _run_matrix(args: argparse.Namespace) -> int:
 
     api = _build_model_api(args.model)
 
+    # Funding pre-check: one cheap send before any matrix spend. Skippable via
+    # --skip-funding-probe (tests / offline). Fails at "run 0" if the account
+    # is unfunded/unreachable, instead of contaminating N cells on turn 1.
+    if not getattr(args, "skip_funding_probe", False):
+        reason = probe_model_funding(api)
+        if reason is not None:
+            print(
+                f"ERROR: model funding/reachability probe failed; no runs "
+                f"launched. Provider said: {reason}",
+                file=sys.stderr,
+            )
+            return EXIT_API_UNFUNDED
+
     for idx, cell in enumerate(todo, 1):
         case = CASE_BY_NAME[cell.case]
         print(
@@ -801,6 +837,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Print the matrix + per-cell cost estimate and exit.")
     p.add_argument("--report", action="store_true",
                    help="Re-aggregate the summary JSONL into the Part-C table.")
+    p.add_argument("--skip-funding-probe", action="store_true",
+                   help="Skip the pre-run 1-token funding/reachability probe.")
     p.add_argument("--verbose", action="store_true")
     return p
 
