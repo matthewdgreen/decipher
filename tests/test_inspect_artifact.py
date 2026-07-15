@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import sys
 from types import SimpleNamespace
 from pathlib import Path
 
 
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "inspect_artifact.py"
 spec = importlib.util.spec_from_file_location("inspect_artifact", SCRIPT_PATH)
 assert spec is not None and spec.loader is not None
@@ -355,3 +358,112 @@ def test_cli_artifact_analysis_ignores_when_not_requested(tmp_path):
 
     assert cli._maybe_write_artifact_analysis(artifact, SimpleNamespace(analyze=False)) is None
     assert not (tmp_path / "run.analyzed.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# --narrative post-hoc transcript replay (CLI-2 spec Part 3)
+# ---------------------------------------------------------------------------
+
+def _render_narrative(artifact: dict, tmp_path: Path, *, verbose: bool = False) -> str:
+    p = tmp_path / "art.json"
+    p.write_text(json.dumps(artifact), encoding="utf-8")
+    buf = io.StringIO()
+    inspect_artifact.render_narrative(p, artifact, verbose=verbose, stream=buf)
+    return buf.getvalue()
+
+
+def test_narrative_replay_real_fixture_has_structure(tmp_path):
+    # The stored v2 fixture has no loop_events but 8 tool_calls; the replay
+    # reconstructs numbered tool lines + Part-1 glosses from them.
+    artifact = json.loads(
+        (FIXTURES / "v2_artifact_synth_en_40wb_s1.json").read_text(encoding="utf-8")
+    )
+    out = _render_narrative(artifact, tmp_path)
+    # Header
+    assert "▶" in out
+    # Numbered tool lines (reconstructed from tool_calls)
+    assert "1 │ observe_frequency" in out
+    assert "2 │ observe_isomorph_clusters" in out
+    # Part-1 gloss line applies automatically (same renderer)
+    assert "· counts how often each symbol appears" in out
+    # Result block + artifact path (= the input path)
+    assert "── result ──" in out
+    assert f"artifact: {tmp_path / 'art.json'}" in out
+    # It says the artifact predates event capture (graceful reconstruction)
+    assert "reconstructed from stored tool calls" in out
+
+
+def test_narrative_empty_loop_events_degrades_to_header_and_result(tmp_path):
+    artifact = {
+        "cipher_id": "empty_case", "model": "m", "language": "en",
+        "status": "exhausted", "max_iterations": 5,
+        "loop_events": [], "tool_calls": [],
+        "char_accuracy": None, "started_at": 0.0, "finished_at": 1.0,
+    }
+    out = _render_narrative(artifact, tmp_path)
+    assert "▶ empty_case" in out
+    assert "predates loop-event capture" in out
+    assert "── result ──" in out
+    # No numbered tool lines when there is nothing to replay.
+    assert "1 │" not in out
+    # No ground-truth signal -> accuracies suppressed.
+    assert "char=" not in out
+
+
+def test_narrative_v3_synthetic_events_replay_with_nesting_and_decode(tmp_path):
+    artifact = {
+        "cipher_id": "v3_synth", "model": "gpt", "language": "la",
+        "loop_version": "v3", "max_iterations": 5, "status": "solved",
+        "char_accuracy": 0.99, "word_accuracy": 0.9,
+        "started_at": 0.0, "finished_at": 30.0, "estimated_cost_usd": 1.5,
+        "branches": [{"name": "main", "decryption": "THE QUICK BROWN FOX"}],
+        "solution": {"branch": "main"},
+        "loop_events": [
+            {"event": "iteration_start", "payload": {"iteration": 1}},
+            {"event": "agent_text",
+             "payload": {"text": "Forking to test a substitution hypothesis."}},
+            {"event": "tool_start",
+             "payload": {"tool": "episode_run",
+                         "arguments": {"kind": "search", "branch": "main"}}},
+            {"event": "episode_tool_call",
+             "payload": {"episode_id": "e1", "kind": "search", "turn": 1,
+                         "tool": "search_hill_climb", "arguments": {"branch": "main"}}},
+            {"event": "episode_complete",
+             "payload": {"episode_id": "e1", "kind": "search", "status": "ok", "calls": 3}},
+            {"event": "tool_call",
+             "payload": {"tool": "episode_run", "result_summary": {}}},
+            {"event": "workspace_snapshot",
+             "payload": {"branch": "main", "decryption_preview": "THE QUICK BROWN FOX",
+                         "total_tokens": 1000, "estimated_cost_usd": 0.5}},
+            {"event": "declared_solution",
+             "payload": {"branch": "main", "confidence": "high"}},
+        ],
+    }
+    out = _render_narrative(artifact, tmp_path)
+    lines = out.splitlines()
+    # Agent self-narration line rendered.
+    assert "“ Forking to test a substitution hypothesis." in out
+    # Episode nesting intact: parent above its gloss above its ↳ child.
+    parent_idx = next(i for i, l in enumerate(lines) if "│ episode_run(" in l)
+    gloss_idx = next(i for i, l in enumerate(lines) if "· spins off a helper to run a search" in l)
+    child_idx = next(i for i, l in enumerate(lines) if "↳" in l and "search_hill_climb" in l)
+    assert parent_idx < gloss_idx < child_idx
+    # Decode-progress line intact.
+    assert "decode [main]" in out and "THE QUICK BROWN FOX" in out
+    # Declaration + result block with the real accuracy.
+    assert "DECLARED solution on branch main" in out
+    assert "── result ──" in out and "char=99.0%" in out
+
+
+def test_narrative_cli_main_end_to_end(tmp_path, monkeypatch, capsys):
+    artifact = json.loads(
+        (FIXTURES / "v2_artifact_synth_en_40wb_s1.json").read_text(encoding="utf-8")
+    )
+    p = tmp_path / "art.json"
+    p.write_text(json.dumps(artifact), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["inspect_artifact.py", str(p), "--narrative"])
+    inspect_artifact.main()
+    out = capsys.readouterr().out
+    assert "▶" in out
+    assert "1 │ observe_frequency" in out
+    assert "── result ──" in out

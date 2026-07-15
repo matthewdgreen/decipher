@@ -17,6 +17,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,7 @@ from agent.model_provider import (  # noqa: E402
     infer_provider_from_model,
     make_model_provider,
 )
+from agent.narrate import NarrateAgentRenderer  # noqa: E402
 from artifact.analyzer import analyze_artifact, summarize_findings  # noqa: E402
 
 
@@ -1137,6 +1139,185 @@ def _analysis_prompt(summary: dict[str, Any], analysis_mode: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# --narrative: post-hoc transcript replay (CLI-2 spec Part 3)
+#
+# Convert ANY stored artifact into the same human-friendly transcript the live
+# narrate renderer produces, by REPLAY: build a NarrateAgentRenderer and feed it
+# the artifact's stored events. No second formatter, no LLM.
+# ---------------------------------------------------------------------------
+
+def _infer_source(cipher_id: str) -> str | None:
+    """Best-effort benchmark source from the test id (for the narrate header)."""
+    cid = (cipher_id or "").lower()
+    for src in ("copiale", "borg"):
+        if src in cid:
+            return src
+    if cid.startswith("synth") or "_synth" in cid or cid.startswith("en_ss"):
+        return "synth"
+    return None
+
+
+def _declared_branch(artifact: dict) -> str:
+    """Name of the branch whose decode is the run's final product."""
+    sol = artifact.get("solution") or artifact.get("declared_solution")
+    if isinstance(sol, dict) and sol.get("branch"):
+        return str(sol["branch"])
+    if artifact.get("best_branch"):
+        return str(artifact["best_branch"])
+    branches = artifact.get("branches") or []
+    if branches and isinstance(branches[0], dict):
+        return str(branches[0].get("name") or "")
+    return ""
+
+
+def _branch_decryption(artifact: dict, branch_name: str) -> str:
+    for b in artifact.get("branches") or []:
+        if isinstance(b, dict) and b.get("name") == branch_name:
+            return str(b.get("decryption") or "")
+    return ""
+
+
+def _iterations_used(artifact: dict, events: list[dict]) -> int | None:
+    if isinstance(artifact.get("iterations_used"), int):
+        return artifact["iterations_used"]
+    iters = [
+        e.get("payload", {}).get("iteration")
+        for e in events
+        if isinstance(e, dict) and e.get("event") == "iteration_start"
+    ]
+    iters = [i for i in iters if isinstance(i, int)]
+    if iters:
+        return max(iters)
+    tc_iters = [
+        tc.get("iteration") for tc in (artifact.get("tool_calls") or [])
+        if isinstance(tc, dict) and isinstance(tc.get("iteration"), int)
+    ]
+    return max(tc_iters) if tc_iters else None
+
+
+def _result_summary_dict(result: Any) -> dict:
+    """A dict result_summary for a tool_call synthesized from a stored ToolCall."""
+    if isinstance(result, dict):
+        return result
+    if isinstance(result, str):
+        return _parse_result(result)  # {} when the payload is not a JSON object
+    return {}
+
+
+def _events_from_tool_calls(artifact: dict) -> list[dict]:
+    """Synthesize a minimal (event, payload) stream from stored ``tool_calls``.
+
+    v2 artifacts (and pre-947f8c6 runs) never captured ``loop_events`` but do
+    carry the full tool_calls list; replaying those still yields the numbered
+    tool lines + glosses. iteration_start events are inserted when the iteration
+    counter advances so per-iteration grouping is preserved.
+    """
+    events: list[dict] = []
+    last_iter: int | None = None
+    for tc in artifact.get("tool_calls") or []:
+        if not isinstance(tc, dict):
+            continue
+        it = tc.get("iteration")
+        if isinstance(it, int) and it != last_iter:
+            events.append({"event": "iteration_start", "payload": {"iteration": it}})
+            last_iter = it
+        name = str(tc.get("tool_name") or "tool")
+        args = tc.get("arguments") if isinstance(tc.get("arguments"), dict) else {}
+        events.append({"event": "tool_start",
+                       "payload": {"tool": name, "arguments": args}})
+        events.append({"event": "tool_call",
+                       "payload": {"tool": name,
+                                   "result_summary": _result_summary_dict(tc.get("result"))}})
+    return events
+
+
+def _synth_finish_result(path: Path, artifact: dict, events: list[dict]) -> SimpleNamespace:
+    """Build the finish() result object from stored artifact fields."""
+    char = artifact.get("char_accuracy")
+    word = artifact.get("word_accuracy")
+    ground_truth = artifact.get("ground_truth")
+    # has_ground_truth: False when the artifact carries no accuracy signal, or a
+    # 0.0/absent score with no benchmark ground truth (avoids a misleading 0.0%).
+    has_ground_truth = char is not None and not (
+        float(char or 0.0) == 0.0 and not ground_truth and not word
+    )
+    branch = _declared_branch(artifact)
+    started = float(artifact.get("started_at") or 0.0)
+    finished = float(artifact.get("finished_at") or 0.0)
+    elapsed = max(0.0, finished - started)
+    return SimpleNamespace(
+        status=str(artifact.get("status") or ""),
+        char_accuracy=float(char) if char is not None else 0.0,
+        word_accuracy=float(word) if word is not None else 0.0,
+        has_ground_truth=has_ground_truth,
+        iterations_used=_iterations_used(artifact, events),
+        estimated_cost_usd=float(artifact.get("estimated_cost_usd") or 0.0),
+        elapsed_seconds=elapsed,
+        artifact_path=str(path),
+        error_message=str(artifact.get("error_message") or ""),
+        final_summary=str(artifact.get("final_summary") or ""),
+        final_decryption=_branch_decryption(artifact, branch),
+    )
+
+
+def render_narrative(
+    path: Path,
+    artifact: dict,
+    *,
+    verbose: bool = False,
+    stream: Any = None,
+) -> None:
+    """Replay a stored artifact through the live NarrateAgentRenderer."""
+    stream = stream or sys.stdout
+    renderer = NarrateAgentRenderer(stream, verbose=verbose)
+
+    cipher_id = str(artifact.get("cipher_id") or artifact.get("test_id") or "?")
+    loop_version = str(artifact.get("loop_version") or "v2")
+    desc_bits = []
+    for value, unit in (
+        (artifact.get("cipher_alphabet_size"), "symbols"),
+        (artifact.get("cipher_token_count"), "tokens"),
+        (artifact.get("cipher_word_count"), "words"),
+    ):
+        if value:
+            desc_bits.append(f"{value} {unit}")
+    renderer.start_test(
+        cipher_id,
+        " · ".join(desc_bits),
+        model=str(artifact.get("model") or "?"),
+        max_iterations=int(artifact.get("max_iterations") or 0),
+        language=artifact.get("language"),
+        source=_infer_source(cipher_id),
+        agent_loop=loop_version,
+    )
+
+    events = [e for e in (artifact.get("loop_events") or []) if isinstance(e, dict)]
+    if events:
+        for e in events:
+            renderer.event(str(e.get("event") or ""), e.get("payload") or {})
+    elif artifact.get("tool_calls"):
+        # Graceful degradation: no captured event stream, but stored tool calls
+        # let us reconstruct the numbered tool lines + glosses.
+        events = _events_from_tool_calls(artifact)
+        print(
+            "  (reconstructed from stored tool calls; this artifact predates "
+            "loop-event capture, so agent commentary and decode-progress lines "
+            "are unavailable)",
+            file=stream,
+        )
+        for e in events:
+            renderer.event(str(e.get("event") or ""), e.get("payload") or {})
+    else:
+        print(
+            "  (this artifact predates loop-event capture; showing the header "
+            "and result only)",
+            file=stream,
+        )
+
+    renderer.finish(_synth_finish_result(path, artifact, events))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -1234,6 +1415,20 @@ def main() -> None:
     )
     parser.add_argument("artifacts", nargs="+", help="Artifact JSON file(s)")
     parser.add_argument(
+        "--narrative",
+        action="store_true",
+        help=(
+            "Replay the artifact as a human-friendly narrate transcript (the "
+            "same renderer the live agentic CLI uses). LLM-free; graceful on "
+            "old artifacts. Use --verbose for full agent text and tool args."
+        ),
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="With --narrative: show full agent commentary, tool args, and decode text.",
+    )
+    parser.add_argument(
         "--analyze", "-a",
         action="store_true",
         help="Call an LLM to provide a compact failure-mode narrative.",
@@ -1290,6 +1485,9 @@ def main() -> None:
         print(f"\n{'━'*70}")
         print(f"  {path}")
         print(f"{'━'*70}")
+        if args.narrative:
+            render_narrative(path, load(path), verbose=args.verbose)
+            continue
         inspect_one(
             path,
             args.analyze,

@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent.display import make_agent_renderer
+from agent.display import describe_tool_gloss, make_agent_renderer
 from agent.model_provider import ModelResponse, ModelUsage, TextBlock, ToolUseBlock
 from agent.narrate import NarrateAgentRenderer, _compact_args, _format_elapsed
 from investigation import sessions as sessions_mod
@@ -740,3 +740,113 @@ def test_narrate_finish_prints_final_plaintext():
         final_summary="",
     ))
     assert "plaintext:" not in s3.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# CLI-2 Part 1 — plain-English tool glosses
+# ---------------------------------------------------------------------------
+
+# Representative common-namespace tools that must resolve to a NON-generic gloss
+# (the coverage-audit pin — table-driven so gaps are named).
+_GLOSS_COVERAGE_TOOLS = [
+    "observe_frequency", "observe_ic", "observe_isomorph_clusters",
+    "observe_diagnosis", "observe_homophone_distribution", "observe_kasiski",
+    "search_hill_climb", "search_anneal", "search_homophonic_anneal",
+    "search_automated_solver", "search_quagmire3_keyword_alphabet",
+    "search_word_repair_menu",
+    "act_set_mapping", "act_bulk_set", "act_anchor_word", "act_swap_decoded",
+    "act_resegment_by_reading",
+    "decode_show", "decode_unmapped_report", "decode_diagnose",
+    "decode_ambiguous_letter", "decode_letter_stats",
+    "score_panel", "score_dictionary",
+    "corpus_word_candidates",
+    "workspace_fork", "workspace_create_hypothesis_branch", "workspace_compare",
+    "workspace_branch_cards", "workspace_hypothesis_cards",
+    "hypothesis_apply_reading", "hypothesis_test_word",
+    "repair_agenda_list",
+    "inspect_related_solution", "list_related_records", "list_associated_documents",
+    "run_python",
+    "meta_declare_solution", "meta_declare_unsolved",
+    "meta_attest_reading_comprehensibility",
+    "experiment_submit", "experiment_collect", "episode_install_branch",
+]
+
+
+def test_describe_tool_gloss_exact_prefix_and_generic_fallback():
+    # Exact-name gloss.
+    assert "counts how often each symbol appears" in describe_tool_gloss("observe_frequency")
+    # A tool not listed by name but in a known namespace -> non-generic prefix gloss.
+    prefix_gloss = describe_tool_gloss("observe_some_new_metric")
+    assert prefix_gloss == "measures a statistical property of the cipher to guide the next move"
+    # A fully unmapped tool -> generic fallback.
+    assert describe_tool_gloss("quantum_flux_capacitor") == "runs the quantum_flux_capacitor tool"
+
+
+def test_describe_tool_gloss_episode_run_varies_by_kind():
+    verify = describe_tool_gloss("episode_run", {"kind": "verify"})
+    search = describe_tool_gloss("episode_run", {"kind": "search"})
+    assert verify != search
+    assert "reader" in verify
+    # Unknown / missing kind still yields a non-empty episode gloss.
+    assert describe_tool_gloss("episode_run", {"kind": "zzz"})
+    assert describe_tool_gloss("episode_run", {})
+
+
+def test_gloss_coverage_no_gaps_for_common_tools_and_fixture():
+    import json
+
+    fixtures = Path(__file__).resolve().parent / "fixtures"
+    artifact = json.loads(
+        (fixtures / "v2_artifact_synth_en_40wb_s1.json").read_text(encoding="utf-8")
+    )
+    fixture_tools = {
+        str(tc.get("tool_name"))
+        for tc in artifact.get("tool_calls", [])
+        if tc.get("tool_name")
+    }
+    tools = set(_GLOSS_COVERAGE_TOOLS) | fixture_tools
+    gaps = [t for t in sorted(tools) if describe_tool_gloss(t) == f"runs the {t} tool"]
+    assert not gaps, f"tools resolving only to the generic gloss: {gaps}"
+    # episode_run per-kind: every documented kind has a distinct, non-generic gloss.
+    generic_episode = "spins off a focused helper to work a sub-task in isolation"
+    for kind in ("survey", "search", "reading", "compare", "repair", "verify"):
+        gloss = describe_tool_gloss("episode_run", {"kind": kind})
+        assert gloss and gloss != generic_episode
+
+
+def test_narrate_gloss_first_use_only():
+    r, stream = _scripted_narrate()
+    for _ in range(2):
+        r.event("tool_start", {"tool": "observe_frequency", "arguments": {"branch": "main"}})
+        r.event("tool_call", {"tool": "observe_frequency",
+                              "result_summary": {"branch": "main"}})
+    out = stream.getvalue()
+    # Gloss printed exactly once (first use), as a dim indented `·` line.
+    assert out.count("counts how often each symbol appears") == 1
+    assert "      · counts how often each symbol appears" in out
+    # Two numbered tool lines still render (repeat renders compactly).
+    assert "1 │ observe_frequency" in out and "2 │ observe_frequency" in out
+
+
+def test_narrate_gloss_unmapped_falls_back_generic():
+    r, stream = _scripted_narrate()
+    r.event("tool_call", {"tool": "quantum_flux_capacitor", "result_summary": {}})
+    assert "· runs the quantum_flux_capacitor tool" in stream.getvalue()
+
+
+def test_narrate_gloss_under_parent_preserves_episode_nesting():
+    # The gloss for a PARENT tool (episode_run) must print directly under the
+    # numbered parent line and ABOVE its ↳ children, and vary by kind.
+    r, stream = _scripted_narrate()
+    r.event("tool_start", {"tool": "episode_run",
+                           "arguments": {"kind": "verify", "branch": "main"}})
+    r.event("episode_tool_call", {"episode_id": "z", "kind": "verify", "turn": 1,
+                                  "tool": "decode_show", "arguments": {"branch": "main"}})
+    r.event("episode_complete", {"episode_id": "z", "kind": "verify",
+                                 "status": "ok", "calls": 1})
+    r.event("tool_call", {"tool": "episode_run", "result_summary": {}})
+    lines = stream.getvalue().splitlines()
+    parent_idx = next(i for i, l in enumerate(lines) if "│ episode_run(" in l)
+    gloss_idx = next(i for i, l in enumerate(lines) if "· sends the candidate text" in l)
+    child_idx = next(i for i, l in enumerate(lines) if "↳" in l)
+    assert parent_idx < gloss_idx < child_idx

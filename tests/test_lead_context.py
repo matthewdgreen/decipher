@@ -189,6 +189,22 @@ def test_v3_system_prompt_is_short_and_language_aware():
     assert "German" in de or "BRUDER" in de
 
 
+def test_v3_brief_has_self_narration_line_v2_untouched():
+    """CLI-2 Part 2: the v3 lead brief instructs one self-narration sentence per
+    turn, and the v2 system prompt is left byte-untouched (no such line)."""
+    from agent.prompts_v2 import get_system_prompt
+
+    narration_marker = "one short plain-language sentence"
+    en = build_v3_system_prompt("en")
+    de = build_v3_system_prompt("de")
+    assert narration_marker in en
+    assert narration_marker in de
+    # v3-only: v2's brief (both styles) must not have grown the line.
+    assert narration_marker not in get_system_prompt("en", "full")
+    assert narration_marker not in get_system_prompt("en", "compact")
+    assert narration_marker not in get_system_prompt("la", "full")
+
+
 def test_view_header_shows_turn_of_max():
     """R4: the view header shows 'turn N of M' so the model knows its runway."""
     state = _state()

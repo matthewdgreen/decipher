@@ -121,6 +121,182 @@ def describe_tool_process(tool: str, args: dict[str, Any] | None = None) -> str:
     return f"{tool}{suffix}"
 
 
+# ---------------------------------------------------------------------------
+# Plain-English tool glosses (narrate renderer only; CLI-2 spec Part 1).
+#
+# describe_tool_process (above) is a SHORT running-action LABEL reused by the
+# raw/pretty renderers — its output must not change (spec: raw/pretty/jsonl
+# untouched). describe_tool_gloss is a SEPARATE, one-line, plain-English
+# EXPLANATION of what a tool does and why, aimed at a reader who is not a
+# cryptographer. The narrate renderer prints it once per run under the first
+# use of each tool. Anything unmapped resolves via the namespace-prefix table
+# and finally a generic fallback, so every tool always yields a gloss.
+# ---------------------------------------------------------------------------
+
+# Per-kind glosses for the v3 lead's episode_run tool (varies by `kind` arg).
+_EPISODE_KIND_GLOSSES = {
+    "survey": "spins off a helper to diagnose the cipher and suggest which methods to try",
+    "search": "spins off a helper to run a search on a branch and report its best result",
+    "reading": "spins off a helper to draft the best plain-language reading of a branch",
+    "compare": "spins off a helper to rank the competing branches",
+    "repair": "spins off a helper to turn a reading into concrete edits on a fresh copy",
+    "verify": "sends the candidate text to a fresh, independent reader who judges whether it reads as real language",
+}
+
+# Exact-name glosses for high-value / commonly-seen tools.
+_TOOL_GLOSSES = {
+    # observe_* — measurements that characterize the cipher
+    "observe_frequency": "counts how often each symbol appears; frequent symbols usually map to common letters like E, T, A",
+    "observe_ic": "measures how 'clumpy' the letter distribution is — a quick test of what kind of cipher this is",
+    "observe_isomorph_clusters": "finds repeated symbol patterns (words that share a shape), which hint at real word structure",
+    "observe_cipher_id": "sizes up the cipher — alphabet size, repeats, overall shape — to guess its type",
+    "observe_cipher_shape": "sizes up the cipher — alphabet size, repeats, overall shape — to guess its type",
+    "observe_diagnosis": "runs a battery of statistical tests to name the most likely cipher family",
+    "observe_homophone_distribution": "checks whether several different symbols seem to stand for the same letter (a homophonic cipher)",
+    "observe_kasiski": "looks for a repeating key period, the signature of a polyalphabetic cipher",
+    "observe_periodic_ic": "looks for a repeating key period, the signature of a polyalphabetic cipher",
+    "observe_periodic_shift_candidates": "looks for a repeating key period, the signature of a polyalphabetic cipher",
+    "observe_phase_frequency": "counts symbol frequencies within each slot of a repeating key",
+    "observe_language_models": "lists the language models used to score how word-like a decode is",
+    "observe_transform_suspicion": "checks whether the text was scrambled (transposed) before substitution",
+    "observe_transform_pipeline": "shows any un-scrambling steps currently applied to a branch",
+    # search_* — automated hunts for a better key
+    "search_hill_climb": "hunts for a better symbol-to-letter key by repeatedly trying small swaps and keeping improvements",
+    "search_anneal": "searches for a good key using simulated annealing — bold guesses early, careful refinements later",
+    "search_homophonic_anneal": "same idea as annealing, but for homophonic ciphers where one letter has many symbols",
+    "search_automated_solver": "runs the built-in automatic solver end to end and reports its best decode",
+    "search_quagmire3_keyword_alphabet": "tries to crack a keyword-based polyalphabetic (Quagmire) cipher",
+    "search_transform_candidates": "tries undoing a scrambling/transposition step to see if the text then reads",
+    "search_transform_homophonic": "tries undoing a scramble AND solving a homophonic key together",
+    "search_pure_transposition": "tries reordering the letters (transposition) to recover readable text",
+    "search_periodic_polyalphabetic": "searches for a repeating-key cipher solution across candidate periods",
+    "search_null_masks": "tries dropping 'null' filler symbols that carry no meaning",
+    "search_word_repair_menu": "proposes fixes for words that are close to real language but not quite right",
+    # act_* — edits to the working key / decode
+    "act_set_mapping": "commits one symbol→letter guess to the working key",
+    "act_bulk_set": "commits several symbol→letter guesses to the key at once",
+    "act_anchor_word": "locks in a guessed word, fixing all of its letters in the key",
+    "act_clear_mapping": "removes a symbol→letter guess from the key",
+    "act_swap_decoded": "swaps two letters in the current decode to test an alternative",
+    "act_split_cipher_word": "splits one run-together word into two",
+    "act_merge_cipher_words": "joins two words into one",
+    "act_merge_decoded_words": "joins two decoded words into one",
+    "act_resegment_by_reading": "re-splits the text into words to match a proposed reading",
+    "act_resegment_from_reading_repair": "re-splits the text into words to match a proposed reading",
+    "act_resegment_window_by_reading": "re-splits one stretch of text into words to match a proposed reading",
+    "act_apply_word_repair": "applies a proposed fix to a specific word",
+    "act_apply_transform_pipeline": "installs an un-scrambling step onto a branch",
+    "act_set_periodic_key": "sets the repeating key for a polyalphabetic decode",
+    "act_set_periodic_shift": "sets one slot of the repeating key for a polyalphabetic decode",
+    "act_adjust_periodic_shift": "nudges one slot of the repeating key",
+    "act_set_model_variant": "switches which language model is used to score decodes",
+    # decode_* — read or repair the current text
+    "decode_show": "shows the current decoded text so you can read what it says so far",
+    "decode_show_phases": "shows the decode split out by each slot of a repeating key",
+    "decode_unmapped_report": "lists the symbols that still have no letter assigned",
+    "decode_ngram_heatmap": "highlights which parts of the decode look like real language and which look like gibberish",
+    "decode_letter_stats": "reports letter-level statistics of the current decode",
+    "decode_ambiguous_letter": "flags a letter whose mapping looks shaky and suggests alternatives",
+    "decode_absent_letter_candidates": "points out common letters that are missing from the decode",
+    "decode_diagnose": "diagnoses problems in the current decode",
+    "decode_diagnose_and_fix": "diagnoses problems in the current decode and applies safe repairs",
+    "decode_repair_no_boundary": "re-splits a run-together decode into words",
+    "decode_validate_reading_repair": "checks a proposed reading fix before it is applied",
+    "decode_plan_word_repair": "plans candidate word fixes for the reader to choose from",
+    "decode_plan_word_repair_menu": "plans candidate word fixes for the reader to choose from",
+    # score_* — how language-like is the decode
+    "score_panel": "scores the current decode on several measures of how language-like it is",
+    "score_dictionary": "measures how many decoded words are real dictionary words",
+    "score_quadgram": "scores the decode by how natural its four-letter sequences look",
+    "score_delta": "estimates how much a proposed change would improve or hurt the decode",
+    "score_delta_if_remapped": "estimates how much a proposed remapping would improve or hurt the decode",
+    # corpus_* — consult the word list
+    "corpus_lookup_word": "looks up a word in the target-language word list",
+    "corpus_word_candidates": "suggests real words that could fill a gap in the decode",
+    # workspace_* — manage exploration branches
+    "workspace_fork": "makes a copy of a branch so an idea can be explored without disturbing the original",
+    "workspace_fork_best": "copies the best-scoring branch to build on it",
+    "workspace_create_hypothesis_branch": "starts a new branch to test a specific hypothesis about the cipher",
+    "workspace_merge": "merges progress from one branch into another",
+    "workspace_compare": "compares branches side by side to see which decode reads better",
+    "workspace_branch_cards": "lists the current branches and what each one is exploring",
+    "workspace_list_branches": "lists the current branches and what each one is exploring",
+    "workspace_hypothesis_cards": "lists the current hypotheses and their status",
+    "workspace_hypothesis_next_steps": "suggests the next step for a hypothesis",
+    "workspace_update_hypothesis": "updates the status of a hypothesis on a branch",
+    "workspace_reject_hypothesis": "marks a hypothesis as ruled out",
+    "workspace_delete": "removes a branch that is no longer needed",
+    # hypothesis_* / composite v3 actions
+    "hypothesis_apply_reading": "turns a proposed reading of a branch into concrete key and word-boundary edits on a fresh copy",
+    "hypothesis_test_word": "tests whether a specific word guess holds up against the evidence",
+    "branch_adjudicate": "ranks the competing branches to pick the most promising one",
+    # repair_* — outstanding-fix bookkeeping
+    "repair_agenda_list": "lists the outstanding fixes the decode still needs",
+    "repair_agenda_update": "updates an item on the list of outstanding fixes",
+    "repair_agenda_unresolved": "lists the fixes that are still unresolved",
+    # inspect_* / list_* — benchmark reference material
+    "inspect_related_solution": "reads a related solved cipher provided for context",
+    "inspect_related_transcription": "reads a related transcription provided for context",
+    "inspect_associated_document": "reads an associated reference document",
+    "inspect_benchmark_context": "reads the benchmark context notes for this cipher",
+    "list_related_records": "lists related reference records available for this cipher",
+    "list_associated_documents": "lists associated reference documents available for this cipher",
+    # run_python — escape hatch
+    "run_python": "runs a small custom Python snippet as an escape hatch for a one-off calculation",
+    # meta_* — run-level decisions
+    "meta_declare_solution": "declares the current decode as the final solution",
+    "meta_declare_unsolved": "gives up and records the best partial result with what was tried",
+    "meta_request_tool": "asks for a tool that isn't currently available",
+    "meta_attest_reading_comprehensibility": "records a judgement of how readable the decode is",
+    # v3 lead-only helpers
+    "episode_install_branch": "brings a helper's result branch into the main workspace",
+    "experiment_submit": "queues a long-running solver to work in the background while you continue",
+    "experiment_collect": "checks on background solver runs and installs a finished one if it looks good",
+}
+
+# Namespace-prefix fallbacks: used when an exact name is not listed above.
+_TOOL_GLOSS_PREFIXES = (
+    ("observe_", "measures a statistical property of the cipher to guide the next move"),
+    ("search_review_", "reviews the candidates a previous search produced before installing one"),
+    ("search_", "searches for a better decode with an automated solver"),
+    ("act_install_", "installs a candidate solution onto a branch so it becomes the working decode"),
+    ("act_", "changes the working decode or key on a branch"),
+    ("decode_", "inspects or repairs the current decoded text"),
+    ("score_", "scores how language-like the current decode is"),
+    ("corpus_", "consults the target-language word list"),
+    ("workspace_", "manages the branches used to explore competing ideas"),
+    ("hypothesis_", "works with a hypothesis about the cipher"),
+    ("repair_", "manages the list of outstanding decode fixes"),
+    ("inspect_", "reads reference material provided for context"),
+    ("list_", "lists reference material available for this cipher"),
+    ("experiment_", "manages background solver runs"),
+    ("episode_", "manages a focused helper sub-task"),
+    ("meta_", "records a run-level decision"),
+)
+
+
+def describe_tool_gloss(tool: str, args: dict[str, Any] | None = None) -> str:
+    """One-line, plain-English explanation of what a tool does and why.
+
+    Narrate-only (Part 1 of the CLI-2 narrative spec). Always returns a
+    non-empty string: an exact-name gloss when known, else a namespace-prefix
+    gloss, else a generic fallback.
+    """
+    args = args or {}
+    if tool == "episode_run":
+        kind = str(args.get("kind") or "").strip().lower()
+        return _EPISODE_KIND_GLOSSES.get(
+            kind, "spins off a focused helper to work a sub-task in isolation"
+        )
+    exact = _TOOL_GLOSSES.get(tool)
+    if exact:
+        return exact
+    for prefix, gloss in _TOOL_GLOSS_PREFIXES:
+        if tool.startswith(prefix):
+            return gloss
+    return f"runs the {tool} tool"
+
+
 class RawAgentRenderer:
     """Current compact event stream for scripts and debugging."""
 

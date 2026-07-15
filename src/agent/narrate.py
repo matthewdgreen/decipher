@@ -8,14 +8,15 @@ works in scrollback, pipes, and CI logs. Optional ANSI color is applied only
 when the output stream is an interactive TTY.
 
 The renderer implements the ``AgentRunRenderer`` protocol (display.py). It reuses
-``summarize_tool_call`` from display.py for lead-tool result summaries.
+``summarize_tool_call`` from display.py for lead-tool result summaries and
+``describe_tool_gloss`` for the first-use plain-English tool glosses (CLI-2 Part 1).
 """
 from __future__ import annotations
 
 import sys
 from typing import Any
 
-from agent.display import summarize_tool_call
+from agent.display import describe_tool_gloss, summarize_tool_call
 
 
 # Lead tools that spawn forwarded episode_* children (nested ↳ lines). Their
@@ -109,6 +110,9 @@ class NarrateAgentRenderer:
         self._pending_tool: dict[str, Any] | None = None
         self._episode_labels: dict[str, str] = {}
         self._episode_counter = 0
+        # CLI-2 Part 1: tool names (or episode_run:<kind>) whose plain-English
+        # gloss has already been printed this run — first-use-per-run only.
+        self._glossed: set[str] = set()
 
     # -- protocol -------------------------------------------------------------
     def start_test(
@@ -235,6 +239,9 @@ class NarrateAgentRenderer:
             self._tool_index += 1
             arg_str = _compact_args(args, verbose=self.verbose)
             self._line(f"  {self._tool_index} │ {tool}({arg_str})")
+            # Gloss goes directly under the parent line, ABOVE its ↳ children,
+            # so the episode nesting is preserved.
+            self._emit_gloss(tool, args)
             self._pending_tool["printed"] = True
 
     def _on_tool_call(self, payload: dict[str, Any]) -> None:
@@ -261,6 +268,7 @@ class NarrateAgentRenderer:
             line += f" → {summary}"
         line += self._ticker()
         self._line(line)
+        self._emit_gloss(tool, args)
 
     def _on_workspace_snapshot(self, payload: dict[str, Any]) -> None:
         self._last_tokens = int(payload.get("total_tokens") or self._last_tokens)
@@ -392,6 +400,27 @@ class NarrateAgentRenderer:
         self._line(self._c("  ! reading proposal length mismatch; retrying", "yellow"))
 
     # -- helpers --------------------------------------------------------------
+    def _emit_gloss(self, tool: str, args: dict[str, Any] | None) -> None:
+        """Print the tool's plain-English gloss the FIRST time it appears (CLI-2
+        Part 1). A dim, indented ``·`` line under the numbered tool line. Keyed
+        per tool name, except episode_run which is keyed per ``kind`` so each
+        kind's distinct gloss shows once."""
+        key = self._gloss_key(tool, args)
+        if key in self._glossed:
+            return
+        self._glossed.add(key)
+        gloss = describe_tool_gloss(tool, args or {})
+        if gloss:
+            self._line(self._c(f"      · {gloss}", "dim"))
+
+    @staticmethod
+    def _gloss_key(tool: str, args: dict[str, Any] | None) -> str:
+        if tool == "episode_run":
+            kind = str((args or {}).get("kind") or "").strip().lower()
+            if kind:
+                return f"episode_run:{kind}"
+        return tool
+
     def _result_summary(self, tool: str, result_summary: dict[str, Any]) -> str:
         summary = summarize_tool_call(tool, result_summary)
         # summarize_tool_call prefixes the tool name; strip it (already shown).
