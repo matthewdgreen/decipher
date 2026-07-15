@@ -599,3 +599,20 @@ built.
    "Remaining Challenges". TOOLS.md count audit. Improve the
    "No matching tests found" error to name the split searched (the UX
    paper cut from live testing). Reviewed like any slice.
+
+---
+
+## Program status (2026-07-15): PLANNED SCOPE COMPLETE — follow-ups queued
+
+All planned slices landed and reviewed (ledger = git log 7c086b4..98be6c9;
+suite 1386). M6 bake-off verdict: NO default switch yet — v3 ~60% cheaper
+and char-tied with v2 (wins Copiale), but trails on Borg word accuracy
+because every v3 Borg run ended in best-branch fallback instead of an
+explicit declaration (data: artifacts/m6_bakeoff/summary.jsonl, local).
+
+**Next up (needs go): M5.1 declaration-trigger fix** —
+`docs/specs/agent_v3_m5_1_declaration_trigger_spec.md` (self-contained:
+evidence, forensics plan, four-part fix, tests, acceptance targets). If
+its acceptance targets are met, re-open the M6 switch decision with a
+focused Borg-only v2-vs-v3 re-run (~$25). After a switch: v2 retirement
+one release later (deletion list in agent_v3_design.md).
