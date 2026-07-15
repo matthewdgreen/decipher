@@ -166,12 +166,13 @@ _READING_SCHEMA = {
                 "repair_text": {"type": ["string", "null"]},
                 "confidence": {"type": ["number", "string"]},
             },
-            # M5.1 review fix: confidence is REQUIRED from reading workers.
-            # Omitted confidence is bumped to fully-actionable 1.0 for LEGACY
-            # stored artifacts (Reading.from_episode_result), so a NEW worker
-            # staying silent would silently bypass the
-            # MIN_REPAIR_FRAGMENT_CONFIDENCE repair threshold.
-            "required": ["text", "confidence"],
+            # M5.1 review fix, SOFTENED after Stage-1 forensics: schema-requiring
+            # confidence would fail the WHOLE episode when a worker omits it —
+            # a worse outcome than degrading one fragment. Omitted confidence
+            # instead defaults to 0.5 in Reading.from_episode_result: BELOW the
+            # MIN_REPAIR_FRAGMENT_CONFIDENCE threshold, so a silent worker's
+            # fragment stays visible but cannot change the key automatically.
+            "required": ["text"],
         }},
         "holes": {"type": "array", "items": {"type": "string"}},
         "overall_confidence": {"type": "number"},
@@ -289,14 +290,25 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "corpus_lookup_word", "corpus_word_candidates",
             "score_panel", "score_dictionary",
         }),
-        "budget": EpisodeBudget(12, 4096, 180.0),
+        # Stage-1 forensics (2026-07-15): under the M5.1 contract (positioned
+        # fragments + repair_text + confidence) reading workers exhausted the
+        # old (12, 4096, 180) budget without ever submitting — 10-11 calls of
+        # exploration, then an EMPTY final-nudge reply (gpt-5.5 reasoning
+        # consumed the 4096-token cap with no visible text; same failure class
+        # as the INV harness's 2048-token Fable truncation). Raised to give the
+        # heavier contract room; the contract now also front-loads "submit
+        # early over exploring".
+        "budget": EpisodeBudget(16, 8192, 300.0),
         "result_schema": _READING_SCHEMA,
         "tier": "reading",
         "contract": (
             "You are a READING worker. Draft the best plain-language reading of "
             "the given branch's decode: report the reading text, per-window "
             "fragments with confidence, remaining holes, and an overall "
-            "confidence. Report each fragment's start/end token indices when you "
+            "confidence. Your budget is small: prefer submitting a partial "
+            "reading early over running more tools — a submitted reading with "
+            "honest confidence beats an exhausted budget. "
+            "Report each fragment's start/end token indices when you "
             "know them. Keep `text` human-readable. When a fragment is confident "
             "enough to drive key repair, also provide `repair_text` using only "
             "plaintext letters, spaces, and `?` for one unknown token. You do NOT "

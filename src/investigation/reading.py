@@ -184,11 +184,16 @@ class Reading:
                 )
             )
             if item.get("confidence") is None:
-                # Legacy reading workers were not required to emit per-fragment
-                # confidence. Preserve those artifacts as actionable; the new
-                # contract supplies an explicit value that the repair threshold
-                # can enforce.
-                fragments[-1].confidence = 1.0
+                # M5.1 review fix (softened after Stage-1 forensics): a worker
+                # that omits confidence gets the conservative 0.5 — BELOW the
+                # MIN_REPAIR_FRAGMENT_CONFIDENCE threshold, so the fragment
+                # stays visible in the Reading (and in skipped_fragments when
+                # application is attempted) but cannot change the key
+                # automatically. Legacy STORED readings load via from_dict,
+                # not through this compiler, and are unaffected. Schema-
+                # requiring confidence was tried and reverted: it failed the
+                # WHOLE episode on one silent fragment.
+                fragments[-1].confidence = 0.5
         # When the worker gave no fragments but did give reading_text, keep the
         # whole-text reading as a single fragment so the reading is applicable.
         if not fragments:

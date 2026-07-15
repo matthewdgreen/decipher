@@ -116,10 +116,11 @@ def test_reading_schema_accepts_optional_start_end():
         "reading_text": "HELLO",
         "fragments": [
             {"window": "w1", "start": 0, "end": 5, "text": "HELLO", "confidence": 0.9},
-            # start/end omitted -> still valid; confidence is REQUIRED
-            # (M5.1 review fix: silent workers must not bypass the repair
-            # confidence threshold).
-            {"text": "WORLD", "confidence": 0.4},
+            # start/end omitted -> still valid; omitted confidence is ALSO
+            # schema-valid (M5.1 softening: failing the whole episode on one
+            # silent fragment is worse than degrading that fragment — the
+            # compiler defaults it to 0.5, below the repair threshold).
+            {"text": "WORLD"},
         ],
         "holes": [],
         "overall_confidence": 0.6,
@@ -129,11 +130,6 @@ def test_reading_schema_accepts_optional_start_end():
            "holes": [], "overall_confidence": 0.5}
     errs = validate_against_schema(bad, EPISODE_KINDS["reading"]["result_schema"])
     assert any("start" in e for e in errs)
-    # omitted confidence is now a schema error
-    missing = {"reading_text": "X", "fragments": [{"text": "Y"}],
-               "holes": [], "overall_confidence": 0.5}
-    errs2 = validate_against_schema(missing, EPISODE_KINDS["reading"]["result_schema"])
-    assert any("confidence" in e for e in errs2)
 
 
 def test_repair_schema_shape():

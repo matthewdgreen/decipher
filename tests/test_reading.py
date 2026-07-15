@@ -95,3 +95,24 @@ def test_from_episode_result_falls_back_to_reading_text():
     assert len(reading.fragments) == 1
     assert reading.fragments[0].text == "ONE FRAGMENT"
     assert reading.fragments[0].start is None
+
+
+def test_from_episode_result_omitted_confidence_is_below_repair_threshold():
+    # M5.1 softening: a worker fragment WITHOUT confidence compiles to 0.5 —
+    # below MIN_REPAIR_FRAGMENT_CONFIDENCE (0.65) — visible but not
+    # auto-actionable. An explicit confidence is preserved.
+    from investigation.actions import MIN_REPAIR_FRAGMENT_CONFIDENCE
+    r = Reading.from_episode_result(
+        {
+            "reading_text": "CAT ON",
+            "fragments": [
+                {"text": "CAT", "confidence": 0.9},
+                {"text": "ON"},  # silent worker fragment
+            ],
+            "holes": [], "overall_confidence": 0.6,
+        },
+        branch="main", source="episode", created_turn=1, reading_id="rd_x",
+    )
+    assert r.fragments[0].confidence == 0.9
+    assert r.fragments[1].confidence == 0.5
+    assert r.fragments[1].confidence < MIN_REPAIR_FRAGMENT_CONFIDENCE
