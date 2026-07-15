@@ -76,18 +76,21 @@ class Case:
     seed: int | None = None          # testgen seed/replicate id (synth)
 
 
-# F8: Copiale case pinned to copiale_p017 (lowest DTA-default floor). Borg/Copiale
-# ~$2.5/run, synthetics ~$1/run (Part B cost decomposition).
+# F8: Copiale case pinned to copiale_p017 (lowest DTA-default floor).
+# est_cost recalibrated 2026-07-14 to OBSERVED run-1 costs: Borg agentic runs
+# averaged ~$4/run (0109v $2.2-3.3, 0045v up to $8.7 when v2 explores before
+# giving up) — the original $2.5 was low; Copiale set Borg-like pending data;
+# synth kept ~$1 (Part B) with headroom. These feed the checkpoint estimate.
 CASES: tuple[Case, ...] = (
-    Case("borg_single_B_borg_0109v", "borg", 2.5, True, True,
+    Case("borg_single_B_borg_0109v", "borg", 4.0, True, True,
          split_file="borg_tests.jsonl"),
-    Case("borg_single_B_borg_0045v", "borg", 2.5, True, False,
+    Case("borg_single_B_borg_0045v", "borg", 4.0, True, False,
          split_file="borg_tests.jsonl"),
-    Case("copiale_single_B_copiale_p017", "copiale", 2.5, False, False,
+    Case("copiale_single_B_copiale_p017", "copiale", 3.5, False, False,
          split_file="copiale_tests.jsonl"),
-    Case("synth_en_250nb_s4", "synth", 1.0, False, True,
+    Case("synth_en_250nb_s4", "synth", 1.5, False, True,
          preset="hard", seed=4),
-    Case("synth_en_200honb_s6", "synth", 1.0, False, False,
+    Case("synth_en_200honb_s6", "synth", 1.5, False, False,
          preset="hardest", seed=6),
 )
 CASE_BY_NAME: dict[str, Case] = {c.name: c for c in CASES}
@@ -734,7 +737,7 @@ def _run_matrix(args: argparse.Namespace) -> int:
             print(f"  - {problem}", file=sys.stderr)
         return EXIT_CACHE_MISS
 
-    all_cells = enumerate_cells()
+    all_cells = enumerate_cells(replicates=range(1, args.replicates + 1))
     artifact_root = Path(args.artifact_root)
 
     done_keys: set[tuple[str, str, bool, int]] = set()
@@ -746,7 +749,8 @@ def _run_matrix(args: argparse.Namespace) -> int:
         print(f"[resume] {len(done_keys)} cells already complete; skipping them.")
 
     todo = pending_cells(all_cells, done_keys)
-    print(f"[matrix] {len(todo)} cell(s) to run (of {len(all_cells)}).")
+    print(f"[matrix] {len(todo)} cell(s) to run (of {len(all_cells)}), "
+          f"{args.replicates} replicate(s)/cell.")
 
     api = _build_model_api(args.model)
 
@@ -837,6 +841,11 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Print the matrix + per-cell cost estimate and exit.")
     p.add_argument("--report", action="store_true",
                    help="Re-aggregate the summary JSONL into the Part-C table.")
+    p.add_argument("--replicates", type=int, default=len(REPLICATES),
+                   help="Replicates per cell (default 3). Lower for a "
+                        "breadth-first pass that covers every case×loop×"
+                        "preflight before adding replicates; combine with "
+                        "--resume to fill in only the uncovered cells.")
     p.add_argument("--skip-funding-probe", action="store_true",
                    help="Skip the pre-run 1-token funding/reachability probe.")
     p.add_argument("--verbose", action="store_true")
@@ -856,7 +865,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _normalize_args(build_parser().parse_args(argv))
 
     if args.dry_run:
-        print(format_matrix_table(enumerate_cells()))
+        print(format_matrix_table(
+            enumerate_cells(replicates=range(1, args.replicates + 1))))
         return EXIT_OK
     if args.report:
         rows = load_summary_rows(args.summary)

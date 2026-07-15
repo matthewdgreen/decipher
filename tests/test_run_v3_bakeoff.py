@@ -52,11 +52,11 @@ def test_cell_artifact_subdir_layout():
 def test_per_cell_estimate_and_total():
     cells = bake.enumerate_cells()
     total = sum(bake.per_cell_estimate(c) for c in cells)
-    # 9 borg + 3 copiale (preflight-on) borg/copiale-ish accounting: just assert
-    # the pinned total the dry-run prints.
-    assert abs(total - 78.0) < 1e-6
-    assert bake.per_cell_estimate("synth_en_250nb_s4") == 1.0
-    assert bake.per_cell_estimate("borg_single_B_borg_0045v") == 2.5
+    # Estimates recalibrated 2026-07-14 to observed cost (Borg $4, Copiale $3.5,
+    # synth $1.5): full 3-replicate matrix now totals $120.
+    assert abs(total - 120.0) < 1e-6
+    assert bake.per_cell_estimate("synth_en_250nb_s4") == 1.5
+    assert bake.per_cell_estimate("borg_single_B_borg_0045v") == 4.0
 
 
 # ---------------------------------------------------------------------------
@@ -101,8 +101,8 @@ def test_checkpoint_no_stop_before_run_21():
 
 
 def test_checkpoint_stops_when_over_30pct_after_21():
-    # 21 borg runs; estimate 21*2.5=52.5; actual 21*3.5=73.5 = +40% -> stop.
-    rows = _rows_for_checkpoint(21, 3.5)
+    # 21 borg runs; estimate 21*4.0=84; actual 21*5.5=115.5 = +37% -> stop.
+    rows = _rows_for_checkpoint(21, 5.5)
     stop, msg = bake.checkpoint_should_stop(rows)
     assert stop is True
     assert "HALFWAY CHECKPOINT" in msg and "Stopping launches" in msg
@@ -291,12 +291,26 @@ def test_format_report_and_matrix_render_without_error():
     text = bake.format_report(bake.aggregate(rows))
     assert "Decision aggregate" in text and "VERDICT" in text
     matrix = bake.format_matrix_table(bake.enumerate_cells())
-    assert "42 runs" in matrix and "78.00" in matrix
+    assert "42 runs" in matrix and "120.00" in matrix
 
 
 # ---------------------------------------------------------------------------
 # Review fix 1 — a "stopped" run records nothing and exits 130
 # ---------------------------------------------------------------------------
+def test_replicates_flag_narrows_enumeration_for_breadth():
+    # Breadth-first pass: 1 replicate/cell covers every case x loop x preflight
+    # once (5 cases x 2 loops = 10 ON + 2 preflight-off cases x 2 loops = 4 OFF).
+    cells = bake.enumerate_cells(replicates=range(1, 2))
+    assert len(cells) == 14
+    assert {c.replicate for c in cells} == {1}
+    # every case is represented on both loops
+    covered = {(c.case, c.loop) for c in cells}
+    for case in bake.CASES:
+        assert (case.name, "v2") in covered and (case.name, "v3") in covered
+    # full 3-replicate matrix is still 42
+    assert len(bake.enumerate_cells(replicates=range(1, 4))) == 42
+
+
 def test_funding_probe_ok_returns_none():
     from agent.model_provider import ModelResponse, ModelUsage
 
@@ -351,11 +365,12 @@ def test_process_completed_run_checkpoint_stop_after_21(tmp_path):
     cell = bake.Cell("v2", "borg_single_B_borg_0109v", True, 3)
     summary = tmp_path / "summary.jsonl"
     # 20 prior over-budget borg rows; the 21st completes then trips the check.
+    # Borg estimate is $4.0; $5.5/run is +37% -> over the 30% threshold.
     completed = [
-        {"case": "borg_single_B_borg_0109v", "cost_usd": 3.5} for _ in range(20)
+        {"case": "borg_single_B_borg_0109v", "cost_usd": 5.5} for _ in range(20)
     ]
     code = bake.process_completed_run(
-        cell, _fake_result(estimated_cost_usd=3.5), {}, summary, completed
+        cell, _fake_result(estimated_cost_usd=5.5), {}, summary, completed
     )
     assert code == bake.EXIT_CHECKPOINT_STOP
     # The 21st run IS recorded (it completed) — only launching stops.
