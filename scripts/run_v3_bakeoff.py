@@ -824,6 +824,16 @@ def process_completed_run(
             file=sys.stderr,
         )
         return EXIT_INTERRUPTED
+    error_message = str(artifact.get("error_message") or "")
+    if "insufficient_quota" in error_message.lower():
+        print(
+            f"[unfunded] loop={cell.loop} case={cell.case} "
+            f"preflight={'ON' if cell.preflight else 'OFF'} rep={cell.replicate} "
+            "hit provider insufficient_quota. NOT recording a summary row for "
+            "this cell; restore funding and rerun with --resume.",
+            file=sys.stderr,
+        )
+        return EXIT_API_UNFUNDED
     append_summary_row(summary_path, row)   # incremental, after EVERY run
     completed_rows.append(row)
     print(

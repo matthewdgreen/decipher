@@ -426,6 +426,31 @@ def test_process_completed_run_records_row_and_returns_none(tmp_path):
     assert len(completed) == 1
 
 
+def test_process_completed_run_quota_failure_records_nothing_and_exits_6(
+    tmp_path, capsys
+):
+    cell = bake.Cell("v3", "borg_single_B_borg_0109v", True, 1)
+    summary = tmp_path / "summary.jsonl"
+    completed: list[dict] = []
+    artifact = {
+        "run_id": "quota-failure",
+        "error_message": "API error: code=insufficient_quota",
+    }
+
+    code = bake.process_completed_run(
+        cell,
+        _fake_result(status="fallback_declared"),
+        artifact,
+        summary,
+        completed,
+    )
+
+    assert code == bake.EXIT_API_UNFUNDED == 6
+    assert not summary.exists()
+    assert completed == []
+    assert "--resume" in capsys.readouterr().err
+
+
 def test_process_completed_run_checkpoint_stop_after_21(tmp_path):
     cell = bake.Cell("v2", "borg_single_B_borg_0109v", True, 3)
     summary = tmp_path / "summary.jsonl"
