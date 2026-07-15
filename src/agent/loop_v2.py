@@ -35,6 +35,7 @@ from agent.loop_shared import (
     _parse_json_result,
     _score_branch_for_panel,
     _tool_result_summary,
+    _workspace_snapshot_payload,
 )
 from agent.orchestration import AgentMode
 from agent.prompts_v2 import get_system_prompt, initial_context
@@ -572,47 +573,6 @@ def _is_boundary_projection_count_failure(tool_name: str, result: str) -> bool:
         and projection.get("applicable") is False
         and "character counts differ" in str(projection.get("reason", ""))
     )
-
-
-def _workspace_snapshot_payload(
-    workspace: Workspace,
-    language: str,
-    word_set: set[str],
-    freq_rank: dict[str, int],
-    iteration: int,
-    max_iterations: int,
-    total_tokens: int = 0,
-    estimated_cost_usd: float = 0.0,
-) -> dict[str, Any]:
-    branch, scores = _best_branch_for_auto_declare(
-        workspace, language, word_set, freq_rank
-    )
-    b = workspace.get_branch(branch)
-    decryption = _decoded_text_for_panel(workspace, branch)
-    branches = []
-    for name in workspace.branch_names():
-        candidate = workspace.get_branch(name)
-        dr, quad = _score_branch_for_panel(
-            workspace, name, language, word_set, freq_rank
-        )
-        branches.append({
-            "name": name,
-            "mapped_count": len(candidate.key),
-            "dict_rate": round(dr, 4) if dr is not None else None,
-            "quad": round(quad, 4) if quad is not None else None,
-        })
-    return {
-        "iteration": iteration,
-        "max_iterations": max_iterations,
-        "branch": branch,
-        "mapped_count": len(b.key),
-        "scores": scores,
-        "total_tokens": total_tokens,
-        "estimated_cost_usd": estimated_cost_usd,
-        "decryption": decryption,
-        "decryption_preview": decryption[:1000],
-        "branches": branches,
-    }
 
 
 def build_workspace_panel(

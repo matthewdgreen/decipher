@@ -50,6 +50,24 @@ class ScoreResult:
     status: str
 
 
+@dataclass
+class ReportRow:
+    """Lightweight per-test row for the end-of-benchmark report table (F2).
+
+    Built directly from a runner result (``RunResultV2`` / ``AutomatedRunResult``)
+    so ``format_report`` does not need agent-only fields (``total_words`` /
+    ``agent_score``) that those result types lack. ``word_accuracy`` may be
+    ``None`` for no-word-boundary ciphers (rendered as ``N/A``).
+    """
+
+    test_id: str
+    status: str
+    char_accuracy: float
+    word_accuracy: float | None = None
+    duration: float = 0.0
+    cost: float = 0.0
+
+
 @dataclass(frozen=True)
 class DiagnosticPlaintextUnit:
     """Typed post-hoc scoring unit for logogram/null diagnostics.
@@ -754,9 +772,15 @@ def format_alignment(decoded: str, ground_truth: str, max_words: int = 60) -> st
     return "\n".join(lines)
 
 
-def format_report(scores: list[ScoreResult]) -> str:
-    """Format a summary report of benchmark results."""
-    if not scores:
+def format_report(rows: list[ReportRow]) -> str:
+    """Format the end-of-benchmark per-test report table (F2).
+
+    Takes lightweight :class:`ReportRow` items (built from runner results).
+    Columns: Test ID, Status, Char%, Word%, Time, Cost. There is no Agent%
+    column (RunResultV2 has no agent self-score). ``solved`` counts both agentic
+    ``solved`` and automated ``completed`` statuses.
+    """
+    if not rows:
         return "No results to report."
 
     lines = []
@@ -765,30 +789,35 @@ def format_report(scores: list[ScoreResult]) -> str:
     lines.append("=" * 80)
     lines.append("Char% and Word% are comparisons to known ground-truth plaintext.")
     lines.append("")
-    lines.append(f"{'Test ID':<40} {'Status':<8} {'Char%':>6} {'Word%':>6} {'Agent%':>7}")
-    lines.append("-" * 80)
+    lines.append(
+        f"{'Test ID':<40} {'Status':<17} {'Char%':>6} {'Word%':>6} "
+        f"{'Time':>7} {'Cost':>8}"
+    )
+    lines.append("-" * 88)
 
-    for s in scores:
-        word_str = "  N/A" if s.total_words <= 1 else f"{s.word_accuracy:>5.1%}"
+    for r in rows:
+        word_str = "   N/A" if r.word_accuracy is None else f"{r.word_accuracy:>5.1%}"
         lines.append(
-            f"{s.test_id:<40} {s.status:<8} "
-            f"{s.char_accuracy:>5.1%} {word_str} "
-            f"{s.agent_score:>6.1%}"
+            f"{r.test_id:<40} {r.status:<17} "
+            f"{r.char_accuracy:>5.1%} {word_str} "
+            f"{r.duration:>6.1f}s ${r.cost:>7.2f}"
         )
 
-    lines.append("-" * 80)
+    lines.append("-" * 88)
 
     # Aggregates
-    n = len(scores)
-    avg_char = sum(s.char_accuracy for s in scores) / n
-    avg_word = sum(s.word_accuracy for s in scores) / n
-    avg_agent = sum(s.agent_score for s in scores) / n
-    solved = sum(1 for s in scores if s.status == "solved")
+    n = len(rows)
+    avg_char = sum(r.char_accuracy for r in rows) / n
+    words = [r.word_accuracy for r in rows if r.word_accuracy is not None]
+    avg_word = (sum(words) / len(words)) if words else 0.0
+    total_time = sum(r.duration for r in rows)
+    total_cost = sum(r.cost for r in rows)
+    solved = sum(1 for r in rows if r.status in {"solved", "completed"})
 
     lines.append(
-        f"{'AVERAGE':<40} {solved}/{n:<5} "
+        f"{'AVERAGE':<40} {f'{solved}/{n}':<17} "
         f"{avg_char:>5.1%} {avg_word:>5.1%} "
-        f"{avg_agent:>6.1%}"
+        f"{total_time:>6.1f}s ${total_cost:>7.2f}"
     )
     lines.append("")
 

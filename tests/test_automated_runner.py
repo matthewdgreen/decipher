@@ -42,7 +42,7 @@ def _test_data() -> BenchmarkTestData:
 
 
 def test_automated_benchmark_runner_writes_no_llm_artifact(tmp_path, monkeypatch):
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None, on_step=None):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",
@@ -92,7 +92,7 @@ def test_cli_crack_defaults_to_automated_solver_and_bypasses_api_key(tmp_path, m
     def forbidden_api_key():
         raise AssertionError("get_api_key must not be called")
 
-    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None):
+    def fake_run(cipher_text, language="en", cipher_id="cli", ground_truth=None, cipher_system="", homophonic_budget="full", homophonic_refinement="none", homophonic_solver="zenith_native", model_variant=None, on_step=None):
         result = AutomatedRunResult(
             test_id=cipher_id,
             status="solved",

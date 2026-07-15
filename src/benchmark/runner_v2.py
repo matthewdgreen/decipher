@@ -63,10 +63,16 @@ class BenchmarkRunnerV2:
         homophonic_solver: str = "zenith_native",
         agent_loop: str = "v2",
         model_variant: str | None = None,
+        renderer_verbose: bool = False,
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
         self.verbose = verbose
+        # ``renderer_verbose`` is the RAW ``-v`` flag (not the display-off-only
+        # ``verbose``); it only enables extra detail INSIDE an active renderer
+        # (F3/F4). Kept separate so passing it never re-fires the runner's own
+        # gated verbose prints inside a live renderer.
+        self.renderer_verbose = renderer_verbose
         self.default_language = language
         self.artifact_dir = Path(artifact_dir)
         self.automated_preflight = automated_preflight
@@ -95,13 +101,16 @@ class BenchmarkRunnerV2:
         test_id = test_data.test.test_id
         lang = language or self._resolve_language(test_data)
         start = time.time()
-        renderer = make_agent_renderer(self.display_mode)
+        renderer = make_agent_renderer(self.display_mode, verbose=self.renderer_verbose)
         if renderer is not None:
             renderer.start_test(
                 test_id,
                 test_data.test.description,
                 model=self.api.model,
                 max_iterations=self.max_iterations,
+                language=lang,
+                source=test_id.split("_")[0] if "_" in test_id else None,
+                agent_loop=self.agent_loop,
             )
 
         try:

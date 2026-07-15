@@ -26,6 +26,7 @@ from agent.loop_shared import (
     _hypothesis_cards_for_artifact,
     _install_automated_preflight_branch,
     _tool_result_summary,
+    _workspace_snapshot_payload,
 )
 from agent.model_provider import (
     ModelProviderError,
@@ -248,6 +249,13 @@ def run_v3(
         if verbose:
             print(f"[{event}] {payload}")
 
+    def _episode_event_forwarder(turn: int) -> Any:
+        """F6: forward an episode's internal progress events into the lead
+        event stream (nested context preserved via ``outer_iteration``)."""
+        def _forward(event: str, payload: dict) -> None:
+            emit(event, payload, outer_iteration=turn)
+        return _forward
+
     prior_budget = list(state.budget_ledger)
     # Episode spend accumulates here across turns so it survives the per-turn
     # ledger rebuild (run_episode also extends state.budget_ledger for direct
@@ -390,14 +398,19 @@ def run_v3(
             spec, state, provider=ep_provider, language=language,
             word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
             launching_turn=turn,
+            on_event=_episode_event_forwarder(turn),
         )
         episode_tool_calls.extend(result.tool_calls)
         episode_budget.extend(
             BudgetEntry.from_dict(b) for b in result.budget_entries
         )
+        spend_usd = round(
+            sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
+        )
         emit("episode_complete", {
             "episode_id": result.episode_id, "kind": result.kind,
             "status": result.status, "calls": result.tool_call_count,
+            "spend_usd": spend_usd,
         }, outer_iteration=turn)
         payload = {
             "episode_id": result.episode_id,
@@ -407,9 +420,7 @@ def run_v3(
             "result": result.result,
             "summary": result.summary,
             "branch": branch,
-            "spend_usd": round(
-                sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
-            ),
+            "spend_usd": spend_usd,
         }
         # On success the DISPATCHER (not the lead model) writes the
         # AttestationRecord with the pre-computed hash (A1 — workers never write
@@ -463,14 +474,19 @@ def run_v3(
             spec, state, provider=ep_provider, language=language,
             word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
             launching_turn=turn,
+            on_event=_episode_event_forwarder(turn),
         )
         episode_tool_calls.extend(result.tool_calls)
         episode_budget.extend(
             BudgetEntry.from_dict(b) for b in result.budget_entries
         )
+        spend_usd = round(
+            sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
+        )
         emit("episode_complete", {
             "episode_id": result.episode_id, "kind": result.kind,
             "status": result.status, "calls": result.tool_call_count,
+            "spend_usd": spend_usd,
         }, outer_iteration=turn)
         payload = {
             "episode_id": result.episode_id,
@@ -480,7 +496,7 @@ def run_v3(
             "result": result.result,
             "summary": result.summary,
             "snapshots": [s.get("name") for s in result.branch_snapshots],
-            "spend_usd": round(sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6),
+            "spend_usd": spend_usd,
         }
         # Part 1: the lead compiles a reading-kind result into a stored Reading
         # (A1 — workers never write state.readings) and returns its id.
@@ -782,6 +798,37 @@ def run_v3(
             "turn_summary", turn=turn, summary=", ".join(summary_items)
         )
 
+        # F5: end-of-turn observability parity with v2. A fresh sync_budget()
+        # first so this turn's lead + episode spend is counted, THEN a workspace
+        # snapshot of the best branch and a category budget breakdown. Emitting
+        # here (post-dispatch) — not the pre-dispatch :675 site — shows THIS
+        # turn's workspace and includes any episode spend.
+        sync_budget()
+        _turn_tokens = artifact.total_input_tokens + artifact.total_output_tokens
+        emit(
+            "workspace_snapshot",
+            _workspace_snapshot_payload(
+                workspace,
+                language,
+                word_set,
+                executor._freq_rank,
+                turn,
+                max_iterations,
+                total_tokens=_turn_tokens,
+                estimated_cost_usd=artifact.estimated_cost_usd,
+            ),
+            outer_iteration=turn,
+        )
+        emit(
+            "budget_update",
+            {
+                "budget_by_category": state.budget_by_category(),
+                "total_cost_usd": state.total_cost(),
+                "total_tokens": _turn_tokens,
+            },
+            outer_iteration=turn,
+        )
+
         if interrupted:
             break
 
@@ -809,12 +856,16 @@ def run_v3(
                     )
                     if match is not None:
                         sol.attestation = dict(match)
+                _declared_attestation = (
+                    getattr(sol, "attestation", None) if sol is not None else None
+                )
                 emit("declared_solution", {
                     "branch": executor.solution.branch if executor.solution else None,
                     "confidence": (
                         executor.solution.self_confidence
                         if executor.solution else None
                     ),
+                    "attestation": _declared_attestation,
                 })
             break
     else:

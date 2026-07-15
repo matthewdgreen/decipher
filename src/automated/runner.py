@@ -93,6 +93,39 @@ class AutomatedRunResult:
     artifact: dict[str, Any] = field(default_factory=dict)
 
 
+# F8: the automated pipeline has no renderer (display is forced "off"). The CLI
+# threads an optional ``on_step(name, status, elapsed)`` callback that PRINTS
+# DIRECTLY (safe — no live display in automated mode). Rather than instrument the
+# ~14 ``steps.append`` sites individually, wrap the steps list so every append
+# fires the callback with the step's "name", optional "status", and the elapsed
+# time since the previous step. No behavior change when ``on_step`` is None.
+OnStep = Callable[[str, "str | None", float], None]
+
+
+class _StepList(list):
+    """A ``list`` that fires ``on_step`` each time a pipeline step is appended."""
+
+    def __init__(self, on_step: "OnStep | None" = None, clock: "Callable[[], float] | None" = None) -> None:
+        super().__init__()
+        self._on_step = on_step
+        self._clock = clock or time.monotonic
+        self._last = self._clock()
+
+    def append(self, step: Any) -> None:  # noqa: D401
+        super().append(step)
+        if self._on_step is None:
+            return
+        now = self._clock()
+        elapsed = now - self._last
+        self._last = now
+        try:
+            name = step.get("name", "step") if isinstance(step, dict) else "step"
+            status = step.get("status") if isinstance(step, dict) else None
+            self._on_step(str(name), status, elapsed)
+        except Exception:  # noqa: BLE001 - progress printing must never crash a run
+            pass
+
+
 class AutomatedBenchmarkRunner:
     """Runs the automated-only pipeline on benchmark ``TestData``."""
 
@@ -130,7 +163,12 @@ class AutomatedBenchmarkRunner:
     def _resolve_language(self, test_data: TestData) -> str:
         return resolve_test_language(test_data, self.default_language)
 
-    def run_test(self, test_data: TestData, language: str | None = None) -> AutomatedRunResult:
+    def run_test(
+        self,
+        test_data: TestData,
+        language: str | None = None,
+        on_step: "OnStep | None" = None,
+    ) -> AutomatedRunResult:
         lang = language or self._resolve_language(test_data)
         test_id = test_data.test.test_id
         start = time.time()
@@ -173,6 +211,8 @@ class AutomatedBenchmarkRunner:
             run_kwargs["transform_promote_top_n"] = self.transform_promote_top_n
         if test_data.transform_pipeline:
             run_kwargs["transform_pipeline"] = test_data.transform_pipeline
+        if on_step is not None:
+            run_kwargs["on_step"] = on_step
         result = run_automated(**run_kwargs)
         artifact = dict(result.artifact)
         artifact["description"] = test_data.test.description
@@ -325,6 +365,7 @@ def run_automated(
     transform_promote_candidate_ids: list[str] | None = None,
     transform_promote_top_n: int | None = None,
     model_variant: str | None = None,
+    on_step: "OnStep | None" = None,
 ) -> AutomatedRunResult:
     """Run the automated pipeline, selecting an optional language-model variant.
 
@@ -356,6 +397,7 @@ def run_automated(
             transform_promote_candidate_ids=transform_promote_candidate_ids,
             transform_promote_top_n=transform_promote_top_n,
             model_variant=model_variant,
+            on_step=on_step,
         )
     finally:
         set_active_model_variant(prev_variant)
@@ -379,11 +421,14 @@ def _run_automated_impl(
     transform_promote_candidate_ids: list[str] | None = None,
     transform_promote_top_n: int | None = None,
     model_variant: str | None = None,
+    on_step: "OnStep | None" = None,
 ) -> AutomatedRunResult:
     """Run the best available local techniques without any LLM call."""
     started = time.time()
     run_id = uuid.uuid4().hex[:12]
-    steps: list[dict[str, Any]] = []
+    # F8: a step-append hook drives optional CLI progress narration. Plain list
+    # when no callback (zero overhead / no behavior change).
+    steps: list[dict[str, Any]] = _StepList(on_step)
     key: dict[int, int] = {}
     decryption = ""
     status = "error"

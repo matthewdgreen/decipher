@@ -48,6 +48,34 @@ from investigation.state import (
 )
 from workspace import Workspace
 
+
+def _compact_episode_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Shrink a tool's args for the forwarded ``episode_tool_call`` event (F-3).
+
+    The full args already live in ``artifact.tool_calls`` (the episode's
+    ToolCall log, merged at finalize), so storing them again in
+    ``artifact.loop_events`` is ~2x duplication that balloons for arg-heavy
+    tools (``act_bulk_set`` mappings, ``run_python`` code). Spec decision 3
+    pinned "name + compact arg summary" for this stream. This keeps a small,
+    dict-shaped summary (the narrate renderer compacts further at render, so the
+    on-screen output is unchanged): long strings truncated, big containers
+    replaced by a size marker, at most a handful of keys.
+    """
+    if not isinstance(args, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in list(args.items())[:6]:
+        if isinstance(value, str) and len(value) > 40:
+            out[key] = value[:39] + "…"
+        elif isinstance(value, (dict, list, tuple)) and len(value) > 8:
+            out[key] = f"<{type(value).__name__}[{len(value)}]>"
+        else:
+            out[key] = value
+    if len(args) > 6:
+        out["…"] = f"+{len(args) - 6} more"
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Excluded tools (A9): long-running tools go to the M4 experiment queue, never
 # to an episode (wall clock is checked only *between* tool calls).
@@ -758,17 +786,31 @@ def run_episode(
     word_list: list[str] | None = None,
     pattern_dict: dict[str, list[str]] | None = None,
     launching_turn: int = 0,
-    verbose: bool = False,
+    on_event: Any = None,
 ) -> EpisodeResult:
     """Run one fresh-context episode worker. Returns a structured EpisodeResult.
 
     Never raises for ordinary failures (A9): schema/budget/handler issues become
     ``episode_failed`` results. ``KeyboardInterrupt`` is re-raised after the
     ledger entry + budget are merged.
+
+    ``on_event`` (default None) is an optional callback the v3 dispatcher passes
+    so episode-internal progress is forwarded into the lead event stream: it
+    receives ``episode_turn_start``, ``episode_tool_call`` and ``episode_submit``
+    events, each carrying ``{episode_id, kind, turn, ...}`` (``turn`` is the
+    episode-internal turn). Purely observational — never raises into the run.
     """
     episode_id = uuid.uuid4().hex[:12]
     kind = spec.kind
     start = time.time()
+
+    def _emit_ep(event: str, payload: dict[str, Any]) -> None:
+        if on_event is None:
+            return
+        try:
+            on_event(event, {"episode_id": episode_id, "kind": kind, **payload})
+        except Exception:  # noqa: BLE001 - observability must never crash a run
+            pass
 
     # F12: language + word resources default from state.
     if language is None:
@@ -941,6 +983,8 @@ def run_episode(
                 if time.time() - start > budget.wall_clock_seconds:
                     return _final_result_send()
 
+                ep_turn = _turn + 1
+                _emit_ep("episode_turn_start", {"turn": ep_turn})
                 response = session.send(messages, tools=tool_defs,
                                         max_tokens=budget.max_output_tokens)
                 assistant_blocks, tool_uses, _text = _collect_assistant_blocks(response)
@@ -962,6 +1006,10 @@ def run_episode(
                         proposed = args.get("result")
                         summary = str(args.get("summary") or "")
                         errors = validate_against_schema(proposed, spec.result_schema)
+                        _emit_ep("episode_submit", {
+                            "turn": ep_turn, "accepted": not errors,
+                            "status": "ok" if not errors else "schema_error",
+                        })
                         if not errors:
                             return _finish("ok", result=proposed, summary=summary)
                         if not schema_retry_used:
@@ -980,6 +1028,10 @@ def run_episode(
                             "episode_failed", failure_reason="schema_mismatch",
                             raw_text=json.dumps(proposed, ensure_ascii=False, default=str),
                         )
+                    _emit_ep("episode_tool_call", {
+                        "turn": ep_turn, "tool": name,
+                        "arguments": _compact_episode_args(args),
+                    })
                     if name in COMPOSITE_TOOL_NAMES and name in toolset:
                         # Part 2/A4: dispatch a composite ONLY when it is in this
                         # episode's toolset; the ToolCall log + hint filtering

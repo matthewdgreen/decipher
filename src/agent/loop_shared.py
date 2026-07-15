@@ -195,6 +195,53 @@ def _best_branch_for_auto_declare(
     return best_name, best_scores
 
 
+def _workspace_snapshot_payload(
+    workspace: Workspace,
+    language: str,
+    word_set: set[str],
+    freq_rank: dict[str, int],
+    iteration: int,
+    max_iterations: int,
+    total_tokens: int = 0,
+    estimated_cost_usd: float = 0.0,
+) -> dict[str, Any]:
+    """Build a ``workspace_snapshot`` event payload (shared by v2 + v3).
+
+    Picks the best available branch (ground-truth free), renders its decode, and
+    attaches the running token/cost totals so any renderer can show a cost ticker.
+    Hoisted here from ``agent.loop_v2`` (F5) so both loops emit identical events.
+    """
+    branch, scores = _best_branch_for_auto_declare(
+        workspace, language, word_set, freq_rank
+    )
+    b = workspace.get_branch(branch)
+    decryption = _decoded_text_for_panel(workspace, branch)
+    branches = []
+    for name in workspace.branch_names():
+        candidate = workspace.get_branch(name)
+        dr, quad = _score_branch_for_panel(
+            workspace, name, language, word_set, freq_rank
+        )
+        branches.append({
+            "name": name,
+            "mapped_count": len(candidate.key),
+            "dict_rate": round(dr, 4) if dr is not None else None,
+            "quad": round(quad, 4) if quad is not None else None,
+        })
+    return {
+        "iteration": iteration,
+        "max_iterations": max_iterations,
+        "branch": branch,
+        "mapped_count": len(b.key),
+        "scores": scores,
+        "total_tokens": total_tokens,
+        "estimated_cost_usd": estimated_cost_usd,
+        "decryption": decryption,
+        "decryption_preview": decryption[:1000],
+        "branches": branches,
+    }
+
+
 # ------------------------------------------------------------------
 # Artifact snapshot helpers
 # ------------------------------------------------------------------

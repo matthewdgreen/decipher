@@ -12,7 +12,17 @@ from typing import Any, Protocol
 
 
 class AgentRunRenderer(Protocol):
-    def start_test(self, test_id: str, description: str, *, model: str, max_iterations: int) -> None:
+    def start_test(
+        self,
+        test_id: str,
+        description: str,
+        *,
+        model: str,
+        max_iterations: int,
+        language: str | None = None,
+        source: str | None = None,
+        agent_loop: str | None = None,
+    ) -> None:
         ...
 
     def event(self, event: str, payload: dict[str, Any]) -> None:
@@ -26,6 +36,7 @@ def make_agent_renderer(
     mode: str,
     *,
     stream: Any = None,
+    verbose: bool = False,
 ) -> AgentRunRenderer | None:
     stream = stream or sys.stdout
     if mode == "off":
@@ -34,6 +45,12 @@ def make_agent_renderer(
         return JsonlAgentRenderer(stream)
     if mode == "pretty":
         return PrettyAgentRenderer(stream)
+    if mode == "narrate":
+        # Imported lazily to avoid a module import cycle (narrate reuses helpers
+        # defined in this module).
+        from agent.narrate import NarrateAgentRenderer
+
+        return NarrateAgentRenderer(stream, verbose=verbose)
     return RawAgentRenderer(stream)
 
 
@@ -110,7 +127,17 @@ class RawAgentRenderer:
     def __init__(self, stream: Any = None) -> None:
         self.stream = stream or sys.stdout
 
-    def start_test(self, test_id: str, description: str, *, model: str, max_iterations: int) -> None:
+    def start_test(
+        self,
+        test_id: str,
+        description: str,
+        *,
+        model: str,
+        max_iterations: int,
+        language: str | None = None,
+        source: str | None = None,
+        agent_loop: str | None = None,
+    ) -> None:
         print(f"[agentic] {test_id} — {description}", file=self.stream)
 
     def event(self, event: str, payload: dict[str, Any]) -> None:
@@ -150,13 +177,26 @@ class JsonlAgentRenderer:
     def __init__(self, stream: Any = None) -> None:
         self.stream = stream or sys.stdout
 
-    def start_test(self, test_id: str, description: str, *, model: str, max_iterations: int) -> None:
+    def start_test(
+        self,
+        test_id: str,
+        description: str,
+        *,
+        model: str,
+        max_iterations: int,
+        language: str | None = None,
+        source: str | None = None,
+        agent_loop: str | None = None,
+    ) -> None:
         self._write({
             "event": "test_start",
             "test_id": test_id,
             "description": description,
             "model": model,
             "max_iterations": max_iterations,
+            "language": language,
+            "source": source,
+            "agent_loop": agent_loop,
         })
 
     def event(self, event: str, payload: dict[str, Any]) -> None:
@@ -216,7 +256,17 @@ class PrettyAgentRenderer:
         self._heartbeat_stop: threading.Event | None = None
         self._heartbeat_thread: threading.Thread | None = None
 
-    def start_test(self, test_id: str, description: str, *, model: str, max_iterations: int) -> None:
+    def start_test(
+        self,
+        test_id: str,
+        description: str,
+        *,
+        model: str,
+        max_iterations: int,
+        language: str | None = None,
+        source: str | None = None,
+        agent_loop: str | None = None,
+    ) -> None:
         self.state = _PrettyState(
             test_id=test_id,
             description=description,

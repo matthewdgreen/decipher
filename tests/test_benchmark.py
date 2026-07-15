@@ -12,6 +12,7 @@ from benchmark.context import build_benchmark_context, safe_read_benchmark_file
 from benchmark.loader import BenchmarkLoader, BenchmarkTest, parse_canonical_transcription
 from benchmark.scorer import (
     DiagnosticPlaintextUnit,
+    ReportRow,
     ScoreResult,
     _collapse_spaced_letters,
     align_char_sequences,
@@ -237,16 +238,35 @@ class TestDiagnosticScoring:
 
 class TestFormatReport:
     def test_basic(self):
-        scores = [
-            ScoreResult("test_1", 0.9, 0.8, 100, 90, 10, 8, 0.7, "solved"),
-            ScoreResult("test_2", 0.5, 0.3, 100, 50, 10, 3, 0.4, "stuck"),
+        rows = [
+            ReportRow("test_1", "solved", 0.9, 0.8, duration=12.4, cost=2.31),
+            ReportRow("test_2", "stuck", 0.5, 0.3, duration=8.1, cost=1.02),
         ]
-        report = format_report(scores)
+        report = format_report(rows)
         assert "BENCHMARK RESULTS" in report
         assert "Char% and Word% are comparisons to known ground-truth plaintext." in report
         assert "test_1" in report
         assert "test_2" in report
         assert "AVERAGE" in report
+        # F2: the Agent% column is dropped; Time + Cost columns are present.
+        assert "Agent%" not in report
+        assert "Time" in report
+        assert "Cost" in report
+
+    def test_solved_counts_completed_and_solved(self):
+        rows = [
+            ReportRow("t1", "solved", 0.9, 0.8),
+            ReportRow("t2", "completed", 0.7, 0.6),
+            ReportRow("t3", "stuck", 0.2, 0.1),
+        ]
+        report = format_report(rows)
+        # solved = {solved, completed} = 2 of 3.
+        assert "2/3" in report
+
+    def test_word_accuracy_none_renders_na(self):
+        rows = [ReportRow("t1", "completed", 0.9, None)]
+        report = format_report(rows)
+        assert "N/A" in report
 
 
 # --- Parser tests ---

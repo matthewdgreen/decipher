@@ -16,12 +16,14 @@ def _use_agentic_mode(args: argparse.Namespace) -> bool:
 
 
 def _resolve_agent_display(args: argparse.Namespace) -> str:
-    requested = getattr(args, "display", "pretty")
+    # F7: narrate is the default agentic display (a scrolling, pipe-safe,
+    # Claude-Code-style transcript). ``auto`` also resolves to narrate. Unlike
+    # the old behavior, ``-v`` no longer forces ``off`` — it means MORE detail
+    # inside whichever renderer is active (decision 1).
+    requested = getattr(args, "display", "narrate")
     if requested != "auto":
         return requested
-    if getattr(args, "verbose", False):
-        return "off"
-    return "pretty" if sys.stdout.isatty() else "raw"
+    return "narrate"
 
 
 _PROVIDER_ENV_KEYS = {
@@ -632,7 +634,6 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
     if getattr(args, "analyze", False) and not agentic:
         print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
     display_mode = _resolve_agent_display(args) if agentic else "off"
-    quiet_structured_display = agentic and display_mode in {"pretty", "jsonl"}
 
     loader = BenchmarkLoader(args.benchmark_path)
     split_file = args.split or (
@@ -695,6 +696,7 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
             claude_api=api,
             max_iterations=args.max_iterations,
             verbose=args.verbose and display_mode == "off",
+            renderer_verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir or "artifacts",
             automated_preflight=not args.no_automated_preflight,
@@ -710,53 +712,91 @@ def cmd_benchmark(args: argparse.Namespace) -> None:
         )
         mode_label = f"agentic ({provider}/{model}, loop={getattr(args, 'agent_loop', 'v2')})"
 
-    if not quiet_structured_display:
-        print(f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}")
-        print(f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n")
+    # F1: keep stdout machine-clean in jsonl mode by routing the human-readable
+    # scrollback (progress lines, per-test result block, report table, artifact
+    # paths) to stderr; every other mode prints to stdout. The pretty-mode
+    # interleaving worry does not apply here — each renderer's lifecycle is fully
+    # contained inside runner.run_test (F1), so no Live is active at these prints.
+    human_out = sys.stderr if (agentic and display_mode == "jsonl") else sys.stdout
+
+    # F8: the automated (no-LLM) path has no renderer; a direct-printing on_step
+    # callback narrates each pipeline step boundary. Agentic runs render steps
+    # through the renderer instead, so on_step stays None there.
+    on_step = None
+    if not agentic:
+        def on_step(name: str, status: str | None, elapsed: float) -> None:
+            tail = f" {status}" if status else " done"
+            print(f"  · step: {name} …{tail} ({elapsed:.1f}s)", file=human_out, flush=True)
+
+    print(
+        f"Running {len(tests)} test(s) — mode={mode_label}, max_iter={args.max_iterations}",
+        file=human_out,
+    )
+    print(
+        f"Artifacts → {args.artifact_dir or 'artifacts'}/<test_id>/<run_id>.json\n",
+        file=human_out,
+    )
 
     results = []
     for i, test in enumerate(tests):
-        if not quiet_structured_display:
-            print(f"[{i+1}/{len(tests)}] {test.test_id} — {test.description}")
+        print(f"[{i+1}/{len(tests)}] {test.test_id} — {test.description}", file=human_out)
         test_data = loader.load_test_data(test)
-        result = runner.run_test(test_data)
+        if agentic:
+            result = runner.run_test(test_data)
+        else:
+            result = runner.run_test(test_data, on_step=on_step)
         conf = f"{result.self_confidence:.2f}" if result.self_confidence is not None else "n/a"
-        if not quiet_structured_display:
-            print(
-                f"  Status: {result.status}, "
-                f"Comparison to known ground-truth plaintext: "
-                f"Char: {result.char_accuracy:.1%}, "
-                f"Word: {result.word_accuracy:.1%}, "
-                f"Conf: {conf}, "
-                f"Iter: {result.iterations_used}, "
-                f"Time: {result.elapsed_seconds:.1f}s"
-            )
-            print(f"  Artifact: {result.artifact_path}")
-            if result.error_message:
-                print(f"  Error: {result.error_message}")
-            if args.verbose and result.final_decryption:
-                print(f"  Decryption: {result.final_decryption[:200]}")
-            print()
+        # Decision 5 / F1: the per-test result block is ALWAYS printed to
+        # scrollback (in every display mode; jsonl routes it to stderr above) so
+        # a human debugging the run always has status + accuracies + the artifact
+        # path, even under a transient/garbled live panel or machine output.
+        print(
+            f"  Status: {result.status}, "
+            f"Comparison to known ground-truth plaintext: "
+            f"Char: {result.char_accuracy:.1%}, "
+            f"Word: {result.word_accuracy:.1%}, "
+            f"Conf: {conf}, "
+            f"Iter: {result.iterations_used}, "
+            f"Time: {result.elapsed_seconds:.1f}s",
+            file=human_out,
+        )
+        print(f"  Artifact: {result.artifact_path}", file=human_out)
+        if result.error_message:
+            print(f"  Error: {result.error_message}", file=human_out)
+        if args.verbose and result.final_decryption:
+            print(f"  Decryption: {result.final_decryption[:200]}", file=human_out)
+        print(file=human_out)
         if agentic:
             _maybe_write_artifact_analysis(result.artifact_path, args)
         results.append(result)
 
-    if results and not quiet_structured_display:
-        n = len(results)
-        avg_char = sum(r.char_accuracy for r in results) / n
-        avg_word = sum(r.word_accuracy for r in results) / n
-        success_status = "completed" if not agentic else "solved"
-        success_label = "completed runs" if not agentic else "declared solutions"
-        successful = sum(1 for r in results if r.status == success_status)
+    if results:
+        from benchmark.scorer import ReportRow, format_report
+
+        rows = [
+            ReportRow(
+                test_id=r.test_id,
+                status=r.status,
+                char_accuracy=r.char_accuracy,
+                word_accuracy=r.word_accuracy,
+                duration=r.elapsed_seconds,
+                cost=getattr(r, "estimated_cost_usd", 0.0) or 0.0,
+            )
+            for r in results
+        ]
+        # Decision 5: the per-test report table replaces the inline AVERAGE line.
+        print(format_report(rows), file=human_out)
+
         fallback_count = sum(1 for r in results if r.status == "fallback_declared")
-        fallback_note = (
-            f" (fallback declarations: {fallback_count})" if fallback_count else ""
-        )
-        print(
-            f"AVERAGE: {successful}/{n} {success_label}{fallback_note}, "
-            f"comparison to known ground-truth plaintext: "
-            f"char={avg_char:.1%}, word={avg_word:.1%}"
-        )
+        if fallback_count:
+            print(f"(fallback declarations: {fallback_count})", file=human_out)
+
+        # Decision 4: a consolidated Artifacts list (one line per run) + the
+        # run-dir root, always printed so the CLI is self-sufficient for humans.
+        print("Artifacts:", file=human_out)
+        for r in results:
+            print(f"  {r.test_id}: {r.artifact_path}", file=human_out)
+        print(f"Run dir root: {args.artifact_dir or 'artifacts'}", file=human_out)
 
 
 def cmd_crack(args: argparse.Namespace) -> None:
@@ -782,7 +822,16 @@ def cmd_crack(args: argparse.Namespace) -> None:
         clean = " ".join(text.split())
         ct = CipherText(raw=clean, alphabet=alphabet, source="cli", separator=" ")
 
-    print(f"Alphabet: {ct.alphabet.size} symbols, {len(ct.tokens)} tokens, {len(ct.words)} words")
+    # F-2: resolve the agentic display once (the automated path has no renderer,
+    # so "off"). Route the pre-run header line to stderr in jsonl mode so stdout
+    # stays a pure machine-readable stream.
+    display_mode = _resolve_agent_display(args) if _use_agentic_mode(args) else "off"
+    crack_out = sys.stderr if display_mode == "jsonl" else sys.stdout
+    print(
+        f"Alphabet: {ct.alphabet.size} symbols, {len(ct.tokens)} tokens, "
+        f"{len(ct.words)} words",
+        file=crack_out,
+    )
     if getattr(args, "analyze", False) and not _use_agentic_mode(args):
         print("Note: --analyze is only run for --agentic artifacts; ignoring.", file=sys.stderr)
 
@@ -797,6 +846,13 @@ def cmd_crack(args: argparse.Namespace) -> None:
         print("Running automated solver (no LLM API calls)...")
         homophonic_budget = getattr(args, "homophonic_budget", "full")
         homophonic_refinement = getattr(args, "homophonic_refinement", "none")
+
+        # F8: narrate each pipeline step boundary directly (no renderer on the
+        # automated path).
+        def on_step(name: str, status: str | None, elapsed: float) -> None:
+            tail = f" {status}" if status else " done"
+            print(f"  · step: {name} …{tail} ({elapsed:.1f}s)", flush=True)
+
         # No benchmark source in `crack`; "auto" degrades to default (None).
         crack_variant = getattr(args, "model_variant", None)
         if crack_variant == "auto":
@@ -809,6 +865,7 @@ def cmd_crack(args: argparse.Namespace) -> None:
             "homophonic_refinement": homophonic_refinement,
             "homophonic_solver": "legacy" if getattr(args, "legacy_homophonic", False) else "zenith_native",
             "model_variant": crack_variant,
+            "on_step": on_step,
         }
         if getattr(args, "transform_search", "off") != "off":
             run_kwargs["transform_search"] = args.transform_search
@@ -839,14 +896,16 @@ def cmd_crack(args: argparse.Namespace) -> None:
     _preflight_model_check(args)
     provider, model = _resolve_provider_and_model(args)
     api = _make_agent_provider(args)
-    display_mode = _resolve_agent_display(args)
-    renderer = make_agent_renderer(display_mode)
+    # display_mode + crack_out were resolved once at the top of cmd_crack (F-2).
+    renderer = make_agent_renderer(display_mode, verbose=args.verbose)
     if renderer is not None:
         renderer.start_test(
             cipher_id,
             "Interactive crack",
             model=model,
             max_iterations=args.max_iterations,
+            language=args.language,
+            agent_loop=agent_loop,
         )
 
     automated_preflight = None
@@ -937,15 +996,12 @@ def cmd_crack(args: argparse.Namespace) -> None:
             on_event=on_event,
         )
 
-    print(f"Status: {artifact.status}")
-    if artifact.solution:
-        print(f"Declared branch: {artifact.solution.branch}")
-        print(f"Self-confidence: {artifact.solution.self_confidence:.2f}")
-        print(f"Rationale: {artifact.solution.rationale}")
+    # Decision 6: while a renderer is active (the pretty Rich Live in
+    # particular), no plain prints — ALL terminal output goes through the
+    # renderer. Compute + save first, run renderer.finish, THEN print the human
+    # summary. In jsonl mode route that summary to stderr so stdout stays
+    # machine-clean (F1).
     iterations = max(tc.iteration for tc in artifact.tool_calls) if artifact.tool_calls else 0
-    print(f"Iterations: {iterations}")
-    print(f"Tool calls: {len(artifact.tool_calls)}")
-
     final_branch = artifact.solution.branch if artifact.solution else "main"
     final_dec = next(
         (b.decryption for b in artifact.branches if b.name == final_branch),
@@ -959,11 +1015,11 @@ def cmd_crack(args: argparse.Namespace) -> None:
     )
     artifact.final_summary = final_summary
     path = Path(artifact_dir) / cipher_id / f"{artifact.run_id}.json"
+    save_error = None
     try:
         artifact.save(path)
-        print(f"\nArtifact saved: {path}")
     except Exception as e:  # noqa: BLE001
-        print(f"\nWarning: failed to save artifact: {e}")
+        save_error = str(e)
 
     if renderer is not None:
         from types import SimpleNamespace
@@ -973,6 +1029,8 @@ def cmd_crack(args: argparse.Namespace) -> None:
             status=artifact.status,
             char_accuracy=0.0,
             word_accuracy=0.0,
+            # `crack` has no ground truth; narrate suppresses the 0.0% line (F-4).
+            has_ground_truth=False,
             iterations_used=iterations,
             elapsed_seconds=artifact.finished_at - artifact.started_at,
             total_tokens=artifact.total_input_tokens + artifact.total_output_tokens,
@@ -985,7 +1043,20 @@ def cmd_crack(args: argparse.Namespace) -> None:
             alignment_report="",
             final_summary=final_summary,
         ))
-    print(f"\nFinal decryption ({final_branch}):\n{final_dec}")
+
+    # crack_out (stderr in jsonl) was resolved once at the top of cmd_crack.
+    print(f"Status: {artifact.status}", file=crack_out)
+    if artifact.solution:
+        print(f"Declared branch: {artifact.solution.branch}", file=crack_out)
+        print(f"Self-confidence: {artifact.solution.self_confidence:.2f}", file=crack_out)
+        print(f"Rationale: {artifact.solution.rationale}", file=crack_out)
+    print(f"Iterations: {iterations}", file=crack_out)
+    print(f"Tool calls: {len(artifact.tool_calls)}", file=crack_out)
+    if save_error is None:
+        print(f"\nArtifact saved: {path}", file=crack_out)
+    else:
+        print(f"\nWarning: failed to save artifact: {save_error}", file=crack_out)
+    print(f"\nFinal decryption ({final_branch}):\n{final_dec}", file=crack_out)
     _maybe_write_artifact_analysis(path, args)
 
 
@@ -1022,13 +1093,15 @@ def cmd_resume_artifact(args: argparse.Namespace) -> None:
     provider, model = _resolve_provider_and_model(args)
     api = _make_agent_provider(args)
     display_mode = _resolve_agent_display(args)
-    renderer = make_agent_renderer(display_mode)
+    renderer = make_agent_renderer(display_mode, verbose=args.verbose)
     if renderer is not None:
         renderer.start_test(
             cipher_id,
             f"Resume artifact {parent_path.name}",
             model=model,
             max_iterations=extra_iterations,
+            language=language,
+            agent_loop=getattr(args, "agent_loop", "v2"),
         )
     else:
         print(
@@ -1276,6 +1349,7 @@ def cmd_testgen(args: argparse.Namespace) -> None:
             claude_api=crack_api,
             max_iterations=args.max_iterations,
             verbose=args.verbose and display_mode == "off",
+            renderer_verbose=args.verbose,
             language=args.language,
             artifact_dir=args.artifact_dir,
             automated_preflight=not args.no_automated_preflight,
@@ -1512,11 +1586,13 @@ def main() -> None:
     bench.add_argument("--verbose", "-v", action="store_true")
     bench.add_argument(
         "--display",
-        choices=["auto", "pretty", "raw", "jsonl"],
-        default="pretty",
+        choices=["auto", "narrate", "pretty", "raw", "jsonl"],
+        default="narrate",
         help=(
-            "Agentic terminal display mode (default: pretty). auto uses pretty on an "
-            "interactive terminal, raw when piped, and the legacy verbose stream with -v."
+            "Agentic terminal display mode (default: narrate — a scrolling, "
+            "pipe-safe transcript). auto also resolves to narrate; pretty is the "
+            "Rich live dashboard; raw/jsonl are the legacy/machine streams. -v adds "
+            "detail inside the active renderer."
         ),
     )
     _add_artifact_analysis_args(bench)
@@ -1665,9 +1741,9 @@ def main() -> None:
     crack.add_argument("--verbose", "-v", action="store_true")
     crack.add_argument(
         "--display",
-        choices=["auto", "pretty", "raw", "jsonl"],
-        default="pretty",
-        help="Agentic terminal display mode (default: pretty).",
+        choices=["auto", "narrate", "pretty", "raw", "jsonl"],
+        default="narrate",
+        help="Agentic terminal display mode (default: narrate; auto also resolves to narrate).",
     )
     _add_artifact_analysis_args(crack)
     crack.add_argument(
@@ -1779,9 +1855,9 @@ def main() -> None:
     resume.add_argument("--verbose", "-v", action="store_true")
     resume.add_argument(
         "--display",
-        choices=["auto", "pretty", "raw", "jsonl"],
-        default="pretty",
-        help="Agentic terminal display mode (default: pretty).",
+        choices=["auto", "narrate", "pretty", "raw", "jsonl"],
+        default="narrate",
+        help="Agentic terminal display mode (default: narrate; auto also resolves to narrate).",
     )
     _add_artifact_analysis_args(resume)
 
@@ -1855,9 +1931,9 @@ def main() -> None:
     tg.add_argument("--verbose", "-v", action="store_true")
     tg.add_argument(
         "--display",
-        choices=["auto", "pretty", "raw", "jsonl"],
-        default="pretty",
-        help="Agentic terminal display mode (default: pretty).",
+        choices=["auto", "narrate", "pretty", "raw", "jsonl"],
+        default="narrate",
+        help="Agentic terminal display mode (default: narrate; auto also resolves to narrate).",
     )
     _add_artifact_analysis_args(tg)
     tg.add_argument(
