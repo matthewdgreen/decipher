@@ -682,3 +682,61 @@ def test_cmd_benchmark_agentic_jsonl_routes_human_prints_to_stderr(tmp_path, mon
     assert "BENCHMARK RESULTS" not in captured.out
     assert "Artifact: /tmp/art/borg_x/run.json" in captured.err
     assert "BENCHMARK RESULTS" in captured.err
+
+
+def test_narrate_renders_decode_on_change_only():
+    # Live progress: a workspace_snapshot whose decode CHANGED prints one
+    # cyan decode line; an identical snapshot prints nothing new.
+    r, stream = _scripted_narrate()
+    r.event("workspace_snapshot", {
+        "branch": "main", "total_tokens": 100, "estimated_cost_usd": 0.01,
+        "decryption_preview": "HELLO WORLD THIS IS PROGRESS",
+    })
+    first = stream.getvalue()
+    assert "decode [main]" in first
+    assert "HELLO WORLD THIS IS PROGRESS" in first
+    # unchanged decode -> no second decode line
+    r.event("workspace_snapshot", {
+        "branch": "main", "total_tokens": 200, "estimated_cost_usd": 0.02,
+        "decryption_preview": "HELLO WORLD THIS IS PROGRESS",
+    })
+    assert stream.getvalue().count("decode [main]") == 1
+    # changed decode -> a new line
+    r.event("workspace_snapshot", {
+        "branch": "main", "total_tokens": 300, "estimated_cost_usd": 0.03,
+        "decryption_preview": "HELLO WORLD THIS IS BETTER",
+    })
+    out = stream.getvalue()
+    assert out.count("decode [main]") == 2
+    assert "THIS IS BETTER" in out
+
+
+def test_narrate_finish_prints_final_plaintext():
+    r, stream = _scripted_narrate()
+    r.finish(SimpleNamespace(
+        status="solved", char_accuracy=0.9, word_accuracy=0.7,
+        iterations_used=5, estimated_cost_usd=1.0, elapsed_seconds=30.0,
+        artifact_path="b.json", error_message="", final_summary="",
+        final_decryption="THE FINAL RECOVERED PLAINTEXT OF THE RUN",
+    ))
+    out = stream.getvalue()
+    assert "plaintext:" in out
+    assert "THE FINAL RECOVERED PLAINTEXT OF THE RUN" in out
+    # long text truncates at non-verbose
+    r2, s2 = _scripted_narrate()
+    r2.finish(SimpleNamespace(
+        status="solved", char_accuracy=0.9, word_accuracy=0.7,
+        iterations_used=5, estimated_cost_usd=1.0, elapsed_seconds=30.0,
+        artifact_path="b.json", error_message="", final_summary="",
+        final_decryption="X" * 400,
+    ))
+    assert "…" in s2.getvalue()
+    # absent final_decryption (crack path) -> no plaintext block
+    r3, s3 = _scripted_narrate()
+    r3.finish(SimpleNamespace(
+        status="solved", char_accuracy=0.0, word_accuracy=0.0,
+        has_ground_truth=False, iterations_used=3, estimated_cost_usd=0.5,
+        elapsed_seconds=12.0, artifact_path="a.json", error_message="",
+        final_summary="",
+    ))
+    assert "plaintext:" not in s3.getvalue()

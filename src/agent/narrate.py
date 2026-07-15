@@ -105,6 +105,7 @@ class NarrateAgentRenderer:
         self._iteration = 0
         self._last_tokens = 0
         self._last_cost = 0.0
+        self._last_decode = ""
         self._pending_tool: dict[str, Any] | None = None
         self._episode_labels: dict[str, str] = {}
         self._episode_counter = 0
@@ -163,6 +164,21 @@ class NarrateAgentRenderer:
         parts.append(f"${cost:.2f}")
         parts.append(f"({_format_elapsed(elapsed)})")
         self._line("  " + "  ".join(parts))
+        # Always show the final plaintext (the run's actual product). First
+        # 200 chars at non-verbose; full text when verbose. `crack` prints its
+        # own final-decryption block after finish and passes no
+        # final_decryption here, so there is no duplication.
+        final_decryption = str(getattr(result, "final_decryption", "") or "").strip()
+        if final_decryption:
+            shown = (
+                final_decryption
+                if self.verbose
+                else final_decryption[:200]
+                + ("…" if len(final_decryption) > 200 else "")
+            )
+            self._line(self._c("  plaintext:", "cyan"))
+            for i in range(0, len(shown), 100):
+                self._line(self._c(f"    {shown[i:i + 100]}", "cyan"))
         if artifact_path:
             self._line(f"  artifact: {artifact_path}")
         if error_message:
@@ -260,6 +276,22 @@ class NarrateAgentRenderer:
                     "dim",
                 )
             )
+        # Live progress: render the current best decode whenever it CHANGES
+        # (the user's core "show me the work" signal). One line at
+        # non-verbose (first 140 chars); the full preview when verbose.
+        decode = str(
+            payload.get("decryption_preview") or payload.get("decryption") or ""
+        ).strip()
+        if decode and decode != self._last_decode:
+            self._last_decode = decode
+            branch = payload.get("branch") or "?"
+            if self.verbose:
+                self._line(self._c(f"      decode [{branch}]:", "cyan"))
+                for i in range(0, min(len(decode), 1000), 100):
+                    self._line(self._c(f"        {decode[i:i + 100]}", "cyan"))
+            else:
+                preview = decode[:140] + ("…" if len(decode) > 140 else "")
+                self._line(self._c(f"      decode [{branch}] {preview}", "cyan"))
 
     def _on_budget_update(self, payload: dict[str, Any]) -> None:
         total = payload.get("total_cost_usd")
