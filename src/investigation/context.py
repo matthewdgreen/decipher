@@ -763,8 +763,9 @@ def _render_late_turn_attestation_hint(
     the lead to run verify now.
 
     Mitigates the late-turn failure mode: a lead that first attempts declaration
-    on its final turn is blocked with zero turns left → fallback_declared
-    (strictly worse than M4 on that path). Empty string when it does not apply.
+    on its final turn is blocked with zero turns left and must terminate
+    honestly unsolved unless a fresh positive attestation already exists.
+    Empty string when it does not apply.
     """
     hints = workflow_hint_candidates(state, executor, turn, max_turns)
     if not hints:

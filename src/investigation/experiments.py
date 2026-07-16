@@ -38,6 +38,7 @@ from typing import Any, Callable
 
 from analysis import model_registry
 from agent.tools_v2 import _strip_packet_keys
+from investigation.board import CARD_MIRROR_KEYS
 from investigation.episodes import validate_against_schema
 from investigation.state import (
     InvestigationState,
@@ -929,6 +930,10 @@ def _mirror_null_mask_metadata(
         "decoded_text_source": "experiment_collect:null_masks",
         "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
         "key_type": "homophonic_with_null_mask",
+        "candidate_renderer": "key_with_null_mask_v1",
+        "candidate_capabilities": [
+            "editable_key", "editable_null_mask", "editable_boundaries",
+        ],
         "null_mask_selected": {
             "mask": selected.get("mask") or [],
             "validation_score_v2": selected.get("validation_score_v2"),
@@ -1077,6 +1082,17 @@ def dispatch_experiment_collect(
             workspace, record, args.get("as_name"), turn
         )
         record["installed_as"] = installed_name
+        source_card = state.hypothesis_board.get(str(record.get("branch") or ""))
+        if source_card is not None:
+            fields = {
+                key: source_card.get(key)
+                for key in CARD_MIRROR_KEYS
+                if source_card.get(key) is not None
+            }
+            fields["mode_status"] = "active"
+            fields["evidence_source"] = f"experiment:{record['experiment_id']}"
+            fields["mode_evidence"] = str(record.get("summary") or "experiment result")
+            state.hypothesis_board.update(workspace, installed_name, **fields)
 
     session_id = _maybe_create_null_mask_session(
         executor, workspace, record, installed_name

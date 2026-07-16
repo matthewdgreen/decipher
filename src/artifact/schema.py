@@ -133,7 +133,7 @@ class RunArtifact:
 
     # Termination
     solution: SolutionDeclaration | None = None
-    status: str = "running"                     # running | solved | unsolved | exhausted | error | stopped | fallback_declared
+    status: str = "running"                     # running | solved | unsolved | exhausted | error | stopped | fallback_declared (positive attestation only)
     auto_declared: bool = False                 # True when the solution was synthesized by the fallback path
     attested_fallback: bool = False              # v3 fallback selected a fresh positive attestation
     fallback_selection: dict[str, Any] | None = None  # v3 fallback tier/shortlist/rationale

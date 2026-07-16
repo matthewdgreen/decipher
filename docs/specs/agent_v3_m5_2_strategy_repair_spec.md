@@ -1,6 +1,6 @@
 # Agent Loop v3 M5.2 - Strategy and Repair Reliability
 
-Status: active. Slices 1-4 implemented 2026-07-16. Paid acceptance remains
+Status: implementation complete. Slices 1-5 implemented 2026-07-16. Paid acceptance remains
 deferred until the user approves another provider spend.
 
 ## Motivation
@@ -122,15 +122,21 @@ lead cannot immediately fall back into the handled source hint.
 
 ## Slice 5 - Durable State and Honest Termination
 
-- Deduplicate content-identical branches while preserving provenance aliases.
-- Update the hypothesis board automatically from episode and experiment
-  results.
-- Populate the repair agenda from verify anomalies and close items when a
-  transaction addresses them.
-- Track no-new-information and repeated-call counts.
-- Rename negative-only exhaustion from `fallback_declared` to a best-effort or
-  honest-unsolved terminal state. Only a fresh positive attestation may produce
-  an attested declared fallback.
+Implemented 2026-07-16.
+
+- Content-identical episode installs deduplicate onto the existing branch and
+  preserve a durable provenance alias.
+- Survey episodes add structured evidence and update the hypothesis board;
+  episode and experiment installs inherit board state with their result as the
+  evidence source.
+- Negative verifier anomalies create durable repair-agenda items, and a
+  successful bound repair transaction closes the source-content items it
+  addressed.
+- Content-bound call signatures and no-new-information streaks are tracked and
+  survive resume.
+- Negative-only exhaustion now retains a best-effort selection but terminates
+  honestly `unsolved`; provider failures remain `error`. Only a fresh positive
+  attestation may synthesize `fallback_declared`.
 
 ## Verification Plan
 

@@ -201,6 +201,10 @@ def test_readings_round_trip_and_m2_artifact_loads():
         "source_content_hash": "before",
         "result_content_hash": "after",
     })
+    state.branch_aliases.append({"requested_name": "copy", "existing_branch": "main"})
+    state.call_signature_counts["sig"] = 3
+    state.no_new_information_streak = 2
+    state.last_information_digest = "digest"
 
     restored = InvestigationState.from_artifact_dict(
         json.loads(json.dumps(state.to_artifact_dict()))
@@ -211,16 +215,28 @@ def test_readings_round_trip_and_m2_artifact_loads():
     assert rd.fragments[0].start == 0
     assert rd.overall_confidence == 0.8
     assert restored.repair_transactions == state.repair_transactions
+    assert restored.branch_aliases == state.branch_aliases
+    assert restored.call_signature_counts == {"sig": 3}
+    assert restored.no_new_information_streak == 2
+    assert restored.last_information_digest == "digest"
 
     # An M2 artifact predating the readings key loads with an empty map.
     m2_dict = state.to_artifact_dict()
     del m2_dict["readings"]
     del m2_dict["repair_transactions"]
+    del m2_dict["branch_aliases"]
+    del m2_dict["call_signature_counts"]
+    del m2_dict["no_new_information_streak"]
+    del m2_dict["last_information_digest"]
     reloaded = InvestigationState.from_artifact_dict(
         json.loads(json.dumps(m2_dict))
     )
     assert reloaded.readings == {}
     assert reloaded.repair_transactions == []
+    assert reloaded.branch_aliases == []
+    assert reloaded.call_signature_counts == {}
+    assert reloaded.no_new_information_streak == 0
+    assert reloaded.last_information_digest is None
 
 
 def test_resume_identity_holds_with_readings():

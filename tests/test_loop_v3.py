@@ -210,26 +210,27 @@ def test_run_v3_records_state_budget_and_transcript(verify_fake):
     assert all(m["role"] in {"assistant", "user"} for m in art.messages)
 
 
-def test_run_v3_fallback_declared_on_provider_error():
+def test_run_v3_provider_error_preserves_best_effort_without_declaration():
     ct, _alpha = _caesar_cipher("THE DOG")
     art = run_v3(ct, session=ErrorSession([]), language="en", max_iterations=5,
                  cipher_id="v3_error")
-    assert art.status == "fallback_declared"
-    assert art.auto_declared is True
-    assert art.solution is not None
-    assert art.solution.self_confidence == 0.0
+    assert art.status == "error"
+    assert art.auto_declared is False
+    assert art.solution is None
+    assert art.fallback_selection is not None
     assert "API error" in art.error_message
 
 
-def test_run_v3_exhaustion_falls_back():
+def test_run_v3_exhaustion_is_honestly_unsolved():
     ct, _alpha = _caesar_cipher("THE DOG")
     # Text-only responses → no tool calls → exhausted → fallback.
     session = ScriptedSession([[TextBlock(text="I have no idea.")]])
     art = run_v3(ct, session=session, language="en", max_iterations=3,
                  cipher_id="v3_exhaust")
-    assert art.status == "fallback_declared"
-    assert art.auto_declared is True
-    assert art.solution is not None
+    assert art.status == "unsolved"
+    assert art.auto_declared is False
+    assert art.solution is None
+    assert art.fallback_selection is not None
 
 
 def test_v3_rejects_hidden_operator_tool_at_dispatch():
@@ -276,6 +277,9 @@ def test_v3_suppresses_duplicate_decode_on_unchanged_content():
     assert len(calls) == 2
     assert json.loads(calls[1].result)["status"] == "duplicate_suppressed"
     assert any(event.event == "duplicate_read_suppressed" for event in art.loop_events)
+    assert any(event.event == "repeated_call" for event in art.loop_events)
+    assert max(art.investigation_state["call_signature_counts"].values()) == 2
+    assert art.investigation_state["no_new_information_streak"] >= 1
 
 
 def test_repair_required_state_narrows_episode_schema_and_dispatch():
@@ -375,9 +379,9 @@ def test_fresh_compare_winner_rejects_stale_hash_binding():
     assert _fresh_compare_winner(state) is None
 
 
-def test_run_v3_declare_without_verify_is_blocked_then_falls_back():
+def test_run_v3_declare_without_verify_is_blocked_then_unsolved():
     """M5: meta_declare_solution with no verify attestation is blocked; the run
-    exhausts to the fallback declaration, which itself needs no attestation."""
+    exhausts honestly unsolved while retaining a best-effort branch."""
     ct, alpha = _caesar_cipher("THE DOG")
     scripts = [
         [ToolUseBlock(id="d1", name="meta_declare_solution",
@@ -391,12 +395,11 @@ def test_run_v3_declare_without_verify_is_blocked_then_falls_back():
                        if tc.tool_name == "meta_declare_solution"]
     assert declare_results
     assert all(r.get("reason") == "attestation_required" for r in declare_results)
-    # Fallback path (needs no attestation).
-    assert art.status == "fallback_declared"
-    assert art.auto_declared is True
+    assert art.status == "unsolved"
+    assert art.auto_declared is False
     assert not art.attestations
-    # A fallback declaration carries no attestation.
-    assert art.solution is not None and art.solution.attestation is None
+    assert art.solution is None
+    assert art.fallback_selection is not None
 
 
 class _WeakVerifyFake(VerifyWorkerFake):
@@ -431,6 +434,13 @@ def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
     assert art.solution.attestation["reader_accepts"] is False
     assert art.solution.attestation["coherence"] == 3
     assert art.solution.attestation["anomalies"] == ["non-word run", "broken clause"]
+    verify_items = [
+        item for item in art.repair_agenda
+        if item.get("source") == "verify_attestation"
+    ]
+    assert {item["anomaly"] for item in verify_items} == {
+        "non-word run", "broken clause",
+    }
 
 
 class _OutOfScaleVerifyFake(VerifyWorkerFake):
@@ -571,7 +581,7 @@ def test_run_v3_max_iterations_zero_no_nameerror():
     art = run_v3(ct, session=ScriptedSession([[TextBlock(text="hi")]]),
                  language="en", max_iterations=0, cipher_id="v3_zero")
     # It finishes cleanly (exhausted → fallback), no exception.
-    assert art.status in {"exhausted", "fallback_declared"}
+    assert art.status == "unsolved"
 
 
 def test_run_v3_resume_uses_state_language_not_param():
@@ -656,10 +666,11 @@ class ReadingWorkerFake:
             content = [ToolUseBlock(id="rd0", name="decode_show", input={"branch": "main"})]
         else:
             content = [ToolUseBlock(id="rd1", name="episode_submit_result", input={
-                "result": {"reading_text": "CATTON",
-                           "fragments": [{"text": "CATTON", "confidence": 0.9}],
-                           "holes": ["extra T"], "overall_confidence": 0.6},
-                "summary": "read as CATTON",
+                "result": {"reading_text": "COTON",
+                           "fragments": [{"text": "COTON", "repair_text": "COTON",
+                                          "confidence": 0.9}],
+                           "holes": [], "overall_confidence": 0.8},
+                "summary": "read as COTON",
             })]
         return ModelResponse(content=content, usage=ModelUsage(10, 5, 0))
 
@@ -749,7 +760,7 @@ def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end(verify_fake
         sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
 
     # Reading was compiled + stored by the lead (A1: workers never write it).
-    assert art.readings and art.readings[0]["fragments"][0]["text"] == "CATTON"
+    assert art.readings and art.readings[0]["fragments"][0]["text"] == "COTON"
     reading_id = art.readings[0]["reading_id"]
 
     # Three episodes: reading (ok), repair (ok), then verify (ok) before declare.
@@ -770,10 +781,9 @@ def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end(verify_fake
     adjudicate = next(tc for tc in art.tool_calls if tc.tool_name == "branch_adjudicate")
     assert adjudicate.episode_id is None and adjudicate.iteration == 4
 
-    # The repair episode's residual agenda merged into state.repair_agenda on
-    # install, remapped to the installed branch name.
+    # A fully aligned repair has no residual agenda item.
     residual = [i for i in art.repair_agenda if i.get("kind") == "reading_residual"]
-    assert residual and residual[0]["branch"] == "repaired"
+    assert residual == []
 
     # No v2 boundary actuator was ever called across the whole v3 run.
     called = {tc.tool_name for tc in art.tool_calls}
@@ -890,6 +900,22 @@ def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify
     sessions_mod.register_session_builder("episode:repair", TransactionRepairWorkerFake)
     try:
         ct, state = _keyed_catton_state()
+        from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+        source_hash = _candidate_content_hash(
+            _decoded_text_for_panel(state.workspace, "main")
+        )
+        state.verify_attestations.append({
+            "branch": "main", "content_hash": source_hash,
+            "renderer_id": "decoded_text_v1", "episode_id": "prior_verify",
+            "coherence": 4, "reader_accepts": False, "gloss": "partly readable",
+            "anomalies": ["damaged middle word"], "created_turn": 0,
+        })
+        state.repair_agenda.append({
+            "id": 1, "kind": "verify_anomaly",
+            "source": "verify_attestation", "branch": "main",
+            "content_hash": source_hash, "anomaly": "damaged middle word",
+            "status": "open", "created_turn": 0,
+        })
         art = run_v3(
             ct, session=TransactionLead(), language="en", max_iterations=6,
             cipher_id="v3_repair_transaction", resume_state=state,
@@ -906,6 +932,10 @@ def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify
     assert transactions[0]["status"] == "installed"
     assert transactions[0]["reverification_required"] is True
     assert transactions[0]["source_content_hash"] != transactions[0]["result_content_hash"]
+    assert transactions[0]["addressed_anomalies"] == ["damaged middle word"]
+    agenda = art.investigation_state["repair_agenda"]
+    assert agenda[0]["status"] == "addressed"
+    assert agenda[0]["addressed_by_transaction"] == transactions[0]["transaction_id"]
     assert art.attestations[-1]["branch"] == "transaction_repaired"
     assert [episode["kind"] for episode in art.episodes] == ["reading", "repair", "verify"]
     assert any(call.tool_name == "repair_transaction" for call in art.tool_calls)

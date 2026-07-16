@@ -242,6 +242,10 @@ class InvestigationState:
     # content hashes, the worker episode, installed branch, and anomalies the
     # transaction attempted to address. This is durable across resume.
     repair_transactions: list[dict[str, Any]] = field(default_factory=list)
+    branch_aliases: list[dict[str, Any]] = field(default_factory=list)
+    call_signature_counts: dict[str, int] = field(default_factory=dict)
+    no_new_information_streak: int = 0
+    last_information_digest: str | None = None
     # M5.1: workflow hints already shown/emitted, keyed by event + candidate
     # content hash. This keeps guidance useful without repeating it every turn
     # and survives resume.
@@ -393,6 +397,10 @@ class InvestigationState:
             "repair_transactions": [
                 dict(item) for item in self.repair_transactions
             ],
+            "branch_aliases": [dict(item) for item in self.branch_aliases],
+            "call_signature_counts": dict(self.call_signature_counts),
+            "no_new_information_streak": self.no_new_information_streak,
+            "last_information_digest": self.last_information_digest,
             "workflow_hint_keys": list(self.workflow_hint_keys),
             "experiment_queue": [dict(item) for item in self.experiment_queue],
             "finalist_sessions": self.finalist_sessions.to_dict(),
@@ -448,6 +456,16 @@ class InvestigationState:
             repair_transactions=[
                 dict(item) for item in data.get("repair_transactions") or []
             ],
+            branch_aliases=[dict(item) for item in data.get("branch_aliases") or []],
+            call_signature_counts={
+                str(key): int(value)
+                for key, value in (data.get("call_signature_counts") or {}).items()
+            },
+            no_new_information_streak=int(data.get("no_new_information_streak") or 0),
+            last_information_digest=(
+                str(data["last_information_digest"])
+                if data.get("last_information_digest") is not None else None
+            ),
             workflow_hint_keys=[
                 str(key) for key in (data.get("workflow_hint_keys") or [])
             ],

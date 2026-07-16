@@ -5,13 +5,14 @@ the existing tool executor directly (no episodes — that is M2), talking to
 models through the ``ModelSession`` seam. The declaration policy is disabled
 (``NoGatesPolicy``): declaration is always allowed, confidence recorded.
 
-Phase 0 termination semantics are preserved: declaration tools terminate the
-run; exhaustion / provider error fall back to the best available branch
-(``fallback_declared`` + ``auto_declared``).
+Declaration tools terminate the run. Exhaustion preserves a best-effort branch
+for inspection but is honestly unsolved unless a fresh positive independent
+attestation supports a synthesized fallback declaration.
 """
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import time
 import uuid
@@ -478,6 +479,41 @@ def run_v3(
         )
         return name, normalized, hashes
 
+    def _information_digest() -> str:
+        payload = {
+            "branch_hashes": sorted(
+                {_branch_hash(workspace, name) for name in workspace.branch_names()}
+            ),
+            "readings": sorted(state.readings),
+            "attestations": sorted(
+                (
+                    str(item.get("content_hash") or ""),
+                    int(item.get("coherence") or 0),
+                    bool(item.get("reader_accepts")),
+                    tuple(str(a) for a in item.get("anomalies") or []),
+                )
+                for item in state.verify_attestations
+            ),
+            "episode_results": sorted(
+                json.dumps(item.get("result"), sort_keys=True, default=str)
+                for item in state.episode_ledger
+                if item.get("status") == "ok"
+            ),
+            "experiment_results": sorted(
+                str(item.get("dedup_key") or "")
+                for item in state.experiment_queue
+                if item.get("status") == "completed"
+            ),
+            "repair_results": sorted(
+                str(item.get("result_content_hash") or "")
+                for item in state.repair_transactions
+                if item.get("status") == "installed"
+            ),
+        }
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
     def _record_dispatch_result(
         *, name: str, tu: dict[str, Any], turn: int, payload: dict[str, Any]
     ) -> str:
@@ -607,6 +643,33 @@ def run_v3(
                 created_turn=turn,
             )
             state.verify_attestations.append(record.to_dict())
+            if not _is_positive_attestation(record.to_dict()):
+                for anomaly in record.anomalies:
+                    if any(
+                        item.get("status", "open") == "open"
+                        and item.get("source") == "verify_attestation"
+                        and item.get("content_hash") == content_hash
+                        and item.get("anomaly") == anomaly
+                        for item in state.repair_agenda
+                    ):
+                        continue
+                    numeric_ids = []
+                    for existing_item in state.repair_agenda:
+                        try:
+                            numeric_ids.append(int(existing_item.get("id") or 0))
+                        except (TypeError, ValueError):
+                            continue
+                    state.repair_agenda.append({
+                        "id": max(numeric_ids, default=0) + 1,
+                        "kind": "verify_anomaly",
+                        "source": "verify_attestation",
+                        "branch": branch,
+                        "content_hash": content_hash,
+                        "anomaly": anomaly,
+                        "status": "open",
+                        "created_turn": turn,
+                        "episode_id": result.episode_id,
+                    })
             payload["attestation"] = {
                 "branch": branch,
                 "coherence": record.coherence,
@@ -728,6 +791,39 @@ def run_v3(
             )
             state.readings[reading.reading_id] = reading.to_dict()
             payload["reading_id"] = reading.reading_id
+        state.add_evidence(
+            f"episode:{result.kind}",
+            turn=turn,
+            summary=result.summary or f"{result.kind} episode {result.status}",
+            episode_id=result.episode_id,
+            status=result.status,
+            input_branches=list(inputs.get("branches") or []),
+            result=(dict(result.result) if isinstance(result.result, dict) else result.result),
+        )
+        if result.status == "ok" and isinstance(result.result, dict):
+            input_branch = next(
+                (
+                    name for name in inputs.get("branches") or []
+                    if workspace.has_branch(name)
+                ),
+                None,
+            )
+            if input_branch and result.kind == "survey":
+                modes = result.result.get("suspected_modes") or []
+                top = modes[0] if modes and isinstance(modes[0], dict) else None
+                if top and top.get("mode"):
+                    state.hypothesis_board.update(
+                        workspace,
+                        input_branch,
+                        cipher_mode=str(top["mode"]),
+                        mode_status="active",
+                        mode_confidence=str(top.get("confidence") or "unknown"),
+                        mode_evidence=str(top.get("evidence") or result.summary or ""),
+                        evidence_source=f"episode:{result.episode_id}",
+                        next_recommended_action=(
+                            str((result.result.get("recommended_next") or [""])[0]) or None
+                        ),
+                    )
         return json.dumps(payload, ensure_ascii=False)
 
     def _dispatch_episode_install(tu: dict[str, Any], turn: int) -> str:
@@ -764,6 +860,35 @@ def run_v3(
             k: v for k, v in raw_metadata.items() if k not in CARD_MIRROR_KEYS
         }
         target = str(as_name) if as_name else f"{entry.get('kind')}_{ep_id[:6]}_{branch}"
+        snapshot_hash = _snapshot_content_hash(snap)
+        existing = next(
+            (
+                name for name in workspace.branch_names()
+                if _branch_hash(workspace, name) == snapshot_hash
+            ),
+            None,
+        )
+        if existing is not None:
+            alias = {
+                "requested_name": target,
+                "existing_branch": existing,
+                "content_hash": snapshot_hash,
+                "from_episode": ep_id,
+                "from_branch": branch,
+                "created_turn": turn,
+            }
+            state.branch_aliases.append(alias)
+            for item in entry.get("agenda_additions") or []:
+                if str(item.get("branch") or "") != branch:
+                    continue
+                merged = dict(item)
+                merged["branch"] = existing
+                state.repair_agenda.append(merged)
+            return json.dumps({
+                "status": "deduplicated",
+                "installed": existing,
+                "alias": alias,
+            }, ensure_ascii=False)
         name = target
         suffix = 2
         while workspace.has_branch(name):
@@ -777,6 +902,23 @@ def run_v3(
         _restore_branch_into(workspace, install_snap)
         if card_fields:
             state.hypothesis_board.update(workspace, name, **card_fields)
+        else:
+            source_branch = next(iter(entry.get("input_branches") or []), None)
+            source_card = (
+                state.hypothesis_board.get(str(source_branch))
+                if source_branch is not None else None
+            )
+            if source_card is not None:
+                inherited = {
+                    key: source_card.get(key)
+                    for key in CARD_MIRROR_KEYS
+                    if source_card.get(key) is not None
+                }
+                inherited["mode_status"] = "active"
+                inherited["evidence_source"] = f"episode:{ep_id}"
+                if entry.get("summary"):
+                    inherited["mode_evidence"] = str(entry["summary"])
+                state.hypothesis_board.update(workspace, name, **inherited)
         # M6 F5: this dispatcher owns BOTH the collision-rename above AND the
         # verify-attestation writes; keep attestation branch labels in sync when a
         # rename moved attested content to a new name (see the helper's docstring).
@@ -989,7 +1131,7 @@ def run_v3(
             },
         }, turn))
         installed = str(install_payload.get("installed") or "")
-        if install_payload.get("status") != "ok" or not installed:
+        if install_payload.get("status") not in {"ok", "deduplicated"} or not installed:
             record = {
                 **base_record, "status": "failed", "reason": "install_failed",
                 "install": install_payload,
@@ -1019,6 +1161,15 @@ def run_v3(
             "collateral": dict(result.get("collateral") or {}),
         }
         state.repair_transactions.append(record)
+        for item in state.repair_agenda:
+            if (
+                item.get("status", "open") == "open"
+                and item.get("source") == "verify_attestation"
+                and item.get("content_hash") == source_hash
+            ):
+                item["status"] = "addressed"
+                item["addressed_by_transaction"] = transaction_id
+                item["addressed_turn"] = turn
         state.add_evidence(
             "repair_transaction", turn=turn,
             summary=f"Installed {installed} from bounded repair transaction.",
@@ -1052,6 +1203,23 @@ def run_v3(
                 },
             )
         args = tu.get("input") or {}
+        signature_payload = {
+            "tool": name,
+            "arguments": args,
+            "branch_hashes": _lead_read_cache_key(name, args)[2],
+        }
+        signature = hashlib.sha256(
+            json.dumps(signature_payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        state.call_signature_counts[signature] = (
+            state.call_signature_counts.get(signature, 0) + 1
+        )
+        if state.call_signature_counts[signature] > 1:
+            emit("repeated_call", {
+                "tool": name,
+                "count": state.call_signature_counts[signature],
+                "signature": signature,
+            }, outer_iteration=turn)
         if name == "episode_run":
             requested_kind = str(args.get("kind") or "")
             if requested_kind not in current_episode_kinds:
@@ -1331,6 +1499,17 @@ def run_v3(
         state.add_evidence(
             "turn_summary", turn=turn, summary=", ".join(summary_items)
         )
+        information_digest = _information_digest()
+        if state.last_information_digest == information_digest:
+            state.no_new_information_streak += 1
+        else:
+            state.no_new_information_streak = 0
+        state.last_information_digest = information_digest
+        if state.no_new_information_streak:
+            emit("no_new_information", {
+                "streak": state.no_new_information_streak,
+                "digest": information_digest,
+            }, outer_iteration=turn)
 
         # F5: end-of-turn observability parity with v2. A fresh sync_budget()
         # first so this turn's lead + episode spend is counted, THEN a workspace
@@ -1414,7 +1593,7 @@ def run_v3(
 
     sync_budget()
 
-    # --- fallback auto-declare (Phase 0 semantics preserved) ---
+    # --- attested fallback or honest best-effort termination ---
     if (
         artifact.status in {"exhausted", "error"}
         and executor.solution is None
@@ -1426,7 +1605,8 @@ def run_v3(
              if item.get("branch") == best_branch),
             fallback_selection.get("scores") or {},
         )
-        if artifact.status == "error":
+        original_status = artifact.status
+        if original_status == "error":
             reason = (
                 "Automatic fallback declaration after agent/API error; "
                 "preserving the best available branch for inspection. "
@@ -1437,33 +1617,44 @@ def run_v3(
                 "Automatic fallback declaration at turn limit; the agent did "
                 "not call meta_declare_solution in time. "
             )
-        executor.solution = SolutionDeclaration(
-            branch=best_branch,
-            rationale=(
-                f"{reason}Selected the highest-scoring available branch by "
-                f"the `{fallback_selection['tier']}` policy: "
-                f"{fallback_selection['rationale']} Scores: {best_scores}."
-            ),
-            self_confidence=(
-                float(fallback_selection["attestation"].get("coherence") or 0) / 10.0
-                if fallback_selection.get("attestation") else 0.0
-            ),
-            declared_at_iteration=max_iterations,
-            attestation=(
-                dict(fallback_selection["attestation"])
-                if fallback_selection.get("attestation") else None
-            ),
-        )
-        artifact.status = "fallback_declared"
-        artifact.auto_declared = True
-        artifact.attested_fallback = fallback_selection["tier"] == "fresh_positive_attestation"
         artifact.fallback_selection = fallback_selection
-        emit("auto_declared_solution", {
-            "branch": best_branch,
-            "scores": best_scores,
-            "selection_tier": fallback_selection["tier"],
-            "attested_fallback": artifact.attested_fallback,
-        })
+        if fallback_selection["tier"] == "fresh_positive_attestation":
+            executor.solution = SolutionDeclaration(
+                branch=best_branch,
+                rationale=(
+                    f"{reason}Selected the positively attested branch: "
+                    f"{fallback_selection['rationale']} Scores: {best_scores}."
+                ),
+                self_confidence=float(
+                    fallback_selection["attestation"].get("coherence") or 0
+                ) / 10.0,
+                declared_at_iteration=max_iterations,
+                attestation=dict(fallback_selection["attestation"]),
+            )
+            artifact.status = "fallback_declared"
+            artifact.auto_declared = True
+            artifact.attested_fallback = True
+            emit("auto_declared_solution", {
+                "branch": best_branch,
+                "scores": best_scores,
+                "selection_tier": fallback_selection["tier"],
+                "attested_fallback": True,
+            })
+        else:
+            artifact.status = "error" if original_status == "error" else "unsolved"
+            artifact.auto_declared = False
+            artifact.attested_fallback = False
+            artifact.final_summary = (
+                f"Best-effort branch `{best_branch}` retained for inspection; "
+                "no fresh positive independent-reader attestation supported a "
+                "solution declaration."
+            )
+            emit("best_effort_selected", {
+                "branch": best_branch,
+                "scores": best_scores,
+                "selection_tier": fallback_selection["tier"],
+                "terminal_status": artifact.status,
+            })
 
     # --- finalize ---
     artifact.finished_at = time.time()

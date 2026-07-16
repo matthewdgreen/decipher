@@ -457,16 +457,16 @@ class WorkflowLeadSession:
         elif step == 4:
             content = [ToolUseBlock(id="e5", name="episode_run", input={
                 "kind": "compare", "goal": "rank",
-                "branches": ["main", "search_result"]})]
+                "branches": ["main"]})]
         elif step == 5:
             content = [ToolUseBlock(id="e6", name="episode_run", input={
                 "kind": "verify", "goal": "verify winner",
-                "branches": ["search_result"]})]
+                "branches": ["main"]})]
         else:
             content = [
-                TextBlock(text="search_result wins."),
+                TextBlock(text="main remains the deduplicated winner."),
                 ToolUseBlock(id="e7", name="meta_declare_solution", input={
-                    "branch": "search_result",
+                    "branch": "main",
                     "rationale": "compare picked it",
                     "self_confidence": 0.9}),
             ]
@@ -488,9 +488,9 @@ def _episode_fakes():
                    "finalist_session_id": None, "notes": "annealed"}
     reading_good = {"reading_text": "the quick brown", "fragments": [], "holes": [],
                     "overall_confidence": 0.6}
-    compare_good = {"ranking": ["search_result", "main"],
-                    "verdicts": [{"branch": "search_result", "verdict": "best"}],
-                    "winner": "search_result"}
+    compare_good = {"ranking": ["main"],
+                    "verdicts": [{"branch": "main", "verdict": "best"}],
+                    "winner": "main"}
     verify_good = {"coherence": 8, "reader_accepts": True, "gloss": "reads",
                    "anomalies": [], "confidence": "high"}
     builders = {
@@ -504,9 +504,7 @@ def _episode_fakes():
             [[ToolUseBlock(id="s0", name="decode_show", input={"branch": "main"})],
              [_submit(reading_good)]], role=r),
         "episode:compare": lambda p, s, r: EpisodeFake(
-            [[ToolUseBlock(id="s0", name="workspace_compare",
-                           input={"branch_a": "main", "branch_b": "search_result"})],
-             [_submit(compare_good)]], role=r),
+            [[_submit(compare_good)]], role=r),
         # M5: verify submits its verdict directly (empty toolset -> zero tools).
         "episode:verify": lambda p, s, r: EpisodeFake(
             [[_submit(verify_good)]], role=r),
@@ -536,12 +534,13 @@ def test_scripted_workflow_end_to_end(_episode_fakes):
     for kind in ("survey", "search", "reading", "compare", "verify"):
         assert f"episode:{kind}" in art.budget_by_category
 
-    # Compare named the installed branch.
+    # The identical episode snapshot deduplicates onto main and records an alias.
     compare = next(e for e in ledger if e["kind"] == "compare")
-    assert compare["result"]["winner"] == "search_result"
-    assert any(b.name == "search_result" for b in art.branches)
+    assert compare["result"]["winner"] == "main"
+    assert not any(b.name == "search_result" for b in art.branches)
+    assert art.investigation_state["branch_aliases"][0]["requested_name"] == "search_result"
     # The declaration was gated by (and carries) a verify attestation.
-    assert art.attestations and art.attestations[0]["branch"] == "search_result"
+    assert art.attestations and art.attestations[0]["branch"] == "main"
     assert art.solution is not None and art.solution.attestation is not None
 
     # The reading result is STORED (in the ledger) but NOT applied (A8): no
@@ -957,7 +956,7 @@ def test_install_deep_copies_snapshot_no_ledger_aliasing():
 
     snap = {
         "name": "b1", "parent": "main", "created_iteration": 1,
-        "key": {}, "tags": [],
+        "key": {"0": 0}, "tags": [],
         "metadata": {"notes": {"inner": ["a"]}},
         "word_spans": None, "token_order": None,
         "transform_pipeline": {"steps": [{"op": "reverse"}]},
