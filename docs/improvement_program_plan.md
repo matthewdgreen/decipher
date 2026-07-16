@@ -674,3 +674,16 @@ homophonic + composites, plus an encodings tier for external-tool comparisons
 like ciphey). Reuses testgen caching/manifest/firewall conventions (plaintext
 hashes, ground truth post-hoc only). Not yet specced; queued behind M5.1/M6
 completion.
+
+## INV family roadmap (long-range support task, 2026-07-15)
+
+`docs/inv_family_roadmap.md` — the tiered list of cipher families NOT yet
+addressed, to be added to INV over time: Tier 1 = families other tools
+(AZdecrypt/CrypTool/ACA list/ciphey) support and we don't (Playfair, Bifid/
+Trifid, ADFGX, autokey, Vigenere relatives, transposition variants, Hill,
+Nihilist, checkerboard, morse family, grilles, encodings-detection tier);
+Tier 2 = historically important with weak tool support anywhere (book-cipher
+SOLVING, nomenclator solving, polyphonic, syllabary, rotor machines,
+non-Latin scripts). Adding a family = registry entry + calibrated
+discriminator + generator counterpart (per the benchmark-generation item)
++ solver-or-referral. Diagnosis-first is acceptable.

@@ -692,3 +692,13 @@ Design sketch (for the INV-1+ slice that implements it):
   The 2026-07-14 sweep's universal composite failure is the standing
   motivation for (b); long-horizon ciphers (Beale-class, multi-session)
   are the motivation for (c).
+
+### Long-range family roadmap (2026-07-15)
+
+`docs/inv_family_roadmap.md` (user-requested) lists the cipher families not
+yet addressed, tiered: first the ones other tools support that we don't,
+then the longer historical tail. Binding convention going forward: a family
+lands as a SLICE of {registry entry + calibrated discriminator + generator
+counterpart + solver-or-referral note}; diagnosis-first is acceptable, but
+the generator ships with the registry entry because it is how the
+discriminator gets calibrated (INV-0 convention).
