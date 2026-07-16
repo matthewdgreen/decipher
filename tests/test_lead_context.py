@@ -14,6 +14,7 @@ from investigation.context import (
     build_lead_context,
     build_v3_system_prompt,
     rotating_window_bounds,
+    workflow_state,
 )
 from investigation.state import InvestigationState
 from models.alphabet import Alphabet
@@ -71,10 +72,31 @@ def test_context_sections_present():
     assert "## Cipher" in joined
     assert "## Diagnostic fingerprint" in joined
     assert "## Branch cards" in joined
+    assert "## Workflow state: searching" in joined
     assert "## Hypothesis board" in joined
     assert "## Recent evidence" in joined
     assert "seeded evidence entry" in joined
     assert "## Full-decode window" in joined
+
+
+def test_negative_partial_attestation_creates_repair_action_menu():
+    state = _state()
+    ex = _executor(state)
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    text = _decoded_text_for_panel(state.workspace, "main")
+    state.verify_attestations.append({
+        "branch": "main",
+        "content_hash": _candidate_content_hash(text),
+        "coherence": 4,
+        "reader_accepts": False,
+        "gloss": "partly readable",
+        "anomalies": ["broken middle"],
+        "created_turn": 2,
+    })
+    menu = workflow_state(state, ex)
+    assert menu["state"] == "repair_required"
+    assert any("repair episode" in action for action in menu["actions"])
 
 
 def test_context_respects_token_budget():

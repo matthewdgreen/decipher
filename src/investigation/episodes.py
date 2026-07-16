@@ -35,6 +35,7 @@ from agent.tools_v2 import (
     _json,
 )
 from investigation.actions import (
+    BRANCH_ADJUDICATE_TOOL,
     COMPOSITE_TOOL_DEFINITIONS,
     COMPOSITE_TOOL_NAMES,
     execute_composite,
@@ -158,6 +159,7 @@ _READING_SCHEMA = {
             "type": "object",
             "properties": {
                 "window": {"type": "string"},
+                "span_id": {"type": ["string", "null"]},
                 # A8: optional nullable-integer token indices alongside the M2
                 # `window` string. `required` stays ["text"] (additive schema).
                 "start": {"type": ["integer", "null"]},
@@ -290,15 +292,11 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "corpus_lookup_word", "corpus_word_candidates",
             "score_panel", "score_dictionary",
         }),
-        # Stage-1 forensics (2026-07-15): under the M5.1 contract (positioned
-        # fragments + repair_text + confidence) reading workers exhausted the
-        # old (12, 4096, 180) budget without ever submitting — 10-11 calls of
-        # exploration, then an EMPTY final-nudge reply (gpt-5.5 reasoning
-        # consumed the 4096-token cap with no visible text; same failure class
-        # as the INV harness's 2048-token Fable truncation). Raised to give the
-        # heavier contract room; the contract now also front-loads "submit
-        # early over exploring".
-        "budget": EpisodeBudget(16, 8192, 300.0),
+        # The host supplies the complete candidate packet and stable span ids,
+        # so reading is a bounded interpretation task rather than an open-ended
+        # tool exploration. Keep enough room for one optional lookup plus the
+        # structured submission.
+        "budget": EpisodeBudget(4, 4096, 180.0),
         "result_schema": _READING_SCHEMA,
         "tier": "reading",
         "contract": (
@@ -308,8 +306,9 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "confidence. Your budget is small: prefer submitting a partial "
             "reading early over running more tools — a submitted reading with "
             "honest confidence beats an exhausted budget. "
-            "Report each fragment's start/end token indices when you "
-            "know them. Keep `text` human-readable. When a fragment is confident "
+            "The host gives you opaque span ids. Reference `span_id` exactly; "
+            "never count or invent numeric offsets. Keep `text` human-readable. "
+            "When a fragment is confident "
             "enough to drive key repair, also provide `repair_text` using only "
             "plaintext letters, spaces, and `?` for one unknown token. You do NOT "
             "change the key — you only read it."
@@ -610,13 +609,50 @@ EPISODE_INSTALL_TOOL = {
     },
 }
 
-# The lead sees the full v2 toolset PLUS the two episode lead tools AND the v3
-# composite actions (v2 never sees any of these).
-V3_LEAD_TOOL_DEFINITIONS = (
-    TOOL_DEFINITIONS
-    + [EPISODE_RUN_TOOL, EPISODE_INSTALL_TOOL]
-    + COMPOSITE_TOOL_DEFINITIONS
-)
+# The lead is a strategist, not an operator. Low-level observation, search, and
+# mapping tools remain in the episode library but are intentionally absent from
+# this surface. Benchmark-context reads are included dynamically by
+# ``v3_lead_tool_definitions`` only when such context exists.
+_V3_STRATEGIC_V2_TOOLS = frozenset({
+    "workspace_create_hypothesis_branch",
+    "workspace_update_hypothesis",
+    "workspace_reject_hypothesis",
+    "workspace_hypothesis_next_steps",
+    "decode_show",
+    "repair_agenda_list",
+    "repair_agenda_update",
+    "act_set_model_variant",
+    "meta_request_tool",
+    "meta_declare_solution",
+    "meta_declare_unsolved",
+})
+_V3_CONTEXT_TOOLS = frozenset({
+    "inspect_benchmark_context",
+    "list_related_records",
+    "inspect_related_transcription",
+    "inspect_related_solution",
+    "list_associated_documents",
+    "inspect_associated_document",
+})
+
+
+def v3_lead_tool_definitions(
+    *, include_context_tools: bool = False
+) -> list[dict[str, Any]]:
+    """Return the bounded lead surface; workers still receive scoped v2 tools."""
+    names = set(_V3_STRATEGIC_V2_TOOLS)
+    if include_context_tools:
+        names.update(_V3_CONTEXT_TOOLS)
+    selected = [
+        definition
+        for definition in TOOL_DEFINITIONS
+        if definition["name"] in names
+    ]
+    selected.extend([EPISODE_RUN_TOOL, EPISODE_INSTALL_TOOL, BRANCH_ADJUDICATE_TOOL])
+    return selected
+
+
+V3_LEAD_TOOL_DEFINITIONS = v3_lead_tool_definitions()
 
 
 def _submit_result_tool_def(result_schema: dict[str, Any]) -> dict[str, Any]:
@@ -710,12 +746,31 @@ def build_episode_context(
         return _build_verify_context(spec)
     branches = list(spec.inputs.get("branches") or [])
     parts: list[str] = [f"## Task\n{spec.goal}"]
+    packet = spec.inputs.get("candidate_packet")
+    if spec.kind == "reading" and isinstance(packet, dict):
+        spans = []
+        for span in packet.get("spans") or []:
+            if not isinstance(span, dict):
+                continue
+            spans.append(
+                f"### {span.get('span_id')} "
+                f"(words {span.get('word_start')}:{span.get('word_end')})\n"
+                f"```\n{span.get('text') or ''}\n```"
+            )
+        parts.append(
+            "## Candidate reading packet\n"
+            f"- branch: `{packet.get('branch')}`\n"
+            f"- content hash: `{packet.get('content_hash')}`\n"
+            f"- capability: `{packet.get('capability')}`\n"
+            "Use only the opaque span ids below for positioned fragments.\n\n"
+            + "\n\n".join(spans)
+        )
     if branches:
         cards = [_episode_branch_card_text(executor, b) for b in branches
                  if workspace.has_branch(b)]
         parts.append("## Branch cards\n" + "\n".join(cards))
         first = next((b for b in branches if workspace.has_branch(b)), None)
-        if first is not None:
+        if first is not None and not (spec.kind == "reading" and isinstance(packet, dict)):
             decode = _decoded_text_for_panel(workspace, first)
             window = decode[:_EPISODE_WINDOW_CHARS]
             parts.append(
@@ -982,14 +1037,27 @@ def run_episode(
         state.budget_ledger.extend(_episode_budget_entries())
 
     def _final_result_send() -> EpisodeResult:
-        """Budget exhausted: one final tool-less send asking for the JSON (A9)."""
+        """Budget exhausted: one submit-only send, preserving structured output."""
         nudge = {"role": "user", "content": [{"type": "text", "text": (
-            "Budget reached. Emit ONLY the result JSON now as text (no tool "
-            "call), matching the result schema."
+            "Budget reached. Call episode_submit_result now. Do not call any "
+            "other tool. Submit the best partial result you can support."
         )}]}
-        response = session.send(messages + [nudge], tools=None,
+        submit_def = _submit_result_tool_def(spec.result_schema)
+        response = session.send(messages + [nudge], tools=[submit_def],
                                 max_tokens=budget.max_output_tokens)
-        _blocks, _tu, text_parts = _collect_assistant_blocks(response)
+        _blocks, tool_uses, text_parts = _collect_assistant_blocks(response)
+        for tu in tool_uses:
+            if tu.get("name") != "episode_submit_result":
+                continue
+            args = tu.get("input") or {}
+            proposed = args.get("result")
+            errors = validate_against_schema(proposed, spec.result_schema)
+            if not errors:
+                return _finish(
+                    "ok",
+                    result=proposed,
+                    summary=str(args.get("summary") or ""),
+                )
         raw = "\n".join(text_parts).strip()
         parsed = _extract_json(raw)
         if parsed is not None and not validate_against_schema(parsed, spec.result_schema):

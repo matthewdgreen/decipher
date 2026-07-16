@@ -10,9 +10,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from investigation.reading import (
     Reading,
     ReadingFragment,
+    build_candidate_reading_packet,
     coerce_confidence,
     new_reading_id,
 )
+from models.alphabet import Alphabet
+from models.cipher_text import CipherText
+from workspace import Workspace
 
 
 def test_confidence_coercion_and_clamp():
@@ -116,3 +120,54 @@ def test_from_episode_result_omitted_confidence_is_below_repair_threshold():
     assert r.fragments[0].confidence == 0.9
     assert r.fragments[1].confidence == 0.5
     assert r.fragments[1].confidence < MIN_REPAIR_FRAGMENT_CONFIDENCE
+
+
+def test_candidate_packet_owns_repair_coordinates():
+    alpha = Alphabet.from_text("ABCD EFGH", ignore_chars={" "})
+    workspace = Workspace(CipherText(
+        raw="ABCD EFGH", alphabet=alpha, separator=" "
+    ))
+    branch = workspace.get_branch("main")
+    for token, letter in zip(workspace.effective_tokens("main"), "TESTWORD"):
+        branch.key[token] = workspace.plaintext_alphabet.id_for(letter)
+
+    packet = build_candidate_reading_packet(
+        workspace, "main", window_tokens=4
+    ).to_dict()
+    assert packet["capability"] == "editable_key"
+    assert [s["text"] for s in packet["spans"]] == ["TEST", "WORD"]
+    span = packet["spans"][1]
+
+    reading = Reading.from_episode_result(
+        {
+            "reading_text": "TEST WORD",
+            "fragments": [{
+                "span_id": span["span_id"],
+                # These are deliberately wrong and must not be trusted.
+                "start": 0,
+                "end": 1,
+                "text": "WORD",
+                "repair_text": "WORD",
+                "confidence": 0.9,
+            }],
+            "holes": [],
+            "overall_confidence": 0.9,
+        },
+        branch="main",
+        source="episode:e1",
+        created_turn=2,
+        candidate_packet=packet,
+    )
+    fragment = reading.fragments[0]
+    assert fragment.span_id == span["span_id"]
+    assert (fragment.start, fragment.end) == (4, 8)
+
+
+def test_metadata_candidate_packet_is_explicitly_text_only():
+    alpha = Alphabet.from_text("ABC", ignore_chars=set())
+    workspace = Workspace(CipherText(raw="ABC", alphabet=alpha, separator=None))
+    workspace.get_branch("main").metadata["decoded_text"] = "A READABLE OVERLAY"
+    packet = build_candidate_reading_packet(workspace, "main").to_dict()
+    assert packet["capability"] == "text_only"
+    assert packet["spans"][0]["token_start"] is None
+    assert packet["spans"][0]["text"] == "A READABLE OVERLAY"

@@ -38,7 +38,7 @@ from investigation.board import CARD_MIRROR_KEYS
 from investigation.actions import COMPOSITE_TOOL_NAMES, execute_composite
 from investigation.episodes import (
     EPISODE_KINDS,
-    V3_LEAD_TOOL_DEFINITIONS,
+    v3_lead_tool_definitions,
     EpisodeSpec,
     run_episode,
 )
@@ -49,7 +49,7 @@ from investigation.experiments import (
     dispatch_experiment_collect,
     dispatch_experiment_submit,
 )
-from investigation.reading import Reading
+from investigation.reading import Reading, build_candidate_reading_packet
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
 from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
@@ -431,7 +431,9 @@ def run_v3(
     # F7: assemble the FINAL lead tool list here (never append into episodes.py's
     # constant — import cycle). The v3 lead sees the episode tools plus the two
     # experiment-queue tools.
-    tools = V3_LEAD_TOOL_DEFINITIONS + EXPERIMENT_TOOL_DEFINITIONS
+    tools = v3_lead_tool_definitions(
+        include_context_tools=benchmark_context is not None,
+    ) + EXPERIMENT_TOOL_DEFINITIONS
 
     # M4: the experiment queue is constructed per run over the state records
     # (never serialized). On resume, loaded pending|running records are already
@@ -576,6 +578,17 @@ def run_v3(
             "context_note": args.get("context_note"),
             "max_tool_calls": args.get("max_tool_calls"),
         }
+        if kind == "reading":
+            reading_branches = [
+                name for name in inputs["branches"] if workspace.has_branch(name)
+            ]
+            if len(reading_branches) != 1:
+                return json.dumps({
+                    "error": "reading requires exactly one existing branch"
+                })
+            inputs["candidate_packet"] = build_candidate_reading_packet(
+                workspace, reading_branches[0]
+            ).to_dict()
         compare_branch_hashes = (
             {
                 name: _branch_hash(workspace, name)
@@ -663,6 +676,7 @@ def run_v3(
                 branch=str(branch),
                 source=f"episode:{result.episode_id}",
                 created_turn=turn,
+                candidate_packet=inputs.get("candidate_packet"),
             )
             state.readings[reading.reading_id] = reading.to_dict()
             payload["reading_id"] = reading.reading_id

@@ -21,6 +21,7 @@ from investigation.episodes import (
     episode_toolset_for,
     run_episode,
     validate_against_schema,
+    v3_lead_tool_definitions,
 )
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry, InvestigationState
@@ -46,9 +47,11 @@ class EpisodeFake:
         self._n = 0
         self._budget: list[BudgetEntry] = []
         self.blocks_seen: list = []
+        self.tools_seen: list = []
 
     def send(self, blocks, tools=None, max_tokens=8192):
         self.blocks_seen.append(blocks)
+        self.tools_seen.append(tools)
         self._budget.append(
             BudgetEntry(self._category, self.provider_name, self.model, 100, 20, 5)
         )
@@ -109,6 +112,31 @@ def test_repair_kind_toolset_includes_composites():
 def test_compare_kind_gained_branch_adjudicate():
     spec = EpisodeSpec("compare", "rank", inputs={"branches": ["main"]})
     assert "branch_adjudicate" in spec.toolset
+
+
+def test_v3_lead_surface_is_strategic_and_bounded():
+    definitions = v3_lead_tool_definitions()
+    names = {definition["name"] for definition in definitions}
+    assert len(definitions) <= 16
+    assert {"episode_run", "episode_install_branch", "branch_adjudicate"} <= names
+    assert {"meta_declare_solution", "meta_declare_unsolved"} <= names
+    assert "search_anneal" not in names
+    assert "observe_frequency" not in names
+    assert "act_set_mapping" not in names
+    assert "hypothesis_apply_reading" not in names
+    schema_chars = sum(len(json.dumps(item, sort_keys=True)) for item in definitions)
+    assert schema_chars < 16_000
+
+
+def test_v3_lead_context_tools_are_explicitly_opt_in():
+    base = {item["name"] for item in v3_lead_tool_definitions()}
+    contextual = {
+        item["name"]
+        for item in v3_lead_tool_definitions(include_context_tools=True)
+    }
+    assert "inspect_benchmark_context" not in base
+    assert "inspect_benchmark_context" in contextual
+    assert "inspect_related_solution" in contextual
 
 
 def test_reading_schema_accepts_optional_start_end():
@@ -220,13 +248,17 @@ def test_a9_budget_exhausted_call_count_then_final_send():
     good = {"findings": ["f"], "suspected_modes": [], "recommended_next": []}
     scripts = [
         [ToolUseBlock(id="t1", name="decode_show", input={"branch": "main"})],
-        # budget hit → final tool-less send returns the JSON as text
-        [TextBlock(text=json.dumps(good))],
+        # budget hit → final submit-only send returns structured output
+        [_submit(good, tid="final")],
     ]
-    res = run_episode(spec, state, session=EpisodeFake(scripts))
+    fake = EpisodeFake(scripts)
+    res = run_episode(spec, state, session=fake)
     assert res.status == "ok"
     assert res.result == good
     assert res.tool_call_count == 1
+    assert [tool["name"] for tool in fake.tools_seen[-1]] == [
+        "episode_submit_result"
+    ]
 
 
 def test_a9_budget_exhausted_wall_clock(monkeypatch):
@@ -236,7 +268,7 @@ def test_a9_budget_exhausted_wall_clock(monkeypatch):
     # Clock jumps past the wall-clock budget before the first send.
     ticks = iter([0.0, 10_000.0, 10_001.0, 10_002.0, 10_003.0])
     monkeypatch.setattr(ep_mod.time, "time", lambda: next(ticks, 10_100.0))
-    # Final tool-less send returns invalid text → budget_exhausted failure.
+    # Final submit-only send returns invalid text → budget_exhausted failure.
     scripts = [[TextBlock(text="I could not finish.")]]
     res = run_episode(spec, state, session=EpisodeFake(scripts))
     assert res.status == "episode_failed"

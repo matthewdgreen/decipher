@@ -53,6 +53,78 @@ LATE_VERIFY_TURNS = 4
 POST_ATTEST_PATIENCE = 2
 
 
+def workflow_state(
+    state: InvestigationState,
+    executor: Any,
+) -> dict[str, Any]:
+    """Return the lead's explicit state-dependent action menu."""
+    best, _scores = _best_branch_for_auto_declare(
+        state.workspace, state.language, executor.word_set, executor._freq_rank
+    )
+    attestation = _fresh_attestation(state, best) if best else None
+    if _positive(attestation):
+        return {
+            "state": "verified",
+            "branch": best,
+            "actions": [
+                "Declare the verified branch now.",
+                "Compare only if concrete evidence identifies a distinct rival.",
+            ],
+        }
+    if attestation is not None:
+        coherence = int(attestation.get("coherence") or 0)
+        if coherence >= REPAIRABLE_COHERENCE_MIN or (
+            attestation.get("gloss") and attestation.get("anomalies")
+        ):
+            return {
+                "state": "repair_required",
+                "branch": best,
+                "actions": [
+                    "Run or reuse one reading episode on the attested branch.",
+                    (
+                        "Run one repair episode with that reading and install "
+                        "its best fork."
+                    ),
+                    "Adjudicate and reverify only changed content.",
+                ],
+            }
+        return {
+            "state": "broaden_required",
+            "branch": best,
+            "actions": [
+                "Reject or hold the collapsed basin.",
+                "Run a different search hypothesis; do not polish this text.",
+            ],
+        }
+    if state.readings:
+        return {
+            "state": "candidate_reading",
+            "branch": best,
+            "actions": [
+                (
+                    "Apply a useful stored reading through a repair episode, "
+                    "or verify the leading branch."
+                ),
+                "Compare genuinely distinct finalists before installing another basin.",
+            ],
+        }
+    return {
+        "state": "searching",
+        "branch": best,
+        "actions": [
+            "Delegate diagnosis/search work to focused episodes or experiments.",
+            "Read and verify a sustained candidate by mid-budget.",
+        ],
+    }
+
+
+def _render_workflow_state(state: InvestigationState, executor: Any) -> str:
+    menu = workflow_state(state, executor)
+    branch = f" on `{menu['branch']}`" if menu.get("branch") else ""
+    actions = "\n".join(f"- {item}" for item in menu["actions"])
+    return f"## Workflow state: {menu['state']}{branch}\n{actions}"
+
+
 # ---------------------------------------------------------------------------
 # v3 system prompt — a NEW, much shorter brief (~1/3 of v2). No cipher-mode
 # playbooks, no reading-repair discipline essay: the hypothesis board and tool
@@ -68,9 +140,11 @@ How this loop works
 cipher, a diagnostic fingerprint, the current branch cards, the hypothesis \
 board, recent evidence, and a rotating window over the full decode. The view \
 is the source of truth — you do not need to re-derive facts it already states.
-- You act through tools. A `main` branch exists; fork branches to explore \
-competing hypotheses, set mappings, run searches, and read the decode. Tool \
-results are your instruments; trust the decoded text over any single score.
+- You are the strategist. Delegate diagnosis, search, reading, comparison, and \
+repair to focused episodes; long solver work belongs in experiments. Your \
+direct tools are for state, context, compact reads, installation, and final \
+decisions. Tool results are your instruments; trust decoded text over any \
+single score.
 - Work at the hypothesis level: form a hypothesis about the cipher, test it, \
 keep evidence for and against on the branch, and move on when it is settled.
 - Begin each turn with one short plain-language sentence saying what you are \
@@ -99,10 +173,9 @@ real {language_name}). An episode runs in an isolated copy of the branches you \
 name and returns a result summary plus branch snapshots; nothing it does \
 touches your workspace until you call `episode_install_branch`. Integrate an \
 episode's findings and snapshots explicitly — they do not apply themselves.
-- Readings are applied with `hypothesis_apply_reading` (one fork with the key \
-edits and word boundaries a reading implies), and individual words are tested \
-with `hypothesis_test_word` — reach for them instead of hand-editing when a \
-branch mostly reads but has residual errors.
+- A repair episode applies stored Readings and tests individual words on \
+isolated forks. Install only its supported winner; do not hand-edit mappings \
+from the lead context.
 - Long solver runs go through `experiment_submit` and run in the background \
 while you keep working. Check and adjudicate them with `experiment_collect`, \
 which polls the queue and installs a completed run's branch when you ask.
@@ -727,6 +800,7 @@ def build_lead_context(
     )
     if attestation_hint:
         view_sections.append(attestation_hint)
+    view_sections.append(_render_workflow_state(state, executor))
     view_sections += [
         _render_branch_cards(state, executor, branch_cards),
         _render_hypothesis_board(state),
