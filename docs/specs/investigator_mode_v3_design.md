@@ -657,3 +657,38 @@ to a Phase-2.x. It pays off before any investigator loop exists: the Beale
 wrong-basin fixture caught by a compiled detector, and v2 finalist
 validation hardened. The anti-pareidolia core is loop-independent, and it
 is the best value-per-effort item found anywhere in this design.
+
+## Recorded design notes (2026-07-15, user-requested)
+
+### Cross-run investigation memory (the "case file")
+
+Proposal (Matthew, 2026-07-15): an INV run's results should be
+recordable so that a LATER run on the SAME cipher can consume them —
+optionally, not in every case, so it doesn't confound experiments.
+
+Design sketch (for the INV-1+ slice that implements it):
+
+- **What persists**: the DiagnosisReport (ranked families, atoms,
+  verdict), discriminator results already run (with their statistics),
+  verified NEGATIVE results ("periodic-IC null p=0.26 — polyalphabetic
+  disfavored"), and any attested readings — i.e. evidence and rulings,
+  not raw transcripts.
+- **Keyed by ciphertext content hash** (same identity rule as M5
+  attestations): "the same cipher" is decided by the token stream, not
+  by filename or benchmark id — no benchmark metadata in the case file
+  (firewall preserved).
+- **Consumption is OPT-IN per run** (e.g. `--case-file <path>` or a
+  registry keyed by hash with an explicit flag): default OFF so
+  experiments are unconfounded. Every consumed case file is stamped
+  into the artifact (provenance: which run produced it, when), so a
+  run's context is always auditable.
+- **Experiment protocol**: with-memory and without-memory arms are
+  distinct conditions, never mixed in an aggregate. This gives the
+  playbook ablation a third axis, cleanly separated:
+  (a) +fingerprint = computed statistical EVIDENCE for this ciphertext;
+  (b) +playbook = static METHODOLOGY (family checklists, discriminator
+  recipes, composite discipline — no per-case data);
+  (c) +case-file = MEMORY from prior investigations of this cipher.
+  The 2026-07-14 sweep's universal composite failure is the standing
+  motivation for (b); long-horizon ciphers (Beale-class, multi-session)
+  are the motivation for (c).
