@@ -94,7 +94,7 @@ def test_f5_rename_resyncs_attestation_branch_no_mislabel():
     """End-to-end: an episode_install_branch collision renames the installed
     branch, and declaring the renamed branch carries a correctly-labeled
     attestation (the label followed the content to the new name)."""
-    ct, state, _alpha, _pt = _keyed_state()  # main decodes CATON
+    ct, state, alpha, pt = _keyed_state()  # main initially decodes CATON
     ws = state.workspace
     # Collision target `cand` already exists and decodes DIFFERENTLY (no key).
     ws.restore_branch("cand", key={})
@@ -118,6 +118,10 @@ def test_f5_rename_resyncs_attestation_branch_no_mislabel():
         "coherence": 9, "reader_accepts": True, "gloss": "",
         "anomalies": [], "created_turn": 0,
     })
+    # Move the live source away from CATON after capturing the snapshot. The
+    # install is now content-distinct (so dedup does not intentionally alias it
+    # back to main), while still exercising the collision rename/resync path.
+    ws.set_mapping("main", alpha.id_for("a"), pt.id_for("Z"))
 
     scripts = [
         [ToolUseBlock(id="i1", name="episode_install_branch",
