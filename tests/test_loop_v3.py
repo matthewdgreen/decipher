@@ -13,9 +13,10 @@ from agent.model_provider import ModelProviderError, ModelResponse, ModelUsage, 
 from investigation import sessions as sessions_mod
 from investigation.loop_v3 import _fresh_compare_winner, run_v3
 from investigation.sessions import SessionCapabilities
-from investigation.state import BudgetEntry
+from investigation.state import BudgetEntry, InvestigationState
 from models.alphabet import Alphabet
 from models.cipher_text import CipherText
+from workspace import Workspace
 
 
 def _caesar(text: str, shift: int) -> str:
@@ -40,10 +41,12 @@ class ScriptedSession:
         self._scripts = list(scripts)
         self._budget: list[BudgetEntry] = []
         self.blocks_seen: list = []
+        self.tools_seen: list = []
         self._n = 0
 
     def send(self, blocks, tools=None, max_tokens=8192):
         self.blocks_seen.append(blocks)
+        self.tools_seen.append(tools)
         self._budget.append(
             BudgetEntry("lead", self.provider_name, self.model, 1000, 50, 100)
         )
@@ -104,16 +107,28 @@ def verify_fake():
     sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
 
 
+def _apply_caesar_key(workspace, alpha):
+    for index in range(alpha.size):
+        cipher_symbol = alpha.symbol_for(index)
+        workspace.set_mapping(
+            "main",
+            workspace.cipher_text.alphabet.id_for(cipher_symbol),
+            workspace.plaintext_alphabet.id_for(_caesar(cipher_symbol, -3)),
+        )
+
+
+def _seeded_caesar_state(ct, alpha, *, with_alt=False):
+    state = InvestigationState(workspace=Workspace(ct), language="en")
+    state.add_evidence("diagnostic_preflight", turn=0, summary="seeded test state")
+    _apply_caesar_key(state.workspace, alpha)
+    if with_alt:
+        state.workspace.fork("alt", from_branch="main")
+    return state
+
+
 def _solve_scripts(alpha):
-    mapping = {
-        alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
-        for i in range(alpha.size)
-    }
     return [
-        [TextBlock(text="Looks like a Caesar; setting the whole key."),
-         ToolUseBlock(id="t1", name="act_bulk_set",
-                      input={"branch": "main", "mappings": mapping})],
-        [ToolUseBlock(id="t2", name="decode_show", input={"branch": "main"})],
+        [ToolUseBlock(id="t1", name="decode_show", input={"branch": "main"})],
         # M5: a verify episode on `main` before declaring (the AttestationPolicy
         # requires a fresh attestation).
         [ToolUseBlock(id="tv", name="episode_run",
@@ -134,14 +149,10 @@ def test_run_v3_scripted_solve_verify_then_declare(verify_fake):
     # declaration; M5's AttestationPolicy keeps only the one attestation check —
     # with a fresh attestation from the verify episode the declaration is
     # accepted immediately (no v2 cascade bounce).
-    scripts[0].insert(
-        1,
-        ToolUseBlock(id="t0", name="workspace_fork",
-                     input={"new_name": "alt", "from_branch": "main"}),
-    )
     session = ScriptedSession(scripts)
     art = run_v3(ct, session=session, language="en", max_iterations=10,
-                 cipher_id="v3_caesar")
+                 cipher_id="v3_caesar",
+                 resume_state=_seeded_caesar_state(ct, alpha, with_alt=True))
 
     assert art.status == "solved"
     assert art.loop_version == "v3"
@@ -167,29 +178,28 @@ def test_run_v3_tool_iteration_is_lead_turn(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
-                 cipher_id="v3_iter")
+                 cipher_id="v3_iter", resume_state=_seeded_caesar_state(ct, alpha))
     by_name = {tc.tool_name: tc.iteration for tc in art.tool_calls}
-    assert by_name["act_bulk_set"] == 1
-    assert by_name["decode_show"] == 2
-    # The verify episode_run runs at lead turn 3 (episode_run is a lead-dispatch
+    assert by_name["decode_show"] == 1
+    # The verify episode_run runs at lead turn 2 (episode_run is a lead-dispatch
     # tool, not an executor ToolCall, so it does not appear in by_name); the
-    # declaration lands at turn 4.
-    assert by_name["meta_declare_solution"] == 4
+    # declaration lands at turn 3.
+    assert by_name["meta_declare_solution"] == 3
 
 
 def test_run_v3_records_state_budget_and_transcript(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
-                 cipher_id="v3_state")
+                 cipher_id="v3_state", resume_state=_seeded_caesar_state(ct, alpha))
     # Budget accounting flows from the session's per-send entries. Four lead
-    # sends (bulk_set, decode_show, verify episode_run, declare) plus one
+    # sends (decode_show, verify episode_run, declare) plus one
     # episode:verify send (50/10/0).
-    assert art.budget_by_category["lead"]["calls"] == 4
+    assert art.budget_by_category["lead"]["calls"] == 3
     assert art.budget_by_category["episode:verify"]["calls"] == 1
-    assert art.total_input_tokens == 4 * 1000 + 50
-    assert art.total_output_tokens == 4 * 50 + 10
-    assert art.total_cache_read_tokens == 4 * 100 + 0
+    assert art.total_input_tokens == 3 * 1000 + 50
+    assert art.total_output_tokens == 3 * 50 + 10
+    assert art.total_cache_read_tokens == 3 * 100 + 0
     # Artifact carries the v3 additions.
     assert art.session_transcript["provider"] == "openai"
     assert art.investigation_state is not None
@@ -222,21 +232,113 @@ def test_run_v3_exhaustion_falls_back():
     assert art.solution is not None
 
 
+def test_v3_rejects_hidden_operator_tool_at_dispatch():
+    ct, alpha = _caesar_cipher("THE DOG")
+    session = ScriptedSession([
+        [ToolUseBlock(id="hidden", name="act_set_mapping", input={
+            "branch": "main", "cipher_symbol": alpha.symbol_for(0),
+            "plain_letter": "T",
+        })],
+        [TextBlock(text="done")],
+    ])
+    art = run_v3(
+        ct,
+        session=session,
+        language="en",
+        max_iterations=2,
+        cipher_id="v3_hidden_tool",
+    )
+    call = next(tc for tc in art.tool_calls if tc.tool_name == "act_set_mapping")
+    assert json.loads(call.result)["reason"] == "lead_tool_not_available"
+    main = next(
+        branch for branch in art.investigation_state["workspace"]["branches"]
+        if branch["name"] == "main"
+    )
+    assert not main["key"]
+    assert any(event.event == "lead_tool_rejected" for event in art.loop_events)
+
+
+def test_v3_suppresses_duplicate_decode_on_unchanged_content():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    session = ScriptedSession([
+        [ToolUseBlock(id="read1", name="decode_show", input={"branch": "main"})],
+        [ToolUseBlock(id="read2", name="decode_show", input={"branch": "main"})],
+        [TextBlock(text="done")],
+    ])
+    art = run_v3(
+        ct,
+        session=session,
+        language="en",
+        max_iterations=3,
+        cipher_id="v3_duplicate_read",
+    )
+    calls = [tc for tc in art.tool_calls if tc.tool_name == "decode_show"]
+    assert len(calls) == 2
+    assert json.loads(calls[1].result)["status"] == "duplicate_suppressed"
+    assert any(event.event == "duplicate_read_suppressed" for event in art.loop_events)
+
+
+def test_repair_required_state_narrows_episode_schema_and_dispatch():
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    ct, alpha = _caesar_cipher("THE DOG")
+    state = _seeded_caesar_state(ct, alpha)
+    decoded = _decoded_text_for_panel(state.workspace, "main")
+    state.verify_attestations.append({
+        "branch": "main",
+        "content_hash": _candidate_content_hash(decoded),
+        "coherence": 4,
+        "reader_accepts": False,
+        "gloss": "partly readable",
+        "anomalies": ["broken clause"],
+        "created_turn": 0,
+    })
+    session = ScriptedSession([
+        [ToolUseBlock(id="search", name="episode_run", input={
+            "kind": "search",
+            "goal": "wander away",
+            "branches": ["main"],
+            "search_tool": "search_anneal",
+        })],
+        [TextBlock(text="done")],
+    ])
+    art = run_v3(
+        ct,
+        session=session,
+        language="en",
+        max_iterations=2,
+        cipher_id="v3_repair_transition",
+        resume_state=state,
+    )
+    episode_def = next(
+        definition for definition in session.tools_seen[0]
+        if definition["name"] == "episode_run"
+    )
+    kinds = episode_def["input_schema"]["properties"]["kind"]["enum"]
+    assert "repair" in kinds and "reading" in kinds
+    assert "search" not in kinds and "survey" not in kinds
+    result_blocks = [
+        block
+        for message in art.messages
+        for block in (message.get("content") or [])
+        if isinstance(block, dict) and block.get("tool_use_id") == "search"
+    ]
+    assert result_blocks
+    assert json.loads(result_blocks[0]["content"])["reason"] == (
+        "episode_kind_not_available"
+    )
+
+
 def test_run_v3_positive_attestation_drives_attested_fallback(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
-    mapping = {
-        alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
-        for i in range(alpha.size)
-    }
     scripts = [
-        [ToolUseBlock(id="set", name="act_bulk_set",
-                      input={"branch": "main", "mappings": mapping})],
         [ToolUseBlock(id="verify", name="episode_run",
                       input={"kind": "verify", "goal": "verify main",
                              "branches": ["main"]})],
     ]
     art = run_v3(ct, session=ScriptedSession(scripts), language="en",
-                 max_iterations=2, cipher_id="v3_attested_fallback")
+                 max_iterations=1, cipher_id="v3_attested_fallback",
+                 resume_state=_seeded_caesar_state(ct, alpha))
     assert art.status == "fallback_declared"
     assert art.auto_declared is True
     assert art.attested_fallback is True
@@ -277,17 +379,14 @@ def test_run_v3_declare_without_verify_is_blocked_then_falls_back():
     """M5: meta_declare_solution with no verify attestation is blocked; the run
     exhausts to the fallback declaration, which itself needs no attestation."""
     ct, alpha = _caesar_cipher("THE DOG")
-    mapping = {alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
-               for i in range(alpha.size)}
     scripts = [
-        [ToolUseBlock(id="t1", name="act_bulk_set",
-                      input={"branch": "main", "mappings": mapping})],
         [ToolUseBlock(id="d1", name="meta_declare_solution",
                       input={"branch": "main", "rationale": "reads",
                              "self_confidence": 0.9})],
     ]
     art = run_v3(ct, session=ScriptedSession(scripts), language="en",
-                 max_iterations=4, cipher_id="v3_no_verify")
+                 max_iterations=4, cipher_id="v3_no_verify",
+                 resume_state=_seeded_caesar_state(ct, alpha))
     declare_results = [json.loads(tc.result) for tc in art.tool_calls
                        if tc.tool_name == "meta_declare_solution"]
     assert declare_results
@@ -323,7 +422,8 @@ def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
     try:
         ct, alpha = _caesar_cipher("THE DOG")
         art = run_v3(ct, session=ScriptedSession(_solve_scripts(alpha)),
-                     language="en", max_iterations=10, cipher_id="v3_weak")
+                     language="en", max_iterations=10, cipher_id="v3_weak",
+                     resume_state=_seeded_caesar_state(ct, alpha))
     finally:
         sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
     assert art.status == "solved"
@@ -358,7 +458,8 @@ def test_run_v3_out_of_scale_coherence_records_floor_not_maximum():
     try:
         ct, alpha = _caesar_cipher("THE DOG")
         art = run_v3(ct, session=ScriptedSession(_solve_scripts(alpha)),
-                     language="en", max_iterations=10, cipher_id="v3_scale")
+                     language="en", max_iterations=10, cipher_id="v3_scale",
+                     resume_state=_seeded_caesar_state(ct, alpha))
     finally:
         sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
     assert art.attestations, "verify episode should have produced an attestation"
@@ -379,11 +480,7 @@ def test_run_v3_post_declare_tools_in_same_batch_do_not_run():
     a paired `run_terminated` tool_result, and the declaration keeps its
     attestation."""
     ct, alpha = _caesar_cipher("THE DOG")
-    mapping = {alpha.symbol_for(i): _caesar(alpha.symbol_for(i), -3)
-               for i in range(alpha.size)}
     scripts = [
-        [ToolUseBlock(id="t1", name="act_bulk_set",
-                      input={"branch": "main", "mappings": mapping})],
         [ToolUseBlock(id="tv", name="episode_run",
                       input={"kind": "verify", "goal": "verify main",
                              "branches": ["main"]})],
@@ -399,7 +496,8 @@ def test_run_v3_post_declare_tools_in_same_batch_do_not_run():
     sessions_mod.register_session_builder("episode:verify", VerifyWorkerFake)
     try:
         art = run_v3(ct, session=ScriptedSession(scripts), language="en",
-                     max_iterations=10, cipher_id="v3_post_declare")
+                     max_iterations=10, cipher_id="v3_post_declare",
+                     resume_state=_seeded_caesar_state(ct, alpha))
     finally:
         sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
 
@@ -425,7 +523,8 @@ def test_run_v3_resume_from_state_continues(verify_fake):
     ct, alpha = _caesar_cipher("THE DOG")
     session = ScriptedSession(_solve_scripts(alpha))
     art = run_v3(ct, session=session, language="en", max_iterations=10,
-                 cipher_id="v3_resume")
+                 cipher_id="v3_resume",
+                 resume_state=_seeded_caesar_state(ct, alpha))
     # Reload state from the artifact and confirm it is a valid resume seed.
     from investigation.state import InvestigationState
     reloaded = InvestigationState.from_artifact_dict(
@@ -448,6 +547,7 @@ def test_run_v3_resume_continues_from_state_turn_monotonic(verify_fake):
 
     reloaded = InvestigationState.from_artifact_dict(
         json.loads(json.dumps(first.investigation_state)))
+    _apply_caesar_key(reloaded.workspace, alpha)
     # Leg 2: resume and solve. Turns continue strictly past the pre-resume turns.
     seen = []
     second = run_v3(

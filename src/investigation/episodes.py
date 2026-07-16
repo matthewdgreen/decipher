@@ -637,7 +637,9 @@ _V3_CONTEXT_TOOLS = frozenset({
 
 
 def v3_lead_tool_definitions(
-    *, include_context_tools: bool = False
+    *,
+    include_context_tools: bool = False,
+    allowed_episode_kinds: list[str] | tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the bounded lead surface; workers still receive scoped v2 tools."""
     names = set(_V3_STRATEGIC_V2_TOOLS)
@@ -648,7 +650,11 @@ def v3_lead_tool_definitions(
         for definition in TOOL_DEFINITIONS
         if definition["name"] in names
     ]
-    selected.extend([EPISODE_RUN_TOOL, EPISODE_INSTALL_TOOL, BRANCH_ADJUDICATE_TOOL])
+    episode_run = copy.deepcopy(EPISODE_RUN_TOOL)
+    if allowed_episode_kinds is not None:
+        valid = [kind for kind in allowed_episode_kinds if kind in EPISODE_KINDS]
+        episode_run["input_schema"]["properties"]["kind"]["enum"] = valid
+    selected.extend([episode_run, EPISODE_INSTALL_TOOL, BRANCH_ADJUDICATE_TOOL])
     return selected
 
 

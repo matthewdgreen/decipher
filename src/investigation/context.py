@@ -118,6 +118,26 @@ def workflow_state(
     }
 
 
+def allowed_episode_kinds(state: InvestigationState, executor: Any) -> list[str]:
+    """Return episode kinds valid in the current workflow state."""
+    phase = workflow_state(state, executor)["state"]
+    by_phase = {
+        "searching": ["survey", "search", "reading", "compare", "repair", "verify"],
+        "candidate_reading": ["search", "reading", "compare", "repair", "verify"],
+        "repair_required": ["reading", "compare", "repair", "verify"],
+        "broaden_required": ["survey", "search", "compare", "verify"],
+        "verified": ["compare", "verify"],
+    }
+    return list(by_phase.get(str(phase), list(EPISODE_KINDS_FOR_CONTEXT)))
+
+
+# Kept local to avoid importing ``episodes`` into the context builder (which
+# would create an import cycle through the episode renderer).
+EPISODE_KINDS_FOR_CONTEXT = (
+    "survey", "search", "reading", "compare", "repair", "verify"
+)
+
+
 def _render_workflow_state(state: InvestigationState, executor: Any) -> str:
     menu = workflow_state(state, executor)
     branch = f" on `{menu['branch']}`" if menu.get("branch") else ""

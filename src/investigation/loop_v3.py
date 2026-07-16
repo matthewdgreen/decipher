@@ -52,10 +52,12 @@ from investigation.experiments import (
 from investigation.reading import Reading, build_candidate_reading_packet
 from analysis import cipher_id as cipher_id_analysis
 from analysis import dictionary, pattern
-from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration
+from artifact.schema import LoopEvent, RunArtifact, SolutionDeclaration, ToolCall
 from investigation.context import (
+    allowed_episode_kinds,
     build_lead_context,
     build_v3_system_prompt,
+    workflow_state,
     workflow_hint_candidates,
     DECLARE_COHERENCE,
 )
@@ -431,10 +433,6 @@ def run_v3(
     # F7: assemble the FINAL lead tool list here (never append into episodes.py's
     # constant — import cycle). The v3 lead sees the episode tools plus the two
     # experiment-queue tools.
-    tools = v3_lead_tool_definitions(
-        include_context_tools=benchmark_context is not None,
-    ) + EXPERIMENT_TOOL_DEFINITIONS
-
     # M4: the experiment queue is constructed per run over the state records
     # (never serialized). On resume, loaded pending|running records are already
     # orphaned(loaded); this fresh queue owns no threads.
@@ -443,6 +441,56 @@ def run_v3(
     # Full episode ToolCalls accumulate here and merge into artifact.tool_calls
     # at finalize (F10). The compact ledger summary lives in state.episode_ledger.
     episode_tool_calls: list[Any] = []
+    current_lead_tool_names: set[str] = set()
+    current_episode_kinds: set[str] = set()
+    read_call_cache: dict[tuple[str, str, tuple[tuple[str, str], ...]], str] = {}
+
+    read_only_lead_tools = frozenset({
+        "decode_show",
+        "repair_agenda_list",
+        "branch_adjudicate",
+        "inspect_benchmark_context",
+        "list_related_records",
+        "inspect_related_transcription",
+        "inspect_related_solution",
+        "list_associated_documents",
+        "inspect_associated_document",
+    })
+
+    def _lead_read_cache_key(
+        name: str, args: dict[str, Any]
+    ) -> tuple[str, str, tuple[tuple[str, str], ...]]:
+        normalized = json.dumps(args or {}, sort_keys=True, default=str)
+        branch_names: list[str] = []
+        if isinstance(args.get("branch"), str):
+            branch_names.append(str(args["branch"]))
+        for branch_name in args.get("branches") or []:
+            if isinstance(branch_name, str):
+                branch_names.append(branch_name)
+        if name == "decode_show" and not branch_names:
+            branch_names.append("main")
+        hashes = tuple(
+            sorted(
+                (branch_name, _branch_hash(workspace, branch_name))
+                for branch_name in set(branch_names)
+                if workspace.has_branch(branch_name)
+            )
+        )
+        return name, normalized, hashes
+
+    def _record_dispatch_result(
+        *, name: str, tu: dict[str, Any], turn: int, payload: dict[str, Any]
+    ) -> str:
+        rendered = json.dumps(payload, ensure_ascii=False)
+        executor.call_log.append(ToolCall(
+            iteration=turn,
+            tool_name=name,
+            tool_use_id=str(tu.get("id") or ""),
+            arguments=dict(tu.get("input") or {}),
+            result=rendered,
+            elapsed_ms=0,
+        ))
+        return rendered
 
     def _provider_for_model(model_id: str | None) -> Any:
         """Return a provider for an episode model id (same client, swapped model)."""
@@ -755,8 +803,66 @@ def run_v3(
 
     def _dispatch_tool(tu: dict[str, Any], turn: int) -> str:
         name = tu["name"]
+        if name not in current_lead_tool_names:
+            emit("lead_tool_rejected", {
+                "tool": name,
+                "reason": "lead_tool_not_available",
+                "workflow_state": workflow_state(state, executor)["state"],
+            }, outer_iteration=turn)
+            return _record_dispatch_result(
+                name=name,
+                tu=tu,
+                turn=turn,
+                payload={
+                    "status": "blocked",
+                    "reason": "lead_tool_not_available",
+                    "tool": name,
+                    "note": (
+                        "This operator tool is not available to the v3 lead. "
+                        "Delegate the work through an episode or experiment."
+                    ),
+                },
+            )
+        args = tu.get("input") or {}
         if name == "episode_run":
-            return _dispatch_episode_run(tu, turn)
+            requested_kind = str(args.get("kind") or "")
+            if requested_kind not in current_episode_kinds:
+                return _record_dispatch_result(
+                    name=name,
+                    tu=tu,
+                    turn=turn,
+                    payload={
+                        "status": "blocked",
+                        "reason": "episode_kind_not_available",
+                        "requested_kind": requested_kind,
+                        "allowed_kinds": sorted(current_episode_kinds),
+                        "workflow_state": workflow_state(state, executor)["state"],
+                    },
+                )
+        cache_key = None
+        if name in read_only_lead_tools:
+            cache_key = _lead_read_cache_key(name, args)
+            if cache_key in read_call_cache:
+                emit("duplicate_read_suppressed", {
+                    "tool": name,
+                    "workflow_state": workflow_state(state, executor)["state"],
+                }, outer_iteration=turn)
+                return _record_dispatch_result(
+                    name=name,
+                    tu=tu,
+                    turn=turn,
+                    payload={
+                        "status": "duplicate_suppressed",
+                        "tool": name,
+                        "note": (
+                            "The same read was already performed against "
+                            "unchanged content; use the investigation state."
+                        ),
+                    },
+                )
+        if name == "episode_run":
+            result = _dispatch_episode_run(tu, turn)
+            return result
         if name == "episode_install_branch":
             return _dispatch_episode_install(tu, turn)
         # M4: experiment-queue lead tools are routed before executor.execute (the
@@ -793,12 +899,17 @@ def run_v3(
                 name, tu.get("input") or {}, executor=executor,
                 state_readings=state.readings, turn=turn, tool_use_id=tu["id"],
             )
-            return json.dumps(result_obj, ensure_ascii=False)
-        result = executor.execute(name, tu["input"], tool_use_id=tu["id"])
+            result = json.dumps(result_obj, ensure_ascii=False)
+            if cache_key is not None:
+                read_call_cache[cache_key] = result
+            return result
+        result = executor.execute(name, args, tool_use_id=tu["id"])
         # Mirror the executor's model-variant selection into state so episodes
         # inherit it and it serializes for resume (act_set_model_variant is the
         # only writer; mirroring unconditionally keeps them in lock-step).
         state.model_variant = executor._model_variant
+        if cache_key is not None:
+            read_call_cache[cache_key] = result
         return result
 
     # R1: a resume continues from where the serialized state left off; a
@@ -822,6 +933,12 @@ def run_v3(
         messages = build_lead_context(
             state, executor, turn, token_budget, max_iterations
         )
+        current_episode_kinds = set(allowed_episode_kinds(state, executor))
+        tools = v3_lead_tool_definitions(
+            include_context_tools=benchmark_context is not None,
+            allowed_episode_kinds=sorted(current_episode_kinds),
+        ) + EXPERIMENT_TOOL_DEFINITIONS
+        current_lead_tool_names = {definition["name"] for definition in tools}
 
         # M6 F7: make the F9 late-turn attestation hint artifact-visible for the
         # bake-off. The context builder RENDERS the reminder (render-only, no

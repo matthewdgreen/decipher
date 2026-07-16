@@ -52,18 +52,20 @@ Local acceptance:
 
 ## Slice 2 - Enforced Workflow Transitions
 
-The lead's visible tools are now bounded, but the dispatcher still accepts
-legacy low-level calls from old scripted tests and resumed transcripts. Replace
-that compatibility behavior with an explicit transition policy:
+Implemented 2026-07-16.
 
-- derive allowed episode kinds from `searching`, `candidate_reading`,
+The lead's visible tools are bounded and the dispatcher now enforces that
+surface. Historical exchanges remain context only and do not restore legacy
+tool authority. The transition policy now:
+
+- derives allowed episode kinds from `searching`, `candidate_reading`,
   `repair_required`, `broaden_required`, and `verified`;
-- narrow the `episode_run.kind` enum each turn;
-- reject hidden direct tools with a structured `lead_tool_not_available`
+- narrows the `episode_run.kind` enum each turn;
+- rejects hidden direct tools with a structured `lead_tool_not_available`
   result;
-- preserve a narrowly scoped resume migration for already-paired historical
-  exchanges, not a permanent low-level escape hatch;
-- add duplicate read suppression keyed by tool name, normalized arguments, and
+- preserves already-paired historical exchanges without granting an escape
+  hatch; and
+- suppresses duplicate reads keyed by tool name, normalized arguments, and
   unchanged branch content hash.
 
 ## Slice 3 - Repair-Capable Candidate Representation
