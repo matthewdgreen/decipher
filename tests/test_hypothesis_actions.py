@@ -217,6 +217,56 @@ def test_f6_composites_reject_transform_and_decoded_text_branches():
     assert r4["status"] == "unsupported" and "decoded_text" in r4["error"]
 
 
+def test_null_mask_candidate_reading_repairs_through_filtered_provenance():
+    from agent.loop_shared import _decoded_text_for_panel
+    from investigation.reading import Reading, build_candidate_reading_packet
+
+    alpha = Alphabet.from_text("AXBC", ignore_chars=set())
+    ct = CipherText(raw="AXBC", alphabet=alpha, separator=None)
+    workspace = Workspace(ct)
+    pt = workspace.plaintext_alphabet
+    for symbol, letter in {"A": "C", "X": "Z", "B": "T", "C": "S"}.items():
+        workspace.set_mapping("main", alpha.id_for(symbol), pt.id_for(letter))
+    branch = workspace.get_branch("main")
+    branch.metadata.update({
+        "decoded_text": "CTS",
+        "decoded_text_source": "act_install_null_mask_finalists",
+        "key_type": "homophonic_with_null_mask",
+        "null_mask_finalist": {"mask": ["X"], "rank": 1},
+    })
+    executor = WorkspaceToolExecutor(
+        workspace, "en", {"COS"}, ["COS"], {}, declaration_policy=NoGatesPolicy()
+    )
+    packet = build_candidate_reading_packet(workspace, "main").to_dict()
+    span = packet["spans"][0]
+    reading = Reading.from_episode_result(
+        {
+            "reading_text": "COS",
+            "fragments": [{
+                "span_id": span["span_id"],
+                "text": "COS",
+                "repair_text": "COS",
+                "confidence": 0.95,
+            }],
+            "holes": [],
+            "overall_confidence": 0.95,
+        },
+        branch="main",
+        source="episode:test",
+        created_turn=1,
+        candidate_packet=packet,
+    )
+    result = _apply(
+        executor,
+        {"branch": "main", "reading_id": reading.reading_id},
+        state_readings={reading.reading_id: reading.to_dict()},
+    )
+    assert result["status"] == "ok"
+    assert result["edits"] == ["B=O"]
+    assert result["fragments"][0]["token_indices"] == [0, 2, 3]
+    assert _decoded_text_for_panel(workspace, result["fork"]) == "COS"
+
+
 def test_phase6_c_window_scoped_outside_byte_identical():
     # decode: CAT ON  (tokens a b c | d e). Scope the window to tokens [3,5) and
     # change only symbol e; tokens/spans/key outside must stay byte-identical.

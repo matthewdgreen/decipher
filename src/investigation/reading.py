@@ -12,7 +12,6 @@ plaintext, and the firewall covers this surface (Part 8).
 """
 from __future__ import annotations
 
-import hashlib
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -65,6 +64,7 @@ class ReadingFragment:
     text: str
     repair_text: str | None = None
     span_id: str | None = None
+    token_indices: list[int] | None = None
     start: int | None = None
     end: int | None = None
     confidence: float = 1.0
@@ -77,6 +77,9 @@ class ReadingFragment:
             "text": self.text,
             "repair_text": self.repair_text,
             "span_id": self.span_id,
+            "token_indices": (
+                list(self.token_indices) if self.token_indices is not None else None
+            ),
             "confidence": self.confidence,
             "label": self.label,
         }
@@ -91,6 +94,11 @@ class ReadingFragment:
                 else None
             ),
             span_id=(str(data["span_id"]) if data.get("span_id") else None),
+            token_indices=(
+                [int(value) for value in data.get("token_indices") or []]
+                if data.get("token_indices") is not None
+                else None
+            ),
             start=_coerce_span(data.get("start")),
             end=_coerce_span(data.get("end")),
             confidence=coerce_confidence(data.get("confidence")),
@@ -185,9 +193,15 @@ class Reading:
             if candidate_packet is not None:
                 start = _coerce_span((bound_span or {}).get("token_start"))
                 end = _coerce_span((bound_span or {}).get("token_end"))
+                token_indices = (
+                    [int(value) for value in (bound_span or {}).get("token_indices") or []]
+                    if bound_span is not None
+                    else None
+                )
             else:
                 start = _coerce_span(item.get("start"))
                 end = _coerce_span(item.get("end"))
+                token_indices = None
             fragments.append(
                 ReadingFragment(
                     text=str(item.get("text") or ""),
@@ -197,6 +211,7 @@ class Reading:
                         else None
                     ),
                     span_id=span_id if bound_span is not None else None,
+                    token_indices=token_indices,
                     start=start,
                     end=end,
                     confidence=coerce_confidence(item.get("confidence")),
@@ -250,6 +265,7 @@ class CandidateReadingSpan:
     text: str
     token_start: int | None
     token_end: int | None
+    token_indices: tuple[int, ...] | None = None
     word_start: int | None = None
     word_end: int | None = None
 
@@ -259,6 +275,9 @@ class CandidateReadingSpan:
             "text": self.text,
             "token_start": self.token_start,
             "token_end": self.token_end,
+            "token_indices": (
+                list(self.token_indices) if self.token_indices is not None else None
+            ),
             "word_start": self.word_start,
             "word_end": self.word_end,
         }
@@ -277,6 +296,8 @@ class CandidateReadingPacket:
     content_hash: str
     renderer_id: str
     capability: str
+    capabilities: tuple[str, ...]
+    provenance: dict[str, Any]
     candidate_text: str
     spans: tuple[CandidateReadingSpan, ...]
 
@@ -286,6 +307,8 @@ class CandidateReadingPacket:
             "content_hash": self.content_hash,
             "renderer_id": self.renderer_id,
             "capability": self.capability,
+            "capabilities": list(self.capabilities),
+            "provenance": dict(self.provenance),
             "candidate_text": self.candidate_text,
             "spans": [span.to_dict() for span in self.spans],
         }
@@ -302,13 +325,13 @@ def build_candidate_reading_packet(
     The general renderer is imported lazily so packet identity exactly matches
     attestation and benchmark rendering without adding an import-time cycle.
     """
-    from agent.loop_shared import DECODED_TEXT_RENDERER_ID, _decoded_text_for_panel
+    from investigation.candidates import candidate_packet_for_branch
 
     branch = workspace.get_branch(branch_name)
-    metadata_text = branch.metadata.get("decoded_text")
-    if isinstance(metadata_text, str) and metadata_text.strip():
-        candidate = _decoded_text_for_panel(workspace, branch_name)
-        digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+    candidate_state = candidate_packet_for_branch(workspace, branch_name)
+    candidate = candidate_state.text
+    digest = candidate_state.content_hash
+    if candidate_state.primary_capability == "text_only":
         span = CandidateReadingSpan(
             span_id=f"span_text_{digest[:10]}",
             text=candidate,
@@ -318,13 +341,16 @@ def build_candidate_reading_packet(
         return CandidateReadingPacket(
             branch=branch_name,
             content_hash=digest,
-            renderer_id=DECODED_TEXT_RENDERER_ID,
+            renderer_id=candidate_state.renderer_id,
             capability="text_only",
+            capabilities=candidate_state.capabilities,
+            provenance=candidate_state.provenance,
             candidate_text=candidate,
             spans=(span,),
         )
 
     tokens = list(workspace.effective_tokens(branch_name))
+    rendered_indices = list(candidate_state.rendered_token_indices)
     word_spans = list(workspace.effective_word_spans(branch_name))
     word_ends = {end for _start, end in word_spans}
     pt_alpha = workspace.plaintext_alphabet
@@ -339,17 +365,40 @@ def build_candidate_reading_packet(
             chars.append("?")
         if index + 1 in word_ends and index + 1 < len(tokens):
             chars.append(" ")
-    candidate = _decoded_text_for_panel(workspace, branch_name)
-    digest = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
-
+    rendered_char_offsets: list[int] = []
+    if candidate_state.null_mask:
+        cuts = (
+            {start for start, _end in word_spans if start}
+            if branch.word_spans is not None
+            else set()
+        )
+        rendered_parts: list[str] = []
+        previous_index: int | None = None
+        for token_index in rendered_indices:
+            if previous_index is not None and any(
+                previous_index < cut <= token_index for cut in cuts
+            ):
+                rendered_parts.append(" ")
+            rendered_char_offsets.append(len(rendered_parts))
+            rendered_parts.append(
+                workspace.plaintext_alphabet.symbol_for(branch.key[tokens[token_index]])
+                if tokens[token_index] in branch.key
+                else "?"
+            )
+            previous_index = token_index
+    else:
+        rendered_char_offsets = [token_char_offsets[index] for index in rendered_indices]
     spans: list[CandidateReadingSpan] = []
     size = max(1, int(window_tokens))
-    for token_start in range(0, len(tokens), size):
-        token_end = min(len(tokens), token_start + size)
-        char_start = token_char_offsets[token_start]
+    for rendered_start in range(0, len(rendered_indices), size):
+        rendered_end = min(len(rendered_indices), rendered_start + size)
+        span_indices = rendered_indices[rendered_start:rendered_end]
+        token_start = span_indices[0]
+        token_end = span_indices[-1] + 1
+        char_start = rendered_char_offsets[rendered_start]
         char_end = (
-            token_char_offsets[token_end]
-            if token_end < len(tokens)
+            rendered_char_offsets[rendered_end]
+            if rendered_end < len(rendered_char_offsets)
             else len(candidate)
         )
         overlapping = [
@@ -361,6 +410,7 @@ def build_candidate_reading_packet(
             text=candidate[char_start:char_end].strip(),
             token_start=token_start,
             token_end=token_end,
+            token_indices=tuple(span_indices),
             word_start=min(overlapping) if overlapping else None,
             word_end=(max(overlapping) + 1) if overlapping else None,
         ))
@@ -374,8 +424,10 @@ def build_candidate_reading_packet(
     return CandidateReadingPacket(
         branch=branch_name,
         content_hash=digest,
-        renderer_id=DECODED_TEXT_RENDERER_ID,
-        capability="editable_key",
+        renderer_id=candidate_state.renderer_id,
+        capability=candidate_state.primary_capability,
+        capabilities=candidate_state.capabilities,
+        provenance=candidate_state.provenance,
         candidate_text=candidate,
         spans=tuple(spans),
     )

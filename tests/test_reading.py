@@ -171,3 +171,26 @@ def test_metadata_candidate_packet_is_explicitly_text_only():
     assert packet["capability"] == "text_only"
     assert packet["spans"][0]["token_start"] is None
     assert packet["spans"][0]["text"] == "A READABLE OVERLAY"
+
+
+def test_null_mask_candidate_packet_preserves_filtered_token_provenance():
+    alpha = Alphabet.from_text("AXBC", ignore_chars=set())
+    workspace = Workspace(CipherText(raw="AXBC", alphabet=alpha, separator=None))
+    pt = workspace.plaintext_alphabet
+    branch = workspace.get_branch("main")
+    for symbol, letter in {"A": "C", "X": "Z", "B": "T", "C": "S"}.items():
+        workspace.set_mapping("main", alpha.id_for(symbol), pt.id_for(letter))
+    branch.metadata.update({
+        "decoded_text": "CTS",
+        "key_type": "homophonic_with_null_mask",
+        "null_mask_finalist": {"mask": ["X"], "rank": 1},
+    })
+
+    packet = build_candidate_reading_packet(
+        workspace, "main", window_tokens=20
+    ).to_dict()
+    assert packet["capability"] == "editable_null_mask"
+    assert set(packet["capabilities"]) >= {"editable_key", "editable_null_mask"}
+    assert packet["candidate_text"] == "CTS"
+    assert packet["spans"][0]["token_indices"] == [0, 2, 3]
+    assert packet["spans"][0]["text"] == "CTS"

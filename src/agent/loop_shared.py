@@ -41,7 +41,37 @@ def _candidate_content_hash(text: str) -> str:
 # Decoded-text helpers (metadata-aware)
 # ------------------------------------------------------------------
 def _metadata_decoded_text(workspace: Workspace, branch_name: str) -> str | None:
-    decoded = workspace.get_branch(branch_name).metadata.get("decoded_text")
+    branch = workspace.get_branch(branch_name)
+    metadata = branch.metadata
+    mask_block = metadata.get("null_mask_finalist")
+    if not isinstance(mask_block, dict):
+        mask_block = metadata.get("null_mask_selected")
+    mask = {
+        str(symbol) for symbol in (mask_block or {}).get("mask") or []
+    } if isinstance(mask_block, dict) else set()
+    if branch.key and mask:
+        cipher_alpha = workspace.cipher_text.alphabet
+        pt_alpha = workspace.plaintext_alphabet
+        cuts = (
+            {start for start, _end in workspace.effective_word_spans(branch_name) if start}
+            if branch.word_spans is not None
+            else set()
+        )
+        parts: list[str] = []
+        previous_index: int | None = None
+        for index, token in enumerate(workspace.effective_tokens(branch_name)):
+            if cipher_alpha.symbol_for(token) in mask:
+                continue
+            if previous_index is not None and any(
+                previous_index < cut <= index for cut in cuts
+            ):
+                parts.append(" ")
+            parts.append(
+                pt_alpha.symbol_for(branch.key[token]) if token in branch.key else "?"
+            )
+            previous_index = index
+        return "".join(parts).strip()
+    decoded = metadata.get("decoded_text")
     if isinstance(decoded, str) and decoded.strip():
         return decoded.strip()
     return None

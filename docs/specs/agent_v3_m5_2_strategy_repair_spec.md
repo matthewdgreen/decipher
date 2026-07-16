@@ -1,6 +1,6 @@
 # Agent Loop v3 M5.2 - Strategy and Repair Reliability
 
-Status: active. Slice 1 implemented 2026-07-16. Paid acceptance remains
+Status: active. Slices 1-3 implemented 2026-07-16. Paid acceptance remains
 deferred until the user approves another provider spend.
 
 ## Motivation
@@ -70,7 +70,10 @@ tool authority. The transition policy now:
 
 ## Slice 3 - Repair-Capable Candidate Representation
 
-Replace branch-shape special cases with one candidate contract carrying:
+Implemented 2026-07-16.
+
+Branch-shape special cases are now normalized through one candidate contract
+carrying:
 
 - exact rendered text and content hash;
 - provenance (solver, finalist, episode/experiment);
@@ -83,6 +86,13 @@ Replace branch-shape special cases with one candidate contract carrying:
 Null-mask finalists must retain their underlying homophonic key and mask rather
 than installing only `metadata.decoded_text`. This is required before Copiale
 can be a meaningful repair acceptance case.
+
+Installed null-mask finalists now declare their renderer and repair
+capabilities, while the host dynamically renders their retained key with the
+selected mask. Reading spans carry the filtered effective-token indices, so a
+repair against compressed display text maps back to the correct cipher
+tokens. Tool panels and verify attestations use the same renderer and content
+hash. Metadata-only overlays remain explicitly `text_only`.
 
 ## Slice 4 - Transactional Repair
 

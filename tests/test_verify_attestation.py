@@ -102,26 +102,27 @@ def test_renderer_deterministic_and_attest_declare_hash_match():
     )
 
 
-def test_branch_decoded_text_differs_from_panel_renderer():
-    """F1 NEGATIVE test: the WRONG renderer (`_branch_decoded_text`) skips
-    word-span re-spacing and differs from the pinned `_decoded_text_for_panel`
-    on a metadata+word_spans branch — documents the hash-mismatch trap."""
+def test_branch_decoded_text_matches_panel_renderer():
+    """All candidate consumers use the attestation renderer.
+
+    Metadata-backed candidates with host word spans used to produce different
+    text in tools and verification, which made content hashes impossible to
+    reason about.  The unified candidate path keeps the rendered text exact.
+    """
     raw = "ABCDEF"
     alpha = Alphabet.from_text(raw, ignore_chars=set())
     ct = CipherText(raw=raw, alphabet=alpha, separator=None)
     ws = Workspace(ct)
     ws.set_word_spans("main", [(0, 3), (3, 6)])
-    # A no-whitespace metadata decode: the panel renderer re-spaces via word
-    # spans, the wrong renderer returns it verbatim.
+    # A no-whitespace metadata decode is re-spaced by the shared renderer.
     ws.get_branch("main").metadata["decoded_text"] = "HELLOX"
 
     executor = _simple_executor(ws, NoGatesPolicy())
     panel = _decoded_text_for_panel(ws, "main")
-    wrong = executor._branch_decoded_text("main")
+    tool_text = executor._branch_decoded_text("main")
     assert panel == "HEL LOX"
-    assert wrong == "HELLOX"
-    assert panel != wrong
-    assert _candidate_content_hash(panel) != _candidate_content_hash(wrong)
+    assert tool_text == panel
+    assert _candidate_content_hash(panel) == _candidate_content_hash(tool_text)
 
 
 # ---------------------------------------------------------------------------

@@ -68,6 +68,10 @@ HYPOTHESIS_APPLY_READING_TOOL = {
                         "end": {"type": ["integer", "null"]},
                         "text": {"type": "string"},
                         "repair_text": {"type": ["string", "null"]},
+                        "token_indices": {
+                            "type": ["array", "null"],
+                            "items": {"type": "integer"},
+                        },
                         "confidence": {"type": ["number", "string"]},
                         "label": {"type": "string"},
                     },
@@ -221,6 +225,10 @@ def _unsupported_branch_state(branch_obj: Any) -> str | None:
             "reason in base-order key-decode coordinates."
         )
     if branch_obj.metadata.get("decoded_text"):
+        from investigation.candidates import null_mask_symbols
+
+        if branch_obj.key and null_mask_symbols(branch_obj):
+            return None
         return (
             "branches carrying decoded_text metadata (transposition / "
             "polyalphabetic overlay) are unsupported; the composites edit the "
@@ -472,9 +480,26 @@ def _hypothesis_apply_reading(
                 "minimum_confidence": MIN_REPAIR_FRAGMENT_CONFIDENCE,
             })
             continue
-        f_start = frag.start if frag.start is not None else win_start
-        f_end = frag.end if frag.end is not None else win_end
-        if f_start < win_start or f_end > win_end:
+        if frag.token_indices is not None:
+            fragment_token_indices = [int(value) for value in frag.token_indices]
+            if not fragment_token_indices:
+                skipped_fragments.append({
+                    "fragment_index": idx,
+                    "reason": "empty_token_provenance",
+                })
+                continue
+            if fragment_token_indices != sorted(set(fragment_token_indices)):
+                return _err(
+                    "fragment token provenance must be unique and ordered",
+                    fragment_index=idx,
+                )
+            f_start = fragment_token_indices[0]
+            f_end = fragment_token_indices[-1] + 1
+        else:
+            f_start = frag.start if frag.start is not None else win_start
+            f_end = frag.end if frag.end is not None else win_end
+            fragment_token_indices = list(range(f_start, f_end))
+        if any(index < win_start or index >= win_end for index in fragment_token_indices):
             return _err(
                 "fragment extends outside the window",
                 fragment_index=idx,
@@ -504,9 +529,10 @@ def _hypothesis_apply_reading(
             continue
         proposed = "".join(words)
         decoded = "".join(
-            _decoded_char(pt_alpha, key, eff_tokens[t]) for t in range(f_start, f_end)
+            _decoded_char(pt_alpha, key, eff_tokens[t])
+            for t in fragment_token_indices
         )
-        span_len = f_end - f_start
+        span_len = len(fragment_token_indices)
         delta = len(proposed) - span_len
         tolerance = max(2, math.ceil(0.02 * span_len))
 
@@ -545,7 +571,7 @@ def _hypothesis_apply_reading(
         frag_mismatches = 0
         for pi, dj in ops:
             if pi is not None and dj is not None:
-                token_index = f_start + dj
+                token_index = fragment_token_indices[dj]
                 p_to_token[pi] = token_index
                 d_consumed = dj + 1
                 proposed_char = proposed[pi]
@@ -559,17 +585,23 @@ def _hypothesis_apply_reading(
                     )
             elif pi is not None and dj is None:
                 # proposed char with no decoded token -> hole
-                p_to_token[pi] = f_start + d_consumed
+                insertion_position = (
+                    fragment_token_indices[d_consumed]
+                    if d_consumed < len(fragment_token_indices)
+                    else f_end
+                )
+                p_to_token[pi] = insertion_position
                 frag_gaps += 1
                 holes.append(
-                    f"frag{idx}: inserted '{proposed[pi]}' at token {f_start + d_consumed}"
+                    f"frag{idx}: inserted '{proposed[pi]}' at token "
+                    f"{insertion_position}"
                 )
             else:
                 # decoded token with no proposed char -> hole
                 d_consumed = dj + 1
                 frag_gaps += 1
                 holes.append(
-                    f"frag{idx}: unread token {f_start + dj} (decoded "
+                    f"frag{idx}: unread token {fragment_token_indices[dj]} (decoded "
                     f"'{decoded[dj]}')"
                 )
 
@@ -591,6 +623,11 @@ def _hypothesis_apply_reading(
             "fragment_index": idx,
             "mode": mode,
             "span": [f_start, f_end],
+            "token_indices": (
+                list(fragment_token_indices)
+                if frag.token_indices is not None
+                else None
+            ),
             "proposed_len": len(proposed),
             "gaps": frag_gaps,
             "mismatches": frag_mismatches,

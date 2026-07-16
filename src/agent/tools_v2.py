@@ -4505,11 +4505,9 @@ class WorkspaceToolExecutor:
         }
 
     def _branch_decoded_text(self, branch_name: str) -> str:
-        branch = self.workspace.get_branch(branch_name)
-        decoded = branch.metadata.get("decoded_text")
-        if isinstance(decoded, str) and decoded.strip():
-            return decoded
-        return self.workspace.apply_key(branch_name)
+        from agent.loop_shared import _decoded_text_for_panel
+
+        return _decoded_text_for_panel(self.workspace, branch_name)
 
     def _compute_quick_scores(self, branch_name: str) -> dict[str, float | None]:
         """Return (dict_rate, quad) for a branch, fast. Used for score_delta
@@ -4599,8 +4597,11 @@ class WorkspaceToolExecutor:
         """
         ws = self.workspace
         branch_state = ws.get_branch(branch_name)
-        metadata_text = branch_state.metadata.get("decoded_text")
-        if isinstance(metadata_text, str) and metadata_text.strip():
+        metadata_text = self._branch_decoded_text(branch_name)
+        has_metadata_decode = isinstance(
+            branch_state.metadata.get("decoded_text"), str
+        ) and bool(branch_state.metadata.get("decoded_text", "").strip())
+        if has_metadata_decode and metadata_text.strip():
             if any(ch.isspace() for ch in metadata_text.strip()):
                 words = metadata_text.split()
             elif branch_state.word_spans is not None:
@@ -10395,6 +10396,12 @@ class WorkspaceToolExecutor:
                     "decoded_text_source": "search_automated_solver:null_masks",
                     "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
                     "key_type": "homophonic_with_null_mask",
+                    "candidate_renderer": "key_with_null_mask_v1",
+                    "candidate_capabilities": [
+                        "editable_key",
+                        "editable_null_mask",
+                        "editable_boundaries",
+                    ],
                     "null_mask_selected": {
                         "mask": selected.get("mask") or [],
                         "validation_score_v2": selected.get("validation_score_v2"),
@@ -10868,6 +10875,12 @@ class WorkspaceToolExecutor:
             "decoded_text_source": "act_install_null_mask_finalists",
             "cipher_mode": branch.metadata.get("cipher_mode") or "homophonic_substitution",
             "key_type": "homophonic_with_null_mask",
+            "candidate_renderer": "key_with_null_mask_v1",
+            "candidate_capabilities": [
+                "editable_key",
+                "editable_null_mask",
+                "editable_boundaries",
+            ],
             "null_mask_finalist": {
                 "search_session_id": session_id,
                 "rank": rank,
