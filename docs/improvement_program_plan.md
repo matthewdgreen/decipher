@@ -687,3 +687,28 @@ SOLVING, nomenclator solving, polyphonic, syllabary, rotor machines,
 non-Latin scripts). Adding a family = registry entry + calibrated
 discriminator + generator counterpart (per the benchmark-generation item)
 + solver-or-referral. Diagnosis-first is acceptable.
+
+### Generator pipeline shape (user-specified 2026-07-15 — binding when built)
+
+1. **Plaintext selection** — driven by language, ERA, frequency
+   characteristics, word types, and other elements that affect
+   cryptanalysis difficulty. LLM generation is allowed, but the preferred
+   design is a large PRE-GENERATED, CAREFULLY MEASURED plaintext library
+   shipped with the tool: each entry stored with its measured statistical
+   profile (letter/bigram frequency fit, dictionary rate, word-length
+   distribution, function-word density, era markers), so difficulty knobs
+   select on MEASURED properties rather than presets. This also removes
+   the LLM cost/nondeterminism of cache regeneration (the F5
+   silent-regeneration incident of 2026-07-14 is the cautionary tale).
+2. **Encipherment + key generation** — select a key and encipher with a
+   given cipher, family-parameterized (each family's generator counterpart
+   per docs/inv_family_roadmap.md owns its key-space sampling).
+3. **Batch + context tiers** — repeat 1-2 across every relevant cipher
+   type, multiple examples each; and generate SYNTHETIC CONTEXT DATA
+   (language, era, provenance, other details) at ALL available levels of
+   metadata specificity — each case ships with graded context tiers (none
+   -> language-only -> era/provenance -> rich), mirroring the existing
+   benchmark track structure and enabling how-much-does-context-help
+   experiments.
+
+Not scheduled; recorded for the eventual spec.
