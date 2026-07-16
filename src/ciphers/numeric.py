@@ -11,7 +11,7 @@ import random
 from typing import Any
 
 from ciphers.family_base import FamilyCipher
-from ciphers.textutil import ALPHABET, clean_ij, keyed_square_25, modinv, random_keyword, coprime
+from ciphers.textutil import ALPHABET, clean, clean_ij, keyed_square_25, modinv, random_keyword, coprime
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +185,10 @@ class Hill2x2Cipher(FamilyCipher):
         # inverse matrix = inv * [[d, -b], [-c, a]]
         ia, ib, ic, idd = (inv * d) % 26, (inv * -b) % 26, (inv * -c) % 26, (inv * a) % 26
         out: list[str] = []
-        for c0, c1 in self._pairs(clean_ij(ciphertext)):
+        # Ciphertext spans the full A-Z alphabet — clean WITHOUT the I/J merge
+        # (clean_ij would fold a ciphertext J -> I and break the round-trip).
+        # The plaintext-side I/J merge stays in encrypt (intended Hill convention).
+        for c0, c1 in self._pairs(clean(ciphertext)):
             out.append(chr((ia * c0 + ib * c1) % 26 + 65))
             out.append(chr((ic * c0 + idd * c1) % 26 + 65))
         return "".join(out)

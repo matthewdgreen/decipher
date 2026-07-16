@@ -359,3 +359,30 @@ def test_key_space_size_values():
     for cipher in ALL_FAMILIES:
         assert isinstance(cipher.key_space_size(), int)
         assert cipher.key_space_size() >= 1
+
+
+def _hill_prepare(pt):
+    from ciphers.textutil import clean_ij
+    s = clean_ij(pt)
+    if len(s) % 2:
+        s += "X"
+    return s
+
+
+def test_hill2x2_roundtrip_with_j_in_ciphertext():
+    # Regression (found by the benchmark generator, 2026-07-15): Hill decrypt
+    # must NOT fold J->I on the ciphertext (ciphertext spans full A-Z). Sweep
+    # keys until one produces a J in the ciphertext, then require round-trip.
+    import random as _r
+    from ciphers.numeric import Hill2x2Cipher
+    h = Hill2x2Cipher()
+    pt = "THEQUICKBROWNFOXJUMPS"
+    expected = _hill_prepare(pt)
+    saw_j = False
+    for seed in range(200):
+        key = h.random_key(_r.Random(seed))
+        ct = h.encrypt(pt, key)
+        assert h.decrypt(ct, key) == expected, (seed, key, ct)
+        if "J" in ct:
+            saw_j = True
+    assert saw_j, "test did not exercise a J-containing ciphertext"
