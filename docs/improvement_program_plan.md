@@ -623,3 +623,19 @@ switch the default; a complete post-fix paired matrix is still required. After
 a switch: v2 retirement one release later (deletion list in
 agent_v3_design.md). The local targeted gate is green; no focused Stage-1 or
 full bake-off was run during implementation in order to control token cost.
+
+---
+
+## External comparison tools — noted for later (not scheduled)
+
+- **Ciphey / ciphey** (https://github.com/bee-san/Ciphey) — noted 2026-07-15
+  for a LATER benchmark comparison; no work requested yet. `ciphey` is the
+  Rust rewrite of the original Python `Ciphey`. A* search over a decoder/cracker
+  tree + plaintext detection (n-gram/dict/regex + optional BERT gibberish
+  model). Handles simple classical ciphers (Caesar/Vigenere/Beaufort/Atbash/
+  Braille) + ~16 encodings (Base64 …) + hash lookup. **No transposition, no
+  homophonic** — so it's a comparator for the ENCODING / easy-classical end,
+  NOT a rival on the homophonic historical-manuscript frontier (Borg/Copiale/
+  Zodiac) this project centers on. Belongs with the existing external-comparison
+  lineage: `src/external/{azdecrypt,cryptocrack}.py` stubs +
+  `scripts/run_automated_parity_matrix.py`. Install: `cargo install ciphey`.
