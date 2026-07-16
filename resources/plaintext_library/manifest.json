@@ -1,0 +1,175 @@
+{
+  "generator": "scripts/build_plaintext_library.py",
+  "built_utc": "2026-07-16T15:19:03.735480+00:00",
+  "seed": 20260716,
+  "config": {
+    "languages": [
+      "en",
+      "de",
+      "fr",
+      "it",
+      "la"
+    ],
+    "sources_filter": "all_redistributable",
+    "files_per_source": 30,
+    "lengths": [
+      40,
+      120,
+      250,
+      500
+    ],
+    "per_length": 1,
+    "max_per_lang": null,
+    "unusual_chi2_percentile": 80.0
+  },
+  "excluded_sources": [
+    "bnc"
+  ],
+  "languages": {
+    "en": {
+      "language": "en",
+      "count": 312,
+      "per_source_sampled": {
+        "gutenberg": 119,
+        "masc": 80,
+        "oanc": 113
+      },
+      "sources": [
+        "gutenberg",
+        "masc",
+        "oanc"
+      ],
+      "unusual_chi2_threshold": 14.542,
+      "by_frequency_style": {
+        "normal": 249,
+        "unusual": 63
+      },
+      "by_era": {
+        "literary_19c": 119,
+        "modern": 193
+      },
+      "by_length_words": {
+        "120": 82,
+        "40": 87,
+        "500": 65,
+        "250": 78
+      },
+      "capped": false,
+      "bytes": 564487,
+      "file": "resources/plaintext_library/en.jsonl"
+    },
+    "de": {
+      "language": "de",
+      "count": 239,
+      "per_source_sampled": {
+        "dta": 119,
+        "gutenberg": 120
+      },
+      "sources": [
+        "dta",
+        "gutenberg"
+      ],
+      "unusual_chi2_threshold": 12.3308,
+      "by_frequency_style": {
+        "unusual": 48,
+        "normal": 191
+      },
+      "by_era": {
+        "historical_1600_1899": 119,
+        "literary_19c": 120
+      },
+      "by_length_words": {
+        "250": 60,
+        "500": 59,
+        "40": 60,
+        "120": 60
+      },
+      "capped": false,
+      "bytes": 491410,
+      "file": "resources/plaintext_library/de.jsonl"
+    },
+    "fr": {
+      "language": "fr",
+      "count": 120,
+      "per_source_sampled": {
+        "gutenberg": 120
+      },
+      "sources": [
+        "gutenberg"
+      ],
+      "unusual_chi2_threshold": 13.9328,
+      "by_frequency_style": {
+        "unusual": 24,
+        "normal": 96
+      },
+      "by_era": {
+        "literary_19c": 120
+      },
+      "by_length_words": {
+        "40": 30,
+        "120": 30,
+        "500": 30,
+        "250": 30
+      },
+      "capped": false,
+      "bytes": 229336,
+      "file": "resources/plaintext_library/fr.jsonl"
+    },
+    "it": {
+      "language": "it",
+      "count": 120,
+      "per_source_sampled": {
+        "gutenberg": 120
+      },
+      "sources": [
+        "gutenberg"
+      ],
+      "unusual_chi2_threshold": 9.9359,
+      "by_frequency_style": {
+        "normal": 96,
+        "unusual": 24
+      },
+      "by_era": {
+        "literary_19c": 120
+      },
+      "by_length_words": {
+        "500": 30,
+        "120": 30,
+        "40": 30,
+        "250": 30
+      },
+      "capped": false,
+      "bytes": 240122,
+      "file": "resources/plaintext_library/it.jsonl"
+    },
+    "la": {
+      "language": "la",
+      "count": 120,
+      "per_source_sampled": {
+        "gutenberg": 120
+      },
+      "sources": [
+        "gutenberg"
+      ],
+      "unusual_chi2_threshold": 26.676,
+      "by_frequency_style": {
+        "normal": 96,
+        "unusual": 24
+      },
+      "by_era": {
+        "classical": 120
+      },
+      "by_length_words": {
+        "500": 30,
+        "250": 30,
+        "120": 30,
+        "40": 30
+      },
+      "capped": false,
+      "bytes": 257128,
+      "file": "resources/plaintext_library/la.jsonl"
+    }
+  },
+  "total_passages": 911,
+  "total_bytes": 1782483
+}
