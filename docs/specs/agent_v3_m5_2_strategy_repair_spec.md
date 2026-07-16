@@ -1,6 +1,6 @@
 # Agent Loop v3 M5.2 - Strategy and Repair Reliability
 
-Status: active. Slices 1-3 implemented 2026-07-16. Paid acceptance remains
+Status: active. Slices 1-4 implemented 2026-07-16. Paid acceptance remains
 deferred until the user approves another provider spend.
 
 ## Motivation
@@ -96,7 +96,9 @@ hash. Metadata-only overlays remain explicitly `text_only`.
 
 ## Slice 4 - Transactional Repair
 
-Add one high-level repair transaction that consumes a candidate packet plus a
+Implemented 2026-07-16.
+
+One high-level repair transaction consumes a candidate packet plus a
 Reading or verify anomalies and returns either an improved installed snapshot
 or a structured failure:
 
@@ -109,6 +111,14 @@ or a structured failure:
 
 The transaction records which anomalies it addressed. A negative verification
 hint must not recur for the same content after the transaction has handled it.
+
+The transaction binds a stored Reading to the source branch's exact content
+hash, injects the candidate packet and latest verifier anomalies into one
+isolated repair episode, rejects stale readings, unchanged results, ambiguous
+finalists, and unsupported claimed winners, then installs one changed result.
+It records source/result hashes and addressed anomalies durably. The installed
+candidate becomes the active workflow branch until fresh verification, so the
+lead cannot immediately fall back into the handled source hint.
 
 ## Slice 5 - Durable State and Honest Termination
 

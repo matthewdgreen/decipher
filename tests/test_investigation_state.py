@@ -195,6 +195,12 @@ def test_readings_round_trip_and_m2_artifact_loads():
                       fragments=[ReadingFragment(text="HELLO", start=0, end=5)],
                       holes=["tail"], overall_confidence=0.8)
     state.readings[reading.reading_id] = reading.to_dict()
+    state.repair_transactions.append({
+        "transaction_id": "tx1",
+        "status": "installed",
+        "source_content_hash": "before",
+        "result_content_hash": "after",
+    })
 
     restored = InvestigationState.from_artifact_dict(
         json.loads(json.dumps(state.to_artifact_dict()))
@@ -204,14 +210,17 @@ def test_readings_round_trip_and_m2_artifact_loads():
     assert rd.branch == "main"
     assert rd.fragments[0].start == 0
     assert rd.overall_confidence == 0.8
+    assert restored.repair_transactions == state.repair_transactions
 
     # An M2 artifact predating the readings key loads with an empty map.
     m2_dict = state.to_artifact_dict()
     del m2_dict["readings"]
+    del m2_dict["repair_transactions"]
     reloaded = InvestigationState.from_artifact_dict(
         json.loads(json.dumps(m2_dict))
     )
     assert reloaded.readings == {}
+    assert reloaded.repair_transactions == []
 
 
 def test_resume_identity_holds_with_readings():

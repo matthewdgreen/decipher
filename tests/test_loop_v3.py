@@ -781,6 +781,136 @@ def test_run_v3_reading_repair_install_adjudicate_declare_end_to_end(verify_fake
     assert art.status == "solved"
 
 
+class TransactionReadingWorkerFake:
+    def __init__(self, provider, system, role):
+        self.model = "fake-reader"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:reading", "openai", self.model, 10, 5, 0))
+        result = {
+            "reading_text": "COTON",
+            "fragments": [{"text": "COTON", "repair_text": "COTON", "confidence": 0.95}],
+            "holes": [],
+            "overall_confidence": 0.95,
+        }
+        return ModelResponse(
+            content=[ToolUseBlock(id="trd", name="episode_submit_result",
+                                  input={"result": result, "summary": "one supported repair"})],
+            usage=ModelUsage(10, 5, 0),
+        )
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+class TransactionRepairWorkerFake:
+    def __init__(self, provider, system, role):
+        self.model = "fake-repair"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []; self._step = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:repair", "openai", self.model, 10, 5, 0))
+        self._step += 1
+        if self._step == 1:
+            text = json.dumps(blocks, default=str)
+            reading_id = re.search(r"id `([0-9a-f]{12})`", text).group(1)
+            content = [ToolUseBlock(
+                id="trp1", name="hypothesis_apply_reading",
+                input={"branch": "main", "reading_id": reading_id},
+            )]
+        else:
+            fork = None
+            edits = []
+            for message in blocks:
+                for block in message.get("content") or []:
+                    if not isinstance(block, dict) or block.get("type") != "tool_result":
+                        continue
+                    try:
+                        payload = json.loads(block.get("content") or "")
+                    except (TypeError, json.JSONDecodeError):
+                        continue
+                    fork = payload.get("fork") or fork
+                    edits = payload.get("edits") or edits
+            result = {
+                "applied": True,
+                "best_branch": fork,
+                "edits": edits,
+                "verdicts": [{
+                    "action": "apply_reading", "target": str(fork),
+                    "verdict": "kept", "rationale": "bounded supported edit",
+                }],
+                "collateral": {"checked": True},
+                "notes": "selected the only changed supported fork",
+            }
+            content = [ToolUseBlock(
+                id="trp2", name="episode_submit_result",
+                input={"result": result, "summary": "installed candidate ready"},
+            )]
+        return ModelResponse(content=content, usage=ModelUsage(10, 5, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+class TransactionLead:
+    def __init__(self):
+        self.model = "fake-lead"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []; self._step = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("lead", "openai", self.model, 100, 10, 0))
+        self._step += 1
+        if self._step == 1:
+            content = [ToolUseBlock(id="tx1", name="episode_run", input={
+                "kind": "reading", "goal": "read main", "branches": ["main"],
+            })]
+        elif self._step == 2:
+            content = [ToolUseBlock(id="tx2", name="repair_transaction", input={
+                "branch": "main", "as_name": "transaction_repaired",
+            })]
+        elif self._step == 3:
+            content = [ToolUseBlock(id="tx3", name="episode_run", input={
+                "kind": "verify", "goal": "verify repaired",
+                "branches": ["transaction_repaired"],
+            })]
+        else:
+            content = [ToolUseBlock(id="tx4", name="meta_declare_solution", input={
+                "branch": "transaction_repaired", "rationale": "freshly verified repair",
+                "self_confidence": 0.8,
+            })]
+        return ModelResponse(content=content, usage=ModelUsage(100, 10, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify_fake):
+    sessions_mod.register_session_builder("episode:reading", TransactionReadingWorkerFake)
+    sessions_mod.register_session_builder("episode:repair", TransactionRepairWorkerFake)
+    try:
+        ct, state = _keyed_catton_state()
+        art = run_v3(
+            ct, session=TransactionLead(), language="en", max_iterations=6,
+            cipher_id="v3_repair_transaction", resume_state=state,
+        )
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:reading", None)
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    assert art.status == "solved"
+    repaired = next(branch for branch in art.branches if branch.name == "transaction_repaired")
+    assert repaired.decryption == "COTON"
+    transactions = art.investigation_state["repair_transactions"]
+    assert len(transactions) == 1
+    assert transactions[0]["status"] == "installed"
+    assert transactions[0]["reverification_required"] is True
+    assert transactions[0]["source_content_hash"] != transactions[0]["result_content_hash"]
+    assert art.attestations[-1]["branch"] == "transaction_repaired"
+    assert [episode["kind"] for episode in art.episodes] == ["reading", "repair", "verify"]
+    assert any(call.tool_name == "repair_transaction" for call in art.tool_calls)
+
+
 def test_run_v3_interrupt_pairs_all_tool_results(monkeypatch):
     """R5: a mid-batch interrupt pairs every tool_use with a stopped result."""
     from agent import tools_v2

@@ -238,6 +238,10 @@ class InvestigationState:
     # reading-kind episode result into a Reading here; workers never write it
     # (A1). Absent from M2 artifacts -> empty on load (extends resume identity).
     readings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # M5.2: host-owned repair transactions. Each record binds source/result
+    # content hashes, the worker episode, installed branch, and anomalies the
+    # transaction attempted to address. This is durable across resume.
+    repair_transactions: list[dict[str, Any]] = field(default_factory=list)
     # M5.1: workflow hints already shown/emitted, keyed by event + candidate
     # content hash. This keeps guidance useful without repeating it every turn
     # and survives resume.
@@ -386,6 +390,9 @@ class InvestigationState:
             "episode_ledger": [dict(item) for item in self.episode_ledger],
             "verify_attestations": [dict(item) for item in self.verify_attestations],
             "readings": {rid: dict(r) for rid, r in self.readings.items()},
+            "repair_transactions": [
+                dict(item) for item in self.repair_transactions
+            ],
             "workflow_hint_keys": list(self.workflow_hint_keys),
             "experiment_queue": [dict(item) for item in self.experiment_queue],
             "finalist_sessions": self.finalist_sessions.to_dict(),
@@ -438,6 +445,9 @@ class InvestigationState:
                 str(rid): dict(r)
                 for rid, r in (data.get("readings") or {}).items()
             },
+            repair_transactions=[
+                dict(item) for item in data.get("repair_transactions") or []
+            ],
             workflow_hint_keys=[
                 str(key) for key in (data.get("workflow_hint_keys") or [])
             ],

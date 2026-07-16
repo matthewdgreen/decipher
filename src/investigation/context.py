@@ -18,7 +18,11 @@ import hashlib
 import json
 from typing import Any
 
-from agent.loop_shared import _best_branch_for_auto_declare
+from agent.loop_shared import (
+    _best_branch_for_auto_declare,
+    _candidate_content_hash,
+    _decoded_text_for_panel,
+)
 from agent.prompts_v2 import LANGUAGE_NOTES
 from analysis import cipher_id as cipher_id_analysis
 from analysis import ic, model_registry
@@ -58,6 +62,48 @@ def workflow_state(
     executor: Any,
 ) -> dict[str, Any]:
     """Return the lead's explicit state-dependent action menu."""
+    latest_transaction = next(
+        (
+            item for item in reversed(state.repair_transactions)
+            if item.get("status") == "installed"
+            and state.workspace.has_branch(str(item.get("installed_branch") or ""))
+        ),
+        None,
+    )
+    if latest_transaction is not None:
+        repaired_branch = str(latest_transaction["installed_branch"])
+        current_hash = _candidate_content_hash(
+            _decoded_text_for_panel(state.workspace, repaired_branch)
+        )
+        if current_hash == latest_transaction.get("result_content_hash"):
+            repaired_attestation = _fresh_attestation(state, repaired_branch)
+            if repaired_attestation is None:
+                return {
+                    "state": "candidate_reading",
+                    "branch": repaired_branch,
+                    "actions": [
+                        "Verify the changed candidate installed by repair_transaction.",
+                        "Do not repeat the handled repair against its source content.",
+                    ],
+                }
+            if _positive(repaired_attestation):
+                return {
+                    "state": "verified",
+                    "branch": repaired_branch,
+                    "actions": [
+                        "Declare the verified repaired branch now.",
+                        "Compare only if concrete evidence identifies a distinct rival.",
+                    ],
+                }
+            else:
+                return {
+                    "state": "repair_required",
+                    "branch": repaired_branch,
+                    "actions": [
+                        "Run a fresh reading on the newly verified anomalies.",
+                        "Use a new repair_transaction bound to that changed content.",
+                    ],
+                }
     best, _scores = _best_branch_for_auto_declare(
         state.workspace, state.language, executor.word_set, executor._freq_rank
     )
@@ -82,10 +128,10 @@ def workflow_state(
                 "actions": [
                     "Run or reuse one reading episode on the attested branch.",
                     (
-                        "Run one repair episode with that reading and install "
-                        "its best fork."
+                        "Run one repair_transaction with that reading; it "
+                        "validates and installs the supported changed fork."
                     ),
-                    "Adjudicate and reverify only changed content.",
+                    "Reverify the transaction's changed content.",
                 ],
             }
         return {
@@ -102,7 +148,7 @@ def workflow_state(
             "branch": best,
             "actions": [
                 (
-                    "Apply a useful stored reading through a repair episode, "
+                    "Apply a useful stored reading through repair_transaction, "
                     "or verify the leading branch."
                 ),
                 "Compare genuinely distinct finalists before installing another basin.",
@@ -193,9 +239,10 @@ real {language_name}). An episode runs in an isolated copy of the branches you \
 name and returns a result summary plus branch snapshots; nothing it does \
 touches your workspace until you call `episode_install_branch`. Integrate an \
 episode's findings and snapshots explicitly — they do not apply themselves.
-- A repair episode applies stored Readings and tests individual words on \
-isolated forks. Install only its supported winner; do not hand-edit mappings \
-from the lead context.
+- Use `repair_transaction` for a stored Reading. It runs the repair worker on \
+isolated forks, validates and installs one supported changed winner, records \
+the anomalies addressed, and requires fresh verification. Do not hand-edit \
+mappings or manually reconstruct the repair/install sequence from lead context.
 - Long solver runs go through `experiment_submit` and run in the background \
 while you keep working. Check and adjudicate them with `experiment_collect`, \
 which polls the queue and installs a completed run's branch when you ask.

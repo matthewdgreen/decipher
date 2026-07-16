@@ -626,13 +626,13 @@ def run_v3(
             "context_note": args.get("context_note"),
             "max_tool_calls": args.get("max_tool_calls"),
         }
-        if kind == "reading":
+        if kind in {"reading", "repair"}:
             reading_branches = [
                 name for name in inputs["branches"] if workspace.has_branch(name)
             ]
             if len(reading_branches) != 1:
                 return json.dumps({
-                    "error": "reading requires exactly one existing branch"
+                    "error": f"{kind} requires exactly one existing branch"
                 })
             inputs["candidate_packet"] = build_candidate_reading_packet(
                 workspace, reading_branches[0]
@@ -801,6 +801,234 @@ def run_v3(
             "from_branch": branch,
         }, ensure_ascii=False)
 
+    def _snapshot_content_hash(snapshot: dict[str, Any]) -> str:
+        """Render one isolated episode snapshot with the canonical renderer."""
+        from investigation.state import _restore_branch_into
+
+        scratch = Workspace(
+            cipher_text=workspace.cipher_text,
+            plaintext_alphabet=workspace.plaintext_alphabet,
+        )
+        snap = copy.deepcopy(snapshot)
+        _restore_branch_into(scratch, snap)
+        return _branch_hash(scratch, str(snap["name"]))
+
+    def _dispatch_repair_transaction(tu: dict[str, Any], turn: int) -> str:
+        """Run, validate, install, and record one bounded repair operation."""
+        args = tu.get("input") or {}
+        branch = str(args.get("branch") or "")
+        if not workspace.has_branch(branch):
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={"status": "failed", "reason": "unknown_branch", "branch": branch},
+            )
+        source_hash = _branch_hash(workspace, branch)
+        reading_id = str(args.get("reading_id") or "")
+        reading_data = state.readings.get(reading_id) if reading_id else None
+        if reading_data is None and not reading_id:
+            candidates = [
+                item for item in state.readings.values()
+                if str(item.get("branch") or "") == branch
+                and item.get("candidate_content_hash") == source_hash
+            ]
+            if candidates:
+                reading_data = max(
+                    candidates, key=lambda item: int(item.get("created_turn") or 0)
+                )
+                reading_id = str(reading_data.get("reading_id") or "")
+        if reading_data is None:
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "failed",
+                    "reason": "fresh_reading_required",
+                    "branch": branch,
+                    "content_hash": source_hash,
+                },
+            )
+        reading = Reading.from_dict(reading_data)
+        if reading.branch != branch:
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "failed", "reason": "reading_branch_mismatch",
+                    "branch": branch, "reading_branch": reading.branch,
+                },
+            )
+        if reading.candidate_content_hash != source_hash:
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "failed", "reason": "stale_or_unbound_reading",
+                    "branch": branch,
+                    "source_content_hash": source_hash,
+                    "reading_content_hash": reading.candidate_content_hash,
+                },
+            )
+        duplicate = next(
+            (
+                item for item in reversed(state.repair_transactions)
+                if item.get("status") == "installed"
+                and item.get("source_content_hash") == source_hash
+                and item.get("reading_id") == reading_id
+            ),
+            None,
+        )
+        if duplicate is not None:
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "duplicate_suppressed",
+                    "reason": "source_and_reading_already_handled",
+                    "transaction_id": duplicate.get("transaction_id"),
+                    "installed": duplicate.get("installed_branch"),
+                },
+            )
+
+        matching_attestations = [
+            item for item in state.verify_attestations
+            if item.get("content_hash") == source_hash
+        ]
+        latest_attestation = max(
+            matching_attestations,
+            key=lambda item: int(item.get("created_turn") or 0),
+            default=None,
+        )
+        anomalies = [
+            str(item) for item in (latest_attestation or {}).get("anomalies") or []
+        ]
+        note = (
+            "Address these independent-reader anomalies conservatively: "
+            + "; ".join(anomalies)
+            if anomalies else
+            "Use only the stored reading's supported fragments; avoid speculative edits."
+        )
+        episode_payload = json.loads(_dispatch_episode_run({
+            "id": f"{tu.get('id')}:repair",
+            "name": "episode_run",
+            "input": {
+                "kind": "repair",
+                "goal": str(args.get("goal") or "Repair the bound candidate conservatively."),
+                "branches": [branch],
+                "reading_id": reading_id,
+                "context_note": note,
+            },
+        }, turn))
+        transaction_id = uuid.uuid4().hex[:12]
+        base_record = {
+            "transaction_id": transaction_id,
+            "source_branch": branch,
+            "source_content_hash": source_hash,
+            "reading_id": reading_id,
+            "episode_id": episode_payload.get("episode_id"),
+            "addressed_anomalies": anomalies,
+            "created_turn": turn,
+        }
+        if episode_payload.get("status") != "ok":
+            record = {
+                **base_record, "status": "failed",
+                "reason": episode_payload.get("failure_reason") or episode_payload.get("error"),
+            }
+            state.repair_transactions.append(record)
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={**record, "episode": episode_payload},
+            )
+
+        episode_id = str(episode_payload.get("episode_id") or "")
+        ledger_entry = next(
+            (
+                entry for entry in reversed(state.episode_ledger)
+                if entry.get("episode_id") == episode_id
+            ),
+            None,
+        )
+        result = episode_payload.get("result") or {}
+        snapshots = list((ledger_entry or {}).get("branch_snapshots") or [])
+        changed: dict[str, str] = {}
+        for snapshot in snapshots:
+            name = str(snapshot.get("name") or "")
+            if not name:
+                continue
+            digest = _snapshot_content_hash(snapshot)
+            if digest != source_hash:
+                changed[name] = digest
+        requested = str(result.get("best_branch") or "")
+        if requested in changed:
+            winner = requested
+        elif not requested and len(changed) == 1:
+            winner = next(iter(changed))
+        else:
+            reason = "unsupported_winner" if requested else "ambiguous_or_unchanged_finalists"
+            record = {
+                **base_record, "status": "failed", "reason": reason,
+                "claimed_winner": requested or None,
+                "changed_finalists": sorted(changed),
+            }
+            state.repair_transactions.append(record)
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn, payload=record
+            )
+        if not bool(result.get("applied")):
+            record = {
+                **base_record, "status": "failed", "reason": "worker_did_not_apply",
+                "claimed_winner": winner,
+            }
+            state.repair_transactions.append(record)
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn, payload=record
+            )
+
+        install_payload = json.loads(_dispatch_episode_install({
+            "id": f"{tu.get('id')}:install",
+            "name": "episode_install_branch",
+            "input": {
+                "episode_id": episode_id,
+                "branch": winner,
+                "as_name": str(args.get("as_name") or f"repair_tx_{turn}_{branch}"),
+            },
+        }, turn))
+        installed = str(install_payload.get("installed") or "")
+        if install_payload.get("status") != "ok" or not installed:
+            record = {
+                **base_record, "status": "failed", "reason": "install_failed",
+                "install": install_payload,
+            }
+            state.repair_transactions.append(record)
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn, payload=record
+            )
+        result_hash = _branch_hash(workspace, installed)
+        workspace.get_branch(installed).metadata["repair_transaction"] = {
+            "transaction_id": transaction_id,
+            "source_branch": branch,
+            "source_content_hash": source_hash,
+            "reading_id": reading_id,
+            "episode_id": episode_id,
+            "addressed_anomalies": anomalies,
+        }
+        record = {
+            **base_record,
+            "status": "installed",
+            "worker_winner": winner,
+            "installed_branch": installed,
+            "result_content_hash": result_hash,
+            "changed": result_hash != source_hash,
+            "reverification_required": True,
+            "edits": [str(item) for item in result.get("edits") or []],
+            "collateral": dict(result.get("collateral") or {}),
+        }
+        state.repair_transactions.append(record)
+        state.add_evidence(
+            "repair_transaction", turn=turn,
+            summary=f"Installed {installed} from bounded repair transaction.",
+            **record,
+        )
+        emit("repair_transaction_complete", dict(record), outer_iteration=turn)
+        return _record_dispatch_result(
+            name="repair_transaction", tu=tu, turn=turn, payload=record
+        )
+
     def _dispatch_tool(tu: dict[str, Any], turn: int) -> str:
         name = tu["name"]
         if name not in current_lead_tool_names:
@@ -865,6 +1093,30 @@ def run_v3(
             return result
         if name == "episode_install_branch":
             return _dispatch_episode_install(tu, turn)
+        if name == "repair_transaction":
+            phase = workflow_state(state, executor)["state"]
+            if phase not in {"candidate_reading", "repair_required"}:
+                return _record_dispatch_result(
+                    name=name, tu=tu, turn=turn,
+                    payload={
+                        "status": "blocked",
+                        "reason": "repair_transaction_not_ready",
+                        "workflow_state": phase,
+                    },
+                )
+            try:
+                return _dispatch_repair_transaction(tu, turn)
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:  # noqa: BLE001 - preserve the run artifact
+                return _record_dispatch_result(
+                    name=name, tu=tu, turn=turn,
+                    payload={
+                        "status": "failed",
+                        "reason": "transaction_error",
+                        "error": str(exc),
+                    },
+                )
         # M4: experiment-queue lead tools are routed before executor.execute (the
         # episode_* pattern); they cannot change the model variant, so they
         # early-return WITHOUT the mirror below.

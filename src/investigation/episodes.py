@@ -342,9 +342,11 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "You are a REPAIR worker. Compile the given reading / word hypotheses "
             "into applied edits on FORKS with hypothesis_apply_reading and "
             "hypothesis_test_word, verify collateral with branch_adjudicate and "
-            "the score/decode tools, and report which edits you applied, the best "
-            "resulting branch, per-action verdicts, collateral summaries, and "
-            "notes. Nothing you fork lands until the lead installs it."
+            "the score/decode tools, discard unsupported edits, keep only a small "
+            "diverse finalist set, and compare it before naming exactly one best "
+            "changed branch. Report which edits you applied, per-action verdicts, "
+            "collateral summaries, and notes. Nothing you fork lands until the "
+            "host repair transaction validates and installs it."
         ),
     },
     # M5 Part 1: the independent-reader `verify` episode. EMPTY toolset (text-only
@@ -609,6 +611,32 @@ EPISODE_INSTALL_TOOL = {
     },
 }
 
+REPAIR_TRANSACTION_TOOL = {
+    "name": "repair_transaction",
+    "description": (
+        "Run one bounded repair transaction for a candidate. The host binds the "
+        "candidate content and stored reading, delegates conservative edits to "
+        "an isolated repair worker, validates its supported winner, installs the "
+        "changed snapshot, and requires fresh verification."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "branch": {"type": "string"},
+            "reading_id": {
+                "type": "string",
+                "description": (
+                    "Stored reading to compile. Omit to use the newest reading "
+                    "bound to this exact branch content."
+                ),
+            },
+            "goal": {"type": "string"},
+            "as_name": {"type": "string"},
+        },
+        "required": ["branch"],
+    },
+}
+
 # The lead is a strategist, not an operator. Low-level observation, search, and
 # mapping tools remain in the episode library but are intentionally absent from
 # this surface. Benchmark-context reads are included dynamically by
@@ -654,7 +682,12 @@ def v3_lead_tool_definitions(
     if allowed_episode_kinds is not None:
         valid = [kind for kind in allowed_episode_kinds if kind in EPISODE_KINDS]
         episode_run["input_schema"]["properties"]["kind"]["enum"] = valid
-    selected.extend([episode_run, EPISODE_INSTALL_TOOL, BRANCH_ADJUDICATE_TOOL])
+    selected.extend([
+        episode_run,
+        EPISODE_INSTALL_TOOL,
+        REPAIR_TRANSACTION_TOOL,
+        BRANCH_ADJUDICATE_TOOL,
+    ])
     return selected
 
 
@@ -753,7 +786,7 @@ def build_episode_context(
     branches = list(spec.inputs.get("branches") or [])
     parts: list[str] = [f"## Task\n{spec.goal}"]
     packet = spec.inputs.get("candidate_packet")
-    if spec.kind == "reading" and isinstance(packet, dict):
+    if spec.kind in {"reading", "repair"} and isinstance(packet, dict):
         spans = []
         for span in packet.get("spans") or []:
             if not isinstance(span, dict):
@@ -768,7 +801,7 @@ def build_episode_context(
             f"- branch: `{packet.get('branch')}`\n"
             f"- content hash: `{packet.get('content_hash')}`\n"
             f"- capability: `{packet.get('capability')}`\n"
-            "Use only the opaque span ids below for positioned fragments.\n\n"
+            "Use only the host provenance below for positioned fragments.\n\n"
             + "\n\n".join(spans)
         )
     if branches:
@@ -776,7 +809,9 @@ def build_episode_context(
                  if workspace.has_branch(b)]
         parts.append("## Branch cards\n" + "\n".join(cards))
         first = next((b for b in branches if workspace.has_branch(b)), None)
-        if first is not None and not (spec.kind == "reading" and isinstance(packet, dict)):
+        if first is not None and not (
+            spec.kind in {"reading", "repair"} and isinstance(packet, dict)
+        ):
             decode = _decoded_text_for_panel(workspace, first)
             window = decode[:_EPISODE_WINDOW_CHARS]
             parts.append(

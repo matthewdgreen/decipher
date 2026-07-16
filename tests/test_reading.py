@@ -39,6 +39,8 @@ def test_reading_roundtrip_and_full_text_order():
         branch="main",
         source="episode:abc123",
         created_turn=4,
+        candidate_content_hash="abc123hash",
+        candidate_renderer_id="decoded_text_v1",
         fragments=[
             ReadingFragment(text="WORLD.", repair_text="WORLD", start=6, end=11,
                             confidence=0.8, label="w2"),
@@ -54,6 +56,8 @@ def test_reading_roundtrip_and_full_text_order():
     assert restored.branch == "main"
     assert restored.source == "episode:abc123"
     assert restored.created_turn == 4
+    assert restored.candidate_content_hash == "abc123hash"
+    assert restored.candidate_renderer_id == "decoded_text_v1"
     assert restored.holes == ["gap@3"]
     assert restored.overall_confidence == 0.85
     assert [f.text for f in restored.fragments] == ["WORLD.", "HELLO"]

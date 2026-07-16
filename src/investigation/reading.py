@@ -114,6 +114,8 @@ class Reading:
     source: str  # "episode:<episode_id>" or "lead"
     created_turn: int = 0
     reading_id: str = field(default_factory=new_reading_id)
+    candidate_content_hash: str | None = None
+    candidate_renderer_id: str | None = None
     fragments: list[ReadingFragment] = field(default_factory=list)
     holes: list[str] = field(default_factory=list)
     overall_confidence: float = 0.5
@@ -133,6 +135,8 @@ class Reading:
             "branch": self.branch,
             "source": self.source,
             "created_turn": self.created_turn,
+            "candidate_content_hash": self.candidate_content_hash,
+            "candidate_renderer_id": self.candidate_renderer_id,
             "fragments": [f.to_dict() for f in self.fragments],
             "holes": list(self.holes),
             "overall_confidence": self.overall_confidence,
@@ -145,6 +149,14 @@ class Reading:
             branch=str(data.get("branch") or ""),
             source=str(data.get("source") or "lead"),
             created_turn=int(data.get("created_turn") or 0),
+            candidate_content_hash=(
+                str(data["candidate_content_hash"])
+                if data.get("candidate_content_hash") else None
+            ),
+            candidate_renderer_id=(
+                str(data["candidate_renderer_id"])
+                if data.get("candidate_renderer_id") else None
+            ),
             fragments=[
                 ReadingFragment.from_dict(f)
                 for f in (data.get("fragments") or [])
@@ -251,6 +263,16 @@ class Reading:
             branch=branch,
             source=source,
             created_turn=created_turn,
+            candidate_content_hash=(
+                str(candidate_packet.get("content_hash"))
+                if candidate_packet and candidate_packet.get("content_hash")
+                else None
+            ),
+            candidate_renderer_id=(
+                str(candidate_packet.get("renderer_id"))
+                if candidate_packet and candidate_packet.get("renderer_id")
+                else None
+            ),
             fragments=fragments,
             holes=[str(h) for h in (result.get("holes") or [])],
             overall_confidence=coerce_confidence(result.get("overall_confidence")),
