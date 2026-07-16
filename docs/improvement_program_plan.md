@@ -639,3 +639,38 @@ full bake-off was run during implementation in order to control token cost.
   Zodiac) this project centers on. Belongs with the existing external-comparison
   lineage: `src/external/{azdecrypt,cryptocrack}.py` stubs +
   `scripts/run_automated_parity_matrix.py`. Install: `cargo install ciphey`.
+
+  **2026-07-15 comparison attempt — findings:** installed (cargo, v0.12.0);
+  UNUSABLE non-interactively — the first-run config wizard infinite-loops and
+  stack-overflows (SIGABRT) on non-TTY stdin, so no batch harness can drive it
+  without a scripted PTY. Domain mismatch confirmed (no general substitution,
+  English-only scoring, 62-symbol input ceiling vs Copiale's 86; only overlap =
+  2 English Kryptos Vigenere cases). Comparison DEFERRED until a fair
+  English-only multi-cipher benchmark exists (below). In-domain alternatives
+  when wanted: AZdecrypt, zkdecrypto, CrypTool.
+
+## Benchmark generation on demand (user-directed, 2026-07-15 — queued)
+
+Matthew: "we should be able to compete on English-only examples, even if that
+means we have to generate a better English-only multi-cipher benchmark" and
+"we should plan to build tools that generate useful cipher benchmarks for many
+unknown ciphers (in any language) on demand."
+
+Status vs existing code: PARTIALLY exists — testgen generates single-
+substitution synthetics (en/de/fr/it, boundaries/homophonic/difficulty
+presets), and the INV diagnosis suite builder
+(scripts/build_inv_diagnosis_suite.py) generates 6 cases across 5 families
+incl. a composite via TestSpec + transform_pipeline. What does NOT exist: a
+general, family-parameterized generator covering the full family space on
+demand.
+
+Design direction (pair with INV): the INV family registry
+(src/investigation/families.py) is the taxonomy — EVERY FAMILY THE
+INVESTIGATOR CAN DIAGNOSE SHOULD HAVE A GENERATOR COUNTERPART, so
+diagnosis/discriminators/solvers can be tested per family at scale, and new
+families arrive with their test data. First deliverable: the English-only
+multi-cipher benchmark (shift/keyword/Vigenere/transposition/substitution/
+homophonic + composites, plus an encodings tier for external-tool comparisons
+like ciphey). Reuses testgen caching/manifest/firewall conventions (plaintext
+hashes, ground truth post-hoc only). Not yet specced; queued behind M5.1/M6
+completion.
