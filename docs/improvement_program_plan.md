@@ -712,3 +712,21 @@ discriminator + generator counterpart (per the benchmark-generation item)
    experiments.
 
 Not scheduled; recorded for the eventual spec.
+
+### Benchmark generator — BUILT 2026-07-15 (slices A/B/C landed)
+
+Spec docs/specs/cipher_benchmark_generator_spec.md implemented in three
+landed commits (f7e816f corpus, 8eeff79 families, 783685a orchestration):
+- Slice B: measured plaintext library (911 passages, en/de/fr/it/la,
+  era-tagged, per-passage statistical profile; select() by measured
+  properties). `scripts/build_plaintext_library.py` regenerates it.
+- Slice A: 34 round-tripping cipher families (src/ciphers/*) with canonical
+  known-answer vectors.
+- Slice C: family_registry (35 FamilyGenSpec) + scripts/
+  generate_cipher_benchmark.py → loader-compatible tree with graded context
+  tiers. 34/35 families are NEW vs investigation/families.py.
+Generate: `scripts/generate_cipher_benchmark.py --families all --languages
+en de fr it la --per-family N --out <dir>`. All offline/deterministic.
+These 34 new families are now the concrete queue for docs/inv_family_roadmap.md
+(each can get a diagnosis discriminator + solver referral). Agentic system
+untouched throughout (Codex-owned).
