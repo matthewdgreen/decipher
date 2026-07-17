@@ -531,8 +531,10 @@ clutter); publishing.
 
 ## Milestones
 
-Sequencing per the feasibility critic. A one-day schema-unification
-mini-spec (I3's five dataclasses, one owner file each) precedes any code.
+Sequencing per the feasibility critic and the 2026-07-16 roadmap review. A
+one-day schema-unification mini-spec (I3's five dataclasses, one owner file
+each) precedes stateful INV code. LLM-free diagnosis calibration is an enabling
+lane and does not wait for the agent milestones.
 
 **INV-0 — Compiled analysis pack** (no v3 dependency; consumable by v2
 immediately). Family registry; `DiagnosisReport` + uncertainty rules +
@@ -546,11 +548,39 @@ Wase/Campanelli broad conclusion; borg_0077v render yields `word_islands`;
 ambiguous near-miss fixtures return `uncertain` with the correct
 discriminator recommended.
 
-**INV-1 — Investigator state + note + human channel** (needs M1). Unified
-schemas; typed evidence; coverage *recording*; `human_inbox` +
-`--suggestion` + A2-policy declaration guard; note renderer + claim
-validator; `state_seq`/`events.jsonl`/`on_turn_end` (M1 spec amendment);
-`watch`/`report`/`suggest` CLI; minimal manifest + lockfile + resume.
+**INV-0.5 — Diagnosis measurement and breadth** (no v3 dependency; required
+before paid playbook conclusions or broad family expansion). This is a series
+of small LLM-free slices:
+
+1. Generate one canonical support matrix from the family, generator,
+   discriminator, and solver registries. The taxonomy distinguishes
+   representation, broad family, exact variant, composition, and modifier.
+2. Build a held-out diagnosis benchmark across multiple seeds, lengths,
+   languages, key parameters, boundary/noise conditions, confusable pairs,
+   composites, unsupported families, and random controls.
+3. Report hierarchical top-1/top-k accuracy, abstention quality,
+   false-confident rate, confidence calibration, and measured discriminator
+   power. Strong rule-outs require measured power; the six-case model suite is
+   a smoke test, not a diagnosis leaderboard.
+4. Land Tier-0 deterministic representation detection/decoding.
+5. Add broad transposition evidence plus bounded solver-backed variant probes.
+   Exact transposition variants are not presumed statistically identifiable
+   from ciphertext alone.
+6. Add composition-aware diagnosis over transformed views, beginning with the
+   substitution+transposition case missed by all three model experiments.
+7. Treat language, segmentation, and transcription quality as orthogonal
+   hypotheses/views; language-model failure alone is not family evidence.
+
+Calibration harness code and false-rule-out reporting are part of INV-0.5,
+not a deferred presentation feature. Every later family slice adds held-out
+cases and re-runs the applicable measurements.
+
+**INV-1 — Thin investigator case file** (needs M1). Unified schemas; typed
+evidence; coverage *recording*; minimal `human_inbox` + `--suggestion` +
+A2-policy declaration guard; note renderer + claim validator;
+`state_seq`/`events.jsonl`/`on_turn_end` (M1 spec amendment); minimal manifest,
+lockfile, and resume. Rich `watch`, diff-reporting, approvals, and presentation
+surfaces wait until the canonical state has survived real multi-session use.
 Acceptance: a full investigator run on Beale produces a defensible
 research note (diagnosis atoms, hoax-vs-book evidence, frontier section);
 the two-session resume test (I7); declaration blocked while an inbox item
@@ -583,8 +613,9 @@ attestation; crib mismatch hard-blocks a scripted K4-style case.
 
 **INV-5 — Gated spikes** (post-M5/M6, only after INV-1..4 usage shows the
 specific gap): lineup spike under D10 rules; per-family envelopes/
-approvals/unattended governance; calibration-harness automation
-(stop-reason and false-rule-out dashboards); presentation dashboard.
+approvals/unattended governance; optional visualization of the already-landed
+calibration outputs (stop-reason and false-rule-out dashboards); rich
+`watch`/presentation surfaces.
 
 Cut list (do not build): the phase state machine; `design`/`adjudicate`/
 `replicate`/`note`/`ingest_note` episode kinds; note parsers;
@@ -698,7 +729,10 @@ Design sketch (for the INV-1+ slice that implements it):
 `docs/inv_family_roadmap.md` (user-requested) lists the cipher families not
 yet addressed, tiered: first the ones other tools support that we don't,
 then the longer historical tail. Binding convention going forward: a family
-lands as a SLICE of {registry entry + calibrated discriminator + generator
-counterpart + solver-or-referral note}; diagnosis-first is acceptable, but
-the generator ships with the registry entry because it is how the
-discriminator gets calibrated (INV-0 convention).
+or variant lands at an explicit hierarchy level as a SLICE of {registry or
+taxonomy entry + generated held-out calibration evidence + calibrated
+detector/discriminator/solver-backed probe + solver-or-referral note}.
+Diagnosis-first is acceptable. Exact variants are not presumed statically
+identifiable when only successful bounded inversion separates them. The
+2026-07-16 revised sequencing and acceptance rules in the roadmap and INV-0.5
+milestone supersede the original flat family-count ordering.

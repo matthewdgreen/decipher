@@ -1,4 +1,4 @@
-# No-LLM Solver Coverage Matrix (2026-07-15)
+# No-LLM Solver Coverage Matrix (updated 2026-07-16)
 
 Ran the existing `AutomatedBenchmarkRunner` (no LLM) against one generated
 English case per family (35 families, `scripts/solver_coverage_sweep.py`,
@@ -17,8 +17,8 @@ the new transposition_solver (landed 2026-07-16); route + cadenus remain gaps.
 | family | char | why it works |
 |---|---|---|
 | vigenere / beaufort / variant_beaufort / gronsfeld | 1.000 | periodic polyalphabetic solver |
-
 | a1z26 / morse / tap_code | ~0.99 | **each is a 1:1 per-token substitution** — our symbol-general mono solver cracks any 1:1 encoding regardless of symbol shape |
+| columnar / railfence / redefence / myszkowski / amsco / nihilist transposition | ~1.000 in acceptance | dedicated transposition solver |
 
 ## NOT solved — the ~0.40 "mono floor" (solver applied the WRONG attack)
 
@@ -29,11 +29,9 @@ Treat as GAPS, not partial solves.
 
 ## Gaps needing new solvers
 
-- **Transposition variants** (~0.37–0.39): columnar_transposition, railfence,
-  redefence, myszkowski, amsco, cadenus, nihilist_transposition. We crack
-  `route` but not these — the transform search doesn't cover keyword-columnar
-  permutations. **Investigate the route-works/columnar-doesn't gap first —
-  likely a tractable extension of existing machinery.**
+- **Residual transposition variants**: route remains unstable (~0.36–0.75 on
+  medium acceptance cases), and Cadenus remains unsupported. The six solved
+  variants above are now diagnosis/probe regression anchors, not solver gaps.
 - **Vigenère relatives** (~0.37–0.39): porta, autokey_text, autokey_key,
   running_key. Periodic near-misses; small adaptations of the attack we have
   (running_key hardest — no period).
@@ -50,18 +48,16 @@ Treat as GAPS, not partial solves.
 
 ## Prioritized solver-build plan (value × tractability)
 
-1. **Transposition-family solver** — 7 families at once; we already crack
-   route, so start by diagnosing why columnar fails and extend the transform
-   search. Biggest single win.
-2. **Vigenère-relatives** (porta, autokey ×2) — adapt the periodic attack;
+1. **Encoding detect+decode** (Base64/32, hex, binary, ROT47, Baconian) —
+   deterministic and cheap; this is INV Tier-0 representation preflight.
+2. **Residual transposition work** — stabilize route and add Cadenus while
+   retaining the six solved variants as regression anchors.
+3. **Vigenère relatives** (Porta, autokey ×2) — adapt the periodic attack;
    small deltas. running_key separately (harder).
-3. **Hill 2×2 brute-force** — smallest, self-contained; a quick real solver.
-4. **Playfair-family SA** — the flagship digraphic solver (roadmap Tier-1 #1).
-5. **Fractionation SA** (bifid/trifid/adfgx/adfgvx).
-6. **Nihilist substitution.**
-7. **Encodings detect+decode** (base64/hex/binary/rot47/…) — deterministic;
-   overlaps INV encoding-detection tier. The 1:1 ones (a1z26/morse/tap) are
-   already cracked.
+4. **Hill 2x2 brute-force** — smallest, self-contained; a quick real solver.
+5. **Playfair-family SA** — the flagship digraphic solver.
+6. **Fractionation SA** (Bifid/Trifid/ADFGX/ADFGVX).
+7. **Nihilist substitution.**
 
 All of this is LLM-free and lives in analysis/automated/ciphers (NOT the
 Codex-owned agentic system). Solvers should be validated against the

@@ -49,18 +49,22 @@ coordinate before editing those.
 
 ## 4. Long-range queue + enabling work
 - `docs/inv_family_roadmap.md` — the tiered list of families not yet diagnosed
-  (Tier 1 = families other tools support and we don't; Tier 2 = the historical
-  tail). The concrete discriminator queue.
+  plus the revised implementation sequence: canonical taxonomy/coverage,
+  diagnosis calibration, Tier-0 representations, transposition probes,
+  layered/composite diagnosis, unknown-language handling, then the broader
+  family tail. This is the concrete discriminator queue.
 - `docs/specs/cipher_benchmark_generator_spec.md` + the generator
   (`scripts/generate_cipher_benchmark.py`, `src/ciphers/*`, `src/testgen/*`) —
-  produces the 34 families INV must diagnose. Convention: every INV family gets
-  a GENERATOR counterpart (calibrates its discriminator).
+  contains 35 registered generators (34 new relative to the coarse INV
+  registry). Convention: every diagnosable mechanism gets generated
+  calibration evidence at the appropriate hierarchy level.
 - `docs/solver_coverage_matrix.md` + `docs/specs/transposition_solver_spec.md` —
   the solver track that pairs with INV families (what we can SOLVE vs DIAGNOSE).
 - `docs/improvement_program_plan.md` — sections: "Investigator-mode structured
   model experiments", "Benchmark generation on demand" + generator pipeline,
   "INV family roadmap", "External comparison tools" (CipherLens = the natural
-  INV-diagnosis competitor, 79.24% bar; ciphey = out-of-domain solver).
+  aligned-data diagnosis comparison after INV-0.5; Ciphey overlaps primarily
+  with Tier-0 representations).
 
 ## 5. Code entry points
 - Engine: `src/investigation/{families,diagnosis}.py`,
@@ -81,11 +85,11 @@ numbers, CipherLens, and the gate-lift decisions. Not in the repo.
   `echo "S001 S002 | S003" | .venv/bin/decipher diagnose - --json`.
 - Re-verify scoring: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_calibration_inv0.py -q`.
 - Rebuild the model suite / run / report: the three `*_inv_*` scripts in §3.
-- **Highest-value next INV work (LLM-free, Codex-safe):** add discriminators for
-  the generated families INV can only see coarsely — start with TRANSPOSITION
-  (we now GENERATE and SOLVE columnar/railfence/redefence/myszkowski/amsco, but
-  INV still only reports generic "transposition"). Then the playbook ablation +
-  v2-task swap (score INV-0's DiagnosisReport head-to-head vs the frontier
-  models on the suite — INV models composites, the case all 3 models missed).
-  Then the CipherLens comparison.
-</content>
+- **Highest-value next INV work (LLM-free, Codex-safe):** execute INV-0.5 from
+  the design: first generate the canonical support matrix and expand the
+  held-out diagnosis/calibration benchmark; then add Tier-0 representation
+  detection, broad transposition evidence with solver-backed variant probes,
+  and composition-aware diagnosis for substitution+transposition. In parallel,
+  INV-1 should begin as a thin persistent case file, not the full presentation
+  surface. Run the report/playbook model ablation only after the expanded local
+  benchmark exists. Run CipherLens only after aligning labels and test data.

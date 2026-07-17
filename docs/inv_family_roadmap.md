@@ -1,92 +1,212 @@
-# INV Cipher-Family Roadmap (long-range support list)
+# INV Cipher-Family Roadmap
 
-Requested by Matthew (2026-07-15): "a list of cipher families that we have
-not yet addressed, so that we can eventually add them to INV. Start with
-families that other tools support and we don't, then the list can get
-longer." Companion to the "Benchmark generation on demand" plan item
-(docs/improvement_program_plan.md): full support for a family means all
-three columns — **Diagnose** (INV registry entry + discriminators),
-**Generate** (benchmark generator counterpart), **Solve** (an automated
-attack). A family can usefully land diagnosis-first (INV names it and
-recommends the right external tool even before we can break it).
+Updated 2026-07-16 after review of the landed INV-0 system, the 35-family
+generator, the no-LLM solver coverage sweep, and the six-case model-diagnosis
+experiment.
 
-Reference tools for "who else supports it": AZdecrypt (the community
-standard for Zodiac-class work), CrypTool 2, the ACA cipher-type list
-(~60 types), ciphey/Ciphey (encodings + simple classical).
+The original request was to list cipher families Decipher does not yet address,
+starting with families supported by other tools. That inventory remains useful,
+but family count is not the primary progress measure. INV must distinguish what
+the available evidence can support without manufacturing false precision.
 
-## Current coverage (2026-07-15)
+Reference tools: AZdecrypt, CrypTool 2, the ACA cipher-type list, Ciphey, and
+CipherLens.
 
-| family | diagnose | generate | solve |
+## Support levels
+
+Every entry is tracked at the correct level of the mechanism hierarchy:
+
+1. **Representation**: text, digits, glyph tokens, Base64, hex, Morse, and
+   similar deterministic encodings.
+2. **Broad family**: substitution, transposition, periodic polyalphabetic,
+   polygraphic, fractionating, numeric/codebook, or unknown/custom.
+3. **Variant**: columnar vs railfence, Playfair vs two-square, Vigenere vs
+   Beaufort, and similar close relatives.
+4. **Composition**: substitution+transposition,
+   transposition+homophonic, fractionation+transposition, and other layered
+   mechanisms.
+5. **Modifier/view**: nulls, noise, segmentation, transcription variants,
+   layout, language, and page grouping.
+
+The support matrix must distinguish:
+
+- `detect`: cheap deterministic or statistical evidence for a broad family;
+- `discriminate`: a calibrated test separating confusable hypotheses;
+- `probe`: a bounded solver-backed inversion used when ciphertext statistics
+  alone cannot identify the exact variant;
+- `generate`: a parameterized benchmark counterpart;
+- `solve`: an automated attack with measured recovery performance;
+- `refer`: an honest external-tool recommendation when Decipher cannot solve.
+
+An exact variant must not be reported confidently merely because it is listed
+in the registry. Many close transposition variants preserve the same
+low-order statistics and are distinguishable only by successful inversion.
+
+## Current coverage
+
+This is the planning-level summary. The next slice creates a generated,
+machine-readable matrix so these facts stop drifting across documents.
+
+| mechanism | detect/discriminate | generate | solve/probe |
 |---|---|---|---|
-| monoalphabetic substitution (incl. Caesar/Atbash as degenerate keys) | ✅ | ✅ testgen | ✅ hill_climb/anneal |
-| homophonic substitution | ✅ | ✅ testgen | ✅ zenith_native (99.3% Z408) |
-| periodic polyalphabetic (Vigenère; Quagmire III keyword) | ✅ | ✅ (suite builder) | ✅ periodic + quagmire3 searches |
-| transposition (columnar/pure) | ✅ | ✅ (transform pipeline) | ✅ pure_transposition + transform searches |
-| substitution+transposition composite | ✅ (transform suspicion) | ✅ (suite builder) | ✅ transform_candidates |
-| transposition+homophonic composite | ✅ registry | ✅ ladder split | ✅ transform_homophonic |
-| numeric book cipher (Beale-class) | ✅ P8 battery | ➖ | ❌ (diagnosis only) |
-| nomenclator | ✅ registry | ❌ | ❌ |
-| plaintext/hoax | ✅ | n/a | n/a |
-| playfair / polygraphic / fractionation | ⚠️ registry entries exist but discriminators are `planned` (INV-0 cover set) | ❌ | ❌ |
+| monoalphabetic substitution | landed | landed | landed |
+| homophonic substitution | landed | landed | landed (`zenith_native`) |
+| periodic polyalphabetic | landed broadly | 8 generated relatives | Vigenere/Beaufort/Variant/Gronsfeld landed; Porta/autokey/running-key gaps |
+| broad transposition | generic suspicion only | 8 generated variants | columnar/railfence/redefence/Myszkowski/Amsco/nihilist-transposition landed; route and Cadenus remain gaps |
+| substitution+transposition | coarse suspicion; model experiment missed it | suite-builder cases | transform search exists, composition diagnosis weak |
+| transposition+homophonic | registry entry | ladder cases | transform-homophonic search exists, composition diagnosis weak |
+| Playfair/polygraphic | registry cover only; discriminator planned | Playfair/two-square/four-square/Hill generated | not solved |
+| fractionation+transposition | registry cover only; discriminator planned | Bifid/Trifid/ADFGX/ADFGVX generated | not solved |
+| numeric book cipher | P8 diagnosis landed | no general generator | diagnosis only |
+| nomenclator/codebook | registry only | not generated | not solved |
+| deterministic encodings | not first-class in INV | Base64/Base32/hex/binary/ROT47/Baconian/A1Z26/Morse/tap generated | detect-and-decode missing; some 1:1 forms happen to fall to substitution |
+| plaintext/random/fabrication models | provisional hypothesis | random controls needed | never a conventional solve |
 
-## Tier 1 — other tools support these; we do not (add first)
+## Immediate enabling lane
 
-Ordered roughly by (a) how commonly other tools crack them, (b) fit with
-machinery we already have.
+These slices precede broad family expansion.
 
-1. **Playfair** (digraphic) — AZdecrypt, CrypTool, ACA staple. Registry
-   entry exists; needs a real discriminator (even-length digraph stats, no
-   doubled digraph letters), a generator, and an SA solver.
-2. **Bifid / Trifid** (Polybius fractionation) — AZdecrypt, ACA. Pairs
-   naturally with the existing fractionation registry entry.
-3. **ADFGX / ADFGVX** (fractionation + columnar) — CrypTool; historically
-   major (WWI). Composite of two things we partly have.
-4. **Two-square / Four-square** (digraphic) — AZdecrypt, ACA.
-5. **Autokey (Vigenère autokey)** — CrypTool, ACA. Small extension of our
-   periodic machinery; distinct diagnosis signature (no Kasiski repeats).
-6. **Beaufort / Variant / Porta / Gronsfeld** (Vigenère relatives) — nearly
-   free on the solve side given our periodic stack; diagnosis merges with
-   polyalphabetic_periodic; generators trivial.
-7. **Running key** — AZdecrypt. Diagnosis: polyalphabetic with no period.
-8. **Transposition variants: Railfence/Redefence, Route, Amsco,
-   Myszkowski, Cadenus** — ACA staples, several in AZdecrypt/CrypTool. Our
-   generic transposition search may already crack some; needs per-variant
-   generators + verification, then targeted solvers where generic fails.
-9. **Hill cipher (2x2/3x3 linear)** — CrypTool. Distinct algebraic
-   diagnosis signature.
-10. **Nihilist substitution / transposition** — ACA; numeric-pair
-    signature overlaps our P8 numeric battery (good discriminator fit).
-11. **Straddling checkerboard / VIC-style** — mixed-length numeric;
-    extends the numeric battery.
-12. **Fractionated Morse / Morbit / Pollux** — ACA; needs a morse layer.
-13. **Grille / turning grille** — CrypTool; transposition family.
-14. **Encodings tier** (ciphey's home turf): Base64/32/85, hex, binary,
-    Morse, Baconian, A1Z26, ROT47, tap code. Not cryptanalysis — but INV
-    diagnosis (P0) should DETECT and name them so an "unknown input"
-    triages correctly; generators are trivial; needed for any fair
-    external-tool comparison (see Ciphey note in the improvement plan).
+### A. Canonical taxonomy and coverage matrix
 
-## Tier 2 — historically important; weak or no support anywhere (longer range)
+- Generate one authoritative matrix from the INV registry, generator registry,
+  discriminator registry, and solver acceptance artifacts.
+- Record hierarchy level, support mode, implementation status, measured power,
+  applicable lengths/languages, and external referral.
+- Make hand-written documents consume or summarize that matrix rather than
+  maintaining independent status claims.
 
-- **Numeric book-cipher SOLVING** (key-text search over corpora) — we
-  diagnose (Beale); nobody solves well. High-prestige target.
-- **Nomenclator solving** (mixed code+cipher, historical archives) — the
-  Borg/Copiale lineage generalized; generator = code-list synthesis.
-- **Polyphonic substitution** (one symbol → several letters) — rare in
-  tools; appears in historical material.
-- **Syllabary / large-alphabet historical systems** — extends multisym.
-- **Rotor machines (Enigma-class)** — CrypTool has it; long-range and a
-  different compute profile.
-- **Running-key with non-book keys, progressive-key (Gromark family)** —
-  ACA tail.
-- **Abjad / non-Latin-script and shorthand systems** (Voynich-adjacent) —
-  research frontier; diagnosis-first.
+### B. Diagnosis calibration benchmark
 
-## How this list gets consumed
+- Expand beyond the current six-case model suite using fresh, held-out
+  generator seeds.
+- Cover multiple lengths, languages, key parameters, boundary conditions,
+  noise levels, and deliberately confusable pairs.
+- Include simple, composite, unsupported, and actually-random controls.
+- Measure hierarchical top-1/top-k accuracy, abstention quality,
+  false-confident rate, calibration, and discriminator power.
+- Keep generator parameters and ground truth outside runtime diagnosis. They
+  are post-hoc evaluation data only.
+- A new discriminator cannot support a strong rule-out until its power and
+  false-rule-out rate are measured on this suite.
 
-Adding a family = one slice: registry entry + discriminator (with
-shuffle-null calibration per INV-0 conventions) + generator (per the
-on-demand benchmark plan item) + solver-or-referral note. Diagnosis-first
-is acceptable; generators are required with the entry (they are how the
-discriminator gets calibrated). Priority follows this document's order
-unless a target cipher demands otherwise.
+### C. Unknown-language and transcription axes
+
+Language, segmentation, transcription quality, and cipher family are separate
+unknowns. They must be represented as orthogonal hypotheses/views rather than
+silently fixing `language=en` and interpreting language-model failure as
+cipher-family evidence. Prefer language-neutral family evidence first, then
+compare plausible language-conditioned views.
+
+## Tier 0: deterministic representation preflight
+
+Implement cheap detect-and-decode checks for Base64/32/85, hex, binary, Morse,
+Baconian, A1Z26, ROT47, tap code, and obvious mixed-length numeric encodings.
+This runs before cryptanalytic diagnosis, prevents wasted investigations, and
+provides the fair overlap needed for a later Ciphey comparison.
+
+## Tier 1: highest-value diagnosis work
+
+### 1. Broad transposition and variant probes
+
+The next LLM-free discriminator work remains transposition, but with an honest
+split:
+
+- Static/order-layout evidence decides whether transposition is a live broad
+  family.
+- Bounded inverse screens for columnar, railfence, redefence, Myszkowski,
+  Amsco, nihilist transposition, route, and Cadenus act as solver-backed
+  variant probes.
+- Exact subtype confidence comes from calibrated probe separation and readable
+  inversions, not monogram statistics.
+- Route and Cadenus remain solver gaps; the other six variants are regression
+  anchors for diagnosis/probe behavior.
+
+### 2. Layered/composite diagnosis
+
+This is the highest demonstrated reasoning gap: every tested frontier model
+missed substitution+transposition. Add compositional hypotheses over mechanism
+layers and update them across `view_hash` transformations. Initial acceptance
+must cover:
+
+- substitution+transposition;
+- transposition+homophonic;
+- fractionation+transposition;
+- null/noise overlays;
+- negative controls where a single family is sufficient.
+
+The report should say which layer is supported, which remains uncertain, and
+which transformed view produced the evidence. Do not force every composition
+into a permanently flat family enum.
+
+### 3. Periodic and non-periodic Vigenere relatives
+
+Generators already exist. Add calibrated distinction/probes for Porta,
+text-autokey, ciphertext-autokey, and running key. Beaufort, Variant Beaufort,
+Gronsfeld, and ordinary Vigenere are solved regression anchors. Absence of a
+Kasiski peak is weak evidence, not a standalone autokey diagnosis.
+
+### 4. Polygraphic and fractionating families
+
+Proceed in confusable groups rather than isolated names:
+
+- Playfair, two-square, and four-square;
+- Hill 2x2 first, then larger Hill variants if justified;
+- Bifid and Trifid;
+- ADFGX and ADFGVX as explicit fractionation+transposition compositions;
+- Nihilist substitution and straddling-checkerboard/VIC-style numeric systems.
+
+Each group gets generated calibration cases, broad-family evidence, a
+solver-backed discriminator where needed, and a solver or referral note.
+
+### 5. Remaining common families
+
+- Fractionated Morse, Morbit, and Pollux;
+- grille and turning-grille transpositions;
+- progressive-key/Gromark relatives;
+- Base85 and other representation variants not covered in Tier 0.
+
+## Tier 2: historical research frontier
+
+- Numeric book-cipher solving through documented corpus search;
+- nomenclator solving and synthetic code-list generation;
+- polyphonic substitution;
+- syllabaries and large-alphabet historical systems;
+- rotor machines;
+- abjad, non-Latin-script, and shorthand systems;
+- Voynich-adjacent unknown-language and transcription research.
+
+For these targets, diagnosis-first and an explicit engineering frontier are
+valuable outcomes even when no solver exists.
+
+## Investigator-state and model sequencing
+
+Family work is only one track. In parallel with the LLM-free enabling lane:
+
+1. Land a thin INV-1 case file: canonical evidence/coverage/experiment state,
+   atomic resume, generated research note, and basic human suggestions.
+2. Defer richer `watch` and presentation surfaces until the state is exercised
+   on real multi-session investigations.
+3. Run the model playbook ablation only after the expanded local diagnosis
+   benchmark exists. Compare raw ciphertext, DiagnosisReport, static playbook,
+   and report+playbook as separate arms.
+4. Use LLMs primarily for experiment selection, adjudication, and testable
+   custom mechanisms, not as replacements for compiled family diagnosis.
+5. Compare with CipherLens only on an aligned family set and fresh shared test
+   distribution. Its published aggregate is a reference point, not directly
+   comparable to INV's current six-case suite.
+
+## Definition of a completed family slice
+
+A family or variant lands only when:
+
+1. Its hierarchy level and confusable set are explicit.
+2. A generator counterpart exists, or the record explains why generation is
+   not meaningful.
+3. Its detector/discriminator/probe is calibrated on fresh held-out cases.
+4. Reports state uncertainty and counterevidence honestly.
+5. Solver status is measured, with a referral when unsupported.
+6. Composite behavior and language dependence are tested where applicable.
+7. Ground truth is used only after diagnosis/search for evaluation.
+
+Priority follows this document unless a target cipher exposes a more valuable
+missing instrument.

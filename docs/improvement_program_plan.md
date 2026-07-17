@@ -649,44 +649,38 @@ full bake-off was run during implementation in order to control token cost.
   English-only multi-cipher benchmark exists (below). In-domain alternatives
   when wanted: AZdecrypt, zkdecrypto, CrypTool.
 
-## Benchmark generation on demand (user-directed, 2026-07-15 — queued)
+## Benchmark generation on demand (user-directed 2026-07-15; built 2026-07-15)
 
 Matthew: "we should be able to compete on English-only examples, even if that
 means we have to generate a better English-only multi-cipher benchmark" and
 "we should plan to build tools that generate useful cipher benchmarks for many
 unknown ciphers (in any language) on demand."
 
-Status vs existing code: PARTIALLY exists — testgen generates single-
-substitution synthetics (en/de/fr/it, boundaries/homophonic/difficulty
-presets), and the INV diagnosis suite builder
-(scripts/build_inv_diagnosis_suite.py) generates 6 cases across 5 families
-incl. a composite via TestSpec + transform_pipeline. What does NOT exist: a
-general, family-parameterized generator covering the full family space on
-demand.
+Status: the general family-parameterized generator now exists (see the built
+section below): 35 registered families, a measured five-language plaintext
+library, deterministic generation, and graded context tiers. The remaining
+work is not more generator scaffolding; it is the held-out INV diagnosis
+benchmark that samples those families across lengths, languages, parameters,
+noise, confusable pairs, composites, unsupported controls, and random controls.
 
-Design direction (pair with INV): the INV family registry
-(src/investigation/families.py) is the taxonomy — EVERY FAMILY THE
-INVESTIGATOR CAN DIAGNOSE SHOULD HAVE A GENERATOR COUNTERPART, so
-diagnosis/discriminators/solvers can be tested per family at scale, and new
-families arrive with their test data. First deliverable: the English-only
-multi-cipher benchmark (shift/keyword/Vigenere/transposition/substitution/
-homophonic + composites, plus an encodings tier for external-tool comparisons
-like ciphey). Reuses testgen caching/manifest/firewall conventions (plaintext
-hashes, ground truth post-hoc only). Not yet specced; queued behind M5.1/M6
-completion.
+Revised design direction (pair with INV): the INV taxonomy distinguishes
+representation, broad family, exact variant, composition, and modifier. Every
+diagnosable mechanism needs generated calibration evidence, but close variants
+may require bounded solver-backed probes rather than a fictional static
+classifier. Generator parameters and plaintext remain post-hoc evaluation data
+only. The immediate deliverable is the INV-0.5 diagnosis benchmark and
+calibration report described in `docs/inv_family_roadmap.md`.
 
 ## INV family roadmap (long-range support task, 2026-07-15)
 
-`docs/inv_family_roadmap.md` — the tiered list of cipher families NOT yet
-addressed, to be added to INV over time: Tier 1 = families other tools
-(AZdecrypt/CrypTool/ACA list/ciphey) support and we don't (Playfair, Bifid/
-Trifid, ADFGX, autokey, Vigenere relatives, transposition variants, Hill,
-Nihilist, checkerboard, morse family, grilles, encodings-detection tier);
-Tier 2 = historically important with weak tool support anywhere (book-cipher
-SOLVING, nomenclator solving, polyphonic, syllabary, rotor machines,
-non-Latin scripts). Adding a family = registry entry + calibrated
-discriminator + generator counterpart (per the benchmark-generation item)
-+ solver-or-referral. Diagnosis-first is acceptable.
+`docs/inv_family_roadmap.md` is now the authoritative order. Immediate work is
+the canonical support matrix and calibration benchmark, followed by Tier-0
+representation detection, broad transposition plus solver-backed variant
+probes, layered/composite diagnosis, and unknown-language/transcription axes.
+Only then does the queue expand through Vigenere relatives,
+polygraphic/fractionating families, numeric systems, and the historical tail.
+Each slice records its hierarchy level, held-out measured power, uncertainty,
+generator, solver status, and external referral.
 
 ### Generator pipeline shape (user-specified 2026-07-15 — binding when built)
 
@@ -742,12 +736,11 @@ untouched throughout (Codex-owned).
   Polybius), and modern block ciphers (TEA/XTEA/Lucifer/LOKI/MISTY1). No
   homophonic, no encodings. Python/FastAPI+PyTorch/XGBoost backend + Next.js
   web UI; IIIT-Delhi B.Tech project (2025-26). REST API + Docker.
-  COMPARISON ANGLE (high value): CipherLens is the natural benchmark for
-  INV-0 — its 22-family set overlaps heavily with the families we just built
-  GENERATORS for (polygraphic/fractionating), and its 79.24% headline is a
-  concrete diagnosis-accuracy bar. INV-0 vs CipherLens on the generated
-  benchmark is a clean, LLM-free comparison; philosophy contrast = ML
-  classifier vs interpretable shuffle-null statistical discriminators. Ties
-  directly into docs/inv_family_roadmap.md (each family gets a discriminator)
-  and the INV model experiments. Distinct from ciphey (encoding/simple-cipher
-  SOLVER, out of our domain); CipherLens is IN our diagnosis domain.
+  COMPARISON ANGLE (high value, but sequenced after INV-0.5): CipherLens is the
+  natural external benchmark for INV diagnosis. Its published 79.24% aggregate
+  is not directly comparable to the current six-case INV suite. Compare only
+  after aligning family labels and evaluating both systems on fresh shared test
+  data, with hierarchical credit and abstention reported. The philosophy
+  contrast remains useful: learned classifier vs interpretable calibrated
+  discriminators. Distinct from Ciphey (encoding/simple-cipher solver,
+  primarily an overlap for Tier-0 representation handling).
