@@ -3,14 +3,83 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 class ModelProviderError(Exception):
     """Provider-neutral API error raised by model adapters."""
+
+
+# --- Transient rate-limit retry (2026-07-17, K3/OpenRouter incident) --------
+# An upstream 429 ("temporarily rate-limited upstream ... Retry-After: 1")
+# killed a whole v3 run on turn 2. Transient limits deserve a few short,
+# bounded retries; QUOTA exhaustion (insufficient_quota, also a 429) does not —
+# retrying an unfunded account is futile (observed live on the Sequence-C
+# smoke) and must fail fast to the caller's honest error path.
+
+_RATE_LIMIT_MARKERS = ("rate-limit", "rate limit", "rate_limit")
+_NON_RETRYABLE_MARKERS = ("insufficient_quota",)
+_RATE_LIMIT_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+def is_retryable_rate_limit_error(exc: BaseException) -> bool:
+    """True for a transient 429/rate-limit error; False for quota exhaustion
+    or anything else."""
+    text = str(exc).lower()
+    if any(marker in text for marker in _NON_RETRYABLE_MARKERS):
+        return False
+    if re.search(r"\b429\b", text):
+        return True
+    return any(marker in text for marker in _RATE_LIMIT_MARKERS)
+
+
+def parse_retry_after_seconds(exc: BaseException) -> float | None:
+    """Best-effort Retry-After (seconds) from a provider error string.
+
+    Matches both header form (``'Retry-After': '1'``) and OpenRouter metadata
+    (``'retry_after_seconds': 1``). Clamped to [0, 60]; None when absent.
+    """
+    match = re.search(
+        r"retry[_-]after[^0-9]{0,24}?(\d+(?:\.\d+)?)", str(exc), re.IGNORECASE
+    )
+    if not match:
+        return None
+    try:
+        return min(max(float(match.group(1)), 0.0), 60.0)
+    except ValueError:
+        return None
+
+
+def call_with_rate_limit_retry(
+    send: Callable[[], Any],
+    *,
+    delays: tuple[float, ...] = _RATE_LIMIT_RETRY_DELAYS,
+    on_retry: Callable[[int, float, BaseException], None] | None = None,
+) -> Any:
+    """Run ``send()``, retrying transient rate-limit errors with short waits.
+
+    At most ``len(delays)`` retries; each wait is the scheduled delay or the
+    provider's parsed Retry-After, whichever is longer. A persistent limit
+    re-raises on the final attempt so the caller's normal error path stays
+    the terminal. Non-rate-limit errors (including insufficient_quota)
+    propagate immediately. KeyboardInterrupt is never caught.
+    """
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            return send()
+        except ModelProviderError as exc:
+            if not is_retryable_rate_limit_error(exc):
+                raise
+            wait = max(delay, parse_retry_after_seconds(exc) or 0.0)
+            if on_retry is not None:
+                on_retry(attempt, wait, exc)
+            time.sleep(wait)
+    return send()
 
 
 @dataclass(frozen=True)

@@ -403,6 +403,13 @@ class NarrateAgentRenderer:
                 )
             )
 
+    def _on_rate_limit_retry(self, payload: dict[str, Any]) -> None:
+        self._line(self._c(
+            f"  [rate-limit] waiting {float(payload.get('delay_seconds') or 0):.0f}s "
+            f"before retry (attempt {payload.get('attempt')})…",
+            "yellow",
+        ))
+
     def _on_declared_unsolved(self, payload: dict[str, Any]) -> None:
         branch = payload.get("best_branch")
         self._line(self._c(f"  ✗ declared UNSOLVED (best branch: {branch})", "yellow"))

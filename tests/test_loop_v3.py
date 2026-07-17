@@ -1826,3 +1826,104 @@ def test_run_v3_text_only_turn_gets_one_nudge_then_exhausts():
     ]
     assert any("REQUIRED every turn" in s for _k, s in kinds_summaries)
     assert art.status == "unsolved"
+
+
+# ---------------------------------------------------------------------------
+# Transient 429 rate-limit resilience on the lead send (K3/OpenRouter incident).
+# ---------------------------------------------------------------------------
+
+_OPENROUTER_429_MSG = (
+    "Error code: 429 - {'error': {'code': 429, 'metadata': {'raw': "
+    "'moonshotai/kimi-k3 is temporarily rate-limited upstream', "
+    "'retry_after_seconds': 1}}}"
+)
+
+
+def test_run_v3_transient_429_retries_and_run_continues(monkeypatch):
+    import agent.model_provider as mp
+    sleeps: list[float] = []
+    monkeypatch.setattr(mp.time, "sleep", lambda s: sleeps.append(s))
+
+    ct, _alpha = _caesar_cipher("THE DOG")
+
+    class _FlakySession(ScriptedSession):
+        def __init__(self, scripts):
+            super().__init__(scripts)
+            self._raised = False
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            if not self._raised:
+                self._raised = True
+                raise ModelProviderError(_OPENROUTER_429_MSG)
+            return super().send(blocks, tools=tools, max_tokens=max_tokens)
+
+    session = _FlakySession([
+        [ToolUseBlock(id="d1", name="meta_declare_unsolved", input={
+            "best_branch": "main", "rationale": "cannot solve"})],
+    ])
+    art = run_v3(ct, session=session, language="en", max_iterations=5,
+                 cipher_id="v3_429_transient")
+    events = [e.event for e in art.loop_events]
+    assert events.count("rate_limit_retry") == 1
+    retry = next(e for e in art.loop_events if e.event == "rate_limit_retry")
+    assert retry.payload["attempt"] == 1
+    assert retry.payload["delay_seconds"] == 2.0  # max(schedule 2s, Retry-After 1s)
+    assert sleeps == [2.0]
+    # The run recovered: no error status, the declared-unsolved terminal ran.
+    assert art.status == "unsolved"
+    assert "API error" not in (art.error_message or "")
+
+
+def test_run_v3_persistent_429_still_ends_honestly(monkeypatch):
+    import agent.model_provider as mp
+    sleeps: list[float] = []
+    monkeypatch.setattr(mp.time, "sleep", lambda s: sleeps.append(s))
+
+    ct, _alpha = _caesar_cipher("THE DOG")
+
+    class _Always429(ScriptedSession):
+        def __init__(self):
+            super().__init__([])
+            self.sends = 0
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.sends += 1
+            raise ModelProviderError(_OPENROUTER_429_MSG)
+
+    session = _Always429()
+    art = run_v3(ct, session=session, language="en", max_iterations=5,
+                 cipher_id="v3_429_persistent")
+    # Bounded: initial + 3 retries, then the existing honest error terminal.
+    assert session.sends == 4
+    assert sleeps == [2.0, 5.0, 10.0]
+    events = [e.event for e in art.loop_events]
+    assert events.count("rate_limit_retry") == 3
+    assert art.status == "error"
+    assert "429" in art.error_message
+    assert art.fallback_selection is not None  # best-branch fallback preserved
+
+
+def test_run_v3_insufficient_quota_fails_fast_no_retry(monkeypatch):
+    import agent.model_provider as mp
+    sleeps: list[float] = []
+    monkeypatch.setattr(mp.time, "sleep", lambda s: sleeps.append(s))
+
+    ct, _alpha = _caesar_cipher("THE DOG")
+
+    class _Quota429(ScriptedSession):
+        def __init__(self):
+            super().__init__([])
+            self.sends = 0
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.sends += 1
+            raise ModelProviderError(
+                "Error code: 429 - {'error': {'type': 'insufficient_quota'}}")
+
+    session = _Quota429()
+    art = run_v3(ct, session=session, language="en", max_iterations=5,
+                 cipher_id="v3_429_quota")
+    assert session.sends == 1          # billing exhaustion: no futile retries
+    assert sleeps == []
+    assert art.status == "error"
+    assert "insufficient_quota" in art.error_message

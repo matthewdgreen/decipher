@@ -7,6 +7,8 @@ not-found. A genuinely invalid id still fails cleanly, with no fetch loop.
 """
 from __future__ import annotations
 
+import pytest
+
 import agent.model_provider as mp
 
 
@@ -109,3 +111,110 @@ def test_cached_model_present_does_not_refresh(monkeypatch):
     ok, hint = mp.validate_model("openrouter", "moonshotai/kimi-k3")
     assert ok is True and hint == ""
     assert calls["n"] == 0  # already known — no network at all
+
+
+# ---------------------------------------------------------------------------
+# Transient rate-limit retry (K3/OpenRouter 429 incident, 2026-07-17)
+# ---------------------------------------------------------------------------
+
+OPENROUTER_429 = (
+    "Error code: 429 - {'error': {'message': 'Provider returned error', "
+    "'code': 429, 'metadata': {'raw': 'moonshotai/kimi-k3 is temporarily "
+    "rate-limited upstream. Please retry shortly', 'provider_name': "
+    "'Moonshot AI', 'retry_after_seconds': 1, "
+    '\'headers\': {"Retry-After": "1"}}}}'
+)
+QUOTA_429 = (
+    "Error code: 429 - {'error': {'message': 'You exceeded your current "
+    "quota', 'type': 'insufficient_quota', 'code': 'insufficient_quota'}}"
+)
+
+
+def _no_sleep(monkeypatch):
+    sleeps: list[float] = []
+    monkeypatch.setattr(mp.time, "sleep", lambda s: sleeps.append(s))
+    return sleeps
+
+
+def test_retryable_detection():
+    assert mp.is_retryable_rate_limit_error(
+        mp.ModelProviderError(OPENROUTER_429)) is True
+    assert mp.is_retryable_rate_limit_error(
+        mp.ModelProviderError(QUOTA_429)) is False  # billing: never retry
+    assert mp.is_retryable_rate_limit_error(
+        mp.ModelProviderError("Rate limit exceeded, slow down")) is True
+    assert mp.is_retryable_rate_limit_error(
+        mp.ModelProviderError("connection reset by peer")) is False
+
+
+def test_parse_retry_after_seconds():
+    assert mp.parse_retry_after_seconds(
+        mp.ModelProviderError(OPENROUTER_429)) == 1.0
+    assert mp.parse_retry_after_seconds(
+        mp.ModelProviderError("Retry-After: 20")) == 20.0
+    assert mp.parse_retry_after_seconds(
+        mp.ModelProviderError("some other error")) is None
+    # Clamped to 60s so a hostile/huge header cannot stall a run.
+    assert mp.parse_retry_after_seconds(
+        mp.ModelProviderError("retry_after_seconds': 9999")) == 60.0
+
+
+def test_retry_succeeds_after_transient_429(monkeypatch):
+    sleeps = _no_sleep(monkeypatch)
+    calls = {"n": 0}
+    retries: list[tuple[int, float]] = []
+
+    def send():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise mp.ModelProviderError(OPENROUTER_429)
+        return "ok"
+
+    out = mp.call_with_rate_limit_retry(
+        send, on_retry=lambda a, d, e: retries.append((a, d)))
+    assert out == "ok"
+    assert calls["n"] == 3
+    # Schedule (2, 5) wins over the 1s Retry-After (max of the two).
+    assert sleeps == [2.0, 5.0]
+    assert retries == [(1, 2.0), (2, 5.0)]
+
+
+def test_retry_honors_longer_retry_after(monkeypatch):
+    sleeps = _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def send():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise mp.ModelProviderError("429 rate limit. Retry-After: 20")
+        return "ok"
+
+    assert mp.call_with_rate_limit_retry(send) == "ok"
+    assert sleeps == [20.0]  # provider's wait exceeds the 2s schedule slot
+
+
+def test_persistent_429_reraises_after_bounded_retries(monkeypatch):
+    sleeps = _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def send():
+        calls["n"] += 1
+        raise mp.ModelProviderError(OPENROUTER_429)
+
+    with pytest.raises(mp.ModelProviderError):
+        mp.call_with_rate_limit_retry(send)
+    assert calls["n"] == 4          # initial + 3 bounded retries, then give up
+    assert sleeps == [2.0, 5.0, 10.0]
+
+
+def test_insufficient_quota_fails_fast(monkeypatch):
+    sleeps = _no_sleep(monkeypatch)
+    calls = {"n": 0}
+
+    def send():
+        calls["n"] += 1
+        raise mp.ModelProviderError(QUOTA_429)
+
+    with pytest.raises(mp.ModelProviderError):
+        mp.call_with_rate_limit_retry(send)
+    assert calls["n"] == 1 and sleeps == []   # no futile billing retries

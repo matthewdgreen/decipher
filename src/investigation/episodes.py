@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.loop_shared import _branch_snapshot_for, _decoded_text_for_panel
-from agent.model_provider import _collect_assistant_blocks
+from agent.model_provider import _collect_assistant_blocks, call_with_rate_limit_retry
 from agent.tools_v2 import (
     TOOL_DEFINITIONS,
     VALID_TOOL_NAMES,
@@ -1306,8 +1306,16 @@ def run_episode(
             "other tool. Submit the best partial result you can support."
         )}]}
         submit_def = _submit_result_tool_def(spec.result_schema)
-        response = session.send(messages + [nudge], tools=[submit_def],
-                                max_tokens=budget.max_output_tokens)
+        # Transient 429s retry briefly (same policy as the lead send); a
+        # persistent limit propagates into the A9 runner_error semantics.
+        response = call_with_rate_limit_retry(
+            lambda: session.send(messages + [nudge], tools=[submit_def],
+                                 max_tokens=budget.max_output_tokens),
+            on_retry=lambda attempt, delay, exc: _emit_ep(
+                "episode_rate_limit_retry",
+                {"attempt": attempt, "delay_seconds": delay},
+            ),
+        )
         _blocks, tool_uses, text_parts = _collect_assistant_blocks(response)
         for tu in tool_uses:
             if tu.get("name") != "episode_submit_result":
@@ -1344,8 +1352,15 @@ def run_episode(
 
                 ep_turn = _turn + 1
                 _emit_ep("episode_turn_start", {"turn": ep_turn})
-                response = session.send(messages, tools=tool_defs,
-                                        max_tokens=budget.max_output_tokens)
+                response = call_with_rate_limit_retry(
+                    lambda: session.send(messages, tools=tool_defs,
+                                         max_tokens=budget.max_output_tokens),
+                    on_retry=lambda attempt, delay, exc: _emit_ep(
+                        "episode_rate_limit_retry",
+                        {"turn": ep_turn, "attempt": attempt,
+                         "delay_seconds": delay},
+                    ),
+                )
                 assistant_blocks, tool_uses, _text = _collect_assistant_blocks(response)
                 messages.append({"role": "assistant", "content": assistant_blocks})
 

@@ -32,6 +32,7 @@ from agent.loop_shared import (
 )
 from agent.model_provider import (
     ModelProviderError,
+    call_with_rate_limit_retry,
     ensure_model_provider,
     _collect_assistant_blocks,
 )
@@ -2092,7 +2093,22 @@ def run_v3(
             )
 
         try:
-            response = session.send(messages, tools=tools, max_tokens=lead_max_tokens)
+            # Transient 429s get a few short, bounded retries (Retry-After
+            # honored); quota exhaustion and persistent limits still land in
+            # the ModelProviderError arm below — the honest error terminal.
+            response = call_with_rate_limit_retry(
+                lambda: session.send(
+                    messages, tools=tools, max_tokens=lead_max_tokens
+                ),
+                on_retry=lambda attempt, delay, exc: emit(
+                    "rate_limit_retry", {
+                        "iteration": turn,
+                        "attempt": attempt,
+                        "delay_seconds": delay,
+                        "error": str(exc)[:200],
+                    }, outer_iteration=turn,
+                ),
+            )
         except KeyboardInterrupt:
             artifact.status = "stopped"
             artifact.error_message = (
