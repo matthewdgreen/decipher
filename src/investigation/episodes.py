@@ -336,18 +336,27 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
     },
     "repair": {
         "toolset": frozenset({
-            "hypothesis_test_word", "hypothesis_apply_reading", "branch_adjudicate",
+            "hypothesis_test_words", "hypothesis_test_word",
+            "hypothesis_apply_reading", "branch_adjudicate",
             "decode_show", "decode_letter_stats", "decode_unmapped_report",
             "corpus_lookup_word", "corpus_word_candidates",
             "score_panel", "score_dictionary",
         }),
-        "budget": EpisodeBudget(12, 4096, 240.0),
+        # M5.3 Slice 3: the budget drops 12 -> 6 now that `hypothesis_test_words`
+        # probes a whole batch of word hypotheses in ONE call (shared repair
+        # menu), so a repair worker no longer needs many singleton probes to
+        # cover a candidate. Reduced only after batch<->singleton parity was
+        # proven (tests/test_hypothesis_actions.py); the wall-clock ceiling and
+        # per-call cap enforcement (Slice 1) still bound the worker.
+        "budget": EpisodeBudget(6, 4096, 240.0),
         "result_schema": _REPAIR_SCHEMA,
         "tier": "repair",
         "contract": (
             "You are a REPAIR worker. Compile the given reading / word hypotheses "
-            "into applied edits on FORKS with hypothesis_apply_reading and "
-            "hypothesis_test_word, verify collateral with branch_adjudicate and "
+            "into applied edits on FORKS. PREFER hypothesis_test_words to probe a "
+            "whole batch of word hypotheses in one call (it builds the repair menu "
+            "once and returns a deduped finalist set); use hypothesis_apply_reading "
+            "for reading fragments. Verify collateral with branch_adjudicate and "
             "the score/decode tools, discard unsupported edits, keep only a small "
             "diverse finalist set, and compare it before naming exactly one best "
             "changed branch. Report which edits you applied, per-action verdicts, "

@@ -20,7 +20,9 @@ from automated import runner as automated_runner
 from investigation.actions import (
     COMPOSITE_TOOL_DEFINITIONS,
     COMPOSITE_TOOL_NAMES,
+    _menu_cache_key,
     _normalize_reading_words,
+    _word_repair_branch_context,
     execute_composite,
 )
 from investigation.episodes import EPISODE_KINDS
@@ -103,12 +105,18 @@ def _test_word(ex, args, state_readings=None, turn=1):
                              state_readings=state_readings or {}, turn=turn)
 
 
+def _test_words(ex, args, state_readings=None, turn=1):
+    return execute_composite("hypothesis_test_words", args, executor=ex,
+                             state_readings=state_readings or {}, turn=turn)
+
+
 # ---------------------------------------------------------------------------
 # A5a pins: v2 untouched
 # ---------------------------------------------------------------------------
 def test_composite_names_disjoint_from_v2_and_tool_count_pinned():
     assert COMPOSITE_TOOL_NAMES == {
-        "hypothesis_apply_reading", "hypothesis_test_word", "branch_adjudicate"
+        "hypothesis_apply_reading", "hypothesis_test_word",
+        "hypothesis_test_words", "branch_adjudicate",
     }
     assert COMPOSITE_TOOL_NAMES.isdisjoint(VALID_TOOL_NAMES)
     # v2 tool surface is unchanged by composites (composites live only on v3
@@ -619,9 +627,13 @@ def test_test_word_masked_span_is_structured_error():
 
 
 def test_test_word_span_length_mismatch():
+    # B1: a wrong-length hypothesis is TYPED DATA (not_expressible_as_key_edit),
+    # not a schema/validation error — nothing installs, but the reason is legible
+    # and carries the mismatched lengths.
     ex = _synthetic_executor()
     res = _test_word(ex, {"branch": "main", "word_index": 0, "word": "TOOLONG"})
-    assert res["status"] == "error"
+    assert res["status"] == "rejected"
+    assert res["reason"] == "not_expressible_as_key_edit"
     assert res["span_length"] == 3 and res["word_length"] == 7
 
 
@@ -733,3 +745,350 @@ def test_apply_reading_legacy_question_mark_is_not_a_wildcard():
     assert res["no_actionable_fragments"] is True
     assert res["skipped_fragments"][0]["reason"] == "unsafe_repair_text"
     assert res["skipped_fragments"][0]["character"] == "?"
+
+
+# ---------------------------------------------------------------------------
+# hypothesis_test_words — M5.3 Slice 3 (batch + menu cache + B1 seams)
+# ---------------------------------------------------------------------------
+# Note: the spec's ">=70% cumulative word-hypothesis time" perf target is
+# measured against the recorded replay fixture by the Slice-7 replay harness,
+# NOT here. These tests assert the underlying single-menu-build property
+# directly (test_batch_builds_repair_menu_exactly_once and the cache tests).
+def _counting_build(monkeypatch, counter):
+    """Wrap automated_runner.build_word_repair_menu with a call counter."""
+    real = automated_runner.build_word_repair_menu
+
+    def wrapped(**kwargs):
+        counter["n"] += 1
+        return real(**kwargs)
+
+    monkeypatch.setattr(automated_runner, "build_word_repair_menu", wrapped)
+
+
+def test_batch_builds_repair_menu_exactly_once(monkeypatch):
+    # Performance acceptance: a batch of eight hypotheses builds the menu ONCE.
+    ex, _alpha = _english_basin()
+    counter = {"n": 0}
+    _counting_build(monkeypatch, counter)
+    words = _ENGLISH_PLAIN.split()
+    hyps = [{"word": words[i], "word_index": i} for i in range(8)]
+    res = _test_words(ex, {"branch": "main", "hypotheses": hyps})
+    assert res["status"] == "ok"
+    assert res["count"] == 8
+    assert counter["n"] == 1                 # ONE build shared across all items
+    assert res["menu_built"] is True
+    assert res["menu_source"] == "built"
+
+
+def test_all_rejected_batch_skips_menu_build(monkeypatch):
+    # If every item is rejected at the cheap resolution pass, the expensive menu
+    # is never built at all.
+    ex, _alpha = _english_basin()
+    counter = {"n": 0}
+    _counting_build(monkeypatch, counter)
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_index": 9999},           # out of range
+        {"word": "BROWN", "claim_type": "boundary"},      # reserved claim_type
+        {"word": "AB", "word_index": 0},                  # wrong length (span "THE")
+    ]})
+    assert res["status"] == "ok"
+    assert counter["n"] == 0                  # menu never built
+    assert res["menu_built"] is False
+    assert res["menu_source"] == "not_built"
+    assert res["rejected_count"] == 3
+    assert res["finalists"] == []
+
+
+def test_batch_and_singleton_agree_for_same_hypothesis():
+    # Parity: the batch item and the singleton produce the same verdict/edits.
+    ex1, _ = _english_basin()
+    ex2, _ = _english_basin()
+    words = _ENGLISH_PLAIN.split()
+    idx = words.index("BROWN")               # contains the damaged letter -> real repair
+    single = _test_word(ex1, {"branch": "main", "word_index": idx, "word": "BROWN"}, turn=5)
+    batch = _test_words(ex2, {"branch": "main",
+                              "hypotheses": [{"word": "BROWN", "word_index": idx}]}, turn=5)
+    item = batch["items"][0]
+    for key in ("menu_backed", "in_dictionary", "verdict", "edits", "span"):
+        assert item.get(key) == single.get(key), key
+    assert item["solver_scores"] == single["solver_scores"]
+    assert item["acceptance"] == single["acceptance"]
+    assert item["changed_excerpt"] == single["changed_excerpt"]
+
+
+def test_batch_menu_cache_reuses_and_rebuilds(monkeypatch):
+    # The cache reuses the menu for identical inputs and rebuilds on a change.
+    ex, alpha = _english_basin()
+    counter = {"n": 0}
+    _counting_build(monkeypatch, counter)
+    words = _ENGLISH_PLAIN.split()
+    h = [{"word": words[0], "word_index": 0}]
+    first = _test_words(ex, {"branch": "main", "hypotheses": h})
+    assert counter["n"] == 1 and first["menu_source"] == "built"
+    # Identical inputs -> cache hit, no rebuild.
+    second = _test_words(ex, {"branch": "main", "hypotheses": h})
+    assert counter["n"] == 1 and second["menu_source"] == "cache"
+    assert second["menu_built"] is False
+    # Config change -> rebuild.
+    _test_words(ex, {"branch": "main", "hypotheses": h, "max_edits": 2})
+    assert counter["n"] == 2
+    # Key change -> rebuild.
+    ex.workspace.set_mapping("main", alpha.id_for("a"),
+                             ex.workspace.plaintext_alphabet.id_for("Z"))
+    _test_words(ex, {"branch": "main", "hypotheses": h})
+    assert counter["n"] == 3
+
+
+def test_menu_cache_key_invalidates_on_every_builder_input():
+    # A8: key/mask/boundary/model/config each change the cache key.
+    import dataclasses as _dc
+
+    ex, _alpha = _english_basin()
+
+    def _ctx(args=None):
+        ctx, err = _word_repair_branch_context(
+            ex, {"branch": "main", **(args or {})},
+            kind="word_hypotheses", tool_name="hypothesis_test_words",
+        )
+        assert err is None
+        return ctx
+
+    base = _menu_cache_key(_ctx())
+    assert _menu_cache_key(_ctx()) == base    # identical inputs -> identical key
+
+    key_changed = _ctx()
+    key_changed.base_key = dict(key_changed.base_key)
+    first_token = next(iter(key_changed.base_key))
+    key_changed.base_key[first_token] = (key_changed.base_key[first_token] + 1) % 26
+    assert _menu_cache_key(key_changed) != base
+
+    mask_changed = _ctx()
+    mask_changed.mask = ("q",)
+    assert _menu_cache_key(mask_changed) != base
+
+    boundary_changed = _ctx()
+    boundary_changed.spans = boundary_changed.spans[:-1]
+    assert _menu_cache_key(boundary_changed) != base
+
+    model_changed = _ctx()
+    model_changed.resolved_model = "/some/other/model.bin"
+    assert _menu_cache_key(model_changed) != base
+
+    config_changed = _ctx()
+    config_changed.config = _dc.replace(
+        config_changed.config,
+        max_edits=(config_changed.config.max_edits % 4) + 1,
+    )
+    assert _menu_cache_key(config_changed) != base
+
+
+def test_menu_cache_key_adversarial_identical_text_different_config():
+    # Adversarial A8 case: two contexts with byte-identical rendered content but
+    # different per-call configs must NOT share a cache entry.
+    ex, _alpha = _english_basin()
+    ctx_a, err_a = _word_repair_branch_context(
+        ex, {"branch": "main"}, kind="word_hypotheses", tool_name="x")
+    ctx_b, err_b = _word_repair_branch_context(
+        ex, {"branch": "main", "max_edits": 2}, kind="word_hypotheses", tool_name="x")
+    assert err_a is None and err_b is None
+    # Identical rendered content (same branch key / mask / boundaries)...
+    assert ctx_a.base_key == ctx_b.base_key
+    assert list(ctx_a.spans) == list(ctx_b.spans)
+    assert set(ctx_a.mask) == set(ctx_b.mask)
+    # ...but different resolved config -> distinct cache keys.
+    assert _menu_cache_key(ctx_a) != _menu_cache_key(ctx_b)
+
+
+def test_batch_wrong_length_is_typed_rejection():
+    # B1: a wrong-length item is typed data, not a schema/validation error; the
+    # rest of the batch still evaluates.
+    ex, _alpha = _english_basin()
+    words = _ENGLISH_PLAIN.split()
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_index": words.index("BROWN")},
+        {"word": "TOOLONGWORD", "word_index": 0},          # span "THE" (len 3)
+    ]})
+    assert res["status"] == "ok"
+    good, bad = res["items"]
+    assert good["status"] == "ok"
+    assert bad["status"] == "rejected"
+    assert bad["reason"] == "not_expressible_as_key_edit"
+    assert bad["span_length"] == len(words[0]) and bad["word_length"] == len("TOOLONGWORD")
+    assert res["rejected_count"] == 1
+
+
+def test_batch_reserved_claim_type_and_op_rejected():
+    # B1: reserved fields are typed rejections, NEVER silently accepted — both a
+    # reserved claim_type ("boundary") and any `op` value reject the item and do
+    # not install.
+    ex, _alpha = _english_basin()
+    words = _ENGLISH_PLAIN.split()
+    idx = words.index("BROWN")
+    before = set(ex.workspace.branch_names())
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_index": idx},                       # baseline OK
+        {"word": "BROWN", "word_index": idx, "op": "replace", "install": True},
+        {"word": "BROWN", "word_index": idx, "claim_type": "boundary"},
+    ]})
+    ok_item, op_item, claim_item = res["items"]
+    assert ok_item["status"] == "ok"
+    # Reserved `op` -> typed rejection, no install.
+    assert op_item["status"] == "rejected"
+    assert op_item["reason"] == "unsupported_reserved_field"
+    assert op_item["op"] == "replace"
+    assert op_item.get("installed_fork") is None
+    # Reserved claim_type -> typed rejection.
+    assert claim_item["status"] == "rejected"
+    assert claim_item["reason"] == "unsupported_reserved_field"
+    assert claim_item["claim_type"] == "boundary"
+    # Only the baseline OK item was even eligible to install; neither reserved
+    # item created a branch.
+    assert res["rejected_count"] == 2
+    assert res["installed"] == []
+    assert set(ex.workspace.branch_names()) == before
+
+
+def test_batch_dedupes_equivalent_edit_sets_into_finalists():
+    # Two references to the SAME word span collapse to one finalist edit set.
+    ex, _alpha = _english_basin()
+    idx = _ENGLISH_PLAIN.split().index("BROWN")
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_index": idx},
+        {"word": "BROWN", "word_index": idx},
+    ]})
+    assert res["status"] == "ok"
+    assert res["items"][0]["edits"] == res["items"][1]["edits"]
+    assert len(res["finalists"]) == 1
+    assert res["duplicates_collapsed"] == 1
+    assert res["finalists"][0]["edits"] == res["items"][0]["edits"]
+
+
+def test_batch_installs_only_selected_forks():
+    # (g) Only items with install=true fork; the other is evaluated but not forked.
+    ex, _alpha = _english_basin()
+    words = _ENGLISH_PLAIN.split()
+    before = set(ex.workspace.branch_names())
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_index": words.index("BROWN"), "install": True},
+        {"word": "FOXES", "word_index": words.index("FOXES")},   # no install
+    ]}, turn=7)
+    new_branches = set(ex.workspace.branch_names()) - before
+    assert res["installed"] == [res["items"][0]["installed_fork"]]
+    assert res["items"][0]["installed_fork"] in new_branches
+    assert res["items"][1]["installed_fork"] is None
+    assert len(new_branches) == 1
+
+
+def test_candidate_packet_exposes_word_and_token_anchors():
+    # B1: the host-built candidate packet mints + exposes granular anchors.
+    from investigation.reading import (
+        build_candidate_reading_packet,
+        token_anchor_id,
+        word_anchor_id,
+    )
+    ex, _alpha = _english_basin()
+    packet = build_candidate_reading_packet(ex.workspace, "main").to_dict()
+    span0 = packet["spans"][0]
+    assert span0["word_anchors"], "word anchors exposed in the packet"
+    assert span0["token_anchors"], "token anchors exposed in the packet"
+    ch = packet["content_hash"]
+    first_word = span0["word_anchors"][0]
+    assert first_word["word_id"] == word_anchor_id(first_word["word_index"], ch)
+    first_tok = span0["token_anchors"][0]
+    assert first_tok["token_id"] == token_anchor_id(first_tok["token_index"], ch)
+
+
+def test_null_mask_packet_word_anchor_text_uses_rendered_offsets():
+    # FIX 2 regression: on a NULL-MASK branch the packet's candidate text is the
+    # mask-FILTERED render, so a word anchor's `text` must be sliced through the
+    # rendered offsets — not the full-decode token offsets, which would shift a
+    # word that sits after a masked token. Tokens B,C are masked; the second word
+    # (E,F,G) must read "TUV", not the shifted "UV".
+    from investigation.reading import build_candidate_reading_packet
+
+    alpha = Alphabet.from_text("ABCDEFG", ignore_chars=set())
+    ct = CipherText(raw="ABCDEFG", alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    for sym, letter in {"A": "P", "B": "Q", "C": "R", "D": "S",
+                        "E": "T", "F": "U", "G": "V"}.items():
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+    ws.set_word_spans("main", [(0, 4), (4, 7)])
+    ws.get_branch("main").metadata.update({
+        "decoded_text": "PS TUV",
+        "decoded_text_source": "act_install_null_mask_finalists",
+        "key_type": "homophonic_with_null_mask",
+        "null_mask_finalist": {"mask": ["B", "C"], "rank": 1},
+    })
+    packet = build_candidate_reading_packet(ws, "main")
+    anchors = {a["word_index"]: a["text"]
+               for sp in packet.spans for a in sp.word_anchors}
+    assert anchors[0] == "PS"           # word 0 = A,(B),(C),D -> P,S
+    assert anchors[1] == "TUV"          # word 1 = E,F,G -> T,U,V (NOT the shifted "UV")
+    # token anchors expose only the rendered (unmasked) tokens.
+    rendered = [a["token_index"] for sp in packet.spans for a in sp.token_anchors]
+    assert rendered == [0, 3, 4, 5, 6]
+
+
+def test_batch_anchor_refs_resolve_same_span_as_positional():
+    # word_id / token-run / span_id references resolve to the same span the
+    # positional word_index reference does.
+    from investigation.reading import (
+        build_candidate_reading_packet,
+        token_anchor_id,
+        word_anchor_id,
+    )
+    ex, _alpha = _english_basin()
+    packet = build_candidate_reading_packet(ex.workspace, "main")
+    ch = packet.content_hash
+    idx = _ENGLISH_PLAIN.split().index("BROWN")
+    span = ex.workspace.effective_word_spans("main")[idx]
+
+    by_index = _test_words(ex, {"branch": "main",
+                                "hypotheses": [{"word": "BROWN", "word_index": idx}]})["items"][0]
+    by_word_id = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_id": word_anchor_id(idx, ch)}]})["items"][0]
+    by_token_run = _test_words(ex, {"branch": "main", "hypotheses": [{
+        "word": "BROWN",
+        "start_token_id": token_anchor_id(span[0], ch),
+        "end_token_id": token_anchor_id(span[1] - 1, ch),
+    }]})["items"][0]
+
+    assert by_index["span"] == [span[0], span[1]]
+    assert by_word_id["span"] == by_index["span"]
+    assert by_token_run["span"] == by_index["span"]
+    assert by_word_id["edits"] == by_index["edits"]
+    assert by_token_run["edits"] == by_index["edits"]
+
+    # A reading-window span_id resolves to that window's token span (proven via
+    # the reported span_length on a deliberately wrong-length probe).
+    window = packet.spans[0]
+    win_len = window.token_end - window.token_start
+    windowed = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "AB", "span_id": window.span_id}]})["items"][0]
+    assert windowed["reason"] == "not_expressible_as_key_edit"
+    assert windowed["span_length"] == win_len
+
+
+def test_batch_unknown_anchor_is_typed_and_stale_id_does_not_resolve():
+    # An anchor id minted against different content must not silently match.
+    ex, _alpha = _english_basin()
+    res = _test_words(ex, {"branch": "main", "hypotheses": [
+        {"word": "BROWN", "word_id": "word_3_deadbeef00"},
+    ]})
+    item = res["items"][0]
+    assert item["status"] == "error"
+    assert item["reason"] == "unknown_anchor"
+
+
+def test_batch_branch_level_errors_match_singleton_shape():
+    # Batch branch-level guards keep the historical shape (kind word_hypotheses).
+    ex, _alpha = _english_basin()
+    ex.workspace.get_branch("main").token_order = [0, 1, 2]
+    res = _test_words(ex, {"branch": "main",
+                           "hypotheses": [{"word": "BROWN", "word_index": 0}]})
+    assert res["status"] == "unsupported"
+    assert res["kind"] == "word_hypotheses"
+    assert "token_order" in res["error"]
+    missing = _test_words(ex, {"branch": "ghost", "hypotheses": [{"word": "X"}]})
+    assert missing["status"] == "error" and "unknown branch" in missing["error"]

@@ -105,8 +105,11 @@ def test_repair_kind_toolset_includes_composites():
                        inputs={"branches": ["main"]})
     assert "hypothesis_apply_reading" in spec.toolset
     assert "hypothesis_test_word" in spec.toolset
+    # M5.3 Slice 3: the batch probe is the preferred repair interface.
+    assert "hypothesis_test_words" in spec.toolset
     assert "branch_adjudicate" in spec.toolset
-    assert spec.budget.max_tool_calls == 12
+    # Budget dropped 12 -> 6 once the batch probe covers a candidate in one call.
+    assert spec.budget.max_tool_calls == 6
     assert EPISODE_KINDS["repair"]["tier"] == "repair"
 
 

@@ -12,6 +12,7 @@ plaintext, and the firewall covers this surface (Part 8).
 """
 from __future__ import annotations
 
+import bisect
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,6 +21,25 @@ from typing import Any
 def new_reading_id() -> str:
     """A 12-hex-char reading id (same convention as episode ids)."""
     return uuid.uuid4().hex[:12]
+
+
+# ---------------------------------------------------------------------------
+# Granular host-owned anchors (M5.3 Slice 3 / B1)
+# ---------------------------------------------------------------------------
+# The existing 120-token reading-window `span_id`s are too coarse for exact
+# word repair. Slice 3 mints per-word and per-token anchors host-side and
+# exposes them in the candidate packet, so `hypothesis_test_words` can reference
+# an exact word or a contiguous token run without the model inventing numeric
+# offsets. The ids embed the branch content hash, so a stale/foreign id resolved
+# against a changed branch cannot silently match a different word/token.
+def word_anchor_id(word_index: int, content_hash: str) -> str:
+    """Opaque host-owned id for one word span, bound to the branch content."""
+    return f"word_{int(word_index)}_{str(content_hash)[:10]}"
+
+
+def token_anchor_id(token_index: int, content_hash: str) -> str:
+    """Opaque host-owned id for one token, bound to the branch content."""
+    return f"tok_{int(token_index)}_{str(content_hash)[:10]}"
 
 
 def coerce_confidence(value: Any, default: float = 0.5) -> float:
@@ -290,6 +310,12 @@ class CandidateReadingSpan:
     token_indices: tuple[int, ...] | None = None
     word_start: int | None = None
     word_end: int | None = None
+    # M5.3 Slice 3 / B1: granular host-owned anchors exposed inside the window.
+    # ``word_anchors`` = one entry per word overlapping this span; ``token_anchors``
+    # = one entry per rendered token. Each anchor id embeds the branch content
+    # hash so `hypothesis_test_words` can reference an exact word/token run.
+    word_anchors: tuple[dict[str, Any], ...] = ()
+    token_anchors: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -302,6 +328,8 @@ class CandidateReadingSpan:
             ),
             "word_start": self.word_start,
             "word_end": self.word_end,
+            "word_anchors": [dict(anchor) for anchor in self.word_anchors],
+            "token_anchors": [dict(anchor) for anchor in self.token_anchors],
         }
 
 
@@ -410,6 +438,24 @@ def build_candidate_reading_packet(
             previous_index = token_index
     else:
         rendered_char_offsets = [token_char_offsets[index] for index in rendered_indices]
+
+    def _word_anchor_text(word_token_start: int, word_token_end: int) -> str:
+        """A word's rendered text sliced from ``candidate`` via the RENDERED
+        offsets — correct for both plain and null-mask branches (``candidate`` is
+        the mask-FILTERED text for the latter, so raw token_char_offsets would be
+        wrong). ``rendered_indices`` is ascending, so bisect finds the word's
+        rendered slice; a fully-masked word yields ""."""
+        lo = bisect.bisect_left(rendered_indices, word_token_start)
+        hi = bisect.bisect_left(rendered_indices, word_token_end)
+        if lo >= hi:
+            return ""
+        start_char = rendered_char_offsets[lo]
+        end_char = (
+            rendered_char_offsets[hi] if hi < len(rendered_char_offsets)
+            else len(candidate)
+        )
+        return candidate[start_char:end_char].strip()
+
     spans: list[CandidateReadingSpan] = []
     size = max(1, int(window_tokens))
     for rendered_start in range(0, len(rendered_indices), size):
@@ -427,6 +473,20 @@ def build_candidate_reading_packet(
             i for i, (start, end) in enumerate(word_spans)
             if start < token_end and end > token_start
         ]
+        word_anchors = tuple(
+            {
+                "word_id": word_anchor_id(i, digest),
+                "word_index": i,
+                "token_start": word_spans[i][0],
+                "token_end": word_spans[i][1],
+                "text": _word_anchor_text(word_spans[i][0], word_spans[i][1]),
+            }
+            for i in overlapping
+        )
+        token_anchors = tuple(
+            {"token_id": token_anchor_id(t, digest), "token_index": t}
+            for t in span_indices
+        )
         spans.append(CandidateReadingSpan(
             span_id=f"span_{token_start}_{token_end}_{digest[:10]}",
             text=candidate[char_start:char_end].strip(),
@@ -435,6 +495,8 @@ def build_candidate_reading_packet(
             token_indices=tuple(span_indices),
             word_start=min(overlapping) if overlapping else None,
             word_end=(max(overlapping) + 1) if overlapping else None,
+            word_anchors=word_anchors,
+            token_anchors=token_anchors,
         ))
     if not spans:
         spans.append(CandidateReadingSpan(

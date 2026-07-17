@@ -1,6 +1,6 @@
 """Composite hypothesis actions for the v3 surfaces (M3 spec Part 2-5).
 
-Three composite tools live ONLY here (never in ``agent/tools_v2.py``), so v2's
+Four composite tools live ONLY here (never in ``agent/tools_v2.py``), so v2's
 ``TOOL_DEFINITIONS`` / ``VALID_TOOL_NAMES`` and TOOLS.md are unchanged and a v2
 run can never see or call them:
 
@@ -8,7 +8,15 @@ run can never see or call them:
   boundary changes in ONE step, on a fork (Part 3; absorbs plan Phase 6).
 - ``hypothesis_test_word`` — same-length word probe with a menu-backed and an
   injected path, both parity-by-construction with the word-repair library
-  (Part 4).
+  (Part 4). A thin wrapper over the batch core below.
+- ``hypothesis_test_words`` — the M5.3 Slice 3 BATCH probe: resolves a bounded
+  list of word/span hypotheses against one branch, builds/retrieves the repair
+  menu exactly once (A8 cache), dedupes equivalent edit sets, and returns a
+  small diverse finalist set. Carries the B1 forward-compat seams: ``claim_type``
+  (only ``"word"`` accepted) and ``op`` are reserved and REJECTED with
+  ``unsupported_reserved_field`` until implemented (never silently ignored),
+  host-owned word/token anchors, and the typed ``not_expressible_as_key_edit``
+  rejection for a word that is not a one-char-per-token key edit.
 - ``branch_adjudicate`` — read-only, packet-based branch comparison (Part 5).
 
 ``execute_composite`` is the single dispatcher both hosts call — the v3 lead
@@ -30,8 +38,12 @@ gate/panel state).
 """
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import math
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from artifact.schema import ToolCall
@@ -114,6 +126,62 @@ HYPOTHESIS_TEST_WORD_TOOL = {
     },
 }
 
+HYPOTHESIS_TEST_WORDS_TOOL = {
+    "name": "hypothesis_test_words",
+    "description": (
+        "Probe a BATCH of same-length word hypotheses on ONE branch in a single "
+        "call. The host builds the expensive word-repair menu ONCE and reuses it "
+        "for every item, so this is the preferred interface over repeated "
+        "hypothesis_test_word calls. Each item: `word` (the proposed reading) plus "
+        "ONE span reference — a host-owned `word_id` or `span_id` from the "
+        "candidate packet, a contiguous `{start_token_id, end_token_id}` run, or "
+        "(legacy) `word_index`/`char_start`. `claim_type` defaults to 'word' (the "
+        "only supported value; 'boundary' is reserved). The `op` field is reserved "
+        "until implemented; supplying it rejects that item. Set an item's `install` "
+        "true to fork+apply ONLY that hypothesis. Returns per-item verdicts, a "
+        "small deduped diverse finalist set with collateral evidence, and the "
+        "installed forks. A word whose length does not equal its span's token "
+        "count is returned as typed data (not_expressible_as_key_edit), not an "
+        "error — nothing installs for it."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "branch": {"type": "string"},
+            "hypotheses": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "word": {"type": "string"},
+                        "claim_type": {"type": "string"},
+                        # Reserved future op selector: documented in the schema
+                        # for forward compatibility, but rejected with
+                        # unsupported_reserved_field until implemented (B1) — a
+                        # reserved field is never silently ignored.
+                        "op": {"type": "string"},
+                        "word_id": {"type": ["string", "integer"]},
+                        "span_id": {"type": "string"},
+                        "start_token_id": {"type": ["string", "integer"]},
+                        "end_token_id": {"type": ["string", "integer"]},
+                        "word_index": {"type": "integer"},
+                        "char_start": {"type": "integer"},
+                        "install": {"type": "boolean"},
+                        "label": {"type": "string"},
+                    },
+                    "required": ["word"],
+                },
+            },
+            # Shared menu knobs (applied once to the whole batch).
+            "window_size": {"type": "integer"},
+            "max_edits": {"type": "integer"},
+            "max_hypotheses": {"type": "integer"},
+            "max_hypotheses_per_window": {"type": "integer"},
+        },
+        "required": ["branch", "hypotheses"],
+    },
+}
+
 BRANCH_ADJUDICATE_TOOL = {
     "name": "branch_adjudicate",
     "description": (
@@ -135,6 +203,7 @@ BRANCH_ADJUDICATE_TOOL = {
 COMPOSITE_TOOL_DEFINITIONS = [
     HYPOTHESIS_APPLY_READING_TOOL,
     HYPOTHESIS_TEST_WORD_TOOL,
+    HYPOTHESIS_TEST_WORDS_TOOL,
     BRANCH_ADJUDICATE_TOOL,
 ]
 COMPOSITE_TOOL_NAMES = frozenset(d["name"] for d in COMPOSITE_TOOL_DEFINITIONS)
@@ -170,6 +239,8 @@ def execute_composite(
             result_obj = _hypothesis_apply_reading(executor, args, state_readings, turn)
         elif name == "hypothesis_test_word":
             result_obj = _hypothesis_test_word(executor, args, turn)
+        elif name == "hypothesis_test_words":
+            result_obj = _hypothesis_test_words(executor, args, turn)
         elif name == "branch_adjudicate":
             result_obj = _branch_adjudicate(executor, args, state_readings)
         else:
@@ -803,147 +874,391 @@ def _first_divergence(proposed: str, decoded: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# hypothesis_test_word (Part 4)
+# hypothesis_test_word / hypothesis_test_words (Part 4 + M5.3 Slice 3 / B1)
 # ---------------------------------------------------------------------------
-def _hypothesis_test_word(executor: Any, args: dict[str, Any], turn: int) -> dict[str, Any]:
-    # Lazy imports (binding constraint): the runner + the word-repair library
-    # pull heavy dependencies; keep them off this module's import path.
+# `hypothesis_test_words` is the batch primitive: it resolves a bounded list of
+# word/span hypotheses against ONE branch, builds (or retrieves from the A8
+# cache) the expensive word-repair menu exactly ONCE, evaluates every item from
+# that shared packet, dedupes equivalent edit sets, and returns a small diverse
+# finalist set. The legacy singleton `hypothesis_test_word` is a thin wrapper
+# over the same core (parity by construction). Menu-build/scoring math is
+# UNCHANGED from the pre-M5.3 singleton; the batch only shares the setup.
+_MAX_WORD_HYPOTHESES = 24
+_MAX_WORD_FINALISTS = 5
+_MENU_CACHE_MAX = 16
+
+
+def _word_item_result_terminal(
+    idx: int, status: str, reason: str, message: str, **extra: Any
+) -> dict[str, Any]:
+    """A terminal per-item result (rejected/error) tagged as one word hypothesis.
+
+    ``status`` is ``"error"`` for malformed references (parity with the legacy
+    singleton) or ``"rejected"`` for B1 typed rejections
+    (``unsupported_reserved_field`` / ``not_expressible_as_key_edit``). Either
+    way nothing installs; the ``reason`` makes the outcome legible.
+    """
+    out: dict[str, Any] = {
+        "status": status,
+        "kind": "word_hypothesis",
+        "index": idx,
+        "reason": reason,
+        "error": message,
+    }
+    for key, value in extra.items():
+        if value is not None:
+            out[key] = value
+    return out
+
+
+def _menu_cache_key(ctx: SimpleNamespace) -> str:
+    """A8 cache key: a digest of the EXACT resolved word-repair-menu builder
+    inputs — base key, null mask, boundary spans, language, resolved config,
+    dictionary path, and language-model path — NOT the looser candidate-hash
+    proxy. Two branches with identical rendered text but different per-call
+    configs therefore never share an entry.
+
+    ``source_branch`` is the ONE builder argument deliberately excluded (proxy
+    sufficiency, documented per the spec): it is a provenance LABEL only. The
+    menu packets are a pure function of the seven inputs above; install forks
+    are cut from ``ctx.branch`` at score time (not from the cached menu), and
+    the composite rebuilds provenance per call, so two branches with identical
+    resolved inputs but different names may safely share a cached menu.
+    """
+    payload = {
+        "base_key": sorted((int(k), int(v)) for k, v in ctx.base_key.items()),
+        "mask": sorted(str(symbol) for symbol in ctx.mask),
+        "boundary_spans": [[int(s), int(e)] for (s, e) in ctx.spans],
+        "language": str(ctx.language),
+        "config": dataclasses.asdict(ctx.config),
+        "dictionary_path": str(ctx.dictionary_path),
+        "model_path": str(ctx.resolved_model),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str)
+    return hashlib.sha1(blob.encode("utf-8")).hexdigest()
+
+
+def _get_or_build_menu(executor: Any, ctx: SimpleNamespace) -> tuple[Any, bool]:
+    """Return ``(menu, from_cache)``, building at most once per unique key set.
+
+    The cache lives on the executor, so it survives across tool calls within a
+    run (a repeated singleton probe reuses it) as well as across the items of a
+    single batch. It is keyed on :func:`_menu_cache_key` and bounded.
+    """
+    from automated import runner as automated_runner
+
+    cache = getattr(executor, "_word_repair_menu_cache", None)
+    if not isinstance(cache, dict):
+        cache = {}
+        try:
+            executor._word_repair_menu_cache = cache
+        except Exception:  # noqa: BLE001 - exotic executor without __dict__
+            pass
+    key = _menu_cache_key(ctx)
+    if key in cache:
+        return cache[key], True
+    menu = automated_runner.build_word_repair_menu(
+        cipher_text=ctx.ws.cipher_text,
+        base_key=ctx.base_key,
+        mask=ctx.mask,
+        language=ctx.language,
+        config=ctx.config,
+        dictionary_path=ctx.dictionary_path,
+        model_path=ctx.resolved_model,
+        source_branch=ctx.branch,
+    )
+    cache[key] = menu
+    if len(cache) > _MENU_CACHE_MAX:
+        for stale in list(cache)[: len(cache) - _MENU_CACHE_MAX]:
+            cache.pop(stale, None)
+    return menu, False
+
+
+def _word_repair_branch_context(
+    executor: Any, args: dict[str, Any], *, kind: str, tool_name: str
+) -> tuple[SimpleNamespace | None, dict[str, Any] | None]:
+    """Resolve + validate the branch shared by every item of a probe.
+
+    Returns ``(ctx, None)`` on success or ``(None, error_dict)`` where the error
+    is tagged with ``kind`` (``word_hypothesis`` for the singleton,
+    ``word_hypotheses`` for the batch) so both surfaces keep their historical
+    result shape. The word-repair menu itself is built lazily by
+    :func:`_get_or_build_menu` only when at least one item survives resolution.
+    """
     from analysis import dictionary as dictionary_module
+    from automated import runner as automated_runner
+
+    ws = executor.workspace
+    branch = str(args.get("branch") or "")
+    if not branch or not ws.has_branch(branch):
+        return None, {"status": "error", "kind": kind, "error": f"unknown branch: {branch!r}"}
+    branch_obj = ws.get_branch(branch)
+    base_key = dict(branch_obj.key)
+    if not base_key:
+        return None, {"status": "skipped", "kind": kind, "branch": branch,
+                      "reason": "empty_base_key"}
+    pt_alpha = ws.plaintext_alphabet
+    if pt_alpha._multisym:
+        return None, {"status": "unsupported", "kind": kind,
+                      "error": f"{tool_name} supports single-character plaintext alphabets only."}
+    unsupported = _unsupported_branch_state(branch_obj)
+    if unsupported is not None:
+        return None, {"status": "unsupported", "kind": kind, "error": unsupported}
+    dictionary_path = dictionary_module.get_dictionary_path(executor.language)
+    if not dictionary_path:
+        return None, {"status": "skipped", "kind": kind, "branch": branch,
+                      "reason": "no_dictionary_for_language", "language": executor.language}
+    mask = executor._branch_word_repair_mask(branch_obj)
+    config = executor._word_repair_menu_config(args)
+    # F2: score with the SAME model variant the menu tool uses so the
+    # menu-backed and injected paths cannot drift.
+    resolved_model = automated_runner.zenith_native_model_path(
+        executor.language, variant=getattr(executor, "_model_variant", None)
+    )
+    pages, alphabet = automated_runner._single_page_group(ws.cipher_text)
+    eff_tokens = ws.effective_tokens(branch)
+    ctx = SimpleNamespace(
+        ws=ws,
+        branch=branch,
+        branch_obj=branch_obj,
+        base_key=base_key,
+        pt_alpha=pt_alpha,
+        eff_tokens=eff_tokens,
+        total=len(eff_tokens),
+        spans=list(ws.effective_word_spans(branch)),
+        language=executor.language,
+        dictionary_path=dictionary_path,
+        config=config,
+        resolved_model=resolved_model,
+        mask=mask,
+        masked=set(mask),
+        pages=pages,
+        alphabet=alphabet,
+        # lazily-built granular anchor index (B1).
+        content_hash=None,
+        word_by_id=None,
+        token_by_id=None,
+        span_by_id=None,
+    )
+    return ctx, None
+
+
+def _ensure_word_anchor_index(executor: Any, ctx: SimpleNamespace) -> None:
+    """Mint the branch's host-owned word/token anchors (B1), content-hash bound.
+
+    Reuses the exact ids the candidate reading packet exposes to models, so an
+    anchor a model reads from the packet resolves here to the same span; a stale
+    or foreign id (built against different content) simply fails to resolve.
+    """
+    if ctx.word_by_id is not None:
+        return
+    from investigation.reading import (
+        build_candidate_reading_packet,
+        token_anchor_id,
+        word_anchor_id,
+    )
+
+    packet = build_candidate_reading_packet(ctx.ws, ctx.branch)
+    content_hash = packet.content_hash
+    ctx.content_hash = content_hash
+    ctx.word_by_id = {
+        word_anchor_id(wi, content_hash): (wi, int(s), int(e))
+        for wi, (s, e) in enumerate(ctx.spans)
+    }
+    ctx.token_by_id = {
+        token_anchor_id(ti, content_hash): ti for ti in range(ctx.total)
+    }
+    ctx.span_by_id = {
+        span.span_id: (int(span.token_start), int(span.token_end))
+        for span in packet.spans
+        if span.token_start is not None and span.token_end is not None
+    }
+
+
+def _resolve_word_span(
+    ctx: SimpleNamespace, executor: Any, raw: dict[str, Any], word: str
+) -> tuple[tuple[int, int] | None, tuple[str, str, str, dict[str, Any]] | None]:
+    """Resolve one item's span reference to ``(char_start, char_end)`` in decode
+    coordinates, or return a typed failure ``(reason, message, status, extra)``.
+
+    Reference precedence: granular host-owned ``word_id`` -> a contiguous
+    ``{start_token_id, end_token_id}`` token run -> host-owned ``span_id`` ->
+    (legacy) ``word_index`` -> (legacy) ``char_start``.
+    """
+    word_id = raw.get("word_id")
+    span_id = raw.get("span_id")
+    start_tid = raw.get("start_token_id")
+    end_tid = raw.get("end_token_id")
+    word_index = raw.get("word_index")
+    char_start = raw.get("char_start")
+
+    if word_id is not None:
+        _ensure_word_anchor_index(executor, ctx)
+        entry = ctx.word_by_id.get(str(word_id))
+        if entry is None:
+            return None, ("unknown_anchor",
+                          f"word_id {word_id!r} does not resolve on this branch content",
+                          "error", {"word_id": str(word_id)})
+        _wi, span_start, span_end = entry
+        return (span_start, span_end), None
+    if start_tid is not None or end_tid is not None:
+        if start_tid is None or end_tid is None:
+            return None, ("incomplete_token_run",
+                          "both start_token_id and end_token_id are required",
+                          "error", {})
+        _ensure_word_anchor_index(executor, ctx)
+        s_idx = ctx.token_by_id.get(str(start_tid))
+        e_idx = ctx.token_by_id.get(str(end_tid))
+        if s_idx is None or e_idx is None:
+            return None, ("unknown_anchor",
+                          "start_token_id / end_token_id does not resolve on this branch content",
+                          "error", {"start_token_id": str(start_tid), "end_token_id": str(end_tid)})
+        if s_idx > e_idx:
+            return None, ("non_contiguous_token_run",
+                          f"start token index {s_idx} is after end token index {e_idx}",
+                          "error", {})
+        return (s_idx, e_idx + 1), None
+    if span_id is not None:
+        _ensure_word_anchor_index(executor, ctx)
+        entry = ctx.span_by_id.get(str(span_id))
+        if entry is not None:
+            return entry, None
+        word_entry = ctx.word_by_id.get(str(span_id))
+        if word_entry is not None:
+            return (word_entry[1], word_entry[2]), None
+        return None, ("unknown_anchor",
+                      f"span_id {span_id!r} does not resolve on this branch content",
+                      "error", {"span_id": str(span_id)})
+    if word_index is not None:
+        wi = int(word_index)
+        if wi < 0 or wi >= len(ctx.spans):
+            return None, ("word_index_out_of_range",
+                          f"word_index {wi} out of range (0..{len(ctx.spans) - 1})",
+                          "error", {"word_index": wi})
+        span_start, span_end = ctx.spans[wi]
+        return (int(span_start), int(span_end)), None
+    if char_start is not None:
+        cs = int(char_start)
+        return (cs, cs + len(word)), None
+    return None, ("missing_span_reference",
+                  "provide one of word_id, span_id, start/end_token_id, word_index, or char_start",
+                  "error", {})
+
+
+class _PendingWordItem:
+    """A resolved, menu-pending word hypothesis (survived cheap validation)."""
+
+    __slots__ = ("idx", "word", "char_start", "char_end", "proj_start",
+                 "proj_end", "install", "label")
+
+    def __init__(self, **kw: Any) -> None:
+        for name in self.__slots__:
+            setattr(self, name, kw.get(name))
+
+
+def _resolve_word_item(
+    ctx: SimpleNamespace, executor: Any, raw: Any, idx: int
+) -> _PendingWordItem | dict[str, Any]:
+    """Cheap pass: type/anchor validation + typed rejections (no menu build)."""
+    if not isinstance(raw, dict):
+        return _word_item_result_terminal(idx, "error", "malformed_hypothesis",
+                                           "each hypothesis must be an object")
+    word = str(raw.get("word") or "").upper()
+    claim_type = raw.get("claim_type")
+    claim_type = "word" if claim_type is None else str(claim_type)
+    op = raw.get("op")
+    label = raw.get("label")
+    install = bool(raw.get("install", False))
+
+    if not word:
+        return _word_item_result_terminal(idx, "error", "empty_word", "word is required",
+                                          label=label)
+    if claim_type != "word":
+        # B1: reserved claim types (e.g. "boundary") are rejected as typed data,
+        # never silently accepted.
+        return _word_item_result_terminal(
+            idx, "rejected", "unsupported_reserved_field",
+            f"claim_type={claim_type!r} is reserved; only 'word' is supported in M5.3",
+            word=word, claim_type=claim_type, label=label)
+    if op is not None:
+        # B1: the `op` field is reserved until implemented and is rejected as
+        # typed data (never silently ignored). The item does not install.
+        return _word_item_result_terminal(
+            idx, "rejected", "unsupported_reserved_field",
+            f"op={op!r} is reserved until implemented",
+            word=word, op=op, label=label)
+
+    span, span_err = _resolve_word_span(ctx, executor, raw, word)
+    if span_err is not None:
+        reason, message, status, extra = span_err
+        return _word_item_result_terminal(idx, status, reason, message,
+                                          word=word, label=label, **extra)
+    char_start, char_end = span
+    if not (0 <= char_start < char_end <= ctx.total):
+        return _word_item_result_terminal(idx, "error", "span_out_of_bounds",
+                                          "span out of bounds", word=word,
+                                          label=label, span=[char_start, char_end],
+                                          total=ctx.total)
+    span_len = char_end - char_start
+    if span_len != len(word):
+        # B1: a word that does not compile to one char per token is TYPED DATA,
+        # not a schema/validation error — nothing installs, but the reason is
+        # legible and carries the mismatched lengths.
+        return _word_item_result_terminal(
+            idx, "rejected", "not_expressible_as_key_edit",
+            "word length does not equal the span's token count; not expressible "
+            "as a one-char-per-token key edit",
+            word=word, label=label, span=[char_start, char_end],
+            span_length=span_len, word_length=len(word))
+
+    ws = ctx.ws
+    offending: list[int] = []
+    for t in range(char_start, char_end):
+        token_id = ctx.eff_tokens[t]
+        value = ctx.base_key.get(token_id)
+        symbol = ws.cipher_text.alphabet.symbol_for(token_id)
+        if value is None or value < 0 or value > 25 or symbol in ctx.masked:
+            offending.append(t)
+    if offending:
+        return _word_item_result_terminal(idx, "error", "unmapped_or_masked_span",
+                                          "span contains unmapped or masked tokens",
+                                          word=word, label=label,
+                                          offending_token_positions=offending)
+    # decode-coordinate span -> projection coordinates (A2).
+    proj_start = 0
+    for t in range(0, char_start):
+        token_id = ctx.eff_tokens[t]
+        value = ctx.base_key.get(token_id)
+        symbol = ws.cipher_text.alphabet.symbol_for(token_id)
+        if value is not None and 0 <= value <= 25 and symbol not in ctx.masked:
+            proj_start += 1
+    return _PendingWordItem(
+        idx=idx, word=word, char_start=char_start, char_end=char_end,
+        proj_start=proj_start, proj_end=proj_start + len(word),
+        install=install, label=label,
+    )
+
+
+def _score_word_item(
+    ctx: SimpleNamespace, executor: Any, pending: _PendingWordItem, menu: Any, turn: int
+) -> dict[str, Any]:
+    """Score one resolved item against the SHARED menu (identical math to the
+    pre-M5.3 singleton), then stamp the batch item metadata."""
     from analysis.word_hypothesis_repair import (
         changed_excerpt,
         score_injected_word_hypothesis,
     )
     from automated import runner as automated_runner
 
-    ws = executor.workspace
-    branch = str(args.get("branch") or "")
-    if not branch or not ws.has_branch(branch):
-        return {"status": "error", "kind": "word_hypothesis", "error": f"unknown branch: {branch!r}"}
-    word = str(args.get("word") or "").upper()
-    if not word:
-        return {"status": "error", "kind": "word_hypothesis", "error": "word is required"}
-
-    branch_obj = ws.get_branch(branch)
-    base_key = dict(branch_obj.key)
-    if not base_key:
-        return {
-            "status": "skipped",
-            "kind": "word_hypothesis",
-            "branch": branch,
-            "reason": "empty_base_key",
-        }
-    pt_alpha = ws.plaintext_alphabet
-    if pt_alpha._multisym:
-        return {
-            "status": "unsupported",
-            "kind": "word_hypothesis",
-            "error": "hypothesis_test_word supports single-character plaintext alphabets only.",
-        }
-    unsupported = _unsupported_branch_state(branch_obj)
-    if unsupported is not None:
-        return {"status": "unsupported", "kind": "word_hypothesis",
-                "error": unsupported}
-
-    eff_tokens = ws.effective_tokens(branch)
-    total = len(eff_tokens)
-    spans = ws.effective_word_spans(branch)
-
-    # --- locate the span in decode coordinates ---
-    word_index = args.get("word_index")
-    char_start = args.get("char_start")
-    if word_index is not None:
-        wi = int(word_index)
-        if wi < 0 or wi >= len(spans):
-            return {"status": "error", "kind": "word_hypothesis",
-                    "error": f"word_index {wi} out of range (0..{len(spans) - 1})"}
-        char_start, char_end = spans[wi]
-    elif char_start is not None:
-        char_start = int(char_start)
-        char_end = char_start + len(word)
-    else:
-        return {"status": "error", "kind": "word_hypothesis",
-                "error": "one of word_index or char_start is required"}
-    if not (0 <= char_start < char_end <= total):
-        return {"status": "error", "kind": "word_hypothesis",
-                "error": "span out of bounds", "span": [char_start, char_end], "total": total}
-    span_len = char_end - char_start
-    if span_len != len(word):
-        return {
-            "status": "error",
-            "kind": "word_hypothesis",
-            "error": "span length does not equal len(word)",
-            "span_length": span_len,
-            "word_length": len(word),
-            "span": [char_start, char_end],
-        }
-
-    mask = executor._branch_word_repair_mask(branch_obj)
-    masked = set(mask)
-
-    # --- map decode-coordinate span into projection coordinates (A2) ---
-    offending: list[int] = []
-    for t in range(char_start, char_end):
-        token_id = eff_tokens[t]
-        value = base_key.get(token_id)
-        symbol = ws.cipher_text.alphabet.symbol_for(token_id)
-        if value is None or value < 0 or value > 25 or symbol in masked:
-            offending.append(t)
-    if offending:
-        return {
-            "status": "error",
-            "kind": "word_hypothesis",
-            "error": "span contains unmapped or masked tokens",
-            "offending_token_positions": offending,
-        }
-    proj_start = 0
-    for t in range(0, char_start):
-        token_id = eff_tokens[t]
-        value = base_key.get(token_id)
-        symbol = ws.cipher_text.alphabet.symbol_for(token_id)
-        if value is not None and 0 <= value <= 25 and symbol not in masked:
-            proj_start += 1
-    proj_end = proj_start + len(word)
-
-    dictionary_path = dictionary_module.get_dictionary_path(executor.language)
-    if not dictionary_path:
-        return {
-            "status": "skipped",
-            "kind": "word_hypothesis",
-            "branch": branch,
-            "reason": "no_dictionary_for_language",
-            "language": executor.language,
-        }
-    config = executor._word_repair_menu_config(args)
-    # F2: score with the SAME model variant the menu tool uses (main's
-    # search_word_repair_menu passes variant=self._model_variant; DTA is the
-    # German default), so the menu-backed and injected paths cannot drift.
-    resolved_model = automated_runner.zenith_native_model_path(
-        executor.language, variant=getattr(executor, "_model_variant", None)
-    )
-
-    # --- build the menu exactly as _tool_search_word_repair_menu does ---
-    try:
-        menu = automated_runner.build_word_repair_menu(
-            cipher_text=ws.cipher_text,
-            base_key=base_key,
-            mask=mask,
-            language=executor.language,
-            config=config,
-            dictionary_path=dictionary_path,
-            model_path=resolved_model,
-            source_branch=branch,
-        )
-    except Exception as exc:  # noqa: BLE001
-        return {"status": "error", "kind": "word_hypothesis",
-                "branch": branch, "error": f"{type(exc).__name__}: {exc}"}
-
+    word = pending.word
+    span = [pending.char_start, pending.char_end]
     menu_packet = None
     for packet in menu.packets:
         prov = packet.provenance or {}
         for hyp in prov.get("word_hypotheses") or []:
             if (
-                hyp.get("start") == proj_start
-                and hyp.get("end") == proj_end
+                hyp.get("start") == pending.proj_start
+                and hyp.get("end") == pending.proj_end
                 and hyp.get("target") == word
             ):
                 menu_packet = packet
@@ -951,11 +1266,10 @@ def _hypothesis_test_word(executor: Any, args: dict[str, Any], turn: int) -> dic
         if menu_packet is not None:
             break
 
-    span = [char_start, char_end]
     if menu_packet is not None:
-        return _word_hypothesis_result(
+        result = _word_hypothesis_result(
             executor,
-            branch=branch,
+            branch=ctx.branch,
             span=span,
             word=word,
             menu_backed=True,
@@ -963,65 +1277,212 @@ def _hypothesis_test_word(executor: Any, args: dict[str, Any], turn: int) -> dic
             verdict=_packet_verdict(menu_packet),
             packet=menu_packet,
             edits=list((menu_packet.provenance or {}).get("edits") or []),
-            install=bool(args.get("install", False)),
-            mask=mask,
-            base_key=base_key,
+            install=pending.install,
+            mask=ctx.mask,
+            base_key=ctx.base_key,
             changed_excerpt=changed_excerpt,
             automated_runner=automated_runner,
             turn=turn,
         )
+    else:
+        injected = score_injected_word_hypothesis(
+            pages=ctx.pages,
+            shared_key=ctx.base_key,
+            dictionary_path=ctx.dictionary_path,
+            start=pending.proj_start,
+            end=pending.proj_end,
+            target=word,
+            language=ctx.language,
+            config=ctx.config,
+            mask=ctx.mask,
+            alphabet=ctx.alphabet,
+            source_branch=ctx.branch,
+            model_path=ctx.resolved_model,
+        )
+        if injected.get("verdict") == "no_valid_edits":
+            result = {
+                "status": "ok",
+                "kind": "word_hypothesis",
+                "branch": ctx.branch,
+                "span": span,
+                "word": word,
+                "menu_backed": False,
+                "in_dictionary": bool(injected.get("in_dictionary")),
+                "verdict": "no_valid_edits",
+                "observed": injected.get("observed"),
+                "edits": [],
+                "installed_fork": None,
+                "note": (
+                    "No valid edit set: the span already reads as the word, or the "
+                    "fix would touch a masked/stable symbol or conflict."
+                ),
+            }
+        else:
+            result = _word_hypothesis_result(
+                executor,
+                branch=ctx.branch,
+                span=span,
+                word=word,
+                menu_backed=False,
+                in_dictionary=bool(injected.get("in_dictionary")),
+                verdict=injected.get("verdict"),
+                packet=injected.get("packet"),
+                edits=list(injected.get("edits") or []),
+                install=pending.install,
+                mask=ctx.mask,
+                base_key=ctx.base_key,
+                changed_excerpt=changed_excerpt,
+                automated_runner=automated_runner,
+                turn=turn,
+            )
 
-    # --- injected path (word the menu did not propose) ---
-    pages, alphabet = automated_runner._single_page_group(ws.cipher_text)
-    injected = score_injected_word_hypothesis(
-        pages=pages,
-        shared_key=base_key,
-        dictionary_path=dictionary_path,
-        start=proj_start,
-        end=proj_end,
-        target=word,
-        language=executor.language,
-        config=config,
-        mask=mask,
-        alphabet=alphabet,
-        source_branch=branch,
-        model_path=resolved_model,
+    result["index"] = pending.idx
+    result["claim_type"] = "word"
+    if pending.label is not None:
+        result["label"] = pending.label
+    return result
+
+
+def _hypothesis_test_words(
+    executor: Any, args: dict[str, Any], turn: int, *, singleton: bool = False
+) -> dict[str, Any]:
+    """Batch word-hypothesis core (M5.3 Slice 3). The singleton wrapper calls
+    this with ``singleton=True`` and receives the single item's result directly,
+    proving parity with the pre-M5.3 tool."""
+    tool_name = "hypothesis_test_word" if singleton else "hypothesis_test_words"
+    branch_kind = "word_hypothesis" if singleton else "word_hypotheses"
+    ctx, err = _word_repair_branch_context(
+        executor, args, kind=branch_kind, tool_name=tool_name
     )
-    if injected.get("verdict") == "no_valid_edits":
-        return {
-            "status": "ok",
-            "kind": "word_hypothesis",
-            "branch": branch,
-            "span": span,
-            "word": word,
-            "menu_backed": False,
-            "in_dictionary": bool(injected.get("in_dictionary")),
-            "verdict": "no_valid_edits",
-            "observed": injected.get("observed"),
-            "edits": [],
-            "installed_fork": None,
-            "note": (
-                "No valid edit set: the span already reads as the word, or the "
-                "fix would touch a masked/stable symbol or conflict."
-            ),
-        }
-    return _word_hypothesis_result(
-        executor,
-        branch=branch,
-        span=span,
-        word=word,
-        menu_backed=False,
-        in_dictionary=bool(injected.get("in_dictionary")),
-        verdict=injected.get("verdict"),
-        packet=injected.get("packet"),
-        edits=list(injected.get("edits") or []),
-        install=bool(args.get("install", False)),
-        mask=mask,
-        base_key=base_key,
-        changed_excerpt=changed_excerpt,
-        automated_runner=automated_runner,
-        turn=turn,
-    )
+    if err is not None:
+        return err
+
+    hypotheses = args.get("hypotheses")
+    if not isinstance(hypotheses, list) or not hypotheses:
+        return {"status": "error", "kind": branch_kind,
+                "error": "hypotheses (a non-empty list) is required"}
+    if len(hypotheses) > _MAX_WORD_HYPOTHESES:
+        return {"status": "error", "kind": branch_kind,
+                "error": f"too many hypotheses (max {_MAX_WORD_HYPOTHESES})",
+                "count": len(hypotheses)}
+
+    # Pass 1 (cheap): resolve spans + typed rejections; no menu needed.
+    resolved: list[_PendingWordItem | dict[str, Any]] = [
+        _resolve_word_item(ctx, executor, raw, idx)
+        for idx, raw in enumerate(hypotheses)
+    ]
+    need_menu = any(isinstance(item, _PendingWordItem) for item in resolved)
+
+    # Pass 2: build (or retrieve) the shared menu exactly ONCE (A8 cache).
+    menu = None
+    menu_from_cache = False
+    if need_menu:
+        try:
+            menu, menu_from_cache = _get_or_build_menu(executor, ctx)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "kind": branch_kind, "branch": ctx.branch,
+                    "error": f"{type(exc).__name__}: {exc}"}
+
+    # Pass 3: score surviving items against the shared packet.
+    items: list[dict[str, Any]] = []
+    for outcome in resolved:
+        if isinstance(outcome, _PendingWordItem):
+            items.append(_score_word_item(ctx, executor, outcome, menu, turn))
+        else:
+            items.append(outcome)
+
+    if singleton:
+        # Parity: the singleton returns the single item's result verbatim.
+        return items[0]
+
+    return _finalize_word_batch(ctx, items, need_menu, menu_from_cache)
+
+
+def _finalize_word_batch(
+    ctx: SimpleNamespace,
+    items: list[dict[str, Any]],
+    need_menu: bool,
+    menu_from_cache: bool,
+) -> dict[str, Any]:
+    """Batch envelope: dedupe equivalent edit sets, pick a small diverse
+    finalist set with collateral evidence, and list installed forks."""
+    installed = [it["installed_fork"] for it in items if it.get("installed_fork")]
+
+    def _fin_sort_key(it: dict[str, Any]) -> tuple[int, float]:
+        accepted = 1 if (it.get("acceptance") or {}).get("accepted") is True else 0
+        adj = (it.get("solver_scores") or {}).get("adjudication_score")
+        adj = adj if isinstance(adj, (int, float)) else float("-inf")
+        return (accepted, adj)
+
+    edited = [
+        it for it in items
+        if it.get("status") == "ok" and it.get("edits")
+    ]
+    finalists: list[dict[str, Any]] = []
+    seen_edit_sets: set[tuple[str, ...]] = set()
+    duplicates_collapsed = 0
+    for it in sorted(edited, key=_fin_sort_key, reverse=True):
+        signature = tuple(sorted(it.get("edits") or []))
+        if signature in seen_edit_sets:
+            duplicates_collapsed += 1
+            continue
+        seen_edit_sets.add(signature)
+        if len(finalists) >= _MAX_WORD_FINALISTS:
+            continue
+        adjudication = it.get("adjudication_summary") or {}
+        finalists.append({
+            "index": it.get("index"),
+            "word": it.get("word"),
+            "span": it.get("span"),
+            "edits": it.get("edits"),
+            "verdict": it.get("verdict"),
+            "menu_backed": it.get("menu_backed"),
+            "accepted": (it.get("acceptance") or {}).get("accepted"),
+            "adjudication_score": (it.get("solver_scores") or {}).get("adjudication_score"),
+            "collateral": {
+                "collateral_occurrences": adjudication.get("collateral_occurrences"),
+                "improved_occurrences": adjudication.get("improved_occurrences"),
+                "damaged_occurrences": adjudication.get("damaged_occurrences"),
+            },
+            "changed_excerpt": it.get("changed_excerpt"),
+            "installed_fork": it.get("installed_fork"),
+        })
+
+    rejected_count = sum(1 for it in items if it.get("status") in {"rejected", "error"})
+    menu_source = "not_built"
+    if need_menu:
+        menu_source = "cache" if menu_from_cache else "built"
+
+    return {
+        "status": "ok",
+        "kind": "word_hypotheses",
+        "branch": ctx.branch,
+        "count": len(items),
+        "menu_source": menu_source,
+        "menu_built": need_menu and not menu_from_cache,
+        "items": items,
+        "finalists": finalists,
+        "installed": installed,
+        "duplicates_collapsed": duplicates_collapsed,
+        "rejected_count": rejected_count,
+    }
+
+
+def _hypothesis_test_word(executor: Any, args: dict[str, Any], turn: int) -> dict[str, Any]:
+    """Legacy single-word probe: a thin wrapper over the batch core (parity)."""
+    item: dict[str, Any] = {
+        "word": args.get("word"),
+        "install": bool(args.get("install", False)),
+    }
+    if args.get("word_index") is not None:
+        item["word_index"] = args.get("word_index")
+    if args.get("char_start") is not None:
+        item["char_start"] = args.get("char_start")
+    batch_args: dict[str, Any] = {"branch": args.get("branch"), "hypotheses": [item]}
+    for knob in ("window_size", "max_edits", "max_hypotheses", "max_hypotheses_per_window"):
+        if args.get(knob) is not None:
+            batch_args[knob] = args.get(knob)
+    return _hypothesis_test_words(executor, batch_args, turn, singleton=True)
 
 
 def _packet_verdict(packet: Any) -> str:
