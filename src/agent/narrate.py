@@ -284,6 +284,26 @@ class NarrateAgentRenderer:
                     "dim",
                 )
             )
+            # M5.3 Slice 7: distinguish the four branch roles when any of the
+            # non-best roles is present and diverges from the best-scored branch.
+            roles = payload.get("branch_roles")
+            if isinstance(roles, dict):
+                best = roles.get("best_scored_branch")
+                workflow = roles.get("workflow_branch")
+                installed = roles.get("latest_installed_branch")
+                selected = roles.get("declared_or_selected_branch")
+                if any(
+                    value is not None and value != best
+                    for value in (workflow, installed, selected)
+                ):
+                    self._line(
+                        self._c(
+                            f"      roles: workflow={workflow or '-'} "
+                            f"installed={installed or '-'} "
+                            f"selected={selected or '-'}",
+                            "dim",
+                        )
+                    )
         # Live progress: render the current best decode whenever it CHANGES
         # (the user's core "show me the work" signal). One line at
         # non-verbose (first 140 chars); the full preview when verbose.

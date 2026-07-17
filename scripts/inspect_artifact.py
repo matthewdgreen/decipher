@@ -268,33 +268,123 @@ def format_timeline(timeline: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared analyzer helpers (M5.3 Slice 7)
+# ---------------------------------------------------------------------------
+
+def _inv_state(artifact: dict) -> dict:
+    """The investigation_state sub-dict (v3), or {} for v2/older artifacts."""
+    state = artifact.get("investigation_state")
+    return state if isinstance(state, dict) else {}
+
+
+def _short_hash(h: Any) -> str:
+    """First 12 chars of a content hash; ``-`` when empty."""
+    text = str(h or "")
+    return text[:12] if text else "-"
+
+
+def _attestation_verdict(attestation: dict) -> str:
+    """positive/weak/negative — the same rule as format_attestations."""
+    if attestation_is_positive(attestation):
+        return "positive"
+    if attestation.get("reader_accepts"):
+        return "weak"
+    return "negative"
+
+
+def derive_run_facts(artifact: dict) -> dict:
+    """Provider/model/iterations/branch/declaration/attestation/cost facts
+    correct for the v2+v3 RunArtifact shape, with graceful fallbacks for the
+    older ad-hoc shapes (automated-runner artifacts carry explicit
+    provider/test_id/iterations_used keys — those take precedence)."""
+    model = artifact.get("model") or "?"
+    provider = artifact.get("provider")
+    if not provider and model != "?":
+        # Only infer from a KNOWN model; an unknown model reports "?" rather
+        # than the inference helper's non-falsy default (nit).
+        provider = infer_provider_from_model(model, None)
+    provider = provider or "?"
+    cipher = (
+        artifact.get("cipher_id")
+        or artifact.get("test_id")
+        or artifact.get("cipher_system")
+        or "?"
+    )
+    loop_version = artifact.get("loop_version") or "v2"
+    status = artifact.get("status") or "?"
+
+    iterations = artifact.get("iterations_used")
+    if not isinstance(iterations, int):
+        iterations = _iterations_used(artifact, artifact.get("loop_events") or [])
+    if iterations is None:
+        iterations = "?"
+
+    declared = (artifact.get("solution") or artifact.get("declared_solution")) is not None
+    fallback = (
+        artifact.get("status") == "fallback_declared"
+        or bool(artifact.get("auto_declared"))
+    )
+    final_branch = (
+        (artifact.get("branch_roles") or {}).get("declared_or_selected_branch")
+        or _declared_branch(artifact)
+        or "?"
+    )
+
+    solution = artifact.get("solution")
+    if isinstance(solution, dict) and isinstance(solution.get("attestation"), dict):
+        attestation_status = f"{_attestation_verdict(solution['attestation'])} (declared)"
+    elif artifact.get("attestations"):
+        attestations = artifact["attestations"]
+        n_positive = sum(1 for a in attestations if attestation_is_positive(a))
+        attestation_status = f"{len(attestations)} recorded ({n_positive} positive)"
+    else:
+        attestation_status = "none"
+
+    cost_usd = float(artifact.get("estimated_cost_usd") or 0.0)
+
+    return {
+        "model": model,
+        "provider": provider,
+        "cipher": cipher,
+        "loop_version": loop_version,
+        "status": status,
+        "iterations": iterations,
+        "declared": declared,
+        "fallback": fallback,
+        "final_branch": final_branch,
+        "attestation_status": attestation_status,
+        "cost_usd": cost_usd,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Header summary
 # ---------------------------------------------------------------------------
 
 def format_header(artifact: dict) -> str:
-    lines: list[str] = []
-    model = artifact.get("model") or "?"
-    provider = artifact.get("provider") or "?"
+    facts = derive_run_facts(artifact)
     lang = artifact.get("language") or "?"
-    cipher = artifact.get("cipher_system") or artifact.get("test_id") or "?"
-    iters = artifact.get("iterations_used") or "?"
     char_acc = artifact.get("char_accuracy")
     word_acc = artifact.get("word_accuracy")
-    declared = (artifact.get("solution") or artifact.get("declared_solution")) is not None
-    is_fallback = (
-        artifact.get("status") == "fallback_declared"
-        or bool(artifact.get("auto_declared"))
+    declared_str = (
+        f"{facts['declared']} (fallback)"
+        if (facts["declared"] and facts["fallback"])
+        else str(facts["declared"])
     )
-    declared_str = f"{declared} (fallback)" if (declared and is_fallback) else str(declared)
-    best_branch = artifact.get("best_branch") or "?"
 
+    lines: list[str] = []
     lines.append("=" * 70)
-    lines.append(f"  Model   : {model} ({provider})")
-    lines.append(f"  Cipher  : {cipher}  language={lang}")
-    lines.append(f"  Iters   : {iters}   declared={declared_str}")
+    lines.append(f"  Model   : {facts['model']} ({facts['provider']})   loop={facts['loop_version']}")
+    lines.append(f"  Cipher  : {facts['cipher']}  language={lang}")
+    lines.append(f"  Iters   : {facts['iterations']}   status={facts['status']}   declared={declared_str}")
     if char_acc is not None:
-        lines.append(f"  Accuracy: char={char_acc:.1%}  word={word_acc:.1%}" if word_acc is not None else f"  Accuracy: char={char_acc:.1%}")
-    lines.append(f"  Branch  : {best_branch}")
+        lines.append(
+            f"  Accuracy: char={char_acc:.1%}  word={word_acc:.1%}"
+            if word_acc is not None
+            else f"  Accuracy: char={char_acc:.1%}"
+        )
+    lines.append(f"  Branch  : {facts['final_branch']}   attestation: {facts['attestation_status']}")
+    lines.append(f"  Cost    : ${facts['cost_usd']:.4f}")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -422,6 +512,293 @@ def format_experiments(artifact: dict) -> str:
         el = f"{elapsed:.1f}s" if isinstance(elapsed, (int, float)) else "n/a"
         summary = str(exp.get("summary") or "").replace("\n", " ")[:50]
         lines.append(f"  {eid:<14} {etype:<18} {status:<12} {el:>8}  {summary}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 7 analyzer sections. Each returns "" when it has nothing to show.
+# ---------------------------------------------------------------------------
+
+def format_episode_budgets(artifact: dict) -> str:
+    """Per-episode requested vs registered vs effective vs executed budget
+    (master 515). Slice-7 ledger keys; pre-Slice-7 episodes render n/a/-."""
+    episodes = artifact.get("episodes") or []
+    if not episodes:
+        return ""
+    lines = ["Episode budgets (requested → effective / registered, executed):"]
+    lines.append(
+        f"  {'kind':<10} {'requested':>9} {'registered':>10} "
+        f"{'effective':>9} {'executed':>8} {'skipped':>7} {'elapsed':>8}"
+    )
+    for ep in episodes:
+        kind = str(ep.get("kind") or "?")
+        requested = ep.get("requested_max_tool_calls")
+        req_s = str(requested) if requested is not None else "-"
+        registered = ep.get("registered_max_tool_calls")
+        reg_s = str(registered) if registered is not None else "n/a"
+        budget = ep.get("budget") if isinstance(ep.get("budget"), dict) else {}
+        effective = budget.get("max_tool_calls")
+        eff_s = str(effective) if effective is not None else "n/a"
+        executed = int(ep.get("tool_call_count") or 0)
+        skipped = int(ep.get("suppressed_over_budget_calls") or 0)
+        elapsed = ep.get("elapsed_seconds")
+        el_s = f"{float(elapsed):.1f}s" if isinstance(elapsed, (int, float)) else "n/a"
+        lines.append(
+            f"  {kind:<10} {req_s:>9} {reg_s:>10} {eff_s:>9} "
+            f"{executed:>8} {skipped:>7} {el_s:>8}"
+        )
+    return "\n".join(lines)
+
+
+def format_suppressed_calls(artifact: dict) -> str:
+    """Episodes whose host skipped one or more over-budget tool_uses (master
+    516). The ledger count is authoritative (Slice 1 writes it)."""
+    episodes = [
+        ep for ep in (artifact.get("episodes") or [])
+        if int(ep.get("suppressed_over_budget_calls") or 0) > 0
+    ]
+    if not episodes:
+        return ""
+    lines = ["Suppressed over-budget episode calls:"]
+    lines.append(
+        f"  {'episode':<14} {'kind':<10} {'suppressed':>10} {'cap':>5} {'executed':>8}"
+    )
+    for ep in episodes:
+        eid = str(ep.get("episode_id") or "?")
+        kind = str(ep.get("kind") or "?")
+        suppressed = int(ep.get("suppressed_over_budget_calls") or 0)
+        budget = ep.get("budget") if isinstance(ep.get("budget"), dict) else {}
+        cap = budget.get("max_tool_calls")
+        cap_s = str(cap) if cap is not None else "n/a"
+        executed = int(ep.get("tool_call_count") or 0)
+        lines.append(f"  {eid:<14} {kind:<10} {suppressed:>10} {cap_s:>5} {executed:>8}")
+    return "\n".join(lines)
+
+
+def format_experiment_validation_failures(timeline: list[dict]) -> str:
+    """Timeline experiment_submit/collect calls that failed typed validation
+    (master 520). experiment dispatches return JSON directly (no ToolCall
+    record), so this reads the timeline, not artifact["tool_calls"]."""
+    rows: list[dict] = []
+    for entry in timeline:
+        for tc in entry.get("tools", []):
+            name = str(tc.get("name") or "")
+            if name not in {"experiment_submit", "experiment_collect"}:
+                continue
+            result = tc.get("result")
+            if not isinstance(result, dict):
+                continue
+            error = str(result.get("error") or "")
+            if not (
+                result.get("config_errors")
+                or error.startswith("invalid experiment config")
+                or error.startswith("unknown experiment type")
+            ):
+                continue
+            rows.append({
+                "iteration": entry.get("iter"),
+                "tool": name,
+                "config_errors": result.get("config_errors") or [],
+                "corrected_example": result.get("corrected_example") is not None,
+            })
+    if not rows:
+        return ""
+    lines = ["Experiment validation failures:"]
+    for row in rows:
+        errs = row["config_errors"][:2]
+        err_text = "; ".join(str(e)[:90] for e in errs) if errs else "-"
+        lines.append(
+            f"  iter {row['iteration']}: {row['tool']}  {err_text}  "
+            f"corrected_example: {'yes' if row['corrected_example'] else 'no'}"
+        )
+    return "\n".join(lines)
+
+
+def format_repair_cycles(artifact: dict) -> str:
+    """Repair transactions grouped by source content hash (master 517).
+    ``repair_transactions`` lives inside investigation_state, not top-level."""
+    transactions = _inv_state(artifact).get("repair_transactions") or []
+    if not transactions:
+        return ""
+    groups: dict[str, list[dict]] = {}
+    for tx in transactions:
+        groups.setdefault(str(tx.get("source_content_hash") or ""), []).append(tx)
+    lines = ["Repair cycles (grouped by source content hash):"]
+    for source_hash, txs in groups.items():
+        ordered = sorted(txs, key=lambda t: int(t.get("created_turn") or 0))
+        if any("pair_digest" in t for t in txs):
+            pairs = {str(t.get("pair_digest") or "") for t in txs}
+            pair_note = f"{len(pairs)} pairs"
+        else:
+            readings = {str(t.get("reading_id") or "") for t in txs}
+            pair_note = f"~{len(readings)} readings"
+        statuses = []
+        for t in ordered:
+            st = str(t.get("status") or "?")
+            statuses.append(f"failed({t.get('reason') or '?'})" if st == "failed" else st)
+        att_keys = {
+            str(t.get("attestation_key")) for t in txs
+            if t.get("attestation_key") is not None
+        }
+        att_s = ", ".join(sorted(att_keys)) if att_keys else "n/a"
+        lines.append(f"  {_short_hash(source_hash)}  {len(txs)} tx  {pair_note}")
+        lines.append(f"    statuses: {', '.join(statuses)}")
+        lines.append(f"    attestation_keys: {att_s}")
+    return "\n".join(lines)
+
+
+def format_saturation(artifact: dict) -> str:
+    """Repair-saturation entries + derived exhaustion transition turn (master
+    518). Slice-2 field; absent on pre-Slice-2 artifacts."""
+    saturation = _inv_state(artifact).get("repair_saturation") or {}
+    if not saturation:
+        return ""
+    transactions = _inv_state(artifact).get("repair_transactions") or []
+    lines = ["Repair saturation transitions:"]
+    for sat_key, entry in saturation.items():
+        if not isinstance(entry, dict):
+            continue
+        cand = _short_hash(entry.get("candidate_content_hash"))
+        att_key = str(entry.get("attestation_key") or "n/a")
+        evidence_failures = int(entry.get("evidence_failures") or 0)
+        process_total = sum(
+            int(v or 0) for v in (entry.get("process_failures") or {}).values()
+        )
+        readings = int(entry.get("readings") or 0)
+        exhausted = bool(entry.get("exhausted"))
+        pending = entry.get("pending_experiment_id") or "-"
+        created = entry.get("created_turn")
+        updated = entry.get("updated_turn")
+        lines.append(
+            f"  {cand}  att={att_key}  evidence_failures={evidence_failures}  "
+            f"process_failures={process_total}  readings={readings}  "
+            f"exhausted={exhausted}  pending_experiment_id={pending}  "
+            f"turns {created}->{updated}"
+        )
+        # Transition turn: the counted evidence failure that reached 2.
+        count = 0
+        transition_turn = None
+        for tx in sorted(
+            (t for t in transactions if t.get("saturation_key") == sat_key),
+            key=lambda t: int(t.get("created_turn") or 0),
+        ):
+            if tx.get("counted_evidence_failure") is True:
+                count += 1
+                if count == 2:
+                    transition_turn = tx.get("created_turn")
+                    break
+        if transition_turn is not None:
+            lines.append(f"    exhausted at turn {transition_turn}")
+    return "\n".join(lines)
+
+
+def format_repair_transactions(artifact: dict) -> str:
+    """Every installed and rejected repair transaction (master 519), in list
+    order, with Slice-2 failure classification + Slice-4 acceptance summary."""
+    transactions = _inv_state(artifact).get("repair_transactions") or []
+    if not transactions:
+        return ""
+    lines = ["Repair transactions:"]
+    for tx in transactions:
+        tid = _short_hash(tx.get("transaction_id"))
+        status = str(tx.get("status") or "?")
+        parts = [f"{tid}  {status}"]
+        if status == "failed":
+            parts.append(f"reason={tx.get('reason') or '-'}")
+        if "failure_class" in tx or "counted_evidence_failure" in tx:
+            parts.append(
+                f"class={tx.get('failure_class') or 'n/a'} "
+                f"counted_evidence={tx.get('counted_evidence_failure')}"
+            )
+        else:
+            parts.append("class=n/a")
+        if status == "installed":
+            parts.append(
+                f"{tx.get('worker_winner') or '-'}->{tx.get('installed_branch') or '-'}"
+            )
+        retry_of = tx.get("retry_of")
+        parts.append(f"retry_of={_short_hash(retry_of) if retry_of else '-'}")
+        acceptance = tx.get("acceptance")
+        if isinstance(acceptance, dict):
+            checks = acceptance.get("checks") or []
+            passed = sum(1 for c in checks if c.get("passed"))
+            parts.append(f"checks {passed}/{len(checks)}")
+            deltas = acceptance.get("score_deltas") or {}
+            dr = deltas.get("dict_rate_delta")
+            q = deltas.get("quad_delta")
+            if isinstance(dr, (int, float)) and not isinstance(dr, bool):
+                parts.append(f"dict_rate_delta={dr:+.4f}")
+            if isinstance(q, (int, float)) and not isinstance(q, bool):
+                parts.append(f"quad_delta={q:+.4f}")
+        lines.append("  " + "  ".join(parts))
+    return "\n".join(lines)
+
+
+def format_branch_roles(artifact: dict) -> str:
+    """The four distinguished branch roles (master 521, Part A). Empty for v2
+    / pre-Slice-7 artifacts. The divergence marker is workflow vs best-scored
+    ('workflow branch vs score-selected branch')."""
+    roles = artifact.get("branch_roles")
+    if not isinstance(roles, dict) or not roles:
+        return ""
+    best = roles.get("best_scored_branch")
+    workflow = roles.get("workflow_branch")
+
+    def _val(v: Any) -> str:
+        return str(v) if v is not None else "-"
+
+    marker = (
+        "   [differs from best-scored]"
+        if (workflow is not None and workflow != best)
+        else ""
+    )
+    lines = ["Branch roles:"]
+    lines.append(f"  best_scored_branch         : {_val(best)}")
+    lines.append(f"  workflow_branch            : {_val(workflow)}{marker}")
+    lines.append(f"  latest_installed_branch    : {_val(roles.get('latest_installed_branch'))}")
+    lines.append(f"  declared_or_selected_branch: {_val(roles.get('declared_or_selected_branch'))}")
+    return "\n".join(lines)
+
+
+def format_repair_hypothesis_time(artifact: dict) -> str:
+    """Cumulative repair-hypothesis compute time (master 522), read from the
+    composite ToolCalls' real ``elapsed_ms`` (execute_composite records it) and
+    the ``menu_source`` tally from hypothesis_test_word* results. Lead
+    ``repair_transaction`` ToolCalls carry elapsed_ms=0 by design
+    (_record_dispatch_result), so this neither double-counts nor misses the
+    inner composite work."""
+    names = {"hypothesis_test_words", "hypothesis_test_word", "hypothesis_apply_reading"}
+    word_names = {"hypothesis_test_words", "hypothesis_test_word"}
+    by_tool: dict[str, dict] = {}
+    for tc in artifact.get("tool_calls") or []:
+        name = str(tc.get("tool_name") or "")
+        if name not in names:
+            continue
+        bucket = by_tool.setdefault(
+            name, {"count": 0, "total_ms": 0, "max_ms": 0, "menus": Counter()}
+        )
+        elapsed_ms = int(tc.get("elapsed_ms") or 0)
+        bucket["count"] += 1
+        bucket["total_ms"] += elapsed_ms
+        bucket["max_ms"] = max(bucket["max_ms"], elapsed_ms)
+        if name in word_names:
+            menu_source = _result_dict_from_call(tc).get("menu_source")
+            if menu_source:
+                bucket["menus"][str(menu_source)] += 1
+    if not by_tool:
+        return ""
+    cumulative_s = sum(b["total_ms"] for b in by_tool.values()) / 1000.0
+    lines = [f"Repair hypothesis time: {cumulative_s:.1f}s cumulative"]
+    for name in sorted(by_tool, key=lambda n: -by_tool[n]["total_ms"]):
+        b = by_tool[name]
+        line = (
+            f"  {name:<24} {b['count']} calls  "
+            f"total={b['total_ms'] / 1000.0:.1f}s  max={b['max_ms'] / 1000.0:.1f}s"
+        )
+        if b["menus"]:
+            menus = " ".join(f"{k}={v}" for k, v in sorted(b["menus"].items()))
+            line += f"  menus: {menus}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -711,6 +1088,7 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
     tool_calls = artifact.get("tool_calls", [])
     findings = summarize_findings(analyze_artifact(artifact))
     timing = analyze_tool_timing(artifact)
+    facts = derive_run_facts(artifact)  # M5.3 Slice 7: header/summary parity
 
     for entry in timeline:
         for tc in entry.get("tools", []):
@@ -780,22 +1158,22 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
 
     return {
         "model": artifact.get("model"),
-        "provider": artifact.get("provider"),
+        "provider": facts["provider"],
         "test_id": artifact.get("test_id"),
         "status": artifact.get("status"),
         "cipher_system": artifact.get("cipher_system"),
         "language": artifact.get("language"),
+        "loop_version": facts["loop_version"],
         "char_accuracy": artifact.get("char_accuracy"),
         "word_accuracy": artifact.get("word_accuracy"),
         "score_meaning": "char_accuracy and word_accuracy are post-hoc comparisons to known benchmark plaintext when ground truth exists; they are not intrinsic solver confidence.",
-        "iterations_used": artifact.get("iterations_used"),
-        "declared": (artifact.get("solution") or artifact.get("declared_solution")) is not None,
-        "auto_declared": (
-            artifact.get("status") == "fallback_declared"
-            or bool(artifact.get("auto_declared"))
-        ),
+        "iterations_used": facts["iterations"],
+        "declared": facts["declared"],
+        "auto_declared": facts["fallback"],
+        "attestation_status": facts["attestation_status"],
         "solution": _trim_obj(artifact.get("solution") or artifact.get("declared_solution") or {}, 1600),
-        "best_branch": artifact.get("best_branch"),
+        "best_branch": facts["final_branch"],
+        "final_branch": facts["final_branch"],
         "tool_counts": dict(tool_counts.most_common(20)),
         "artifact_tool_counts": dict(tool_call_counts.most_common(40)),
         "gate_hits": dict(gate_counts),
@@ -1355,22 +1733,24 @@ def inspect_one(
 
     print(format_header(artifact))
     print()
-    episodes_table = format_episodes(artifact)
-    if episodes_table:
-        print(episodes_table)
-        print()
-    readings_table = format_readings(artifact)
-    if readings_table:
-        print(readings_table)
-        print()
-    attestations_table = format_attestations(artifact)
-    if attestations_table:
-        print(attestations_table)
-        print()
-    experiments_table = format_experiments(artifact)
-    if experiments_table:
-        print(experiments_table)
-        print()
+
+    def _emit(text: str) -> None:
+        if text:
+            print(text)
+            print()
+
+    _emit(format_episodes(artifact))
+    _emit(format_episode_budgets(artifact))
+    _emit(format_suppressed_calls(artifact))
+    _emit(format_readings(artifact))
+    _emit(format_attestations(artifact))
+    _emit(format_experiments(artifact))
+    _emit(format_experiment_validation_failures(timeline))
+    _emit(format_repair_cycles(artifact))
+    _emit(format_saturation(artifact))
+    _emit(format_repair_transactions(artifact))
+    _emit(format_branch_roles(artifact))
+    _emit(format_repair_hypothesis_time(artifact))
     composite_table = format_composite_calls(artifact)
     if composite_table:
         print(composite_table)

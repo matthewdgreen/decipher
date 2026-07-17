@@ -80,6 +80,8 @@ def test_context_sections_present():
 
 
 def test_negative_partial_attestation_creates_repair_action_menu():
+    """Pre-M5.3 test, claimed+updated to the Slice-2 menu contract (M5.3);
+    see agent_v3_m5_3_slice2_4_impl_spec.md §U1."""
     state = _state()
     ex = _executor(state)
     from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel

@@ -265,6 +265,30 @@ def test_a9_budget_exhausted_call_count_then_final_send():
     ]
 
 
+def test_episode_ledger_records_budget_requested_and_registered():
+    """M5.3 Slice 7 Part B: the ledger carries requested vs registered vs
+    effective budget so the analyzer can render all three."""
+    state = _simple_state()
+    good = {"findings": ["f"], "suspected_modes": [], "recommended_next": []}
+
+    # (1) survey episode with a lowered per-call override.
+    spec = EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 3})
+    run_episode(spec, state, session=EpisodeFake([[_submit(good)]]))
+    entry = state.episode_ledger[-1]
+    assert entry["budget"]["max_tool_calls"] == 3
+    assert entry["requested_max_tool_calls"] == 3
+    assert entry["registered_max_tool_calls"] == 10  # survey kind cap
+
+    # (2) survey episode WITHOUT the override: effective == registered.
+    spec2 = EpisodeSpec("survey", "g", inputs={"branches": ["main"]})
+    run_episode(spec2, state, session=EpisodeFake([[_submit(good)]]))
+    entry2 = state.episode_ledger[-1]
+    assert entry2["requested_max_tool_calls"] is None
+    assert entry2["budget"]["max_tool_calls"] == 10
+    assert entry2["registered_max_tool_calls"] == 10
+
+
 def test_a9_budget_exhausted_wall_clock(monkeypatch):
     import investigation.episodes as ep_mod
     state = _simple_state()

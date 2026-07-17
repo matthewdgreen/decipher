@@ -11,6 +11,7 @@ import json
 import os
 import random
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Iterable
 
@@ -857,3 +858,64 @@ def test_observe_diagnosis_dispatch_no_leak():
     dispatched = ex.execute("observe_diagnosis", {"branch": "main"})  # serialized envelope
     haystacks = [json.dumps(handler_result, default=str), str(dispatched)]
     assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 7: the committed trimmed M5.2 analyzer fixture must be
+# ground-truth-free by construction (§5.3). A CONTENT sweep is impossible by
+# design here (the Borg GT text must NOT be embedded in this test file), so the
+# guard is KEY-STRUCTURAL: no banned key name anywhere, plan blanked, every
+# raw text block emptied, investigation_state trimmed to the analyzer allowlist.
+# ---------------------------------------------------------------------------
+
+_FIXTURE_PATH = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "v3_artifact_m5_2_smoke_trimmed.json"
+)
+
+_BANNED_KEYS = {
+    "ground_truth", "expected", "expected_plaintext", "plaintext",
+    "alignment", "alignments", "alignment_blocks", "solution_key",
+    "session_transcript", "recent_exchanges", "external_context",
+    "benchmark_context",
+}
+
+_INV_STATE_ALLOWLIST = {
+    "language", "turn", "repair_transactions", "repair_saturation",
+    "repair_agenda", "workflow_hint_keys", "call_signature_counts",
+    "no_new_information_streak", "model_variant",
+}
+
+
+def _iter_dict_keys(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            yield key
+            yield from _iter_dict_keys(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            yield from _iter_dict_keys(item)
+
+
+def test_trimmed_m5_2_fixture_contains_no_ground_truth_keys():
+    with open(_FIXTURE_PATH, encoding="utf-8") as handle:
+        artifact = json.load(handle)
+
+    # No banned key ANYWHERE in the tree (exact, case-sensitive match).
+    offenders = [k for k in _iter_dict_keys(artifact) if k in _BANNED_KEYS]
+    assert offenders == [], f"banned keys present: {offenders}"
+
+    # Structural raw-body removal (not just key-based).
+    assert artifact["plan"] == ""
+    for message in artifact["messages"]:
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    assert block.get("text") == ""
+
+    # investigation_state is trimmed to the analyzer allowlist (fixture is
+    # analyzer-only; NOT loadable via InvestigationState.from_artifact_dict).
+    inv_keys = set(artifact.get("investigation_state") or {})
+    assert inv_keys <= _INV_STATE_ALLOWLIST, f"unexpected inv keys: {inv_keys - _INV_STATE_ALLOWLIST}"

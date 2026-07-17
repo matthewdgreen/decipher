@@ -129,3 +129,53 @@ def test_pretty_renderer_tracks_usage_from_workspace_snapshot():
 
     assert renderer.state.total_tokens == 12_345
     assert renderer.state.estimated_cost_usd == 0.456
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 7 Part A: the narrate verbose renderer distinguishes branch roles.
+# ---------------------------------------------------------------------------
+
+def _roles_snapshot(branch_roles):
+    return {
+        "decryption": "CATON",
+        "branch": "main",
+        "mapped_count": 5,
+        "scores": {"dict_rate": 1.0, "quad": -1.0},
+        "total_tokens": 10,
+        "estimated_cost_usd": 0.01,
+        "branch_roles": branch_roles,
+    }
+
+
+def test_verbose_snapshot_renders_branch_roles():
+    from agent.narrate import NarrateAgentRenderer
+
+    # Verbose + a diverging workflow role → the roles line is rendered.
+    stream = io.StringIO()
+    renderer = NarrateAgentRenderer(stream, verbose=True)
+    renderer.event("workspace_snapshot", _roles_snapshot({
+        "best_scored_branch": "main",
+        "workflow_branch": "transaction_repaired",
+        "latest_installed_branch": "transaction_repaired",
+        "declared_or_selected_branch": None,
+    }))
+    assert "roles: workflow=" in stream.getvalue()
+
+    # Verbose but NO branch_roles key → no roles line.
+    stream2 = io.StringIO()
+    renderer2 = NarrateAgentRenderer(stream2, verbose=True)
+    payload = _roles_snapshot(None)
+    payload.pop("branch_roles")
+    renderer2.event("workspace_snapshot", payload)
+    assert "roles: workflow=" not in stream2.getvalue()
+
+    # Non-verbose → no roles line even when branch_roles is present.
+    stream3 = io.StringIO()
+    renderer3 = NarrateAgentRenderer(stream3, verbose=False)
+    renderer3.event("workspace_snapshot", _roles_snapshot({
+        "best_scored_branch": "main",
+        "workflow_branch": "transaction_repaired",
+        "latest_installed_branch": None,
+        "declared_or_selected_branch": None,
+    }))
+    assert "roles: workflow=" not in stream3.getvalue()

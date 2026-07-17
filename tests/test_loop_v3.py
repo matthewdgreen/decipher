@@ -18,6 +18,24 @@ from models.alphabet import Alphabet
 from models.cipher_text import CipherText
 from workspace import Workspace
 
+# M5.3 Slice 7 Part F: the scripted fakes + seed helpers are hoisted into the
+# shared support module. Thin aliases below keep this file's existing
+# underscore-prefixed call sites unchanged.
+from tests.support.scripted_v3 import (
+    ErrorSession,
+    ScriptedSession,
+    VerifyWorkerFake,
+    keyed_catton_state,
+    register_programmable_repair,
+    seed_negative_attestation,
+    seed_reading,
+)
+
+_keyed_catton_state = keyed_catton_state
+_seed_reading = seed_reading
+_seed_negative_attestation = seed_negative_attestation
+_register_programmable_repair = register_programmable_repair
+
 
 def _caesar(text: str, shift: int) -> str:
     return "".join(
@@ -29,80 +47,6 @@ def _caesar_cipher(plaintext: str, shift: int = 3):
     raw = _caesar(plaintext, shift)
     alpha = Alphabet.from_text(raw, ignore_chars={" "})
     return CipherText(raw=raw, alphabet=alpha, separator=" "), alpha
-
-
-class ScriptedSession:
-    """A ModelSession fake driven by a list of per-turn content-block lists."""
-
-    def __init__(self, scripts, *, model="fake-openai", provider_name="openai"):
-        self.model = model
-        self.provider_name = provider_name
-        self.capabilities = SessionCapabilities()
-        self._scripts = list(scripts)
-        self._budget: list[BudgetEntry] = []
-        self.blocks_seen: list = []
-        self.tools_seen: list = []
-        self._n = 0
-
-    def send(self, blocks, tools=None, max_tokens=8192):
-        self.blocks_seen.append(blocks)
-        self.tools_seen.append(tools)
-        self._budget.append(
-            BudgetEntry("lead", self.provider_name, self.model, 1000, 50, 100)
-        )
-        content = self._scripts[min(self._n, len(self._scripts) - 1)]
-        self._n += 1
-        return ModelResponse(content=content, usage=ModelUsage(1000, 50, 100))
-
-    def usage_entries(self):
-        return list(self._budget)
-
-    def export_transcript(self):
-        return {"provider": self.provider_name, "model": self.model,
-                "exchanges": [{"n": self._n}]}
-
-
-class ErrorSession(ScriptedSession):
-    def send(self, blocks, tools=None, max_tokens=8192):
-        raise ModelProviderError("simulated API overload")
-
-
-class VerifyWorkerFake:
-    """M5: a verify episode worker that accepts the candidate as coherent English.
-
-    Registered per test via the ``verify_fake`` fixture; the run's
-    AttestationPolicy needs an attestation before meta_declare_solution is
-    allowed.
-    """
-
-    def __init__(self, provider=None, system="", role="episode:verify"):
-        self.model = "fake-luna"
-        self.provider_name = "openai"
-        self.capabilities = SessionCapabilities()
-        self._budget: list[BudgetEntry] = []
-
-    def send(self, blocks, tools=None, max_tokens=8192):
-        self._budget.append(
-            BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0)
-        )
-        result = {"coherence": 9, "reader_accepts": True,
-                  "reader_accepts_as_solution": True,
-                  "target_language_confidence": 0.9,
-                  "semantic_recoverability": 0.8,
-                  "damage_scope": "local", "repairability": "local_repair",
-                  "uncertainty_note": "",
-                  "gloss": "reads as clear English", "anomalies": [],
-                  "confidence": "high"}
-        return ModelResponse(
-            content=[ToolUseBlock(id="v1", name="episode_submit_result",
-                                  input={"result": result, "summary": "reads well"})],
-            usage=ModelUsage(50, 10, 0))
-
-    def usage_entries(self):
-        return list(self._budget)
-
-    def export_transcript(self):
-        return {"provider": "openai", "model": self.model, "exchanges": []}
 
 
 @pytest.fixture
@@ -657,20 +601,6 @@ BOUNDARY_ACTUATORS = {
 }
 
 
-def _keyed_catton_state():
-    raw = "abcde"  # single word, decodes to CATON
-    alpha = Alphabet.from_text(raw, ignore_chars=set())
-    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
-    ws = Workspace(ct)
-    pt = ws.plaintext_alphabet
-    from investigation.state import InvestigationState
-    for sym, letter in {"a": "C", "b": "A", "c": "T", "d": "O", "e": "N"}.items():
-        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
-    state = InvestigationState(workspace=ws, language="en")
-    state.turn = 0
-    return ct, state
-
-
 def _episode_id_from_blocks(blocks, kind):
     for m in blocks:
         for b in (m.get("content") or []):
@@ -991,6 +921,101 @@ def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify
     assert any(call.tool_name == "repair_transaction" for call in art.tool_calls)
 
 
+# ---------------------------------------------------------------------------
+# M5.3 Slice 7 Part A: the four distinguished branch roles
+# ---------------------------------------------------------------------------
+def _run_transaction_repair_flow():
+    """The reading → repair_transaction install → verify → declare flow used by
+    test_repair_transaction_runs_validates_installs_and_requires_reverify,
+    factored so the branch-role tests reuse the exact fixtures."""
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+    sessions_mod.register_session_builder("episode:reading", TransactionReadingWorkerFake)
+    sessions_mod.register_session_builder("episode:repair", TransactionRepairWorkerFake)
+    try:
+        ct, state = _keyed_catton_state()
+        source_hash = _candidate_content_hash(
+            _decoded_text_for_panel(state.workspace, "main")
+        )
+        state.verify_attestations.append({
+            "branch": "main", "content_hash": source_hash,
+            "renderer_id": "decoded_text_v1", "episode_id": "prior_verify",
+            "coherence": 4, "reader_accepts": False,
+            "reader_accepts_as_solution": False,
+            "target_language_confidence": 0.8, "semantic_recoverability": 0.7,
+            "damage_scope": "local", "repairability": "local_repair",
+            "gloss": "partly readable",
+            "anomalies": ["damaged middle word"], "created_turn": 0,
+        })
+        state.repair_agenda.append({
+            "id": 1, "kind": "verify_anomaly",
+            "source": "verify_attestation", "branch": "main",
+            "content_hash": source_hash, "anomaly": "damaged middle word",
+            "status": "open", "created_turn": 0,
+        })
+        art = run_v3(
+            ct, session=TransactionLead(), language="en", max_iterations=6,
+            cipher_id="v3_branch_roles", resume_state=state,
+        )
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:reading", None)
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+    return art
+
+
+def test_branch_roles_in_snapshot_and_artifact(verify_fake):
+    art = _run_transaction_repair_flow()
+    assert art.status == "solved"
+    assert set(art.branch_roles) == {
+        "best_scored_branch", "workflow_branch",
+        "latest_installed_branch", "declared_or_selected_branch",
+    }
+    assert art.branch_roles["latest_installed_branch"] == "transaction_repaired"
+    assert art.branch_roles["declared_or_selected_branch"] == "transaction_repaired"
+    assert isinstance(art.branch_roles["workflow_branch"], str)
+    # At least one mid-run workspace_snapshot event carries branch_roles with a
+    # None declared_or_selected_branch (termination-scoped role).
+    snapshots = [
+        event.payload for event in art.loop_events
+        if event.event == "workspace_snapshot"
+    ]
+    assert snapshots, "expected workspace_snapshot events"
+    assert any(
+        isinstance(payload.get("branch_roles"), dict)
+        and payload["branch_roles"]["declared_or_selected_branch"] is None
+        for payload in snapshots
+    )
+
+
+def test_branch_roles_recomputable_after_resume(verify_fake):
+    from investigation.loop_v3 import _compute_branch_roles
+    art = _run_transaction_repair_flow()
+    restored = InvestigationState.from_artifact_dict(art.investigation_state)
+    ex = _slice_executor(restored)
+    roles = _compute_branch_roles(restored, ex)
+    for key in ("best_scored_branch", "workflow_branch", "latest_installed_branch"):
+        assert roles[key] == art.branch_roles[key]
+    # declared_or_selected is termination-scoped: None on a resume recompute.
+    assert roles["declared_or_selected_branch"] is None
+    # Derived, not stored in InvestigationState.
+    assert "branch_roles" not in art.investigation_state
+
+
+def test_branch_roles_honest_unsolved_fallback():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    session = ScriptedSession([[TextBlock(text="I have no idea.")]])
+    art = run_v3(ct, session=session, language="en", max_iterations=3,
+                 cipher_id="v3_roles_unsolved")
+    assert art.status == "unsolved"
+    assert art.fallback_selection is not None
+    selected = next(
+        event.payload.get("branch")
+        for event in art.loop_events
+        if event.event == "best_effort_selected"
+    )
+    # A fallback-selected branch counts as "selected" (master 509).
+    assert art.branch_roles["declared_or_selected_branch"] == selected
+
+
 def test_run_v3_interrupt_pairs_all_tool_results(monkeypatch):
     """R5: a mid-batch interrupt pairs every tool_use with a stopped result."""
     from agent import tools_v2
@@ -1140,109 +1165,11 @@ from investigation.state import (
 )
 
 
-_REPAIR_PROGRAMS: list = []
-
-
-class ProgrammableRepairWorker:
-    """Repair worker driven by a FIFO of per-episode programs.
-
-    Each program is ``{"apply": [apply-arg dicts], "result": callable(forks)->dict}``.
-    ``apply`` entries lacking reading_text/fragments/reading_id get the injected
-    reading id; ``result`` receives the created fork names (in call order)."""
-
-    def __init__(self, provider, system, role):
-        self.model = "fake-repair"; self.provider_name = "openai"
-        self.capabilities = SessionCapabilities(); self._budget = []
-        prog = _REPAIR_PROGRAMS.pop(0) if _REPAIR_PROGRAMS else {
-            "apply": [],
-            "result": (lambda forks: {
-                "applied": True, "best_branch": None, "edits": [],
-                "verdicts": [], "collateral": {}, "notes": "",
-            }),
-        }
-        self._applies = list(prog.get("apply") or [])
-        self._result_fn = prog["result"]
-        self._step = 0
-        self._reading_id = None
-
-    def send(self, blocks, tools=None, max_tokens=8192):
-        self._budget.append(BudgetEntry("episode:repair", "openai", self.model, 10, 5, 0))
-        if self._reading_id is None:
-            m = re.search(r"id `([0-9a-f]{12})`", json.dumps(blocks, default=str))
-            self._reading_id = m.group(1) if m else None
-        if self._step < len(self._applies):
-            apply_args = dict(self._applies[self._step])
-            apply_args.setdefault("branch", "main")
-            if not any(k in apply_args for k in ("reading_text", "fragments", "reading_id")):
-                apply_args["reading_id"] = self._reading_id
-            self._step += 1
-            return ModelResponse(
-                content=[ToolUseBlock(id=f"ap{self._step}",
-                                      name="hypothesis_apply_reading", input=apply_args)],
-                usage=ModelUsage(10, 5, 0))
-        forks: list[str] = []
-        for message in blocks:
-            for block in message.get("content") or []:
-                if not isinstance(block, dict) or block.get("type") != "tool_result":
-                    continue
-                try:
-                    payload = json.loads(block.get("content") or "")
-                except (TypeError, json.JSONDecodeError):
-                    continue
-                if isinstance(payload, dict) and isinstance(payload.get("fork"), str):
-                    if payload["fork"] not in forks:
-                        forks.append(payload["fork"])
-        result = self._result_fn(forks)
-        return ModelResponse(
-            content=[ToolUseBlock(id="sub", name="episode_submit_result",
-                                  input={"result": result, "summary": "programmed"})],
-            usage=ModelUsage(10, 5, 0))
-
-    def usage_entries(self): return list(self._budget)
-    def export_transcript(self): return {"provider": "openai", "exchanges": []}
-
-
-def _main_hash(state):
-    return _cc_hash(_dt_panel(state.workspace, "main"))
-
-
-def _seed_reading(state, text, *, reading_id=None, created_turn=0):
-    packet = build_candidate_reading_packet(state.workspace, "main").to_dict()
-    reading = Reading.from_episode_result(
-        {"reading_text": text,
-         "fragments": [{"text": text, "repair_text": text, "confidence": 0.95}],
-         "holes": [], "overall_confidence": 0.9},
-        branch="main", source="lead", created_turn=created_turn,
-        reading_id=reading_id, candidate_packet=packet,
-    )
-    state.readings[reading.reading_id] = reading.to_dict()
-    return reading.reading_id
-
-
-def _seed_negative_attestation(state, *, episode_id="prior_verify"):
-    h = _main_hash(state)
-    state.verify_attestations.append({
-        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
-        "episode_id": episode_id, "coherence": 4, "reader_accepts": False,
-        "reader_accepts_as_solution": False,
-        "target_language_confidence": 0.8, "semantic_recoverability": 0.7,
-        "damage_scope": "local", "repairability": "local_repair",
-        "gloss": "partly readable", "anomalies": ["damaged middle word"],
-        "created_turn": 0,
-    })
-    return h
-
-
 def _slice_executor(state):
     return WorkspaceToolExecutor(
         workspace=state.workspace, language="en",
         word_set={"LATER", "WATER"}, word_list=["LATER", "WATER"],
         pattern_dict={}, declaration_policy=NoGatesPolicy())
-
-
-def _register_programmable_repair(programs):
-    _REPAIR_PROGRAMS[:] = list(programs)
-    sessions_mod.register_session_builder("episode:repair", ProgrammableRepairWorker)
 
 
 def _lead_results(art, tool_name):

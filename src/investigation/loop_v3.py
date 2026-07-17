@@ -189,6 +189,49 @@ def _select_v3_fallback(
     }
 
 
+def _compute_branch_roles(
+    state: InvestigationState,
+    executor: WorkspaceToolExecutor,
+    declared_or_selected: str | None = None,
+) -> dict[str, str | None]:
+    """The four distinguished branch roles (M5.3 Slice 7, master 504-509).
+
+    Derived, never stored in InvestigationState: a resume recomputes them
+    from the restored state + a fresh executor. Branch NAMES only —
+    firewall-safe by construction.
+
+    - best_scored_branch: the internal scalar-best branch
+      (_best_branch_for_auto_declare — the value M5.2 telemetry mislabeled
+      as plain `branch`).
+    - workflow_branch: the branch the workflow state machine is focused on
+      (workflow_state(...)["branch"]; None when the menu names no branch).
+    - latest_installed_branch: the newest `installed` repair transaction
+      whose installed branch still exists in the workspace.
+    - declared_or_selected_branch: the declared / honest-unsolved /
+      fallback-selected branch. None until termination resolves it
+      (mid-run snapshots always carry None).
+    """
+    best_scored_branch = _best_branch_for_auto_declare(
+        state.workspace, state.language, executor.word_set, executor._freq_rank
+    )[0]
+    workflow_branch = workflow_state(state, executor).get("branch")
+    latest_installed_branch = next(
+        (
+            str(item.get("installed_branch") or "")
+            for item in reversed(state.repair_transactions)
+            if item.get("status") == "installed"
+            and state.workspace.has_branch(str(item.get("installed_branch") or ""))
+        ),
+        None,
+    )
+    return {
+        "best_scored_branch": best_scored_branch,
+        "workflow_branch": workflow_branch,
+        "latest_installed_branch": latest_installed_branch,
+        "declared_or_selected_branch": declared_or_selected,
+    }
+
+
 def _resync_attestation_branch_on_rename(
     workspace: Workspace,
     attestations: list[dict[str, Any]],
@@ -2121,20 +2164,19 @@ def run_v3(
         # turn's workspace and includes any episode spend.
         sync_budget()
         _turn_tokens = artifact.total_input_tokens + artifact.total_output_tokens
-        emit(
-            "workspace_snapshot",
-            _workspace_snapshot_payload(
-                workspace,
-                language,
-                word_set,
-                executor._freq_rank,
-                turn,
-                max_iterations,
-                total_tokens=_turn_tokens,
-                estimated_cost_usd=artifact.estimated_cost_usd,
-            ),
-            outer_iteration=turn,
+        snapshot_payload = _workspace_snapshot_payload(
+            workspace,
+            language,
+            word_set,
+            executor._freq_rank,
+            turn,
+            max_iterations,
+            total_tokens=_turn_tokens,
+            estimated_cost_usd=artifact.estimated_cost_usd,
         )
+        # M5.3 Slice 7: mid-run the declared_or_selected role is always None.
+        snapshot_payload["branch_roles"] = _compute_branch_roles(state, executor)
+        emit("workspace_snapshot", snapshot_payload, outer_iteration=turn)
         emit(
             "budget_update",
             {
@@ -2197,12 +2239,17 @@ def run_v3(
     sync_budget()
 
     # --- attested fallback or honest best-effort termination ---
+    # M5.3 Slice 7: hoisted so the finalize block can resolve the
+    # declared-or-selected branch role for the honest best-effort tier (the
+    # attested-fallback tier sets executor.solution, covered separately).
+    fallback_best_branch: str | None = None
     if (
         artifact.status in {"exhausted", "error"}
         and executor.solution is None
         and getattr(executor, "unsolved_declaration", None) is None
     ):
         best_branch, fallback_selection = _select_v3_fallback(state, executor)
+        fallback_best_branch = best_branch
         best_scores = next(
             (item.get("scores") for item in fallback_selection.get("shortlist", [])
              if item.get("branch") == best_branch),
@@ -2312,6 +2359,23 @@ def run_v3(
     ]
     artifact.budget_by_category = state.budget_by_category()
     artifact.session_transcript = session.export_transcript()
+
+    # M5.3 Slice 7: stamp the four distinguished branch roles at termination.
+    # Resolve declared-or-selected: a declaration/honest-unsolved sets it
+    # directly; the honest best-effort fallback tier counts as "selected"
+    # (master 509). An interrupted/exhausted run that never reached the
+    # fallback block leaves it None (nothing was declared or selected).
+    declared_or_selected: str | None = None
+    if executor.solution is not None:
+        declared_or_selected = executor.solution.branch
+    elif getattr(executor, "unsolved_declaration", None) is not None:
+        declared_or_selected = executor.unsolved_declaration.get("best_branch")
+    elif artifact.fallback_selection is not None:
+        declared_or_selected = fallback_best_branch
+    artifact.branch_roles = _compute_branch_roles(
+        state, executor, declared_or_selected
+    )
+
     artifact.investigation_state = state.to_artifact_dict()
 
     emit("run_complete", {

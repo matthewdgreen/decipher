@@ -522,6 +522,12 @@ class EpisodeSpec:
             self.budget = entry["budget"]
         if not self.result_schema:
             self.result_schema = entry["result_schema"]
+        # M5.3 Slice 7: capture the registered (pre-override) call cap as a
+        # derived attribute so the episode ledger / analyzer can render
+        # requested vs registered vs executed without reconstructing the kind
+        # registry. Plain attribute (not a dataclass field): it is derived and
+        # must not change the constructor surface.
+        self.registered_max_tool_calls = self.budget.max_tool_calls
         # Optional per-call override of the call cap (M5.3 Slice 1). The
         # model-facing `max_tool_calls` may LOWER the registered host budget but
         # must never RAISE it — a worker cannot vote itself a larger budget.
@@ -532,7 +538,7 @@ class EpisodeSpec:
         # the registered cap.
         max_calls = self.inputs.get("max_tool_calls")
         if max_calls is not None:
-            registered_max = self.budget.max_tool_calls
+            registered_max = self.registered_max_tool_calls
             try:
                 requested = int(max_calls)
             except (TypeError, ValueError, OverflowError):
@@ -564,6 +570,12 @@ class EpisodeResult:
     # tool for, synthesizing a paired budget_exhausted result instead). Makes the
     # per-batch overshoot visible in the episode ledger / analyzer.
     suppressed_over_budget_calls: int = 0
+    # M5.3 Slice 7: effective budget + the raw model-facing override request,
+    # so the analyzer can render requested vs registered vs executed without
+    # reconstructing kind registries.
+    budget: dict[str, Any] = field(default_factory=dict)
+    requested_max_tool_calls: int | None = None
+    registered_max_tool_calls: int | None = None
     elapsed_seconds: float = 0.0
     budget_entries: list[dict[str, Any]] = field(default_factory=list)
     raw_text: str | None = None
@@ -588,6 +600,9 @@ class EpisodeResult:
             "branch_snapshots": self.branch_snapshots,
             "tool_call_count": self.tool_call_count,
             "suppressed_over_budget_calls": self.suppressed_over_budget_calls,
+            "budget": self.budget,
+            "requested_max_tool_calls": self.requested_max_tool_calls,
+            "registered_max_tool_calls": self.registered_max_tool_calls,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "budget_entries": self.budget_entries,
             "agenda_additions": self.agenda_additions,
@@ -1007,6 +1022,20 @@ def _episode_transcripts_enabled() -> bool:
     return os.environ.get("DECIPHER_DEBUG_EPISODE_TRANSCRIPTS", "").strip() in {"1", "true", "yes", "on"}
 
 
+def _requested_calls(spec: EpisodeSpec) -> int | None:
+    """The RAW model-facing max_tool_calls request (M5.3 Slice 7).
+
+    int-coerced when parseable, else None (matching the __post_init__ clamp,
+    which IGNORES unparseable requests and keeps the registered budget)."""
+    raw = spec.inputs.get("max_tool_calls")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
 def run_episode(
     spec: EpisodeSpec,
     state: InvestigationState,
@@ -1128,6 +1157,11 @@ def run_episode(
             goal=spec.goal,
             status="episode_failed",
             failure_reason="runner_error",
+            budget=spec.budget.to_dict(),
+            requested_max_tool_calls=_requested_calls(spec),
+            registered_max_tool_calls=getattr(
+                spec, "registered_max_tool_calls", None
+            ),
             raw_text=traceback.format_exc(),
             elapsed_seconds=time.time() - start,
         )
@@ -1198,6 +1232,11 @@ def run_episode(
             branch_snapshots=snapshots,
             tool_call_count=tool_call_count,
             suppressed_over_budget_calls=overbudget_skips,
+            budget=budget.to_dict(),
+            requested_max_tool_calls=_requested_calls(spec),
+            registered_max_tool_calls=getattr(
+                spec, "registered_max_tool_calls", None
+            ),
             elapsed_seconds=time.time() - start,
             budget_entries=[e.to_dict() for e in budget_entries],
             raw_text=raw_text,

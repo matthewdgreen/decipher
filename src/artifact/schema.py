@@ -172,6 +172,10 @@ class RunArtifact:
     readings: list[dict[str, Any]] = field(default_factory=list)  # v3 stored Readings (M3)
     experiments: list[dict[str, Any]] = field(default_factory=list)  # v3 experiment queue (M4)
     attestations: list[dict[str, Any]] = field(default_factory=list)  # v3 verify attestations (M5)
+    # M5.3 Slice 7: the four distinguished branch roles at termination
+    # (best_scored_branch / workflow_branch / latest_installed_branch /
+    # declared_or_selected_branch). Branch names only. None for v2 runs.
+    branch_roles: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a JSON-safe dict."""
