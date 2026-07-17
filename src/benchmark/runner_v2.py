@@ -64,9 +64,13 @@ class BenchmarkRunnerV2:
         agent_loop: str = "v2",
         model_variant: str | None = None,
         renderer_verbose: bool = False,
+        max_cost_usd: float | None = None,
     ) -> None:
         self.api = claude_api
         self.max_iterations = max_iterations
+        # M5.3 Slice 1 per-run paid ceiling, threaded to run_v3 (v3 only; the
+        # value is otherwise not reachable from an entry point). None = no cap.
+        self.max_cost_usd = max_cost_usd
         self.verbose = verbose
         # ``renderer_verbose`` is the RAW ``-v`` flag (not the display-off-only
         # ``verbose``); it only enables extra detail INSIDE an active renderer
@@ -230,6 +234,7 @@ class BenchmarkRunnerV2:
                 benchmark_context=benchmark_context,
                 verbose=self.verbose,
                 on_event=on_event,
+                max_cost_usd=self.max_cost_usd,
             )
         else:
             artifact = run_v2(

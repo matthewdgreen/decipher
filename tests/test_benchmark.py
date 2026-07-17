@@ -531,3 +531,66 @@ class TestBenchmarkLoader:
         )
         assert score.char_accuracy == 1.0
         assert 0.5 < score.word_accuracy < 1.0
+
+
+class TestMaxCostUsdWiring:
+    """M5.3: BenchmarkRunnerV2 threads the per-run paid ceiling to run_v3.
+
+    Slice 1's review flagged that ``max_cost_usd`` (the run_v3 hard ceiling)
+    had no entry-point wiring; the Sequence-C smoke needs it reachable through
+    the normal runner path. This pins the additive kwarg + the v3 passthrough.
+    """
+
+    def _minimal_test_data(self):
+        from benchmark.loader import BenchmarkTest, TestData
+
+        test = BenchmarkTest(
+            test_id="unit_maxcost_A",
+            track="transcription2plaintext",
+            cipher_system="substitution",
+            target_records=[],
+            context_records=[],
+            description="unit",
+        )
+        return TestData(
+            test=test,
+            canonical_transcription="A B C | D E F",
+            plaintext="HELLO WORLD",
+            plaintext_language="en",
+        )
+
+    def test_default_is_none(self):
+        from benchmark.runner_v2 import BenchmarkRunnerV2
+
+        runner = BenchmarkRunnerV2(claude_api=object(), agent_loop="v3")
+        assert runner.max_cost_usd is None
+
+    def test_v3_dispatch_threads_max_cost_usd(self, monkeypatch):
+        import investigation.loop_v3 as loop_v3
+        from artifact.schema import RunArtifact
+        from benchmark.runner_v2 import BenchmarkRunnerV2
+
+        captured = {}
+
+        def fake_run_v3(*args, **kwargs):
+            captured.update(kwargs)
+            return RunArtifact(
+                run_id="unit", cipher_id=kwargs.get("cipher_id", "unit"),
+                model="fake", status="unsolved", loop_version="v3",
+                language="en",
+            )
+
+        monkeypatch.setattr(loop_v3, "run_v3", fake_run_v3)
+
+        class _Api:
+            model = "fake-model"
+
+        runner = BenchmarkRunnerV2(
+            claude_api=_Api(),
+            agent_loop="v3",
+            automated_preflight=False,
+            max_cost_usd=5.0,
+            artifact_dir=tempfile.mkdtemp(),
+        )
+        runner.run_test(self._minimal_test_data(), language="en")
+        assert captured.get("max_cost_usd") == 5.0
