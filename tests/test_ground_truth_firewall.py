@@ -728,6 +728,7 @@ def test_v3_verify_episode_never_sees_ground_truth_or_scores():
                 content=[ToolUseBlock(id="v1", name="episode_submit_result",
                                       input={"result": {"coherence": 1,
                                                         "reader_accepts": False,
+                                                        "reader_accepts_as_solution": False,
                                                         "gloss": "gibberish",
                                                         "anomalies": ["not a language"],
                                                         "confidence": "high"},

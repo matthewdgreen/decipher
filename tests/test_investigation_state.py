@@ -352,3 +352,59 @@ def test_s2_saturation_roundtrip_preserves_next_action():
     del legacy["repair_saturation"]
     reloaded = InvestigationState.from_artifact_dict(json.loads(json.dumps(legacy)))
     assert reloaded.repair_saturation == {}
+
+
+def test_attestations_normalized_on_slice6_load():
+    """Slice 6 (required test d, resume side): a pre-Slice-6 artifact whose
+    attestation dicts lack the six new keys is normalized on load — legacy
+    positivity is derived and routing fields default conservatively — and a
+    second dump/load round-trip is byte-stable."""
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    raw = "abcde"
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    for sym, letter in {"a": "C", "b": "A", "c": "T", "d": "O", "e": "N"}.items():
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+    state = InvestigationState(workspace=ws, language="en")
+    h = _candidate_content_hash(_decoded_text_for_panel(ws, "main"))
+    # Two old-shape (pre-Slice-6) attestations: one legacy-positive, one weak.
+    state.verify_attestations.append({
+        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
+        "episode_id": "epP", "coherence": 9, "reader_accepts": True,
+        "gloss": "reads", "anomalies": [], "created_turn": 1,
+    })
+    state.verify_attestations.append({
+        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
+        "episode_id": "epW", "coherence": 4, "reader_accepts": False,
+        "gloss": "partial", "anomalies": ["broken"], "created_turn": 2,
+    })
+
+    dumped = json.loads(json.dumps(state.to_artifact_dict()))
+    # Simulate a pre-Slice-6 artifact: strip the six new keys.
+    new_keys = (
+        "target_language_confidence", "semantic_recoverability", "damage_scope",
+        "repairability", "reader_accepts_as_solution", "uncertainty_note",
+    )
+    for att in dumped["verify_attestations"]:
+        for key in new_keys:
+            att.pop(key, None)
+
+    restored = InvestigationState.from_artifact_dict(dumped)
+    positive, weak = restored.verify_attestations
+    assert positive["reader_accepts_as_solution"] is True   # accepts + coherence 9
+    assert weak["reader_accepts_as_solution"] is False       # coherence 4
+    for att in restored.verify_attestations:
+        assert att["target_language_confidence"] == 0.0
+        assert att["semantic_recoverability"] == 0.0
+        assert att["damage_scope"] == "basin_wide"
+        assert att["repairability"] == "none"
+        assert att["uncertainty_note"] == ""
+
+    # A second dump/load is byte-stable (pure field-add migration is idempotent).
+    reloaded = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(restored.to_artifact_dict()))
+    )
+    assert reloaded.to_artifact_dict() == restored.to_artifact_dict()

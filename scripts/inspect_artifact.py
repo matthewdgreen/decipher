@@ -37,6 +37,7 @@ from agent.model_provider import (  # noqa: E402
 )
 from agent.narrate import NarrateAgentRenderer  # noqa: E402
 from artifact.analyzer import analyze_artifact, summarize_findings  # noqa: E402
+from investigation.state import attestation_is_positive  # noqa: E402
 
 
 DEFAULT_ANALYSIS_MAX_TOKENS = 2_500
@@ -352,7 +353,9 @@ def format_attestations(artifact: dict) -> str:
     """Minimal verify-attestation table for v3 artifacts (M5). Empty when none.
 
     Marks the declared branch's attestation so a weak-but-declared solve is
-    visible (coherence / reader_accepts / anomalies)."""
+    visible. Slice 6: adds a verdict column (positive/weak/negative) and the
+    diplomatic verifier fields; legacy records classify via the frozen legacy
+    rule and render n/a for absent fields."""
     attestations = artifact.get("attestations") or []
     if not attestations:
         return ""
@@ -363,22 +366,38 @@ def format_attestations(artifact: dict) -> str:
         declared_hash = str(solution["attestation"].get("content_hash") or "")
     lines = ["Verify attestations:"]
     lines.append(
-        f"  {'branch':<18} {'coher':>5} {'accepts':>7} {'anoms':>5}  gloss"
+        f"  {'branch':<18} {'verdict':<9} {'lang':>5} {'recov':>5} "
+        f"{'scope':<11} {'repair':<13} {'coher':>5} {'anoms':>5}  gloss"
     )
     for a in attestations:
         branch = str(a.get("branch") or "?")
         coher = a.get("coherence")
         coher_s = str(coher) if isinstance(coher, int) else "n/a"
-        accepts = "yes" if a.get("reader_accepts") else "no"
         anoms = len(a.get("anomalies") or [])
-        gloss = str(a.get("gloss") or "").replace("\n", " ")[:44]
+        if attestation_is_positive(a):
+            verdict = "positive"
+        elif a.get("reader_accepts"):
+            verdict = "weak"
+        else:
+            verdict = "negative"
+
+        def _unit(key: str) -> str:
+            v = a.get(key)
+            numeric = isinstance(v, (int, float)) and not isinstance(v, bool)
+            return f"{float(v):.2f}" if numeric else "n/a"
+        lang = _unit("target_language_confidence")
+        recov = _unit("semantic_recoverability")
+        scope = str(a.get("damage_scope") or "n/a")
+        repair = str(a.get("repairability") or "n/a")
+        gloss = str(a.get("gloss") or "").replace("\n", " ")[:36]
         is_declared = (
             (declared_hash and a.get("content_hash") == declared_hash)
             or (not declared_hash and branch == declared_branch)
         )
         marker = " *declared" if is_declared else ""
         lines.append(
-            f"  {branch:<18} {coher_s:>5} {accepts:>7} {anoms:>5}  {gloss}{marker}"
+            f"  {branch:<18} {verdict:<9} {lang:>5} {recov:>5} {scope:<11} "
+            f"{repair:<13} {coher_s:>5} {anoms:>5}  {gloss}{marker}"
         )
     return "\n".join(lines)
 

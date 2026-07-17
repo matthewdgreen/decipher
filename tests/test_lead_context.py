@@ -90,6 +90,11 @@ def test_negative_partial_attestation_creates_repair_action_menu():
         "content_hash": _candidate_content_hash(text),
         "coherence": 4,
         "reader_accepts": False,
+        "reader_accepts_as_solution": False,
+        "target_language_confidence": 0.8,
+        "semantic_recoverability": 0.7,
+        "damage_scope": "local",
+        "repairability": "local_repair",
         "gloss": "partly readable",
         "anomalies": ["broken middle"],
         "created_turn": 2,
@@ -97,6 +102,26 @@ def test_negative_partial_attestation_creates_repair_action_menu():
     menu = workflow_state(state, ex)
     assert menu["state"] == "repair_required"
     assert any("repair episode" in action for action in menu["actions"])
+
+
+def test_legacy_attestation_routes_to_broaden():
+    """Decision §10.4: a pre-Slice-6 (old-shape) non-positive attestation carries
+    conservative defaults (0.0/0.0/basin_wide) and routes to broaden."""
+    state = _state()
+    ex = _executor(state)
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+
+    text = _decoded_text_for_panel(state.workspace, "main")
+    state.verify_attestations.append({
+        "branch": "main",
+        "content_hash": _candidate_content_hash(text),
+        "coherence": 4,
+        "reader_accepts": False,
+        "gloss": "partly readable",
+        "anomalies": ["broken middle"],
+        "created_turn": 2,
+    })
+    assert workflow_state(state, ex)["state"] == "broaden_required"
 
 
 def test_context_respects_token_budget():
@@ -440,3 +465,97 @@ def test_s2_unknown_phase_fails_closed_to_verify_with_warning(monkeypatch):
     with pytest.warns(RuntimeWarning):
         kinds = allowed_episode_kinds(state, ex)
     assert kinds == ["verify"]
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 6 — routing table + exhaustion short-circuit + hint gating
+# ---------------------------------------------------------------------------
+from investigation.context import _attestation_route  # noqa: E402
+from investigation.context import workflow_hint_candidates  # noqa: E402
+
+
+def _seed_fresh_attestation(state, *, tlc, recov, scope, accepts_solution,
+                            repairability="local_repair", branch="main",
+                            anomalies=("a",)):
+    text = _decoded_text_for_panel(state.workspace, branch)
+    state.verify_attestations.append({
+        "branch": branch,
+        "content_hash": _candidate_content_hash(text),
+        "renderer_id": "decoded_text_v1", "episode_id": "ep_route",
+        "coherence": 5, "reader_accepts": bool(accepts_solution),
+        "reader_accepts_as_solution": bool(accepts_solution),
+        "target_language_confidence": tlc, "semantic_recoverability": recov,
+        "damage_scope": scope, "repairability": repairability,
+        "gloss": "g", "anomalies": list(anomalies), "created_turn": 2,
+    })
+
+
+@pytest.mark.parametrize(
+    "tlc, recov, scope, accepts, expected_state, marker",
+    [
+        (0.9, 0.8, "local", True, "verified", None),
+        (0.9, 0.8, "local", False, "repair_required", None),
+        (0.9, 0.8, "distributed", False, "broaden_required",
+         "Compare genuinely distinct finalists"),
+        (0.9, 0.2, "local", False, "broaden_required",
+         "Compare genuinely distinct finalists"),
+        (0.3, 0.9, "local", False, "broaden_required", "Reject or hold"),
+        (0.9, 0.9, "basin_wide", False, "broaden_required", "Reject or hold"),
+    ],
+)
+def test_slice6_routing_table(tlc, recov, scope, accepts, expected_state, marker):
+    state = _state()
+    ex = _executor(state)
+    _seed_fresh_attestation(state, tlc=tlc, recov=recov, scope=scope,
+                            accepts_solution=accepts)
+    menu = workflow_state(state, ex)
+    assert menu["state"] == expected_state
+    if marker is not None:
+        assert any(marker in action for action in menu["actions"])
+
+
+def test_slice6_repair_route_exhaustion_short_circuits():
+    state = _state()
+    ex = _executor(state)
+    h = _candidate_content_hash(_decoded_text_for_panel(state.workspace, "main"))
+    att = {
+        "branch": "main", "content_hash": h,
+        "renderer_id": "decoded_text_v1", "episode_id": "ep_route",
+        "coherence": 5, "reader_accepts": False,
+        "reader_accepts_as_solution": False,
+        "target_language_confidence": 0.9, "semantic_recoverability": 0.8,
+        "damage_scope": "local", "repairability": "local_repair",
+        "gloss": "g", "anomalies": ["a"], "created_turn": 2,
+    }
+    state.verify_attestations.append(att)
+    # The verdict fields would route to repair...
+    assert _attestation_route(att) == "repair"
+    # ...but an exhausted saturation entry on (content, evidence) short-circuits.
+    att_key = attestation_key(att)
+    entry = new_saturation_entry(h, att_key, 1)
+    entry["exhausted"] = True
+    state.repair_saturation[saturation_key(h, att_key)] = entry
+    assert workflow_state(state, ex)["state"] == "repair_exhausted"
+
+
+def test_negative_verify_repair_hint_only_for_repair_route():
+    # A distributed-damage non-positive attestation (compare_or_search route)
+    # gets NO negative_verify_repair_hint.
+    state = _state()
+    ex = _executor(state)
+    _seed_fresh_attestation(state, tlc=0.9, recov=0.8, scope="distributed",
+                            accepts_solution=False)
+    events = {
+        h["event"] for h in workflow_hint_candidates(state, ex, turn=5, max_turns=20)
+    }
+    assert "negative_verify_repair_hint" not in events
+
+    # A local/high (repair route) attestation DOES get the hint.
+    state2 = _state()
+    ex2 = _executor(state2)
+    _seed_fresh_attestation(state2, tlc=0.9, recov=0.8, scope="local",
+                            accepts_solution=False)
+    events2 = {
+        h["event"] for h in workflow_hint_candidates(state2, ex2, turn=5, max_turns=20)
+    }
+    assert "negative_verify_repair_hint" in events2

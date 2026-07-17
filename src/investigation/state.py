@@ -110,6 +110,37 @@ class EvidenceEntry:
         )
 
 
+# M5.3 Slice 6: the pre-Slice-6 positive-attestation coherence threshold.
+# FROZEN migration constant — used ONLY to derive `reader_accepts_as_solution`
+# for legacy serialized records (master spec 472-475). Never tune; live gating
+# reads `reader_accepts_as_solution` alone.
+LEGACY_DECLARE_COHERENCE = 7
+
+DAMAGE_SCOPES = ("local", "distributed", "basin_wide")
+REPAIRABILITIES = ("local_repair", "broaden", "none")
+
+
+def clamp_unit_interval(value: Any) -> float:
+    """Coerce a verifier 0..1 field: unparseable/NaN -> 0.0; clamp to [0, 1]."""
+    try:
+        coerced = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if coerced != coerced:  # NaN
+        return 0.0
+    return min(1.0, max(0.0, coerced))
+
+
+def normalize_damage_scope(value: Any) -> str:
+    """Out-of-enum -> conservative 'basin_wide'."""
+    return value if value in DAMAGE_SCOPES else "basin_wide"
+
+
+def normalize_repairability(value: Any) -> str:
+    """Out-of-enum -> conservative 'none'."""
+    return value if value in REPAIRABILITIES else "none"
+
+
 @dataclass
 class AttestationRecord:
     """An independent-reader verdict on a branch's decode (M5 spec Part 2, A6).
@@ -122,6 +153,9 @@ class AttestationRecord:
     match. ``branch`` is recorded for observability only — matching is by
     ``content_hash`` (F11 branch-rename edge). ``coherence`` is clamped to 0-10
     by the dispatcher (F5: the range is advisory).
+
+    Slice 6 adds the diplomatic verifier fields; ``reader_accepts_as_solution``
+    alone gates declaration (C6 reversed), ``coherence`` is report-only legacy.
     """
 
     branch: str
@@ -133,6 +167,14 @@ class AttestationRecord:
     gloss: str = ""
     anomalies: list[str] = field(default_factory=list)
     created_turn: int = 0
+    # M5.3 Slice 6 — diplomatic verifier fields. Conservative defaults: a
+    # record that never states them can neither declare nor route to repair.
+    target_language_confidence: float = 0.0
+    semantic_recoverability: float = 0.0
+    damage_scope: str = "basin_wide"
+    repairability: str = "none"
+    reader_accepts_as_solution: bool = False
+    uncertainty_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -145,10 +187,26 @@ class AttestationRecord:
             "gloss": self.gloss,
             "anomalies": list(self.anomalies),
             "created_turn": self.created_turn,
+            "target_language_confidence": self.target_language_confidence,
+            "semantic_recoverability": self.semantic_recoverability,
+            "damage_scope": self.damage_scope,
+            "repairability": self.repairability,
+            "reader_accepts_as_solution": self.reader_accepts_as_solution,
+            "uncertainty_note": self.uncertainty_note,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AttestationRecord":
+        if "reader_accepts_as_solution" in data:
+            # Strict: only a JSON true counts. Any other value (string "true",
+            # 1, None) is conservative False.
+            accepts_as_solution = data.get("reader_accepts_as_solution") is True
+        else:
+            # Legacy (pre-Slice-6) record: positive iff the prior
+            # _is_positive_attestation condition held (master spec 472-475).
+            accepts_as_solution = bool(data.get("reader_accepts")) and int(
+                data.get("coherence") or 0
+            ) >= LEGACY_DECLARE_COHERENCE
         return cls(
             branch=str(data.get("branch") or ""),
             content_hash=str(data.get("content_hash") or ""),
@@ -159,6 +217,16 @@ class AttestationRecord:
             gloss=str(data.get("gloss") or ""),
             anomalies=[str(a) for a in (data.get("anomalies") or [])],
             created_turn=int(data.get("created_turn") or 0),
+            target_language_confidence=clamp_unit_interval(
+                data.get("target_language_confidence")
+            ),
+            semantic_recoverability=clamp_unit_interval(
+                data.get("semantic_recoverability")
+            ),
+            damage_scope=normalize_damage_scope(data.get("damage_scope")),
+            repairability=normalize_repairability(data.get("repairability")),
+            reader_accepts_as_solution=accepts_as_solution,
+            uncertainty_note=str(data.get("uncertainty_note") or ""),
         )
 
 
@@ -231,6 +299,29 @@ def latest_attestation_for_hash(
         key=lambda a: (int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
         default=None,
     )
+
+
+def attestation_is_positive(attestation: dict[str, Any] | None) -> bool:
+    """M5.3 Slice 6 SINGLE positive-attestation predicate (reverses C6).
+
+    Positive == the independent reader accepts the candidate AS A SOLUTION.
+    Every gating/routing/fallback consumer (AttestationPolicy, context
+    workflow/hints, fallback tiering, agenda seeding, bakeoff telemetry) must
+    call THIS function — the pre-Slice-6 pair (context._positive /
+    loop_v3._is_positive_attestation) is deleted so the definition cannot
+    drift again. Legacy dicts (no `reader_accepts_as_solution` key — e.g. a
+    pre-Slice-6 artifact read raw, or a hand-seeded test record) fall back to
+    the frozen pre-Slice-6 condition, mirroring AttestationRecord.from_dict.
+    `coherence` appears ONLY in that legacy branch; it never gates a
+    new-format record.
+    """
+    if not attestation:
+        return False
+    if "reader_accepts_as_solution" in attestation:
+        return attestation.get("reader_accepts_as_solution") is True
+    return bool(attestation.get("reader_accepts")) and int(
+        attestation.get("coherence") or 0
+    ) >= LEGACY_DECLARE_COHERENCE
 
 
 def new_saturation_entry(
@@ -568,8 +659,13 @@ class InvestigationState:
             recent_exchanges=[dict(m) for m in data.get("recent_exchanges") or []],
             repair_agenda=[dict(item) for item in data.get("repair_agenda") or []],
             episode_ledger=[dict(item) for item in data.get("episode_ledger") or []],
+            # Slice 6: normalize every stored attestation through
+            # AttestationRecord.from_dict so legacy records gain the new
+            # fields (conservative defaults; positivity derived from the
+            # frozen legacy condition) and resume behaves like a live run.
             verify_attestations=[
-                dict(item) for item in data.get("verify_attestations") or []
+                AttestationRecord.from_dict(dict(item)).to_dict()
+                for item in data.get("verify_attestations") or []
             ],
             readings={
                 str(rid): dict(r)

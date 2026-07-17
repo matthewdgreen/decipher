@@ -1583,16 +1583,20 @@ A `verify` episode has an EMPTY toolset and sees ONLY the candidate plaintext
 scores, or ground truth. It requires EXACTLY ONE existing branch in `branches`
 (the candidate to attest); an arity ≠ 1 list or a missing branch is a structured
 error (it never silently attests the wrong branch). It returns `{coherence
-(0–10), reader_accepts, gloss, anomalies, confidence}`. On success the lead
+(0–10, report-only), reader_accepts, reader_accepts_as_solution,
+target_language_confidence (0–1), semantic_recoverability (0–1), damage_scope
+(local|distributed|basin_wide), repairability (local_repair|broaden|none),
+gloss, anomalies, uncertainty_note, confidence}`. On success the lead
 dispatcher writes an `AttestationRecord` (matched later by content hash).
 
-Under the v3 M5 `AttestationPolicy`, `meta_declare_solution` on a branch is
-allowed only when a verify attestation exists whose content hash matches the
-branch's current rendered text. A weak attestation (`reader_accepts=false` or
-low coherence) does NOT block — it is carried into the declaration so a
-weak-but-declared solve is visibly weak. Absent or stale (text changed since
-attestation) blocks with `reason: attestation_required | attestation_stale`.
-`meta_declare_unsolved` and the exhaustion/error fallback are NOT gated.
+Under the v3 M5 `AttestationPolicy`, `meta_declare_solution` is allowed only
+when the NEWEST attestation matching the branch's current rendered text is
+POSITIVE (`reader_accepts_as_solution=true`; M5.3 Slice 6, reversing C6). A
+fresh weak/negative attestation blocks with `reason: attestation_not_positive`
+and echoes the verdict fields; a missing or hash-mismatched attestation blocks
+with `reason: attestation_required | attestation_stale`. Weak attestations
+remain routing evidence for the workflow. `meta_declare_unsolved` and the
+exhaustion/error fallback are NOT gated.
 
 ---
 

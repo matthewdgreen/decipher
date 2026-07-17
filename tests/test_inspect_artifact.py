@@ -467,3 +467,43 @@ def test_narrative_cli_main_end_to_end(tmp_path, monkeypatch, capsys):
     assert "▶" in out
     assert "1 │ observe_frequency" in out
     assert "── result ──" in out
+
+
+def test_format_attestations_shows_verdict_and_new_fields():
+    """Slice 6: the verdict column classifies positive/weak/negative; a legacy
+    weak record renders n/a for the absent unit fields; the declared marker
+    still fires."""
+    positive_hash = "hpos"
+    artifact = {
+        "solution": {
+            "branch": "cand",
+            "attestation": {"content_hash": positive_hash},
+        },
+        "attestations": [
+            {
+                "branch": "cand", "content_hash": positive_hash,
+                "coherence": 9, "reader_accepts": True,
+                "reader_accepts_as_solution": True,
+                "target_language_confidence": 0.9,
+                "semantic_recoverability": 0.8,
+                "damage_scope": "local", "repairability": "local_repair",
+                "gloss": "reads", "anomalies": [],
+            },
+            {
+                # Legacy weak record: no new keys, reader_accepts True but
+                # coherence < 7 (legacy-non-positive) -> "weak".
+                "branch": "old", "content_hash": "hlegacy",
+                "coherence": 4, "reader_accepts": True,
+                "gloss": "partial", "anomalies": ["broken"],
+            },
+        ],
+    }
+    out = inspect_artifact.format_attestations(artifact)
+    assert "positive" in out
+    assert "weak" in out
+    # The positive row is marked as declared (hash match).
+    assert "*declared" in out
+    # The legacy row renders n/a for the absent unit fields.
+    lines = out.splitlines()
+    legacy_line = next(line for line in lines if line.strip().startswith("old"))
+    assert "n/a" in legacy_line

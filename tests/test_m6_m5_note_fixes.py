@@ -264,6 +264,11 @@ class _VerifyWorkerFake:
             BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0)
         )
         result = {"coherence": 9, "reader_accepts": True,
+                  "reader_accepts_as_solution": True,
+                  "target_language_confidence": 0.9,
+                  "semantic_recoverability": 0.8,
+                  "damage_scope": "local", "repairability": "local_repair",
+                  "uncertainty_note": "",
                   "gloss": "reads as clear English", "anomalies": [],
                   "confidence": "high"}
         return ModelResponse(

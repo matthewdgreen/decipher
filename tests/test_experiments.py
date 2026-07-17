@@ -740,6 +740,7 @@ class _VerifyFake:
         self._budget.append(BudgetEntry("episode:verify", "openai", "fake-luna", 40, 8, 0))
         return _resp([ToolUseBlock(id="v1", name="episode_submit_result",
                       input={"result": {"coherence": 8, "reader_accepts": True,
+                                        "reader_accepts_as_solution": True,
                                         "gloss": "reads", "anomalies": [],
                                         "confidence": "high"},
                              "summary": "reads well"})])

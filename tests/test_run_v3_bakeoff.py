@@ -222,6 +222,27 @@ def test_refresh_summary_rows_is_artifact_only(tmp_path):
     assert refreshed[0]["positive_attestation_available"] is True
 
 
+def test_positive_attestation_available_respects_new_field():
+    """Slice 6: the bakeoff predicate reads the shared attestation_is_positive —
+    reader_accepts_as_solution governs new-format records; legacy dicts fall
+    back to reader_accepts + coherence>=7."""
+    cell = bake.Cell("v3", "borg_single_B_borg_0109v", True, 1)
+
+    def _avail(att):
+        artifact = {
+            "run_id": "r", "solution": {"branch": "main", "attestation": None},
+            "attestations": [dict(att, branch="main", created_turn=1)],
+        }
+        row = bake.build_summary_row(cell, _fake_result(), artifact)
+        return row["positive_attestation_available"]
+
+    assert _avail({"reader_accepts": True, "coherence": 9,
+                   "reader_accepts_as_solution": False}) is False
+    assert _avail({"reader_accepts": True, "coherence": 9,
+                   "reader_accepts_as_solution": True}) is True
+    assert _avail({"reader_accepts": True, "coherence": 8}) is True
+
+
 def test_build_summary_row_v2_has_no_attestation_and_flags_fallback():
     cell = bake.Cell("v2", "borg_single_B_borg_0045v", False, 1)
     artifact = {"run_id": "z", "total_input_tokens": 10, "total_output_tokens": 2}

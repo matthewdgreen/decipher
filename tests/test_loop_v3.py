@@ -86,6 +86,11 @@ class VerifyWorkerFake:
             BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0)
         )
         result = {"coherence": 9, "reader_accepts": True,
+                  "reader_accepts_as_solution": True,
+                  "target_language_confidence": 0.9,
+                  "semantic_recoverability": 0.8,
+                  "damage_scope": "local", "repairability": "local_repair",
+                  "uncertainty_note": "",
                   "gloss": "reads as clear English", "anomalies": [],
                   "confidence": "high"}
         return ModelResponse(
@@ -293,6 +298,11 @@ def test_repair_required_state_narrows_episode_schema_and_dispatch():
         "content_hash": _candidate_content_hash(decoded),
         "coherence": 4,
         "reader_accepts": False,
+        "reader_accepts_as_solution": False,
+        "target_language_confidence": 0.8,
+        "semantic_recoverability": 0.7,
+        "damage_scope": "local",
+        "repairability": "local_repair",
         "gloss": "partly readable",
         "anomalies": ["broken clause"],
         "created_turn": 0,
@@ -348,7 +358,10 @@ def test_run_v3_positive_attestation_drives_attested_fallback(verify_fake):
     assert art.attested_fallback is True
     assert art.fallback_selection["tier"] == "fresh_positive_attestation"
     assert art.solution.attestation["reader_accepts"] is True
-    assert art.solution.self_confidence == 0.9
+    assert art.fallback_selection["attestation"]["reader_accepts_as_solution"] is True
+    # Slice 6: fallback confidence = mean(target_language_confidence,
+    # semantic_recoverability) = (0.9 + 0.8) / 2.
+    assert abs(art.solution.self_confidence - 0.85) < 1e-9
 
 
 def test_fresh_compare_winner_rejects_stale_hash_binding():
@@ -409,6 +422,11 @@ class _WeakVerifyFake(VerifyWorkerFake):
         self._budget.append(
             BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0))
         result = {"coherence": 3, "reader_accepts": False,
+                  "reader_accepts_as_solution": False,
+                  "target_language_confidence": 0.8,
+                  "semantic_recoverability": 0.7,
+                  "damage_scope": "local", "repairability": "local_repair",
+                  "uncertainty_note": "middle clause",
                   "gloss": "reads as words but not coherent sentences",
                   "anomalies": ["non-word run", "broken clause"], "confidence": "low"}
         return ModelResponse(
@@ -417,10 +435,10 @@ class _WeakVerifyFake(VerifyWorkerFake):
             usage=ModelUsage(50, 10, 0))
 
 
-def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
-    """M5/C6: a WEAK attestation does not block a deliberate declaration; the
-    declaration carries the weakness so a weak-but-declared solve is visibly
-    weak in the artifact."""
+def test_run_v3_weak_attestation_blocks_declare_and_seeds_agenda():
+    """M5.3 Slice 6 (C6 reversed): a WEAK attestation BLOCKS declaration; the
+    run exhausts honestly unsolved, and the local_repair verdict seeds the
+    repair agenda with the reported anomalies."""
     sessions_mod.register_session_builder("episode:verify", _WeakVerifyFake)
     try:
         ct, alpha = _caesar_cipher("THE DOG")
@@ -429,11 +447,15 @@ def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
                      resume_state=_seeded_caesar_state(ct, alpha))
     finally:
         sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
-    assert art.status == "solved"
-    assert art.solution is not None and art.solution.attestation is not None
-    assert art.solution.attestation["reader_accepts"] is False
-    assert art.solution.attestation["coherence"] == 3
-    assert art.solution.attestation["anomalies"] == ["non-word run", "broken clause"]
+    declare_results = [json.loads(tc.result) for tc in art.tool_calls
+                       if tc.tool_name == "meta_declare_solution"]
+    assert declare_results
+    assert all(
+        r.get("reason") == "attestation_not_positive" for r in declare_results
+    )
+    assert art.status == "unsolved"
+    assert art.solution is None
+    assert art.attestations[0]["reader_accepts_as_solution"] is False
     verify_items = [
         item for item in art.repair_agenda
         if item.get("source") == "verify_attestation"
@@ -441,6 +463,9 @@ def test_run_v3_weak_attestation_allows_declare_and_carries_weakness():
     assert {item["anomaly"] for item in verify_items} == {
         "non-word run", "broken clause",
     }
+    assert all(
+        item["repairability"] == "local_repair" for item in verify_items
+    )
 
 
 class _OutOfScaleVerifyFake(VerifyWorkerFake):
@@ -451,6 +476,11 @@ class _OutOfScaleVerifyFake(VerifyWorkerFake):
         self._budget.append(
             BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0))
         result = {"coherence": 12, "reader_accepts": False,
+                  "reader_accepts_as_solution": False,
+                  "target_language_confidence": 0.2,
+                  "semantic_recoverability": 0.1,
+                  "damage_scope": "basin_wide", "repairability": "none",
+                  "uncertainty_note": "",
                   "gloss": "scattered words only",
                   "anomalies": ["non-words throughout"], "confidence": "high"}
         return ModelResponse(
@@ -477,10 +507,10 @@ def test_run_v3_out_of_scale_coherence_records_floor_not_maximum():
     assert att["coherence"] != 10, "scale violation must not be recorded as maximum"
     assert att["coherence"] == 0
     assert att["reader_accepts"] is False
-    # The hash-gated declaration still proceeds (weak-doesn't-block, C6) and
-    # carries the conservative record.
-    assert art.status == "solved"
-    assert art.solution.attestation["coherence"] == 0
+    # Slice 6 (C6 reversed): the hash-matched but non-positive weak attestation
+    # no longer lets the declaration through — the run exhausts unsolved.
+    assert art.status == "unsolved"
+    assert art.solution is None
 
 
 def test_run_v3_post_declare_tools_in_same_batch_do_not_run():
@@ -907,7 +937,11 @@ def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify
         state.verify_attestations.append({
             "branch": "main", "content_hash": source_hash,
             "renderer_id": "decoded_text_v1", "episode_id": "prior_verify",
-            "coherence": 4, "reader_accepts": False, "gloss": "partly readable",
+            "coherence": 4, "reader_accepts": False,
+            "reader_accepts_as_solution": False,
+            "target_language_confidence": 0.8, "semantic_recoverability": 0.7,
+            "damage_scope": "local", "repairability": "local_repair",
+            "gloss": "partly readable",
             "anomalies": ["damaged middle word"], "created_turn": 0,
         })
         state.repair_agenda.append({
@@ -1190,6 +1224,9 @@ def _seed_negative_attestation(state, *, episode_id="prior_verify"):
     state.verify_attestations.append({
         "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
         "episode_id": episode_id, "coherence": 4, "reader_accepts": False,
+        "reader_accepts_as_solution": False,
+        "target_language_confidence": 0.8, "semantic_recoverability": 0.7,
+        "damage_scope": "local", "repairability": "local_repair",
         "gloss": "partly readable", "anomalies": ["damaged middle word"],
         "created_turn": 0,
     })
@@ -1611,3 +1648,108 @@ def test_s4_duplicate_by_interpretation_digest(verify_fake):
     second = _lead_results(art, "repair_transaction")[1]
     assert second["status"] == "duplicate_suppressed"
     assert second["reason"] == "source_and_reading_already_handled"
+
+
+# ---------------------------------------------------------------------------
+# Slice 6: fallback re-key on reader_accepts_as_solution + dispatcher coercion
+# ---------------------------------------------------------------------------
+def _positive_att(branch, chash, *, recov, turn, episode_id):
+    return {
+        "branch": branch, "content_hash": chash,
+        "renderer_id": "decoded_text_v1", "episode_id": episode_id,
+        "coherence": 9, "reader_accepts": True,
+        "reader_accepts_as_solution": True,
+        "target_language_confidence": 0.9, "semantic_recoverability": recov,
+        "damage_scope": "local", "repairability": "local_repair",
+        "created_turn": turn, "anomalies": [],
+    }
+
+
+def _negative_att(branch, chash, *, turn, episode_id):
+    return {
+        "branch": branch, "content_hash": chash,
+        "renderer_id": "decoded_text_v1", "episode_id": episode_id,
+        "coherence": 1, "reader_accepts": False,
+        "reader_accepts_as_solution": False,
+        "target_language_confidence": 0.2, "semantic_recoverability": 0.1,
+        "damage_scope": "basin_wide", "repairability": "none",
+        "created_turn": turn, "anomalies": [],
+    }
+
+
+def test_v3_fallback_rekeys_on_reader_accepts_as_solution():
+    from investigation.loop_v3 import _select_v3_fallback
+
+    ct, state = _keyed_catton_state()
+    ws = state.workspace
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+    ws.fork("alt", from_branch="main")
+    ws.set_mapping("alt", alpha.id_for("a"), pt.id_for("W"))  # WATON vs CATON
+    hash_main = _cc_hash(_dt_panel(ws, "main"))
+    hash_alt = _cc_hash(_dt_panel(ws, "alt"))
+    assert hash_main != hash_alt
+    executor = _slice_executor(state)
+
+    # Both positive; alt has the higher semantic_recoverability -> alt wins.
+    state.verify_attestations.append(
+        _positive_att("main", hash_main, recov=0.6, turn=1, episode_id="a1"))
+    state.verify_attestations.append(
+        _positive_att("alt", hash_alt, recov=0.9, turn=1, episode_id="b1"))
+    branch, selection = _select_v3_fallback(state, executor)
+    assert branch == "alt"
+    assert selection["tier"] == "fresh_positive_attestation"
+
+    # A NEWER negative on alt's hash supersedes -> alt drops out, main wins.
+    state.verify_attestations.append(
+        _negative_att("alt", hash_alt, turn=2, episode_id="b2"))
+    branch2, selection2 = _select_v3_fallback(state, executor)
+    assert branch2 == "main"
+    assert selection2["tier"] == "fresh_positive_attestation"
+
+    # main's newest also negative -> no positive tier remains.
+    state.verify_attestations.append(
+        _negative_att("main", hash_main, turn=2, episode_id="a2"))
+    _branch3, selection3 = _select_v3_fallback(state, executor)
+    assert selection3["tier"] in {"fresh_compare_winner", "scalar_fallback"}
+
+
+class _ClampVerifyFake(VerifyWorkerFake):
+    """Submits out-of-range unit fields + omits the optional routing fields."""
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(
+            BudgetEntry("episode:verify", "openai", "fake-luna", 50, 10, 0))
+        result = {"coherence": 5, "reader_accepts": False,
+                  "reader_accepts_as_solution": False,
+                  "target_language_confidence": 1.7,
+                  "semantic_recoverability": -0.2,
+                  "gloss": "some words", "anomalies": ["odd run"],
+                  "confidence": "low"}
+        return ModelResponse(
+            content=[ToolUseBlock(id="v1", name="episode_submit_result",
+                                  input={"result": result, "summary": "clamp"})],
+            usage=ModelUsage(50, 10, 0))
+
+
+def test_run_v3_verify_dispatcher_clamps_and_defaults():
+    sessions_mod.register_session_builder("episode:verify", _ClampVerifyFake)
+    try:
+        ct, alpha = _caesar_cipher("THE DOG")
+        art = run_v3(ct, session=ScriptedSession(_solve_scripts(alpha)),
+                     language="en", max_iterations=10, cipher_id="v3_clamp",
+                     resume_state=_seeded_caesar_state(ct, alpha))
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+    att = art.attestations[0]
+    assert att["target_language_confidence"] == 1.0
+    assert att["semantic_recoverability"] == 0.0
+    assert att["damage_scope"] == "basin_wide"
+    assert att["repairability"] == "none"
+    assert att["uncertainty_note"] == ""
+    # repairability "none" -> agenda NOT seeded even though an anomaly is present.
+    verify_items = [
+        item for item in art.repair_agenda
+        if item.get("source") == "verify_attestation"
+    ]
+    assert verify_items == []

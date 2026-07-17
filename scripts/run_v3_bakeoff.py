@@ -40,6 +40,8 @@ from typing import Any, Callable, Iterable
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
+from investigation.state import attestation_is_positive as _is_positive_attestation  # noqa: E402
+
 # Distinct exit codes so the orchestrator can react programmatically.
 EXIT_OK = 0
 EXIT_CHECKPOINT_STOP = 3
@@ -311,12 +313,6 @@ def _attestation_sort_key(attestation: dict[str, Any]) -> tuple[int, str]:
         int(attestation.get("created_turn") or 0),
         str(attestation.get("episode_id") or ""),
     )
-
-
-def _is_positive_attestation(attestation: dict[str, Any]) -> bool:
-    return bool(attestation.get("reader_accepts")) and int(
-        attestation.get("coherence") or 0
-    ) >= 7
 
 
 def _apply_v3_telemetry(row: dict[str, Any], artifact: dict[str, Any]) -> None:

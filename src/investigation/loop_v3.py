@@ -60,18 +60,20 @@ from investigation.context import (
     build_v3_system_prompt,
     workflow_state,
     workflow_hint_candidates,
-    DECLARE_COHERENCE,
 )
 from investigation.sessions import ModelSession, session_factory
-from investigation.state import AttestationRecord, BudgetEntry, InvestigationState
+from investigation.state import (
+    AttestationRecord,
+    BudgetEntry,
+    InvestigationState,
+    attestation_is_positive,
+    clamp_unit_interval,
+    latest_attestation_for_hash,
+    normalize_damage_scope,
+    normalize_repairability,
+)
 from models.cipher_text import CipherText
 from workspace import Workspace
-
-
-def _is_positive_attestation(attestation: dict[str, Any]) -> bool:
-    return bool(attestation.get("reader_accepts")) and int(
-        attestation.get("coherence") or 0
-    ) >= DECLARE_COHERENCE
 
 
 def _branch_hash(workspace: Workspace, branch: str) -> str:
@@ -132,28 +134,29 @@ def _select_v3_fallback(
         if not _active_branch(workspace, name):
             continue
         content_hash = _branch_hash(workspace, name)
-        attestations = [
-            a for a in state.verify_attestations
-            if a.get("content_hash") == content_hash and _is_positive_attestation(a)
-        ]
-        latest_positive = max(
-            attestations,
-            key=lambda a: (int(a.get("coherence") or 0), int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
-            default=None,
-        )
+        # Slice 6: the LATEST verdict on the current content governs (same
+        # rule as the declare gate). An older positive superseded by a newer
+        # negative on identical content does NOT qualify.
+        latest = latest_attestation_for_hash(state.verify_attestations, content_hash)
+        positive = latest if attestation_is_positive(latest) else None
         shortlist.append({
             "branch": name,
             "content_hash": content_hash,
-            "positive_attestation": dict(latest_positive) if latest_positive else None,
+            "positive_attestation": dict(positive) if positive else None,
             "scores": executor._compute_quick_scores(name),
         })
 
     positively_attested = [item for item in shortlist if item["positive_attestation"]]
     if positively_attested:
+        # Slice 6 ordering [FIXED]: coherence no longer sorts the tier. Order
+        # by the reader's meaning-recovery estimate, then language confidence,
+        # then recency, then name (fully deterministic; legacy-derived
+        # positives carry 0.0/0.0 and sort last).
         chosen = max(
             positively_attested,
             key=lambda item: (
-                int(item["positive_attestation"].get("coherence") or 0),
+                float(item["positive_attestation"].get("semantic_recoverability") or 0.0),
+                float(item["positive_attestation"].get("target_language_confidence") or 0.0),
                 int(item["positive_attestation"].get("created_turn") or 0),
                 str(item["branch"]),
             ),
@@ -656,6 +659,11 @@ def run_v3(
                     str(item.get("content_hash") or ""),
                     int(item.get("coherence") or 0),
                     bool(item.get("reader_accepts")),
+                    bool(item.get("reader_accepts_as_solution")),
+                    f"{float(item.get('target_language_confidence') or 0.0):.4f}",
+                    f"{float(item.get('semantic_recoverability') or 0.0):.4f}",
+                    str(item.get("damage_scope") or ""),
+                    str(item.get("repairability") or ""),
                     tuple(str(a) for a in item.get("anomalies") or []),
                 )
                 for item in state.verify_attestations
@@ -808,9 +816,34 @@ def run_v3(
                 gloss=str(result.result.get("gloss") or ""),
                 anomalies=[str(a) for a in (result.result.get("anomalies") or [])],
                 created_turn=turn,
+                target_language_confidence=clamp_unit_interval(
+                    result.result.get("target_language_confidence")
+                ),
+                semantic_recoverability=clamp_unit_interval(
+                    result.result.get("semantic_recoverability")
+                ),
+                damage_scope=normalize_damage_scope(
+                    result.result.get("damage_scope")
+                ),
+                repairability=normalize_repairability(
+                    result.result.get("repairability")
+                ),
+                reader_accepts_as_solution=(
+                    result.result.get("reader_accepts_as_solution") is True
+                ),
+                uncertainty_note=str(result.result.get("uncertainty_note") or ""),
             )
-            state.verify_attestations.append(record.to_dict())
-            if not _is_positive_attestation(record.to_dict()):
+            record_dict = record.to_dict()
+            state.verify_attestations.append(record_dict)
+            # Slice 6: the agenda seeds from the verifier's REPAIRABILITY
+            # verdict, not from coherence. Only a non-positive attestation
+            # whose reader says targeted local fixes are worthwhile mints
+            # open repair items; broaden/none verdicts route elsewhere
+            # (context workflow) and must not queue local repair work.
+            if (
+                not attestation_is_positive(record_dict)
+                and record.repairability == "local_repair"
+            ):
                 for anomaly in record.anomalies:
                     if any(
                         item.get("status", "open") == "open"
@@ -836,11 +869,19 @@ def run_v3(
                         "status": "open",
                         "created_turn": turn,
                         "episode_id": result.episode_id,
+                        "damage_scope": record.damage_scope,
+                        "repairability": record.repairability,
                     })
             payload["attestation"] = {
                 "branch": branch,
                 "coherence": record.coherence,
                 "reader_accepts": record.reader_accepts,
+                "reader_accepts_as_solution": record.reader_accepts_as_solution,
+                "target_language_confidence": record.target_language_confidence,
+                "semantic_recoverability": record.semantic_recoverability,
+                "damage_scope": record.damage_scope,
+                "repairability": record.repairability,
+                "uncertainty_note": record.uncertainty_note,
                 "anomalies": record.anomalies,
             }
         return json.dumps(payload, ensure_ascii=False)
@@ -2192,9 +2233,15 @@ def run_v3(
                     f"{reason}Selected the positively attested branch: "
                     f"{fallback_selection['rationale']} Scores: {best_scores}."
                 ),
-                self_confidence=float(
-                    fallback_selection["attestation"].get("coherence") or 0
-                ) / 10.0,
+                self_confidence=round(
+                    (
+                        float(fallback_selection["attestation"].get(
+                            "target_language_confidence") or 0.0)
+                        + float(fallback_selection["attestation"].get(
+                            "semantic_recoverability") or 0.0)
+                    ) / 2.0,
+                    4,
+                ),
                 declared_at_iteration=max_iterations,
                 attestation=dict(fallback_selection["attestation"]),
             )

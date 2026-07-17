@@ -2335,20 +2335,24 @@ class NoGatesPolicy(DeclarationPolicy):
 
 
 class AttestationPolicy(NoGatesPolicy):
-    """M5 v3 policy (A2/A6/C6): declaration requires a fresh verify attestation.
+    """M5.3 Slice 6 policy (REVERSES design C6): declaration requires a fresh
+    POSITIVE verify attestation.
 
-    ``meta_declare_solution`` on branch B is allowed iff an AttestationRecord
-    exists whose ``content_hash`` matches B's CURRENT rendered text (the same
-    named renderer, ``decoded_text_v1`` = ``_decoded_text_for_panel``). This is
-    ONE structural check, not the v2 cascade. Matching is primarily by
-    content_hash (F11 branch-rename edge); an attestation recorded under the same
-    branch name whose hash no longer matches is STALE.
+    ``meta_declare_solution`` on branch B is allowed iff the NEWEST
+    AttestationRecord whose ``content_hash`` matches B's CURRENT rendered text
+    (renderer ``decoded_text_v1`` = ``_decoded_text_for_panel``) is POSITIVE
+    under ``investigation.state.attestation_is_positive`` — i.e. the
+    independent reader set ``reader_accepts_as_solution`` true (legacy
+    records: the frozen pre-Slice-6 condition). Absent, stale, weak, and
+    negative attestations ALL block. Weak fresh attestations remain routing
+    evidence for the workflow (they are kept in state and drive
+    repair/compare/broaden); they no longer satisfy this gate. High
+    ``semantic_recoverability`` alone NEVER unlocks declaration (B3).
 
-    A WEAK attestation (``reader_accepts`` false / low coherence) does NOT block
-    (design C6): a matching hash allows the declaration and its weakness is
-    carried into the artifact. Only ABSENT or STALE attestation blocks.
-    ``meta_declare_unsolved`` is NOT gated (base-class default), and the loop's
-    exhaustion/error fallback bypasses the tool entirely.
+    Matching stays hash-primary (F11 branch-rename edge); an attestation
+    recorded under the same branch name whose hash no longer matches is
+    STALE. ``meta_declare_unsolved`` is NOT gated (base-class default), and
+    the loop's exhaustion/error fallback bypasses the tool entirely.
 
     Subclasses ``NoGatesPolicy`` (not the bare base) so the v3 neutral
     finalize-phase guard is preserved; only ``check_declare_solution`` is
@@ -2366,6 +2370,10 @@ class AttestationPolicy(NoGatesPolicy):
             _candidate_content_hash,
             _decoded_text_for_panel,
         )
+        from investigation.state import (
+            attestation_is_positive,
+            latest_attestation_for_hash,
+        )
 
         branch = args["branch"]
         if not executor.workspace.has_branch(branch):
@@ -2374,11 +2382,40 @@ class AttestationPolicy(NoGatesPolicy):
         current_hash = _candidate_content_hash(
             _decoded_text_for_panel(executor.workspace, branch)
         )
-        matches = any(
-            a.get("content_hash") == current_hash for a in self._attestations
-        )
-        if matches:
-            return None  # fresh attestation exists -> declaration proceeds
+        latest = latest_attestation_for_hash(self._attestations, current_hash)
+        if latest is not None and attestation_is_positive(latest):
+            return None  # fresh POSITIVE attestation -> declaration proceeds
+        if latest is not None:
+            # Fresh but weak/negative: the C6 reversal. Echo the verdict so
+            # the lead can route without re-reading state.
+            return {
+                "status": "blocked",
+                "accepted": False,
+                "branch": branch,
+                "reason": "attestation_not_positive",
+                "attestation": {
+                    "reader_accepts_as_solution": latest.get(
+                        "reader_accepts_as_solution"
+                    ),
+                    "reader_accepts": latest.get("reader_accepts"),
+                    "target_language_confidence": latest.get(
+                        "target_language_confidence"
+                    ),
+                    "semantic_recoverability": latest.get(
+                        "semantic_recoverability"
+                    ),
+                    "damage_scope": latest.get("damage_scope"),
+                    "repairability": latest.get("repairability"),
+                    "anomalies": list(latest.get("anomalies") or []),
+                },
+                "how": (
+                    "The fresh independent reading does not accept this "
+                    "candidate as a complete solution. Follow the workflow "
+                    "state (repair, compare, or broaden), reverify changed "
+                    "content, and declare only when the reader accepts it — "
+                    "or declare honestly unsolved."
+                ),
+            }
         stale = any(a.get("branch") == branch for a in self._attestations)
         reason = "attestation_stale" if stale else "attestation_required"
         return {
@@ -2386,7 +2423,10 @@ class AttestationPolicy(NoGatesPolicy):
             "accepted": False,
             "branch": branch,
             "reason": reason,
-            "how": "run a verify episode on this branch, then declare",
+            "how": (
+                "run a verify episode on this branch, then declare if the "
+                "reader accepts it as a solution"
+            ),
         }
 
 

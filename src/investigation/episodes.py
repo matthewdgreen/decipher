@@ -223,25 +223,85 @@ _COMPARE_SCHEMA = {
     "required": ["ranking", "verdicts", "winner"],
 }
 
-# M5 Part 1: the `verify` episode result schema. ``coherence`` is an int on a
-# 0-10 scale. The local validator has no min/max support, so the scale is
-# stated to the worker twice — in the contract prose and in the field
-# ``description`` below (the validator ignores ``description``; providers
-# render it in the tool schema) — and the dispatcher treats out-of-range
-# values as scale violations (see loop_v3._clamp_coherence).
+# M5.3 Slice 6: the diplomatic `verify` result schema. ``coherence`` is a
+# clamped 0-10 REPORT-ONLY legacy field (it no longer gates anything); the
+# gate reads ``reader_accepts_as_solution`` and routing reads the
+# confidence/damage fields. The local validator has no min/max support, so
+# numeric ranges are stated in the contract prose and the field descriptions,
+# and the dispatcher clamps out-of-range values conservatively
+# (loop_v3._clamp_coherence / state.clamp_unit_interval).
+# Required-set philosophy (M5.1 forensics lesson, see _READING_SCHEMA note):
+# require the minimum. The FIVE legacy fields stay required (existing worker
+# discipline) plus ``reader_accepts_as_solution`` — the one field that gates
+# declaration must be explicit, because a silently-defaulted False is
+# indistinguishable from rejection and would quietly burn the only declare
+# path; a worker that omits it gets one schema-retry with the error echoed.
+# The four routing fields + ``uncertainty_note`` are OPTIONAL and default
+# conservatively non-positive at the dispatcher (0.0 / 0.0 / basin_wide /
+# none / "").
 _VERIFY_SCHEMA = {
     "type": "object",
     "properties": {
         "coherence": {
             "type": "integer",
-            "description": "0 (gibberish) to 10 (fluent, natural text)",
+            "description": "0 (gibberish) to 10 (fluent, natural text). Report-only.",
         },
-        "reader_accepts": {"type": "boolean"},
+        "reader_accepts": {
+            "type": "boolean",
+            "description": (
+                "Would a fluent reader accept this as genuine, if damaged, "
+                "text? (Weaker than reader_accepts_as_solution.)"
+            ),
+        },
+        "reader_accepts_as_solution": {
+            "type": "boolean",
+            "description": (
+                "True ONLY if the candidate, exactly as it stands, is complete "
+                "enough to declare the decipherment solved. A promising but "
+                "incomplete or damaged reading is false."
+            ),
+        },
+        "target_language_confidence": {
+            "type": "number",
+            "description": "0.0-1.0: confidence the text is the target language at all.",
+        },
+        "semantic_recoverability": {
+            "type": "number",
+            "description": (
+                "0.0-1.0: how much of the intended meaning a careful reader "
+                "can recover from the candidate as written."
+            ),
+        },
+        "damage_scope": {
+            "type": "string",
+            "enum": ["local", "distributed", "basin_wide"],
+            "description": (
+                "local = a few isolated damaged spots; distributed = damage "
+                "scattered throughout; basin_wide = the text as a whole does "
+                "not read as the target language."
+            ),
+        },
+        "repairability": {
+            "type": "string",
+            "enum": ["local_repair", "broaden", "none"],
+            "description": (
+                "local_repair = a few targeted fixes would complete it; "
+                "broaden = needs rework beyond spot fixes; none = no repair "
+                "path is visible."
+            ),
+        },
         "gloss": {"type": "string"},
         "anomalies": {"type": "array", "items": {"type": "string"}},
+        "uncertainty_note": {
+            "type": "string",
+            "description": "One or two sentences on what you are least sure of.",
+        },
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
     },
-    "required": ["coherence", "reader_accepts", "gloss", "anomalies", "confidence"],
+    "required": [
+        "coherence", "reader_accepts", "gloss", "anomalies", "confidence",
+        "reader_accepts_as_solution",
+    ],
 }
 
 
@@ -369,22 +429,44 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
     # ``{language}`` placeholder is formatted in ``_episode_system_prompt`` after
     # the lead resolves the run language (contracts are otherwise static). No
     # cryptanalysis framing (avoids the refusal the INV experiment hit) and no
-    # scores to anchor on — the whole value is independence.
+    # scores to anchor on — the whole value is independence. Slice 6: diplomatic
+    # multi-field verdict; the historical-imperfection framing is generic by
+    # design (no benchmark specifics).
     "verify": {
         "toolset": frozenset(),
-        "budget": EpisodeBudget(1, 1024, 90.0),
+        "budget": EpisodeBudget(1, 2048, 90.0),
         "result_schema": _VERIFY_SCHEMA,
         "tier": "verify",
         "contract": (
             "You are a fluent reader of {language}. Below is a candidate "
             "decipherment of a historical manuscript. Judge ONLY whether it "
-            "reads as real (possibly damaged or partial) {language}: gloss what "
-            "it says (a clause-level paraphrase), list anomalies (non-words, "
-            "broken syntax spans, wrong-language runs), rate coherence as an "
-            "integer from 0 (gibberish) to 10 (fluent, natural {language}), and "
-            "state whether a fluent reader would accept it as genuine, if "
-            "damaged, text. You have no other information and need none — do "
-            "not ask for the cipher, the key, or any score."
+            "reads as real (possibly damaged or partial) {language}. Genuine "
+            "historical decipherments often preserve lacunae, abbreviation "
+            "scars, uncertain word boundaries, and editorial omissions — "
+            "imperfection alone does not make a candidate wrong, and polish "
+            "alone does not make it right. Ground every judgment in the "
+            "candidate itself: quote or point to the exact spans that support "
+            "it. Report: `gloss` — a clause-level paraphrase of what the text "
+            "says; `anomalies` — non-words, broken syntax spans, wrong-"
+            "language runs, each quoting the span it concerns; "
+            "`uncertainty_note` — one or two sentences on what you are least "
+            "sure of; `coherence` — an integer from 0 (gibberish) to 10 "
+            "(fluent, natural {language}); `reader_accepts` — whether a "
+            "fluent reader would accept it as genuine, if damaged, text; "
+            "`target_language_confidence` — 0.0 to 1.0 that the text is "
+            "{language} at all; `semantic_recoverability` — 0.0 to 1.0 of the "
+            "intended meaning a careful reader can recover; `damage_scope` — "
+            "local (a few isolated damaged spots), distributed (damage "
+            "scattered throughout), or basin_wide (the text as a whole does "
+            "not read as {language}); `repairability` — local_repair (a few "
+            "targeted fixes would complete it), broaden (rework beyond spot "
+            "fixes is needed), or none (no repair path is visible); "
+            "`reader_accepts_as_solution` — true ONLY if you would accept the "
+            "candidate, exactly as it stands, as a complete solved "
+            "decipherment (a promising but incomplete reading is false); and "
+            "`confidence` — high, medium, or low in your own verdict. You "
+            "have no other information and need none — do not ask for the "
+            "cipher, the key, or any score."
         ),
     },
 }

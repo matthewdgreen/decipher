@@ -28,7 +28,7 @@ from agent.prompts_v2 import LANGUAGE_NOTES
 from analysis import cipher_id as cipher_id_analysis
 from analysis import ic, model_registry
 from analysis.dictionary import LANGUAGE_NAMES
-from investigation.state import InvestigationState
+from investigation.state import InvestigationState, attestation_is_positive
 
 CHARS_PER_TOKEN = 4  # crude estimator for budget bookkeeping
 
@@ -52,8 +52,11 @@ DEFAULT_EVIDENCE_ENTRIES = 6
 # How many branch cards to render (top-K by internal scoring).
 DEFAULT_BRANCH_CARDS = 4
 
-DECLARE_COHERENCE = 7
-REPAIRABLE_COHERENCE_MIN = 2
+# M5.3 Slice 6 routing thresholds (master spec "Slice 6", lines 486-491).
+# Host constants and calibration defaults — tunable only with paid-smoke or
+# equivalent targeted evidence.
+TARGET_LANGUAGE_CONFIDENCE_HIGH = 0.7
+SEMANTIC_RECOVERABILITY_HIGH = 0.5
 LATE_VERIFY_TURNS = 4
 POST_ATTEST_PATIENCE = 2
 
@@ -114,6 +117,91 @@ def _exhausted_entry_for(
     return None
 
 
+def _attestation_route(attestation: dict[str, Any]) -> str:
+    """Route a fresh NON-positive attestation (master 478-491, completed).
+
+    Master rows: high lang confidence + high recoverability + local damage ->
+    one bounded repair cycle; recognizable language + distributed damage ->
+    compare/alternate search; low language confidence or basin-wide damage ->
+    broaden; positive -> declare (handled by the caller). The residual
+    combination the master does not enumerate (recognizable language, local
+    damage, LOW recoverability) routes to compare/alternate search — per B3
+    the incomplete case never routes to declaration, and low recoverability
+    is no evidence that a bounded local repair can lift it. Legacy records
+    (conservative defaults 0.0/0.0/basin_wide) route to broaden.
+    """
+    tlc = float(attestation.get("target_language_confidence") or 0.0)
+    recov = float(attestation.get("semantic_recoverability") or 0.0)
+    scope = str(attestation.get("damage_scope") or "basin_wide")
+    if tlc < TARGET_LANGUAGE_CONFIDENCE_HIGH or scope not in {"local", "distributed"}:
+        return "broaden"
+    if scope == "local" and recov >= SEMANTIC_RECOVERABILITY_HIGH:
+        return "repair"
+    return "compare_or_search"
+
+
+def _attested_menu(
+    state: InvestigationState, branch: str | None,
+    attestation: dict[str, Any], *, repaired: bool,
+) -> dict[str, Any]:
+    """Menu for a branch with a fresh NON-positive attestation (Slice 6).
+
+    The Slice-2 exhaustion short-circuit runs FIRST for every attested route:
+    an exhausted (content, evidence) pair stays `repair_exhausted` until one
+    of its components changes, regardless of how the verdict fields would
+    otherwise route.
+    """
+    exhausted = _exhausted_entry_for(state, branch, attestation)
+    if exhausted is not None:
+        return _repair_exhausted_menu(state, branch, exhausted[0], exhausted[1])
+    route = _attestation_route(attestation)
+    if route == "repair":
+        if repaired:
+            actions = [
+                "Run a fresh reading on the newly verified anomalies.",
+                (
+                    "Use a new repair_transaction (an isolated repair "
+                    "episode) bound to that changed content."
+                ),
+            ]
+        else:
+            actions = [
+                "Run or reuse one reading episode on the attested branch.",
+                (
+                    "Run one repair_transaction with that reading; it "
+                    "runs an isolated repair episode, then validates and "
+                    "installs the supported changed fork."
+                ),
+                "Reverify the transaction's changed content.",
+            ]
+        return {"state": "repair_required", "branch": branch, "actions": actions}
+    if route == "compare_or_search":
+        return {
+            "state": "broaden_required",
+            "branch": branch,
+            "actions": [
+                (
+                    "Compare genuinely distinct finalists "
+                    "(compare episode or branch_adjudicate)."
+                ),
+                (
+                    "Run one alternate search/basin experiment via "
+                    "experiment_submit or a search episode; the verifier "
+                    "reports damage local repair cannot fix — do not polish "
+                    "this text."
+                ),
+            ],
+        }
+    return {
+        "state": "broaden_required",
+        "branch": branch,
+        "actions": [
+            "Reject or hold the collapsed basin.",
+            "Run a different search hypothesis; do not polish this text.",
+        ],
+    }
+
+
 def workflow_state(
     state: InvestigationState,
     executor: Any,
@@ -143,7 +231,7 @@ def workflow_state(
                         "Do not repeat the handled repair against its source content.",
                     ],
                 }
-            if _positive(repaired_attestation):
+            if attestation_is_positive(repaired_attestation):
                 return {
                     "state": "verified",
                     "branch": repaired_branch,
@@ -152,30 +240,14 @@ def workflow_state(
                         "Compare only if concrete evidence identifies a distinct rival.",
                     ],
                 }
-            else:
-                exhausted = _exhausted_entry_for(
-                    state, repaired_branch, repaired_attestation
-                )
-                if exhausted is not None:
-                    return _repair_exhausted_menu(
-                        state, repaired_branch, exhausted[0], exhausted[1]
-                    )
-                return {
-                    "state": "repair_required",
-                    "branch": repaired_branch,
-                    "actions": [
-                        "Run a fresh reading on the newly verified anomalies.",
-                        (
-                            "Use a new repair_transaction (an isolated repair "
-                            "episode) bound to that changed content."
-                        ),
-                    ],
-                }
+            return _attested_menu(
+                state, repaired_branch, repaired_attestation, repaired=True
+            )
     best, _scores = _best_branch_for_auto_declare(
         state.workspace, state.language, executor.word_set, executor._freq_rank
     )
     attestation = _fresh_attestation(state, best) if best else None
-    if _positive(attestation):
+    if attestation is not None and attestation_is_positive(attestation):
         return {
             "state": "verified",
             "branch": best,
@@ -185,34 +257,7 @@ def workflow_state(
             ],
         }
     if attestation is not None:
-        coherence = int(attestation.get("coherence") or 0)
-        if coherence >= REPAIRABLE_COHERENCE_MIN or (
-            attestation.get("gloss") and attestation.get("anomalies")
-        ):
-            exhausted = _exhausted_entry_for(state, best, attestation)
-            if exhausted is not None:
-                return _repair_exhausted_menu(state, best, exhausted[0], exhausted[1])
-            return {
-                "state": "repair_required",
-                "branch": best,
-                "actions": [
-                    "Run or reuse one reading episode on the attested branch.",
-                    (
-                        "Run one repair_transaction with that reading; it "
-                        "runs an isolated repair episode, then validates and "
-                        "installs the supported changed fork."
-                    ),
-                    "Reverify the transaction's changed content.",
-                ],
-            }
-        return {
-            "state": "broaden_required",
-            "branch": best,
-            "actions": [
-                "Reject or hold the collapsed basin.",
-                "Run a different search hypothesis; do not polish this text.",
-            ],
-        }
+        return _attested_menu(state, best, attestation, repaired=False)
     if state.readings:
         return {
             "state": "candidate_reading",
@@ -713,12 +758,6 @@ def _fresh_attestation(
     )
 
 
-def _positive(attestation: dict[str, Any] | None) -> bool:
-    return bool(attestation and attestation.get("reader_accepts")) and int(
-        attestation.get("coherence") or 0
-    ) >= DECLARE_COHERENCE
-
-
 def workflow_hint_candidates(
     state: InvestigationState, executor: Any, turn: int, max_turns: int | None
 ) -> list[dict[str, Any]]:
@@ -762,7 +801,7 @@ def workflow_hint_candidates(
             for call in executor.call_log
         )
 
-    if _positive(attestation):
+    if attestation_is_positive(attestation):
         if turn - int(attestation.get("created_turn") or 0) >= POST_ATTEST_PATIENCE:
             add(
                 "positive_attestation_declare_hint",
@@ -772,10 +811,7 @@ def workflow_hint_candidates(
     elif (
         attestation is not None
         and not repair_addressed
-        and (
-            int(attestation.get("coherence") or 0) >= REPAIRABLE_COHERENCE_MIN
-            or bool(attestation.get("gloss")) and bool(attestation.get("anomalies"))
-        )
+        and _attestation_route(attestation) == "repair"
     ):
         anomalies = "; ".join(str(a) for a in (attestation.get("anomalies") or []))
         suffix = f" Reported anomalies: {anomalies}." if anomalies else ""
@@ -808,7 +844,9 @@ def workflow_hint_candidates(
             if branch.metadata.get("mode_status", "active") in {"rejected", "superseded"}:
                 continue
             active_hashes.add(_branch_content_hash(state, name))
-            any_positive = any_positive or _positive(_fresh_attestation(state, name))
+            any_positive = any_positive or attestation_is_positive(
+                _fresh_attestation(state, name)
+            )
         if len(active_hashes) > 1 and not any_positive:
             shortlist_hash = hashlib.sha256(
                 "\n".join(sorted(active_hashes)).encode("utf-8")

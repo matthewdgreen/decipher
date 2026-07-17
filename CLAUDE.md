@@ -190,9 +190,10 @@ resume path. Milestones landed M1–M6:
   lead workspace until `episode_install_branch`.
 - **M3/M4** — composite hypothesis actions + a background *experiment queue*
   (`experiment_submit` / `experiment_collect`) for long-running automated-solver compute.
-- **M5** — **verification-gated declaration**: `meta_declare_solution` is unblocked only
-  by a `verify` episode attestation (or a strong `meta_attest_reading_comprehensibility`
-  score) whose content hash matches the branch's current text.
+- **M5/M5.3** — verification-gated declaration: `meta_declare_solution` is unblocked only
+  by a fresh `verify`-episode attestation whose content hash matches the branch's current
+  text AND whose `reader_accepts_as_solution` is true (Slice 6 reversed C6; weak
+  attestations route repair/compare/broaden instead).
 - **M6** — a v2/v3 bake-off matrix + a v2-artifact→v3-state adapter (`adapter.py`).
 
 Selected with `--agentic --agent-loop v3` (default is `v2`). The default no-LLM

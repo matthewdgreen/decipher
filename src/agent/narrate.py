@@ -364,10 +364,17 @@ class NarrateAgentRenderer:
         attestation = payload.get("attestation")
         if isinstance(attestation, dict):
             coherence = attestation.get("coherence")
-            accepts = attestation.get("reader_accepts")
             anomalies = attestation.get("anomalies") or []
             n = len(anomalies) if isinstance(anomalies, list) else anomalies
-            accept_word = "reader accepts" if accepts else "reader rejects"
+            if "reader_accepts_as_solution" in attestation:
+                accept_word = (
+                    "reader accepts as solution"
+                    if attestation.get("reader_accepts_as_solution")
+                    else "reader does not accept as solution"
+                )
+            else:
+                accepts = attestation.get("reader_accepts")
+                accept_word = "reader accepts" if accepts else "reader rejects"
             self._line(
                 self._c(
                     f"      attestation: coherence {coherence}/10, "

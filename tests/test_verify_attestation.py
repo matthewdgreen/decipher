@@ -67,8 +67,15 @@ def _simple_executor(ws, policy):
 
 
 def _attestation_for(ws, branch, *, coherence=9, reader_accepts=True,
-                     anomalies=None, episode_id="ep1", turn=1):
-    """Build an AttestationRecord dict over the current rendered text."""
+                     anomalies=None, episode_id="ep1", turn=1,
+                     reader_accepts_as_solution=True,
+                     target_language_confidence=0.9,
+                     semantic_recoverability=0.8, damage_scope="local",
+                     repairability="local_repair", uncertainty_note=""):
+    """Build an AttestationRecord dict over the current rendered text.
+
+    Slice 6: positive-shaped defaults (reader_accepts_as_solution True + the
+    routing fields), so a bare call produces a positive attestation."""
     text = _decoded_text_for_panel(ws, branch)
     return AttestationRecord(
         branch=branch,
@@ -80,6 +87,12 @@ def _attestation_for(ws, branch, *, coherence=9, reader_accepts=True,
         gloss="reads as a short clause",
         anomalies=list(anomalies or []),
         created_turn=turn,
+        reader_accepts_as_solution=reader_accepts_as_solution,
+        target_language_confidence=target_language_confidence,
+        semantic_recoverability=semantic_recoverability,
+        damage_scope=damage_scope,
+        repairability=repairability,
+        uncertainty_note=uncertainty_note,
     ).to_dict()
 
 
@@ -183,7 +196,7 @@ def test_attestation_policy_absent_blocks():
     assert executor.solution is None and executor.terminated is False
 
 
-def test_attestation_policy_match_allows_and_accepts():
+def test_attestation_policy_positive_match_allows_and_accepts():
     ws, _alpha, _pt = _cat_on_ws()
     attestations = [_attestation_for(ws, "main")]
     executor = _simple_executor(ws, AttestationPolicy(attestations))
@@ -193,20 +206,101 @@ def test_attestation_policy_match_allows_and_accepts():
     assert executor.solution is not None and executor.solution.branch == "main"
 
 
-def test_attestation_policy_weak_allows_and_records_weakness():
-    """Weak (reader_accepts False / low coherence) does NOT block when the hash
-    matches (design C6); the record carries the weakness."""
+def test_attestation_policy_weak_blocks_declaration():
+    """Weak (reader_accepts False / low coherence / reader_accepts_as_solution
+    False) BLOCKS declaration (C6 reversed); the block echoes the verdict."""
     ws, _alpha, _pt = _cat_on_ws()
     weak = _attestation_for(
         ws, "main", coherence=2, reader_accepts=False,
+        reader_accepts_as_solution=False,
         anomalies=["non-word GHXQ", "broken syntax"],
     )
     executor = _simple_executor(ws, AttestationPolicy([weak]))
     out = executor._tool_meta_declare_solution(_declare_args())
-    assert out["status"] == "ok" and out["accepted"] is True
-    # The weakness is recorded on the attestation the run will carry.
-    assert weak["reader_accepts"] is False and weak["coherence"] == 2
-    assert weak["anomalies"] == ["non-word GHXQ", "broken syntax"]
+    assert out["status"] == "blocked"
+    assert out["reason"] == "attestation_not_positive"
+    assert executor.solution is None
+    assert executor.terminated is False
+    echo = out["attestation"]
+    assert echo["reader_accepts_as_solution"] is False
+    assert echo["anomalies"] == ["non-word GHXQ", "broken syntax"]
+
+
+def test_attestation_policy_high_recoverability_alone_does_not_unlock():
+    """B3: high semantic_recoverability + language confidence + local damage +
+    reader_accepts True + coherence 10, but reader_accepts_as_solution False ->
+    STILL blocked. Only reader_accepts_as_solution unlocks declaration."""
+    ws, _alpha, _pt = _cat_on_ws()
+    att = _attestation_for(
+        ws, "main", coherence=10, reader_accepts=True,
+        reader_accepts_as_solution=False,
+        target_language_confidence=1.0, semantic_recoverability=1.0,
+        damage_scope="local", repairability="local_repair",
+    )
+    executor = _simple_executor(ws, AttestationPolicy([att]))
+    out = executor._tool_meta_declare_solution(_declare_args())
+    assert out["status"] == "blocked"
+    assert out["reason"] == "attestation_not_positive"
+
+
+def test_attestation_policy_latest_verdict_governs():
+    """Two attestations on the SAME current hash: the NEWEST verdict governs."""
+    ws, _alpha, _pt = _cat_on_ws()
+    older_positive = _attestation_for(
+        ws, "main", episode_id="ep_old", turn=1,
+        reader_accepts_as_solution=True,
+    )
+    newer_negative = _attestation_for(
+        ws, "main", episode_id="ep_new", turn=2,
+        reader_accepts=False, reader_accepts_as_solution=False,
+    )
+    executor = _simple_executor(
+        ws, AttestationPolicy([older_positive, newer_negative])
+    )
+    out = executor._tool_meta_declare_solution(_declare_args())
+    assert out["status"] == "blocked"
+    assert out["reason"] == "attestation_not_positive"
+
+    # Reversed order (newest is positive) -> allowed.
+    ws2, _a2, _p2 = _cat_on_ws()
+    older_negative = _attestation_for(
+        ws2, "main", episode_id="ep_old", turn=1,
+        reader_accepts=False, reader_accepts_as_solution=False,
+    )
+    newer_positive = _attestation_for(
+        ws2, "main", episode_id="ep_new", turn=2,
+        reader_accepts_as_solution=True,
+    )
+    executor2 = _simple_executor(
+        ws2, AttestationPolicy([older_negative, newer_positive])
+    )
+    assert executor2._declaration_policy.check_declare_solution(
+        executor2, _declare_args()
+    ) is None
+
+
+def test_attestation_policy_legacy_record_positive_via_old_condition():
+    """A pre-Slice-6 dict (no new keys) is positive iff reader_accepts and
+    coherence>=7 (the frozen legacy condition), pinned at the gate."""
+    ws, _alpha, _pt = _cat_on_ws()
+    chash = _candidate_content_hash(_decoded_text_for_panel(ws, "main"))
+    legacy_positive = {
+        "branch": "main", "content_hash": chash,
+        "renderer_id": DECODED_TEXT_RENDERER_ID, "episode_id": "ep_legacy",
+        "coherence": 7, "reader_accepts": True, "gloss": "g",
+        "anomalies": [], "created_turn": 1,
+    }
+    executor = _simple_executor(ws, AttestationPolicy([legacy_positive]))
+    assert executor._declaration_policy.check_declare_solution(
+        executor, _declare_args()
+    ) is None
+
+    ws2, _a2, _p2 = _cat_on_ws()
+    legacy_weak = dict(legacy_positive, coherence=6)
+    executor2 = _simple_executor(ws2, AttestationPolicy([legacy_weak]))
+    out = executor2._tool_meta_declare_solution(_declare_args())
+    assert out["status"] == "blocked"
+    assert out["reason"] == "attestation_not_positive"
 
 
 def test_attestation_matched_by_content_hash_not_branch_name():
@@ -293,7 +387,8 @@ def _simple_state(raw="ABCDEFGHIJKL"):
 
 def test_verify_episode_zero_tool_submit():
     state = _simple_state()
-    good = {"coherence": 7, "reader_accepts": True, "gloss": "reads",
+    good = {"coherence": 7, "reader_accepts": True,
+            "reader_accepts_as_solution": True, "gloss": "reads",
             "anomalies": [], "confidence": "medium"}
     spec = EpisodeSpec("verify", "judge this",
                        inputs={"candidate_text": "SOME PROPOSED TEXT", "language": "en"})
@@ -310,7 +405,9 @@ def test_verify_episode_zero_tool_submit():
 
 def test_verify_episode_budget_tagged():
     state = _simple_state()
-    good = {"coherence": 5, "reader_accepts": False, "gloss": "words but not sentences",
+    good = {"coherence": 5, "reader_accepts": False,
+            "reader_accepts_as_solution": False,
+            "gloss": "words but not sentences",
             "anomalies": ["fragmented"], "confidence": "low"}
     spec = EpisodeSpec("verify", "judge",
                        inputs={"candidate_text": "WORD ISLANDS HERE", "language": "en"})
@@ -342,3 +439,39 @@ def test_attestation_record_from_dict_defaults():
     assert rec.content_hash == "abc"
     assert rec.coherence == 0 and rec.reader_accepts is False
     assert rec.anomalies == []
+    # Slice 6 conservative defaults on an old-shape dict.
+    assert rec.target_language_confidence == 0.0
+    assert rec.semantic_recoverability == 0.0
+    assert rec.damage_scope == "basin_wide"
+    assert rec.repairability == "none"
+    assert rec.reader_accepts_as_solution is False
+    assert rec.uncertainty_note == ""
+
+
+def test_attestation_record_legacy_load_derivation():
+    """Legacy (no reader_accepts_as_solution key) positivity derivation +
+    strict handling of the explicit key + routing-field clamping."""
+    assert AttestationRecord.from_dict(
+        {"reader_accepts": True, "coherence": 9}
+    ).reader_accepts_as_solution is True
+    assert AttestationRecord.from_dict(
+        {"reader_accepts": True, "coherence": 6}
+    ).reader_accepts_as_solution is False
+    assert AttestationRecord.from_dict(
+        {"reader_accepts": False, "coherence": 10}
+    ).reader_accepts_as_solution is False
+    # The key, when present, wins over the legacy fields.
+    assert AttestationRecord.from_dict({
+        "reader_accepts_as_solution": False,
+        "reader_accepts": True, "coherence": 10,
+    }).reader_accepts_as_solution is False
+    clamped = AttestationRecord.from_dict({
+        "reader_accepts_as_solution": True,
+        "target_language_confidence": 1.7,
+        "semantic_recoverability": -0.2,
+        "damage_scope": "LOCAL", "repairability": "spolish",
+    })
+    assert clamped.target_language_confidence == 1.0
+    assert clamped.semantic_recoverability == 0.0
+    assert clamped.damage_scope == "basin_wide"
+    assert clamped.repairability == "none"
