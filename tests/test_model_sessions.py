@@ -11,9 +11,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from agent.model_provider import (
     ModelResponse,
     ModelUsage,
+    OpenRouterModelProvider,
+    ProviderExtraBlock,
     TextBlock,
     ToolUseBlock,
     _messages_to_openai_chat,
+    _messages_to_openrouter_chat,
+    _openrouter_chat_response_to_model_response,
     _reasoning_passback_enabled,
 )
 from investigation.sessions import (
@@ -335,3 +339,105 @@ def test_openai_chat_empty_assistant_message_not_null_content():
          "content": [{"type": "tool_use", "id": "a", "name": "t", "input": {}}]}
     ])
     assert tool_out[0]["content"] is None and "tool_calls" in tool_out[0]
+
+
+def test_openrouter_chat_drops_empty_assistant_message():
+    out = _messages_to_openrouter_chat([
+        {"role": "user", "content": [{"type": "text", "text": "ctx"}]},
+        {"role": "assistant", "content": []},
+        {"role": "user", "content": [{"type": "text", "text": "nudge"}]},
+    ], system="sys")
+
+    assert [message["role"] for message in out] == ["system", "user", "user"]
+    assert all(
+        message.get("content") not in {None, ""}
+        for message in out
+        if message["role"] == "assistant"
+    )
+
+
+def test_openrouter_chat_roundtrips_reasoning_with_tool_call():
+    details = [{"type": "reasoning.text", "text": "opaque", "id": "r1"}]
+    out = _messages_to_openrouter_chat([{
+        "role": "assistant",
+        "content": [
+            {"type": "provider_extra", "provider": "openrouter",
+             "kind": "reasoning", "items": [{"reasoning_details": details}]},
+            {"type": "tool_use", "id": "t1", "name": "decode_show",
+             "input": {"branch": "main"}},
+        ],
+    }])
+
+    assert out[0]["reasoning_details"] == details
+    assert out[0]["tool_calls"][0]["id"] == "t1"
+
+
+def test_openrouter_chat_drops_reasoning_only_assistant_message():
+    out = _messages_to_openrouter_chat([
+        {"role": "user", "content": [{"type": "text", "text": "ctx"}]},
+        {"role": "assistant", "content": [{
+            "type": "provider_extra",
+            "provider": "openrouter",
+            "kind": "reasoning",
+            "items": [{"reasoning": "unfinished private reasoning"}],
+        }]},
+        {"role": "user", "content": [{"type": "text", "text": "nudge"}]},
+    ])
+
+    assert [message["role"] for message in out] == ["user", "user"]
+
+
+def test_openrouter_response_captures_reasoning_details():
+    from types import SimpleNamespace
+
+    detail = SimpleNamespace(
+        type="reasoning.text", id="r1", format="unknown", text="opaque"
+    )
+    message = SimpleNamespace(
+        content=None, tool_calls=[], reasoning_details=[detail], reasoning=None
+    )
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=SimpleNamespace(
+            prompt_tokens=10, completion_tokens=5, prompt_tokens_details=None
+        ),
+    )
+
+    normalized = _openrouter_chat_response_to_model_response(response)
+    extra = next(
+        block for block in normalized.content if isinstance(block, ProviderExtraBlock)
+    )
+    assert extra.provider == "openrouter"
+    assert extra.items[0]["reasoning_details"][0]["id"] == "r1"
+
+
+def test_openrouter_provider_uses_compatibility_converter():
+    from types import SimpleNamespace
+
+    captured: dict = {}
+
+    def create(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(
+                content="ok", tool_calls=[], reasoning_details=None,
+                reasoning=None,
+            ))],
+            usage=SimpleNamespace(
+                prompt_tokens=1, completion_tokens=1,
+                prompt_tokens_details=None,
+            ),
+        )
+
+    provider = OpenRouterModelProvider.__new__(OpenRouterModelProvider)
+    provider.model = "moonshotai/kimi-k3"
+    provider.client = SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create))
+    )
+    provider.send(messages=[
+        {"role": "user", "content": [{"type": "text", "text": "ctx"}]},
+        {"role": "assistant", "content": []},
+        {"role": "user", "content": [{"type": "text", "text": "nudge"}]},
+    ])
+
+    assert [message["role"] for message in captured["messages"]] == ["user", "user"]

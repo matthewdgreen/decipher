@@ -1437,6 +1437,17 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
       `.decipher_keys/*_api_key` files, or macOS Keychain.
     - Remaining work: run the live smoke packet across candidate models and
       calibrate provider-specific reliability/cost notes.
+    - [ ] After the MCP host extraction stabilizes, add provider-response
+      observability without changing routing policy: emit and persist explicit
+      `empty_assistant_response`, `reasoning_only_response`, and
+      `assistant_message_dropped` events; record provider/model, finish reason,
+      output-token cap/usage, retry outcome, and whether reasoning passback was
+      present; summarize these in `scripts/inspect_artifact.py`. Add synthetic
+      provider fixtures plus one inexpensive live OpenRouter episode smoke.
+      This follows the July 2026 Kimi K3 run where Moonshot rejected blank
+      assistant history entries and 11/12 worker episodes failed. Keep this
+      telemetry separate from adapter compatibility behavior and from MCP
+      investigation policy.
     - Add periodic checkpoint artifact saving during long live-provider runs.
       Current artifacts are written only after `run_v2` returns, so an
       interrupted or hung provider call can lose partial post-fix state, as

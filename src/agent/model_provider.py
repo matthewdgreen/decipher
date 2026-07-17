@@ -616,13 +616,13 @@ class OpenRouterModelProvider:
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
-                messages=_messages_to_openai_chat(messages, system=system),
+                messages=_messages_to_openrouter_chat(messages, system=system),
                 tools=_tools_to_openai_chat(tools),
                 max_tokens=max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
             raise ModelProviderError(str(exc)) from exc
-        return _openai_chat_response_to_model_response(response)
+        return _openrouter_chat_response_to_model_response(response)
 
 
 class GeminiModelProvider:
@@ -1149,6 +1149,8 @@ def _messages_to_openai_chat(
     messages: list[dict[str, Any]],
     *,
     system: str = "",
+    passthrough_provider: str | None = None,
+    drop_empty_assistant: bool = False,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if system:
@@ -1159,6 +1161,7 @@ def _messages_to_openai_chat(
         if role == "assistant" and isinstance(content, list):
             text_parts: list[str] = []
             tool_calls: list[dict[str, Any]] = []
+            provider_reasoning: dict[str, Any] = {}
             for block in content:
                 if not isinstance(block, dict):
                     continue
@@ -1173,6 +1176,21 @@ def _messages_to_openai_chat(
                             "arguments": json.dumps(block.get("input") or {}),
                         },
                     })
+                elif (
+                    passthrough_provider
+                    and block.get("type") == "provider_extra"
+                    and block.get("provider") == passthrough_provider
+                    and block.get("kind") == "reasoning"
+                ):
+                    for item in block.get("items") or []:
+                        if not isinstance(item, dict):
+                            continue
+                        details = item.get("reasoning_details")
+                        if isinstance(details, list):
+                            provider_reasoning["reasoning_details"] = details
+                        reasoning = item.get("reasoning")
+                        if isinstance(reasoning, str) and reasoning:
+                            provider_reasoning["reasoning"] = reasoning
             chat_message: dict[str, Any] = {
                 "role": "assistant",
                 "content": "\n\n".join(t for t in text_parts if t) or None,
@@ -1180,6 +1198,13 @@ def _messages_to_openai_chat(
             if tool_calls:
                 chat_message["tool_calls"] = tool_calls
             elif chat_message["content"] is None:
+                if drop_empty_assistant:
+                    # Some OpenAI-compatible providers (observed with Moonshot
+                    # through OpenRouter) reject both null and empty-string
+                    # assistant turns. A reasoning-only response has no usable
+                    # sibling text/tool payload to continue, so omit it before
+                    # the harness sends its no-tool nudge.
+                    continue
                 # An assistant message with neither text nor tool_calls is
                 # rejected by the OpenAI chat API ("content: expected a string,
                 # got null"). This happens when a worker's turn produced no
@@ -1187,6 +1212,7 @@ def _messages_to_openai_chat(
                 # nudge (e.g. a one-shot verify episode). Coerce to "" so the
                 # re-send is valid; well-formed messages are unaffected.
                 chat_message["content"] = ""
+            chat_message.update(provider_reasoning)
             out.append(chat_message)
         elif role == "user" and isinstance(content, list):
             text_parts = []
@@ -1206,6 +1232,20 @@ def _messages_to_openai_chat(
         else:
             out.append({"role": role, "content": _content_to_text(content)})
     return out
+
+
+def _messages_to_openrouter_chat(
+    messages: list[dict[str, Any]],
+    *,
+    system: str = "",
+) -> list[dict[str, Any]]:
+    """OpenRouter chat conversion with cross-provider compatibility guards."""
+    return _messages_to_openai_chat(
+        messages,
+        system=system,
+        passthrough_provider="openrouter",
+        drop_empty_assistant=True,
+    )
 
 
 def _openai_chat_response_to_model_response(response: Any) -> ModelResponse:
@@ -1235,6 +1275,40 @@ def _openai_chat_response_to_model_response(response: Any) -> ModelResponse:
         cache_read_input_tokens=int(getattr(prompt_details, "cached_tokens", 0) or 0),
     )
     return ModelResponse(content=content, usage=usage, raw=response)
+
+
+def _openrouter_chat_response_to_model_response(response: Any) -> ModelResponse:
+    """Normalize OpenRouter chat while retaining re-sendable reasoning data."""
+    normalized = _openai_chat_response_to_model_response(response)
+    message = response.choices[0].message
+    reasoning_item: dict[str, Any] = {}
+
+    reasoning_details = getattr(message, "reasoning_details", None)
+    if reasoning_details:
+        reasoning_item["reasoning_details"] = [
+            _output_item_to_dict(item) for item in reasoning_details
+        ]
+    reasoning = (
+        getattr(message, "reasoning", None)
+        or getattr(message, "reasoning_content", None)
+    )
+    if isinstance(reasoning, str) and reasoning:
+        reasoning_item["reasoning"] = reasoning
+
+    if not reasoning_item:
+        return normalized
+    return ModelResponse(
+        content=[
+            *normalized.content,
+            ProviderExtraBlock(
+                provider="openrouter",
+                kind="reasoning",
+                items=[reasoning_item],
+            ),
+        ],
+        usage=normalized.usage,
+        raw=normalized.raw,
+    )
 
 
 # ---------------------------------------------------------------------------
