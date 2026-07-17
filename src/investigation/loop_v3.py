@@ -2021,6 +2021,21 @@ def run_v3(
     first_turn = (state.turn + 1) if resume_state is not None else 1
     turn = first_turn - 1
     cost_ceiling_hit = False
+    # Tool-less-turn resilience (K3 incident, 2026-07-17): a single turn with
+    # zero tool calls must not silently end the run. Two bounded recoveries:
+    # - TRUNCATION: a reasoning-heavy model (e.g. moonshotai/kimi-k3) can spend
+    #   the whole output budget thinking and get cut off BEFORE emitting its
+    #   tool call (observed: output == max_tokens exactly, no text, no tools).
+    #   Retry with a doubled budget, at most twice per run, capped at 32k.
+    #   Reasoning EFFORT is deliberately not capped — that is a quality knob;
+    #   this is a robustness bug. Spend stays guarded by max_cost_usd.
+    # - TEXT-ONLY: a model that narrates without acting gets ONE evidence-log
+    #   nudge (the rebuilt context surfaces it next turn) before the honest
+    #   `exhausted` terminal. Retries consume normal turn numbers, so the
+    #   max_iterations bound is unchanged.
+    lead_max_tokens = max_tokens
+    truncation_retries_left = 2
+    no_tool_nudges_left = 1
     for turn in range(first_turn, max_iterations + 1):
         state.turn = turn
         workspace.set_iteration(turn)
@@ -2077,7 +2092,7 @@ def run_v3(
             )
 
         try:
-            response = session.send(messages, tools=tools, max_tokens=max_tokens)
+            response = session.send(messages, tools=tools, max_tokens=lead_max_tokens)
         except KeyboardInterrupt:
             artifact.status = "stopped"
             artifact.error_message = (
@@ -2107,6 +2122,41 @@ def run_v3(
             )
 
         if not tool_uses:
+            usage = getattr(response, "usage", None)
+            out_tokens = int(getattr(usage, "output_tokens", 0) or 0)
+            truncated = out_tokens >= lead_max_tokens
+            if truncated and truncation_retries_left > 0:
+                truncation_retries_left -= 1
+                previous_cap = lead_max_tokens
+                lead_max_tokens = min(lead_max_tokens * 2, 32768)
+                state.add_evidence(
+                    "turn_summary", turn=turn,
+                    summary=(
+                        f"turn {turn} hit the {previous_cap}-token output cap "
+                        "before emitting a tool call (long reasoning); "
+                        f"retrying with max_tokens={lead_max_tokens}"
+                    ),
+                )
+                emit("lead_truncation_retry", {
+                    "iteration": turn,
+                    "output_tokens": out_tokens,
+                    "previous_max_tokens": previous_cap,
+                    "new_max_tokens": lead_max_tokens,
+                }, outer_iteration=turn)
+                continue
+            if not truncated and no_tool_nudges_left > 0:
+                no_tool_nudges_left -= 1
+                state.add_evidence(
+                    "turn_summary", turn=turn,
+                    summary=(
+                        f"turn {turn} produced no tool call. A tool call is "
+                        "REQUIRED every turn: act via a tool now, or call "
+                        "meta_declare_unsolved to end the run honestly."
+                    ),
+                )
+                emit("no_tool_calls_nudge", {"iteration": turn},
+                     outer_iteration=turn)
+                continue
             artifact.status = "exhausted"
             state.add_evidence(
                 "turn_summary", turn=turn, summary="no tool calls (exhausted)"

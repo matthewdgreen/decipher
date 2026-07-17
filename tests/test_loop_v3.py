@@ -1733,3 +1733,96 @@ def test_run_v3_verify_dispatcher_clamps_and_defaults():
         if item.get("source") == "verify_attestation"
     ]
     assert verify_items == []
+
+
+# ---------------------------------------------------------------------------
+# Tool-less-turn resilience (K3 incident, 2026-07-17): a reasoning model that
+# spends the whole output budget thinking (truncated before its tool call) or
+# narrates without acting must not silently end the run on ONE bad turn.
+# ---------------------------------------------------------------------------
+
+class _TruncatingFirstSession(ScriptedSession):
+    """First send: empty content with output_tokens == the max_tokens actually
+    passed (the truncation signature). Later sends: normal scripted turns."""
+
+    def __init__(self, scripts, **kwargs):
+        super().__init__(scripts, **kwargs)
+        self.max_tokens_seen: list[int] = []
+        self._sends = 0
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self.max_tokens_seen.append(max_tokens)
+        self._sends += 1
+        if self._sends == 1:
+            self._budget.append(BudgetEntry(
+                "lead", self.provider_name, self.model, 1000, max_tokens, 0))
+            return ModelResponse(
+                content=[], usage=ModelUsage(1000, max_tokens, 0))
+        return super().send(blocks, tools=tools, max_tokens=max_tokens)
+
+
+def test_run_v3_truncated_tool_less_turn_retries_with_larger_budget():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    session = _TruncatingFirstSession([
+        [ToolUseBlock(id="d1", name="meta_declare_unsolved", input={
+            "best_branch": "main", "rationale": "cannot solve"})],
+    ])
+    art = run_v3(ct, session=session, language="en", max_iterations=5,
+                 cipher_id="v3_trunc_retry")
+    # The truncated turn escalated the budget instead of exhausting the run.
+    assert session.max_tokens_seen[:2] == [8192, 16384]
+    events = [e.event for e in art.loop_events]
+    assert "lead_truncation_retry" in events
+    assert "no_tool_calls" not in events  # the retry turn acted normally
+    retry = next(e for e in art.loop_events
+                 if e.event == "lead_truncation_retry")
+    assert retry.payload["previous_max_tokens"] == 8192
+    assert retry.payload["new_max_tokens"] == 16384
+    assert retry.payload["output_tokens"] == 8192
+    assert art.status == "unsolved"  # the declared-unsolved terminal, not a crash
+
+
+def test_run_v3_truncation_retries_are_bounded_then_exhaust():
+    ct, _alpha = _caesar_cipher("THE DOG")
+
+    class _AlwaysTruncating(ScriptedSession):
+        def __init__(self):
+            super().__init__([])
+            self.max_tokens_seen: list[int] = []
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.max_tokens_seen.append(max_tokens)
+            self._budget.append(BudgetEntry(
+                "lead", self.provider_name, self.model, 1000, max_tokens, 0))
+            return ModelResponse(
+                content=[], usage=ModelUsage(1000, max_tokens, 0))
+
+    session = _AlwaysTruncating()
+    art = run_v3(ct, session=session, language="en", max_iterations=8,
+                 cipher_id="v3_trunc_bounded")
+    # 8192 -> 16384 -> 32768, then no retries left: honest exhaustion (via
+    # fallback => unsolved), NOT an unbounded escalation loop.
+    assert session.max_tokens_seen == [8192, 16384, 32768]
+    events = [e.event for e in art.loop_events]
+    assert events.count("lead_truncation_retry") == 2
+    assert "no_tool_calls" in events
+    assert art.status == "unsolved"
+
+
+def test_run_v3_text_only_turn_gets_one_nudge_then_exhausts():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    session = ScriptedSession([[TextBlock(text="Thinking out loud, no action.")]])
+    art = run_v3(ct, session=session, language="en", max_iterations=5,
+                 cipher_id="v3_nudge_once")
+    events = [e.event for e in art.loop_events]
+    # One nudge, then the honest exhausted terminal on the second offence.
+    assert events.count("no_tool_calls_nudge") == 1
+    assert events.count("no_tool_calls") == 1
+    assert events.index("no_tool_calls_nudge") < events.index("no_tool_calls")
+    # The nudge is visible to the model via the rebuilt context evidence log.
+    kinds_summaries = [
+        (e["kind"], e["summary"])
+        for e in art.investigation_state["evidence_log"]
+    ]
+    assert any("REQUIRED every turn" in s for _k, s in kinds_summaries)
+    assert art.status == "unsolved"
