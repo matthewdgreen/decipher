@@ -118,6 +118,11 @@ def _tool_result_summary(result: str) -> dict[str, Any]:
     keys = (
         "status",
         "error",
+        # CLI-3: blocked/failed results carry a reason code + how/note guidance;
+        # the narrate display turns these into plain-English problem lines.
+        "reason",
+        "how",
+        "note",
         "branch",
         "mapping",
         "from",

@@ -54,7 +54,71 @@ def make_agent_renderer(
     return RawAgentRenderer(stream)
 
 
+# CLI-3 Part 2: plain-English phrasing for blocked tool results. The renderer
+# strips the leading tool name (see NarrateAgentRenderer._result_summary), so a
+# blocked summary reads as "blocked: <reason in words> — <guidance>". Unknown
+# reason codes fall back to the raw reason string.
+_BLOCKED_REASON_WORDS = {
+    "attestation_not_positive": (
+        "declaration needs a fresh positive attestation — reader does not "
+        "accept as solution"
+    ),
+    "attestation_required": (
+        "declaration needs a fresh verify attestation on this branch first"
+    ),
+    "attestation_stale": (
+        "the attestation is stale — the branch text changed since it was "
+        "written, so reverify before declaring"
+    ),
+    "repair_transaction_not_ready": (
+        "the repair transaction is not ready — no fresh reading is bound to "
+        "this branch content yet"
+    ),
+    "episode_kind_not_available": (
+        "that episode kind is not available in the current workflow state"
+    ),
+    "lead_tool_not_available": (
+        "that operator tool is not available to the lead — delegate it "
+        "through an episode or experiment"
+    ),
+    "repair_saturated": (
+        "repair is saturated on this candidate — local fixes are exhausted; "
+        "broaden or compare instead"
+    ),
+    "pair_evidence_failed": (
+        "the repair evidence did not hold up for this source/reading pair"
+    ),
+}
+
+
+def _first_sentence(text: Any) -> str:
+    """First sentence of a free-text field (blocked-result guidance)."""
+    collapsed = " ".join(str(text or "").split())
+    if not collapsed:
+        return ""
+    for sep in (". ", "! ", "? "):
+        idx = collapsed.find(sep)
+        if idx != -1:
+            return collapsed[: idx + 1]
+    return collapsed
+
+
+def _blocked_phrase(result: dict[str, Any]) -> str:
+    reason = str(result.get("reason") or "")
+    words = _BLOCKED_REASON_WORDS.get(reason, reason or "action not permitted here")
+    phrase = f"blocked: {words}"
+    guidance = _first_sentence(result.get("how") or result.get("note"))
+    if guidance and guidance.lower() not in phrase.lower():
+        phrase += f" — {guidance}"
+    return phrase
+
+
 def summarize_tool_call(tool: str, result: dict[str, Any]) -> str:
+    status_early = result.get("status")
+    if status_early == "blocked":
+        return f"{tool} {_blocked_phrase(result)}"
+    if status_early == "duplicate_suppressed":
+        return f"{tool} duplicate — already done against unchanged content"
     parts = [tool]
     if result.get("branch"):
         parts.append(f"[{result['branch']}]")
@@ -295,6 +359,87 @@ def describe_tool_gloss(tool: str, args: dict[str, Any] | None = None) -> str:
         if tool.startswith(prefix):
             return gloss
     return f"runs the {tool} tool"
+
+
+# ---------------------------------------------------------------------------
+# Plain-English ACTION lines (CLI-3 spec Part 2). describe_tool_action is the
+# args-aware, present-progressive sentence the default narrate display prints as
+# an `⏺` line — "what the agent is DOING", not the tool name. Specific patterns
+# exist for every v3 lead tool and the common v2 tools; anything else falls back
+# to describe_tool_gloss's table, and finally to "Running <tool>".
+# ---------------------------------------------------------------------------
+def _truncate(text: Any, limit: int) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def describe_tool_action(tool: str, args: dict[str, Any] | None = None) -> str:
+    """One-line, present-progressive description of what a lead tool call does."""
+    args = args or {}
+
+    if tool == "episode_run":
+        kind = str(args.get("kind") or "").strip() or "focused"
+        goal = _truncate(args.get("goal"), 90)
+        base = f"Launching a {kind} episode"
+        return f"{base}: {goal}" if goal else base
+    if tool == "episode_install_branch":
+        branch = str(args.get("branch") or "?")
+        as_name = str(args.get("as_name") or branch)
+        return f"Installing episode branch '{branch}' as '{as_name}'"
+    if tool == "repair_transaction":
+        branch = str(args.get("branch") or "?")
+        reading_id = str(args.get("reading_id") or "")
+        if reading_id:
+            return (
+                f"Attempting a validated repair of '{branch}' bound to reading "
+                f"{reading_id[:8]}"
+            )
+        return f"Attempting a validated repair of '{branch}' (newest bound reading)"
+    if tool == "branch_adjudicate":
+        branches = [str(b) for b in (args.get("branches") or [])]
+        joined = ", ".join(branches) if branches else "the current branches"
+        return f"Comparing branches: {joined}"
+    if tool == "experiment_submit":
+        exp_type = str(args.get("type") or "automated_solver")
+        branch = str(args.get("branch") or "?")
+        if args.get("resubmit"):
+            return f"Resubmitting experiment {str(args['resubmit'])[:8]}"
+        return f"Queuing a {exp_type} experiment on '{branch}'"
+    if tool == "experiment_collect":
+        experiment_id = str(args.get("experiment_id") or "")
+        if experiment_id:
+            return f"Collecting experiment {experiment_id[:8]} results"
+        return "Collecting background experiment results"
+    if tool == "meta_declare_solution":
+        return f"Declaring the solution on '{args.get('branch') or '?'}'"
+    if tool == "meta_declare_unsolved":
+        best = args.get("best_branch")
+        if best:
+            return f"Declaring the run unsolved (best: '{best}')"
+        return "Declaring the run unsolved"
+    if tool == "workspace_create_hypothesis_branch":
+        new_name = str(args.get("new_name") or "?")
+        mode = str(args.get("cipher_mode") or "hypothesis")
+        return f"Opening hypothesis branch '{new_name}' ({mode})"
+    if tool == "decode_show":
+        return f"Reading the decode of '{args.get('branch') or '?'}'"
+    if tool == "repair_agenda_list":
+        return "Reviewing the repair agenda"
+    if tool == "repair_agenda_update":
+        item_id = args.get("item_id", args.get("id"))
+        return f"Updating repair-agenda item {item_id}"
+    if tool == "act_set_model_variant":
+        variant = str(args.get("variant") or "?")
+        language = str(args.get("language") or "").strip()
+        prefix = f"{language} " if language else ""
+        return f"Switching the {prefix}language model to '{variant}'"
+
+    # Fallback: reuse the gloss table; a generic gloss ("runs the X tool")
+    # degrades to a present-progressive "Running X".
+    gloss = describe_tool_gloss(tool, args)
+    if gloss and gloss != f"runs the {tool} tool":
+        return gloss
+    return f"Running {tool}"
 
 
 class RawAgentRenderer:

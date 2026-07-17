@@ -20,12 +20,17 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agent.display import describe_tool_gloss, make_agent_renderer
+from agent.display import (
+    describe_tool_action,
+    describe_tool_gloss,
+    make_agent_renderer,
+    summarize_tool_call,
+)
 from agent.model_provider import ModelResponse, ModelUsage, TextBlock, ToolUseBlock
 from agent.narrate import NarrateAgentRenderer, _compact_args, _format_elapsed
 from investigation import sessions as sessions_mod
 from investigation.episodes import EpisodeSpec, run_episode
-from investigation.loop_v3 import run_v3
+from investigation.loop_v3 import _episode_result_digest, run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry, InvestigationState
 from models.alphabet import Alphabet
@@ -41,7 +46,18 @@ def _scripted_narrate(verbose: bool = False) -> tuple[NarrateAgentRenderer, io.S
     return NarrateAgentRenderer(stream, verbose=verbose), stream
 
 
+_LONG_NARRATION = (
+    "The frequency profile of this Borg page is consistent with a Latin "
+    "monoalphabetic substitution. I am going to start from the most common "
+    "symbol, map it to a vowel candidate, and then look for the pharmaceutical "
+    "vocabulary the corpus tends to contain before I commit any bulk mappings."
+)
+
+
 def test_narrate_renders_full_transcript_shape():
+    # CLI-3 default (human-first) contract: plain-English ⏺ action lines, full
+    # untruncated narration, ↳ outcome lines, NO numbered `tool(args)` lines,
+    # NO episode-internal tool names, and the analyzer-grade finish digest.
     r, stream = _scripted_narrate()
     r.start_test(
         "borg_0109v", "A borg page", model="gpt-5.5", max_iterations=9,
@@ -51,6 +67,7 @@ def test_narrate_renders_full_transcript_shape():
         "solver": "zenith_native", "status": "solved", "elapsed_seconds": 12.4,
     })
     r.event("iteration_start", {"iteration": 1})
+    r.event("agent_text", {"iteration": 1, "text": _LONG_NARRATION})
     r.event("tool_start", {"tool": "observe_frequency", "arguments": {"branch": "main"}})
     r.event("tool_call", {"tool": "observe_frequency",
                           "result_summary": {"branch": "main", "status": "ok"}})
@@ -79,29 +96,43 @@ def test_narrate_renders_full_transcript_shape():
     assert "(borg, la)" in out
     # Preflight
     assert "preflight" in out and "zenith_native" in out
-    # One indexed line per lead tool call
-    assert "1 │ observe_frequency" in out
-    assert "2 │ act_set_mapping" in out
-    # Cost ticker reflects the last-known snapshot on the 2nd tool line
+    # Full narration is present verbatim (no `…` truncation of the last words).
+    assert "before I commit any bulk mappings." in out
+    assert "…" not in out
+    # Plain-English ⏺ action lines (NOT tool names) — one per lead tool call.
+    assert "⏺ counts how often each symbol appears" in out
+    assert "⏺ commits one symbol→letter guess" in out
+    # Default suppresses the numbered `tool(args)` precise line entirely.
+    assert "observe_frequency(" not in out
+    assert "act_set_mapping(" not in out
+    assert "1 │" not in out
+    # ↳ outcome line under an action.
+    assert "↳" in out
+    # Cost ticker reflects the last-known snapshot on the 2nd tool line.
     assert "$0.14" in out
-    # Declaration + attestation block
+    # Declaration + attestation block.
     assert "✓ DECLARED solution on branch main" in out
     assert "attestation:" in out and "coherence 8/10" in out
-    # Result block + artifact path
+    # Result block + artifact path.
     assert "── result ──" in out
     assert "status=solved" in out and "char=95.7%" in out
     assert "artifact: artifacts/borg_0109v/abc.json" in out
+    # Analyzer-grade run digest.
+    assert "── digest ──" in out
+    assert "outcome    : solved — declared on main" in out
 
 
-def test_narrate_nested_episode_block_orders_parent_above_children():
+def test_narrate_verbose_nested_episode_block_orders_parent_above_children():
+    # F-1 nesting pin, at VERBOSE (episode internals are verbose-only now).
     # Event order mirrors the real v3 dispatch: tool_start(episode_run) fires
     # FIRST, then the forwarded episode_* children, then episode_complete, then
-    # the lead tool_call. The renderer must print the numbered parent line at
-    # tool_start so the ↳ children nest UNDER it (F-1 regression).
-    r, stream = _scripted_narrate()
+    # the lead tool_call. The parent's ⏺ action line must print at tool_start so
+    # the ↳ children nest UNDER it.
+    r, stream = _scripted_narrate(verbose=True)
     r.event("iteration_start", {"iteration": 2})
     r.event("tool_start", {"tool": "episode_run",
-                           "arguments": {"kind": "search", "branch": "main"}})
+                           "arguments": {"kind": "search", "goal": "search main",
+                                         "branch": "main"}})
     r.event("episode_turn_start", {"episode_id": "abcdef", "kind": "search", "turn": 1})
     r.event("episode_tool_call", {"episode_id": "abcdef", "kind": "search",
                                   "turn": 1, "tool": "search_hill_climb",
@@ -109,24 +140,52 @@ def test_narrate_nested_episode_block_orders_parent_above_children():
     r.event("episode_submit", {"episode_id": "abcdef", "kind": "search",
                                "turn": 2, "accepted": True})
     r.event("episode_complete", {"episode_id": "abcdef", "kind": "search",
-                                 "status": "ok", "calls": 3, "spend_usd": 0.21})
+                                 "status": "ok", "calls": 3, "spend_usd": 0.21,
+                                 "digest": "improved → main"})
     r.event("tool_call", {"tool": "episode_run", "result_summary": {}})
     out = stream.getvalue()
     lines = out.splitlines()
 
-    # The numbered parent line exists and precedes EVERY ↳ child line (ORDER,
-    # not just presence — the previous test missed the inversion).
+    # The parent ⏺ action line exists and precedes EVERY ↳ child line (ORDER).
     parent_idx = next(i for i, ln in enumerate(lines)
-                      if "│ episode_run(" in ln and ln.lstrip().startswith("1 "))
+                      if "⏺ Launching a search episode" in ln)
     child_indices = [i for i, ln in enumerate(lines) if "↳" in ln]
     assert child_indices, "expected nested ↳ child lines"
     assert parent_idx < min(child_indices), (
-        "parent episode_run line must come ABOVE its ↳ children"
+        "parent episode_run action line must come ABOVE its ↳ children"
     )
-    # The parent line is unnumbered-result (children carry the outcome).
+    # Verbose ALSO shows the numbered precise line and the episode internals.
+    assert "│ episode_run(" in out
     assert "search_hill_climb" in out
     assert "episode_submit → ok" in out
     assert "calls=3" in out and "$0.21" in out
+    assert "improved → main" in out
+
+
+def test_narrate_default_episode_shows_digest_hides_internals():
+    # Default: only the parent ⏺ action + the episode_complete digest ↳ line
+    # show; the episode-internal per-tool line is suppressed.
+    r, stream = _scripted_narrate()
+    r.event("tool_start", {"tool": "episode_run",
+                           "arguments": {"kind": "verify", "goal": "read main",
+                                         "branches": ["main"]}})
+    r.event("episode_tool_call", {"episode_id": "z", "kind": "verify", "turn": 1,
+                                  "tool": "decode_show", "arguments": {"branch": "main"}})
+    r.event("episode_complete", {
+        "episode_id": "z", "kind": "verify", "status": "ok", "calls": 2,
+        "spend_usd": 0.05,
+        "digest": 'NEGATIVE — "Latin-like but not real Latin" '
+                  "(lang 0.70, recoverability 0.25, damage distributed → broaden)",
+    })
+    r.event("tool_call", {"tool": "episode_run", "result_summary": {}})
+    out = stream.getvalue()
+    assert "⏺ Launching a verify episode: read main" in out
+    # episode-internal tool name is NOT shown at default.
+    assert "decode_show" not in out
+    assert "episode_run(" not in out
+    # digest outcome line present.
+    assert "↳ verify: NEGATIVE" in out
+    assert "calls=2" in out
 
 
 def test_narrate_finish_suppresses_accuracy_without_ground_truth():
@@ -150,6 +209,35 @@ def test_narrate_verbose_shows_full_args_nonverbose_truncates():
     assert "d=4" in _compact_args(args, verbose=True)
     non = _compact_args(args, verbose=False)
     assert "d=4" not in non and non.endswith("…")
+
+
+def test_narrate_verbose_shows_action_and_numbered_lines():
+    # CLI-3 verbose is strictly ADDITIVE: both the ⏺ action line AND the
+    # numbered `N │ tool(args)` precise line render for a lead tool call.
+    r, stream = _scripted_narrate(verbose=True)
+    r.event("tool_start", {"tool": "observe_frequency", "arguments": {"branch": "main"}})
+    r.event("tool_call", {"tool": "observe_frequency",
+                          "result_summary": {"branch": "main", "status": "ok"}})
+    out = stream.getvalue()
+    assert "⏺ counts how often each symbol appears" in out
+    assert "1 │ observe_frequency(branch=main)" in out
+    lines = out.splitlines()
+    action_idx = next(i for i, ln in enumerate(lines) if "⏺ counts how often" in ln)
+    numbered_idx = next(i for i, ln in enumerate(lines) if "1 │ observe_frequency(" in ln)
+    # The numbered line sits directly UNDER the action line.
+    assert action_idx < numbered_idx
+
+
+def test_narrate_default_omits_numbered_line():
+    # The same call at default: ⏺ action line, but NO numbered precise line.
+    r, stream = _scripted_narrate()
+    r.event("tool_start", {"tool": "observe_frequency", "arguments": {"branch": "main"}})
+    r.event("tool_call", {"tool": "observe_frequency",
+                          "result_summary": {"branch": "main", "status": "ok"}})
+    out = stream.getvalue()
+    assert "⏺ counts how often each symbol appears" in out
+    assert "observe_frequency(" not in out
+    assert "1 │" not in out
 
 
 def test_format_elapsed_minutes_and_seconds():
@@ -814,39 +902,339 @@ def test_gloss_coverage_no_gaps_for_common_tools_and_fixture():
         assert gloss and gloss != generic_episode
 
 
-def test_narrate_gloss_first_use_only():
+def test_narrate_action_line_per_call_no_gloss():
+    # CLI-3 replaced the first-use `·` gloss with a per-call ⏺ action line; the
+    # action line prints on EVERY call and there is no dim `·` gloss line.
     r, stream = _scripted_narrate()
     for _ in range(2):
         r.event("tool_start", {"tool": "observe_frequency", "arguments": {"branch": "main"}})
         r.event("tool_call", {"tool": "observe_frequency",
                               "result_summary": {"branch": "main"}})
     out = stream.getvalue()
-    # Gloss printed exactly once (first use), as a dim indented `·` line.
-    assert out.count("counts how often each symbol appears") == 1
-    assert "      · counts how often each symbol appears" in out
-    # Two numbered tool lines still render (repeat renders compactly).
-    assert "1 │ observe_frequency" in out and "2 │ observe_frequency" in out
+    # Action line printed once per call (twice), never as a `·` gloss line.
+    assert out.count("⏺ counts how often each symbol appears") == 2
+    assert "· counts how often each symbol appears" not in out
+    # No numbered precise line at default.
+    assert "observe_frequency(" not in out
 
 
-def test_narrate_gloss_unmapped_falls_back_generic():
+def test_narrate_action_line_unmapped_falls_back_running():
+    # An unmapped tool with no gloss falls back to "Running <tool>".
     r, stream = _scripted_narrate()
+    r.event("tool_start", {"tool": "quantum_flux_capacitor", "arguments": {}})
     r.event("tool_call", {"tool": "quantum_flux_capacitor", "result_summary": {}})
-    assert "· runs the quantum_flux_capacitor tool" in stream.getvalue()
+    assert "⏺ Running quantum_flux_capacitor" in stream.getvalue()
 
 
-def test_narrate_gloss_under_parent_preserves_episode_nesting():
-    # The gloss for a PARENT tool (episode_run) must print directly under the
-    # numbered parent line and ABOVE its ↳ children, and vary by kind.
-    r, stream = _scripted_narrate()
+def test_narrate_action_line_under_parent_preserves_episode_nesting():
+    # A PARENT tool (episode_run) prints its ⏺ action line at tool_start, ABOVE
+    # its ↳ children (F-1), and the action varies by kind. Verbose so the
+    # episode-internal ↳ child line is visible.
+    r, stream = _scripted_narrate(verbose=True)
     r.event("tool_start", {"tool": "episode_run",
-                           "arguments": {"kind": "verify", "branch": "main"}})
+                           "arguments": {"kind": "verify", "goal": "read main",
+                                         "branches": ["main"]}})
     r.event("episode_tool_call", {"episode_id": "z", "kind": "verify", "turn": 1,
                                   "tool": "decode_show", "arguments": {"branch": "main"}})
     r.event("episode_complete", {"episode_id": "z", "kind": "verify",
-                                 "status": "ok", "calls": 1})
+                                 "status": "ok", "calls": 1, "digest": "POSITIVE — ok"})
     r.event("tool_call", {"tool": "episode_run", "result_summary": {}})
     lines = stream.getvalue().splitlines()
-    parent_idx = next(i for i, l in enumerate(lines) if "│ episode_run(" in l)
-    gloss_idx = next(i for i, l in enumerate(lines) if "· sends the candidate text" in l)
+    action_idx = next(i for i, l in enumerate(lines)
+                      if "⏺ Launching a verify episode: read main" in l)
     child_idx = next(i for i, l in enumerate(lines) if "↳" in l)
-    assert parent_idx < gloss_idx < child_idx
+    assert action_idx < child_idx
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 2 — describe_tool_action (plain-English action lines)
+# ---------------------------------------------------------------------------
+def test_describe_tool_action_v3_lead_patterns():
+    assert describe_tool_action(
+        "episode_run", {"kind": "verify", "goal": "judge whether main reads as Latin"}
+    ) == "Launching a verify episode: judge whether main reads as Latin"
+    assert describe_tool_action(
+        "episode_install_branch", {"branch": "cand", "as_name": "kept"}
+    ) == "Installing episode branch 'cand' as 'kept'"
+    assert describe_tool_action(
+        "repair_transaction", {"branch": "auto", "reading_id": "8c1a2b3c4d"}
+    ) == "Attempting a validated repair of 'auto' bound to reading 8c1a2b3c"
+    assert describe_tool_action(
+        "branch_adjudicate", {"branches": ["auto", "alt"]}
+    ) == "Comparing branches: auto, alt"
+    assert describe_tool_action(
+        "experiment_submit", {"type": "automated_solver", "branch": "main"}
+    ) == "Queuing a automated_solver experiment on 'main'"
+    assert describe_tool_action(
+        "experiment_collect", {"experiment_id": "deadbeef12"}
+    ) == "Collecting experiment deadbeef results"
+    assert describe_tool_action(
+        "meta_declare_solution", {"branch": "auto"}
+    ) == "Declaring the solution on 'auto'"
+    assert describe_tool_action(
+        "meta_declare_unsolved", {"best_branch": "auto"}
+    ) == "Declaring the run unsolved (best: 'auto')"
+    assert describe_tool_action(
+        "workspace_create_hypothesis_branch",
+        {"new_name": "hb", "cipher_mode": "periodic_polyalphabetic"},
+    ) == "Opening hypothesis branch 'hb' (periodic_polyalphabetic)"
+    assert describe_tool_action("decode_show", {"branch": "main"}) == \
+        "Reading the decode of 'main'"
+    assert describe_tool_action("repair_agenda_list", {}) == "Reviewing the repair agenda"
+    assert describe_tool_action("repair_agenda_update", {"item_id": 4}) == \
+        "Updating repair-agenda item 4"
+    assert describe_tool_action(
+        "act_set_model_variant", {"variant": "historical_1600_1899"}
+    ) == "Switching the language model to 'historical_1600_1899'"
+
+
+def test_describe_tool_action_goal_truncated_to_90():
+    long_goal = "x" * 200
+    out = describe_tool_action("episode_run", {"kind": "search", "goal": long_goal})
+    assert out.startswith("Launching a search episode: ")
+    assert out.endswith("…")
+    # 90-char cap on the goal portion.
+    assert len(out.split(": ", 1)[1]) == 90
+
+
+def test_describe_tool_action_fallbacks():
+    # No specific pattern, but a known gloss -> the gloss text.
+    assert describe_tool_action("observe_frequency") == \
+        describe_tool_gloss("observe_frequency")
+    # No pattern and only the generic gloss -> "Running <tool>".
+    assert describe_tool_action("quantum_flux_capacitor") == \
+        "Running quantum_flux_capacitor"
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 2 — blocked-reason phrasing in summarize_tool_call
+# ---------------------------------------------------------------------------
+def test_summarize_tool_call_blocked_reason_phrasing():
+    reasons = [
+        "attestation_not_positive", "attestation_required", "attestation_stale",
+        "repair_transaction_not_ready", "episode_kind_not_available",
+        "lead_tool_not_available", "repair_saturated", "pair_evidence_failed",
+    ]
+    for reason in reasons:
+        out = summarize_tool_call("meta_declare_solution",
+                                  {"status": "blocked", "reason": reason})
+        assert out.startswith("meta_declare_solution blocked:")
+        # a known code becomes prose, never the raw snake_case token.
+        assert reason not in out
+    # The marquee case echoes the reader verdict + how-guidance sentence.
+    out = summarize_tool_call("meta_declare_solution", {
+        "status": "blocked", "reason": "attestation_not_positive",
+        "how": "The fresh independent reading does not accept this candidate. "
+               "Follow the workflow state.",
+    })
+    assert "declaration needs a fresh positive attestation" in out
+    assert "reader does not accept as solution" in out
+    assert "The fresh independent reading does not accept this candidate." in out
+    # An unknown reason falls back to the raw reason string.
+    out = summarize_tool_call("x", {"status": "blocked", "reason": "weird_new_reason"})
+    assert "blocked: weird_new_reason" in out
+
+
+def test_summarize_tool_call_duplicate_suppressed():
+    out = summarize_tool_call("decode_show", {"status": "duplicate_suppressed"})
+    assert out == "decode_show duplicate — already done against unchanged content"
+
+
+def test_summarize_tool_call_ok_status_unchanged():
+    # Non-blocked statuses keep the existing "(status)" rendering.
+    out = summarize_tool_call("act_set_mapping",
+                              {"status": "ok", "branch": "main", "from": "S1", "to": "E"})
+    assert "act_set_mapping" in out and "(ok)" in out and "S1 -> E" in out
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 3 — _episode_result_digest (pure, per kind)
+# ---------------------------------------------------------------------------
+def test_episode_result_digest_non_ok():
+    assert _episode_result_digest("search", "failed", "provider_error", None) == \
+        "search failed: provider_error"
+    # missing failure_reason -> status word.
+    assert _episode_result_digest("verify", "error", None, {}) == "verify failed: error"
+
+
+def test_episode_result_digest_verify_positive_and_negative():
+    negative = _episode_result_digest("verify", "ok", None, {
+        "reader_accepts_as_solution": False, "gloss": "Latin-like but not real Latin",
+        "target_language_confidence": 0.70, "semantic_recoverability": 0.25,
+        "damage_scope": "distributed", "repairability": "broaden",
+    })
+    assert negative.startswith('NEGATIVE — "Latin-like but not real Latin"')
+    assert "lang 0.70" in negative and "recoverability 0.25" in negative
+    assert "damage distributed → broaden" in negative
+    positive = _episode_result_digest("verify", "ok", None, {
+        "reader_accepts_as_solution": True, "gloss": "reads as real Latin",
+        "target_language_confidence": 0.95, "semantic_recoverability": 0.9,
+        "damage_scope": "none", "repairability": "none",
+    })
+    assert positive.startswith("POSITIVE")
+
+
+def test_episode_result_digest_verify_legacy_dict():
+    # Legacy attestation dict (no reader_accepts_as_solution) uses the fallback
+    # predicate: reader_accepts AND coherence >= threshold -> POSITIVE.
+    legacy_pos = _episode_result_digest("verify", "ok", None, {
+        "reader_accepts": True, "coherence": 9, "gloss": "ok",
+    })
+    assert legacy_pos.startswith("POSITIVE")
+    legacy_neg = _episode_result_digest("verify", "ok", None, {
+        "reader_accepts": False, "coherence": 2, "gloss": "no",
+    })
+    assert legacy_neg.startswith("NEGATIVE")
+
+
+def test_episode_result_digest_other_kinds():
+    assert _episode_result_digest("search", "ok", None, {
+        "improved": True, "best_branch": "alt", "notes": "hill climb found a peak",
+    }) == "improved → alt — hill climb found a peak"
+    assert _episode_result_digest("search", "ok", None, {
+        "improved": False, "best_branch": None, "notes": "",
+    }) == "no improvement"
+    assert _episode_result_digest("reading", "ok", None, {
+        "reading_text": "PLERISQUE VERO", "overall_confidence": 0.7,
+    }) == 'proposed "PLERISQUE VERO" (confidence 0.70)'
+    compare = _episode_result_digest("compare", "ok", None, {
+        "winner": "alt", "ranking": ["alt", "main"],
+    })
+    assert compare.startswith("winner alt") and "ranked: alt, main" in compare
+    assert _episode_result_digest("repair", "ok", None, {
+        "applied": True, "edits": ["e1", "e2"], "best_branch": "alt_repair_3",
+    }) == "applied 2 edit(s) → alt_repair_3"
+    assert _episode_result_digest("repair", "ok", None, {"applied": False}) == \
+        "did not apply"
+    assert _episode_result_digest("survey", "ok", None, {
+        "findings": ["monoalphabetic Latin substitution"],
+    }) == "monoalphabetic Latin substitution"
+    assert _episode_result_digest("survey", "ok", None, {"findings": []}) == \
+        "survey complete"
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 3 — workflow_state_changed emitted only on transitions
+# ---------------------------------------------------------------------------
+def test_run_v3_workflow_state_changed_only_on_transition():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    events: list[tuple] = []
+    # Two turns of a no-op read: the phase stays "searching" both turns, so
+    # exactly ONE workflow_state_changed fires (the initial None -> searching);
+    # the unchanged second turn emits nothing.
+    scripts = [[ToolUseBlock(id="t", name="decode_show", input={"branch": "main"})]]
+    session = _ScriptedSession(scripts)
+    run_v3(ct, session=session, language="en", max_iterations=2,
+           cipher_id="v3_wf", on_event=lambda ev, pl: events.append((ev, pl)))
+
+    transitions = [pl for ev, pl in events if ev == "workflow_state_changed"]
+    assert len(transitions) == 1
+    assert transitions[0]["from"] is None
+    assert transitions[0]["to"] == "searching"
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 3 — agent_text full-text emit (<= 4000, not 400)
+# ---------------------------------------------------------------------------
+def test_run_v3_agent_text_full_text_emit():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    events: list[tuple] = []
+    long_text = "S" + ("o " * 700) + "END-MARKER"  # > 400 chars, < 4000
+    scripts = [[
+        TextBlock(text=long_text),
+        ToolUseBlock(id="t", name="decode_show", input={"branch": "main"}),
+    ]]
+    session = _ScriptedSession(scripts)
+    run_v3(ct, session=session, language="en", max_iterations=1,
+           cipher_id="v3_text", on_event=lambda ev, pl: events.append((ev, pl)))
+    text = next(pl["text"] for ev, pl in events if ev == "agent_text")
+    assert len(text) > 400  # the old 400 cap would have truncated this
+    assert len(text) <= 4000
+    assert "END-MARKER" in text
+
+
+def test_run_v3_agent_text_capped_at_4000():
+    ct, _alpha = _caesar_cipher("THE DOG")
+    events: list[tuple] = []
+    scripts = [[
+        TextBlock(text="Z" * 5000),
+        ToolUseBlock(id="t", name="decode_show", input={"branch": "main"}),
+    ]]
+    session = _ScriptedSession(scripts)
+    run_v3(ct, session=session, language="en", max_iterations=1,
+           cipher_id="v3_cap", on_event=lambda ev, pl: events.append((ev, pl)))
+    text = next(pl["text"] for ev, pl in events if ev == "agent_text")
+    assert len(text) == 4000
+
+
+# ---------------------------------------------------------------------------
+# CLI-3 Part 4 — finish digest from a synthetic event stream
+# ---------------------------------------------------------------------------
+def test_narrate_finish_digest_from_event_stream():
+    r, stream = _scripted_narrate()
+    # A synthetic run: two episodes, a verify attestation, a rejected/blocked
+    # declaration, transient problems, and an honest best-effort terminal.
+    r.event("workspace_snapshot", {
+        "branch": "auto", "total_tokens": 10000, "estimated_cost_usd": 0.5,
+        "branch_roles": {
+            "best_scored_branch": "auto", "workflow_branch": "auto",
+            "latest_installed_branch": "alt_repair_3",
+            "declared_or_selected_branch": "auto",
+        },
+    })
+    r.event("episode_complete", {
+        "episode_id": "e1", "kind": "verify", "status": "ok", "calls": 4,
+        "spend_usd": 0.2,
+        "digest": 'NEGATIVE — "Latin-like but not acceptable" '
+                  "(lang 0.70, recoverability 0.25, damage distributed → broaden)",
+    })
+    r.event("episode_complete", {
+        "episode_id": "e2", "kind": "compare", "status": "ok", "calls": 2,
+        "spend_usd": 0.1, "digest": "winner auto",
+    })
+    r.event("tool_call", {"tool": "experiment_submit",
+                          "result_summary": {"status": "ok"}})
+    r.event("tool_call", {"tool": "meta_declare_solution",
+                          "result_summary": {"status": "blocked",
+                                             "reason": "attestation_not_positive"}})
+    r.event("rate_limit_retry", {"attempt": 1, "delay_seconds": 2})
+    r.event("lead_truncation_retry", {"new_max_tokens": 16384})
+    r.event("best_effort_selected", {"branch": "auto", "selection_tier": "quad",
+                                     "terminal_status": "unsolved"})
+    r.finish(SimpleNamespace(
+        status="unsolved", char_accuracy=0.8, word_accuracy=0.4,
+        iterations_used=6, estimated_cost_usd=1.5, elapsed_seconds=90.0,
+        artifact_path="artifacts/x/run.json", error_message="", final_summary="",
+    ))
+    out = stream.getvalue()
+    assert "── digest ──" in out
+    # outcome derived from the best-effort terminal event.
+    assert "best-effort branch 'auto' retained" in out
+    # branch line shows the divergent installed role.
+    assert "installed=alt_repair_3" in out
+    # attestation reuses the latest verify digest.
+    assert 'attestation: NEGATIVE — "Latin-like but not acceptable"' in out
+    # episodes counted by kind + queued experiments.
+    assert "episodes   : 2 (compare 1 ok, verify 1 ok)" in out
+    assert "experiments: 1 queued" in out
+    # problems line lists the transient retries.
+    assert "1 rate-limit retry" in out and "1 truncation retry" in out
+    # artifact line with the inspect hint.
+    assert "artifact   : artifacts/x/run.json" in out
+    assert "inspect_artifact.py" in out
+
+
+def test_narrate_finish_digest_omits_problems_line_when_clean():
+    r, stream = _scripted_narrate()
+    r.event("declared_solution", {"branch": "main", "confidence": "high"})
+    r.finish(SimpleNamespace(
+        status="solved", char_accuracy=0.99, word_accuracy=0.95,
+        iterations_used=4, estimated_cost_usd=1.0, elapsed_seconds=30.0,
+        artifact_path="a.json", error_message="", final_summary="",
+    ))
+    out = stream.getvalue()
+    assert "outcome    : solved — declared on main" in out
+    assert "problems   :" not in out
+    # No episodes / verify -> attestation none, episodes 0.
+    assert "attestation: none" in out
+    assert "episodes   : 0" in out

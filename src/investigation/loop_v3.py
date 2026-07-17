@@ -295,6 +295,92 @@ def _tool_status(result: str) -> str:
     return "ok"
 
 
+def _episode_result_digest(
+    kind: str,
+    status: str,
+    failure_reason: str | None,
+    result: Any,
+) -> str:
+    """CLI-3: one-line plain-English outcome for a finished episode.
+
+    Built lead-side from the episode's structured result so the narrate display
+    can render an outcome (`↳ verify: NEGATIVE — …`) instead of a bare status.
+    Pure + module-level so it is unit-testable in isolation. Tolerant of missing
+    keys (old/partial result dicts).
+    """
+    kind = str(kind or "episode")
+    if status != "ok":
+        reason = str(failure_reason or status or "no result")
+        return f"{kind} failed: {reason}"
+    data = result if isinstance(result, dict) else {}
+
+    if kind == "verify":
+        from investigation.state import attestation_is_positive
+
+        positive = attestation_is_positive(data)
+        verdict = "POSITIVE" if positive else "NEGATIVE"
+        gloss = _truncate_text(data.get("gloss"), 90)
+        lang = _fmt_unit(data.get("target_language_confidence"))
+        recov = _fmt_unit(data.get("semantic_recoverability"))
+        scope = str(data.get("damage_scope") or "?")
+        repairability = str(data.get("repairability") or "?")
+        head = f'{verdict} — "{gloss}"' if gloss else verdict
+        return (
+            f"{head} (lang {lang}, recoverability {recov}, "
+            f"damage {scope} → {repairability})"
+        )
+
+    if kind == "search":
+        best = data.get("best_branch")
+        notes = _truncate_text(data.get("notes"), 80)
+        if data.get("improved") and best:
+            head = f"improved → {best}"
+        else:
+            head = "no improvement"
+        return f"{head} — {notes}" if notes else head
+
+    if kind == "reading":
+        text = _truncate_text(data.get("reading_text"), 60)
+        conf = data.get("overall_confidence")
+        conf_str = _fmt_unit(conf) if conf is not None else "?"
+        return f'proposed "{text}" (confidence {conf_str})'
+
+    if kind == "compare":
+        winner = data.get("winner")
+        ranking = [str(b) for b in (data.get("ranking") or [])][:3]
+        head = f"winner {winner}" if winner else "no winner"
+        if ranking:
+            head += f" (ranked: {', '.join(ranking)})"
+        return head
+
+    if kind == "repair":
+        if data.get("applied"):
+            n = len(data.get("edits") or [])
+            best = data.get("best_branch") or "?"
+            return f"applied {n} edit(s) → {best}"
+        return "did not apply"
+
+    if kind == "survey":
+        findings = data.get("findings") or []
+        if findings:
+            return _truncate_text(findings[0], 90)
+        return "survey complete"
+
+    return f"{kind} complete"
+
+
+def _truncate_text(text: Any, limit: int) -> str:
+    s = " ".join(str(text or "").split())
+    return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def _fmt_unit(value: Any) -> str:
+    try:
+        return f"{float(value):.2f}"
+    except (TypeError, ValueError):
+        return "?"
+
+
 # M5.3 Slice 4: the scalar-decrease acceptance policy hook. ``None`` = default
 # deny (reject any net scalar decrease). No worker-improvisable policy is
 # implemented in M5.3; a tested, ground-truth-free policy object is an M5.4
@@ -866,6 +952,9 @@ def run_v3(
             "episode_id": result.episode_id, "kind": result.kind,
             "status": result.status, "calls": result.tool_call_count,
             "spend_usd": spend_usd,
+            "digest": _episode_result_digest(
+                result.kind, result.status, result.failure_reason, result.result
+            ),
         }, outer_iteration=turn)
         payload = {
             "episode_id": result.episode_id,
@@ -1085,6 +1174,9 @@ def run_v3(
             "episode_id": result.episode_id, "kind": result.kind,
             "status": result.status, "calls": result.tool_call_count,
             "spend_usd": spend_usd,
+            "digest": _episode_result_digest(
+                result.kind, result.status, result.failure_reason, result.result
+            ),
         }, outer_iteration=turn)
         payload = {
             "episode_id": result.episode_id,
@@ -2037,6 +2129,10 @@ def run_v3(
     lead_max_tokens = max_tokens
     truncation_retries_left = 2
     no_tool_nudges_left = 1
+    # CLI-3: surface workflow-phase transitions live. Compared turn-over-turn;
+    # a change emits `workflow_state_changed` BEFORE the send so the transition
+    # appears where it happened (e.g. searching → repair_exhausted).
+    prev_workflow_phase: str | None = None
     for turn in range(first_turn, max_iterations + 1):
         state.turn = turn
         workspace.set_iteration(turn)
@@ -2092,6 +2188,20 @@ def run_v3(
                 outer_iteration=turn,
             )
 
+        # CLI-3: emit a workflow-phase transition when the phase changed since
+        # the previous turn (the menu is the same shared helper the context
+        # builder uses). Emitted before the send so the transition renders where
+        # it occurred; `repair_exhausted` and other mid-run states become live.
+        menu = workflow_state(state, executor)
+        current_workflow_phase = str(menu.get("state") or "")
+        if current_workflow_phase != prev_workflow_phase:
+            emit("workflow_state_changed", {
+                "from": prev_workflow_phase,
+                "to": current_workflow_phase,
+                "branch": menu.get("branch"),
+            }, outer_iteration=turn)
+            prev_workflow_phase = current_workflow_phase
+
         try:
             # Transient 429s get a few short, bounded retries (Retry-After
             # honored); quota exhaustion and persistent limits still land in
@@ -2131,9 +2241,13 @@ def run_v3(
         if turn == 1 and text_parts:
             artifact.plan = "\n\n".join(text_parts)
         if text_parts:
+            # CLI-3: the narration is now the primary human display line; join
+            # ALL text blocks and raise the emit cap from 400 to 4000 chars so
+            # multi-sentence turns are not visibly truncated. Full text remains
+            # in artifact.messages.
             emit(
                 "agent_text",
-                {"iteration": turn, "text": text_parts[0][:400]},
+                {"iteration": turn, "text": "\n\n".join(text_parts)[:4000]},
                 outer_iteration=turn,
             )
 

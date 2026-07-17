@@ -381,11 +381,12 @@ def test_narrative_replay_real_fixture_has_structure(tmp_path):
     out = _render_narrative(artifact, tmp_path)
     # Header
     assert "▶" in out
-    # Numbered tool lines (reconstructed from tool_calls)
-    assert "1 │ observe_frequency" in out
-    assert "2 │ observe_isomorph_clusters" in out
-    # Part-1 gloss line applies automatically (same renderer)
-    assert "· counts how often each symbol appears" in out
+    # CLI-3 default: plain-English ⏺ action lines (reconstructed from tool_calls),
+    # NOT numbered `tool(args)` lines and NOT the old first-use `·` gloss line.
+    assert "⏺ counts how often each symbol appears" in out
+    assert "⏺ finds repeated symbol patterns" in out
+    assert "1 │ observe_frequency" not in out
+    assert "· counts how often each symbol appears" not in out
     # Result block + artifact path (= the input path)
     assert "── result ──" in out
     assert f"artifact: {tmp_path / 'art.json'}" in out
@@ -439,15 +440,16 @@ def test_narrative_v3_synthetic_events_replay_with_nesting_and_decode(tmp_path):
              "payload": {"branch": "main", "confidence": "high"}},
         ],
     }
-    out = _render_narrative(artifact, tmp_path)
+    # Verbose so the episode-internal ↳ child line is visible (CLI-3 moves
+    # episode internals behind the verbose flag).
+    out = _render_narrative(artifact, tmp_path, verbose=True)
     lines = out.splitlines()
     # Agent self-narration line rendered.
     assert "“ Forking to test a substitution hypothesis." in out
-    # Episode nesting intact: parent above its gloss above its ↳ child.
-    parent_idx = next(i for i, l in enumerate(lines) if "│ episode_run(" in l)
-    gloss_idx = next(i for i, l in enumerate(lines) if "· spins off a helper to run a search" in l)
+    # Episode nesting intact: the ⏺ parent action line precedes its ↳ child.
+    parent_idx = next(i for i, l in enumerate(lines) if "⏺ Launching a search episode" in l)
     child_idx = next(i for i, l in enumerate(lines) if "↳" in l and "search_hill_climb" in l)
-    assert parent_idx < gloss_idx < child_idx
+    assert parent_idx < child_idx
     # Decode-progress line intact.
     assert "decode [main]" in out and "THE QUICK BROWN FOX" in out
     # Declaration + result block with the real accuracy.
@@ -465,7 +467,8 @@ def test_narrative_cli_main_end_to_end(tmp_path, monkeypatch, capsys):
     inspect_artifact.main()
     out = capsys.readouterr().out
     assert "▶" in out
-    assert "1 │ observe_frequency" in out
+    assert "⏺ counts how often each symbol appears" in out
+    assert "1 │ observe_frequency" not in out
     assert "── result ──" in out
 
 
