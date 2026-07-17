@@ -22,10 +22,15 @@ or standing instructions supply the investigative methodology. They are
 complementary, not competing alternatives.
 
 The proposal includes a cheap, falsifiable experiment that decides how much
-custom loop we should keep maintaining. **No existing v3 nudge, gate, or
-barrier is removed in MCP v1 merely because it looks inelegant.** Phase 0 first
-records why each control exists, the artifact or test that motivated it, and
-the evidence required to soften or retire it.
+custom loop we should keep maintaining. **No invariant or evidence gate is
+removed in MCP v1 merely because it looks inelegant.** By design, though, v1
+does soften a *named, pre-registered* set of investigative barriers — the
+scalar-selected workflow focus, the phase/action restrictions, the
+verifier-to-route thresholds, and `next_steps` — from the hard blocks they are
+today in `_dispatch_tool` to advisory recommendations, and only as a
+ledger-recorded change (§3.3), never a silent one. Phase 0 first records why
+each control exists, the artifact or test that motivated it, and the evidence
+required to soften or retire it.
 
 ## 2. Motivation
 
@@ -37,7 +42,7 @@ provide.
 
 Built or fixed by hand, recently, in our loop:
 
-- per-run cost ceilings and per-episode call budgets (M5.3 Slices 1);
+- per-run cost ceilings and per-episode call budgets (M5.3 Slice 1);
 - 429 rate-limit retry with Retry-After handling (K3 incident);
 - output-truncation resilience for reasoning models (K3 incident);
 - tool-less-turn nudges;
@@ -76,8 +81,8 @@ continues enforcing the invariants that experiments proved necessary.
    model-driven loop these degrade into suggestions unless enforced
    server-side.
 4. **Cost economics** (weakest pillar): v3's rebuilt-context runs are ~60%
-   cheaper per run than transcript accumulation — but see §3: subscriptions
-   mostly delete this argument for exploratory work.
+   cheaper per run than transcript accumulation (v2 $4.86 vs v3 $1.96, n=11) —
+   but see §2.3: subscriptions mostly delete this argument for exploratory work.
 
 ### 2.3 The economic driver
 
@@ -169,8 +174,15 @@ regardless of which client/model calls:
   (evidence binding, reject-before-install, default-deny on scalar decrease).
 - Saturation counters and the `repair_exhausted` latch (Slice 2) apply.
 
-MCP v1 begins at behavioral parity with the current host. Before Phase A, each
-control is entered in a **policy provenance ledger** with:
+MCP v1 is two-tier, not uniform behavioral parity. It holds **exact behavioral
+parity** for the invariants and evidence-management mechanisms below. For the
+named investigative policies — scalar-selected workflow focus, phase/action
+restrictions, verifier-to-route thresholds, and `next_steps` — v1 deliberately
+**diverges to advisory form**, softening what are hard blocks in
+`_dispatch_tool` today. That divergence is **pre-registered and
+ledger-recorded**, never silent: it happens only for policies whose ledger
+entry has classified them advisory and recorded the evidence for the change.
+Before Phase A, each control is entered in a **policy provenance ledger** with:
 
 - policy id and current enforcement point;
 - original failure mode and motivating artifact/test;
@@ -236,17 +248,26 @@ surface renamed:
   investigations visible to that capability (§4.3). Benchmark-backed
   investigations are provisioned by the trusted capsule launcher, not created
   by passing a benchmark id or filesystem path through MCP.
-- `observe_overview`, `observe_diagnosis`, `decode_show` — compact reads.
+- `observe_overview` (a thin **new** wrapper over existing reads),
+  `observe_diagnosis`, `decode_show` — compact reads.
 - `hypothesis_branch_create` / `update` / `reject` / `next_steps` — board.
 - `candidate_list` / `candidate_show` / `candidate_compare_signals` — a
   bounded, diverse portfolio with provenance and family-specific evidence;
-  no single scalar silently defines the active candidate.
+  no single scalar silently defines the active candidate
+  (`candidate_compare_signals` defers to v1.1; §7.2).
 - `experiment_submit` / `experiment_collect` — background solver compute.
 - `reading_record` / `comparison_record` — persist client-authored readings and
   rankings, hash-bound to the candidate content. A comparison records
-  `best_partial` separately from `accepts_as_solution`.
+  `best_partial` separately from `accepts_as_solution`. (v1 ships basic
+  hash-bound storage; the richer integration extras defer to v1.1; §7.2.)
 - `repair_hypotheses_test` / `repair_transaction` — deterministic hypothesis
-  compilation plus the validated install path.
+  compilation plus the validated install path. Note the divergence from v3:
+  MCP's `repair_transaction` is the Slice-4 host-validated acceptance-and-install
+  logic applied to **client-compiled** finalists — a new code path. Today's
+  `_dispatch_repair_transaction` instead runs an **API-billed repair episode**
+  internally; that variant stays v3-only. The deterministic compile
+  (`hypothesis_test_words`) and the acceptance checks already exist; the new glue
+  is the install path divorced from an in-host repair episode.
 - `request_independent_verification` — the one mandatory server-side reader
   operation (§3.4).
 - `branch_adjudicate` — deterministic score/evidence comparison, not a hidden
@@ -331,6 +352,26 @@ arbitrary path parameters. Ground truth is loaded later by the grading layer
 after terminal submission; it is never mounted into or returned to the
 model-facing client/server pair.
 
+Directory restriction alone is not enough; two further leak paths must be
+closed:
+
+- **Client global config/memory.** A client reads state outside the run
+  directory — Claude Code's per-project memory (which today records benchmark
+  accuracy/cost figures) and Codex's `~/.codex` global instructions among them.
+  The capsule must therefore run with an **isolated HOME/profile**, not just a
+  scoped working directory, so no global memory or config can leak target facts
+  in.
+- **Network egress.** A client with network access can fetch published
+  solutions for a famous cipher. §6 runs must execute with **no network**, or a
+  strict allowlist that excludes solution sources. Residual **model
+  memorization** of famous solutions remains a confound even with the network
+  closed; it is mitigated (not eliminated) by the newly generated, opaque-id
+  held-out analogs in §6.
+
+Because of these paths, the container — isolated HOME, no/allowlisted network,
+only the capsule directory mounted — is **mandatory for every §6 run**, not an
+optional hardening step.
+
 "Please do not inspect the benchmark" is not an acceptable firewall for the
 §6 experiment. Doctrine is useful for ordinary research hygiene, but the
 direction-setting comparison requires this technical boundary.
@@ -348,7 +389,8 @@ direction-setting comparison requires this technical boundary.
 
 ## 6. The falsifiable experiment (decision gate)
 
-Before implementing the server, complete **Phase 0: policy archaeology**. The
+Before implementing the server, complete **Phase 0: policy archaeology** (the
+same Phase 0 scoped in the phased plan, §8). The
 policy provenance ledger must cover at least context-family discipline,
 verification gating, repeated-call suppression, repair acceptance,
 saturation, workflow routing, and scalar candidate focus. MCP v1 then retains
@@ -363,15 +405,17 @@ payload and allowed context; only the post-run grading layer sees ground truth:
 - **Arms**: (1) Claude Code + decipher-mcp (Claude, Max); (2) Codex +
   decipher-mcp (gpt-5.x, Pro); (3) v3 harness (gpt-5.5, API) as baseline.
 - **Cases** (the agent-critical set): `borg_single_B_borg_0109v` (the fixed v3
-  run reached 91.0/66.7 unsolved at $1.43),
-  `copiale_single_B_copiale_p017` (54.6 v2 vs 75.4 v3), and the Quagmire-3
-  synthetic (`synth_en_97q3nb_s50`). Add at least two newly generated,
-  opaque-id held-out analogs: one sparse-null substitution and one
-  wrong-family lure. Famous or repository-visible cases alone are not adequate
-  evidence. Preflight and local-solver access must be identical across arms;
-  either all arms receive the same initial candidate or all must invoke the
-  same MCP/local experiment themselves. Do not compare a no-preflight arm to
-  the cited preflight-assisted baseline.
+  run reached 91.0/66.7 unsolved at $1.43, **preflight-off**),
+  `copiale_single_B_copiale_p017` (**char** accuracy 54.6 v2 vs 75.4 v3; word
+  accuracy is 0 in both loops), and the Quagmire-3 synthetic
+  (`synth_en_97q3nb_s50`). Add at least two newly generated, opaque-id held-out
+  analogs: one sparse-null substitution and one wrong-family lure. Famous or
+  repository-visible cases alone are not adequate evidence.
+- **Preflight-parity rule** (standalone): preflight and local-solver access
+  must be identical across arms — either all arms receive the same initial
+  candidate, or all must invoke the same MCP/local experiment themselves. The
+  cited borg_0109v baseline is a **preflight-off** run, so do not compare a
+  preflight-on arm to it (or vice versa) without re-baselining.
 - **Metrics**: char/word accuracy, API dollars, subscription capacity where
   observable, tool/model calls, wall clock, strongest post-hoc candidate ever
   generated versus retained, family/refinement coverage, and qualitative
@@ -379,10 +423,12 @@ payload and allowed context; only the post-run grading layer sees ground truth:
   violations and server interventions (blocked declarations, duplicate calls,
   unsupported edits), not only terminal compliance — a perfect final gate
   score can conceal a badly disciplined client repeatedly hitting barriers.
-- **Reading the result**: if a frontier harness + tools matches or beats v3
-  on these cases, the custom loop shrinks to an eval shell and future loop
-  investment (e.g. parts of M5.4) is redirected to the MCP surface. If v3
-  wins clearly, the harness has earned its keep with data.
+- **Reading the result**: if a frontier harness + tools **beats v3 by the
+  pre-registered margin** on these cases, the custom loop shrinks to an eval
+  shell and future loop investment (e.g. parts of M5.4) is redirected to the
+  MCP surface. If the result is **within the margin**, run the thin
+  API-driven MCP arm (the ambiguity rule below) before deciding either way. If
+  v3 wins clearly, the harness has earned its keep with data.
 - **Caveat recorded up front**: cross-harness arms confound model with
   harness; this experiment picks an *engineering direction*, it is not model
   science. GT-scored, but treated as exploration-grade evidence.
@@ -393,8 +439,10 @@ payload and allowed context; only the post-run grading layer sees ground truth:
 - **Pre-registration**: define pass/fail thresholds before paid runs, including
   maximum false/ungated declaration attempts, maximum repeated expensive
   actions, minimum candidate-retention rate, and a bounded spend/capacity
-  envelope. Do local replay and synthetic checks first; do not launch a broad
-  bake-off to answer an architectural prototype question.
+  envelope. **Pin the exact Claude model** used in the Max arm (arm 1) up
+  front, so the comparison is against a fixed model rather than a silently
+  updated subscription default. Do local replay and synthetic checks first; do
+  not launch a broad bake-off to answer an architectural prototype question.
 - **Staging and replication**: first run one pilot replicate on the two new
   opaque analogs plus one historical case. If the MCP path is operationally
   credible, run at least two confirmation replicates per arm on the smallest
@@ -428,11 +476,18 @@ loop-independent modules the MCP server imports directly:
 **The one real refactor**: `run_v3`'s lead *dispatch layer* — the nested
 closures `_dispatch_episode_run` / `_dispatch_episode_install` /
 `_dispatch_repair_transaction` (+ `_settle_repair_outcome`, saturation
-bookkeeping, duplicate suppression, episode-kind gating), roughly 600–800
-lines entangled with the turn loop's `emit` and bookkeeping. Extract them
-into a loop-independent host object (working name `InvestigationHost`)
-owning `(state, workspace, executor, queue, emit)` and exposing
-`handle_tool(name, args) -> result`. After extraction:
+bookkeeping, duplicate suppression, episode-kind gating) plus the **budget
+seam** the dispatchers call (`sync_budget` / `_committed_cost` /
+`_cost_ceiling_reached` closures) — measured at **~1,150–1,250 lines**
+(verify/episode/install dispatchers + the settle cluster + `repair_transaction`
++ the router + helpers), entangled with the turn loop's `emit` and bookkeeping.
+Extract them into a loop-independent host object (working name
+`InvestigationHost`) owning `(state, workspace, executor, queue, emit)` plus the
+budget accounting, and exposing `handle_tool(name, args) -> result`. Note that
+`_dispatch_repair_transaction`'s internal API-billed repair episode stays a
+v3-only behavior; the MCP server's `repair_transaction` reuses only the Slice-4
+validate-and-install half against client-compiled finalists (§3.5). After
+extraction:
 
 - `run_v3` becomes a thin driver: build context → `session.send` → for each
   tool_use → `host.handle_tool` → bookkeeping. Same behavior, same events,
@@ -445,7 +500,7 @@ owning `(state, workspace, executor, queue, emit)` and exposing
 1. The extraction lands FIRST as its own zero-behavior-change slice through
    the standard pipeline (spec → coder → adversarial review → land), before
    any MCP code exists.
-2. The entire existing suite (~1,690 tests) exercises the dispatch layer
+2. The entire existing suite (~1,710 tests) exercises the dispatch layer
    THROUGH `run_v3` with scripted sessions — M5.3's saturation, acceptance,
    and gate tests all drive the exact code being moved, so a
    behavior-preservation failure is caught by construction, not by new tests.
@@ -459,15 +514,26 @@ owning `(state, workspace, executor, queue, emit)` and exposing
 
 - Host extraction slice: comparable to one M5.3 slice (days, not weeks, at
   the current cadence).
-- MCP server adapter: ~300–500 lines of new adapter/capsule/revision code
-  (Phases A–B), everything else reuse.
+- MCP server adapter: an honest estimate for the *full* §3.5 surface — capsule
+  launcher, locked registry + revision store, candidate-portfolio layer,
+  reading/`comparison_record` integration, deterministic repair path, and MCP
+  plumbing — is **~1–2k lines** of new code, not the ~300–500 originally
+  sketched. Rather than accept that growth, **v1 is scoped tighter**: Phases
+  A–B ship the capsule launcher, the locked registry + revision store, a
+  minimal candidate-portfolio layer (`candidate_list` / `candidate_show`),
+  `reading_record` with basic hash-bound `comparison_record` storage, the
+  deterministic repair path, and the MCP plumbing. **Deferred to v1.1**:
+  `candidate_compare_signals` and the richer `comparison_record` integration
+  extras beyond hash-bound storage. This keeps the new-code budget near the
+  low end of the estimate while preserving every §3.3 gate.
 - Client integration + doctrine files: small (Phase C).
 
-## 7½. Phased plan (sizes are rough; no code in this proposal)
+## 8. Phased plan (sizes are rough; no code in this proposal)
 
 - **Phase 0 — policy archaeology + acceptance design** (small): build the
   provenance ledger; classify controls; define sanitized-capsule requirements,
-  experiment thresholds, and which v3 behavior MCP v1 must preserve.
+  experiment thresholds, and which v3 behavior MCP v1 must preserve. (This is
+  the same Phase 0 whose minimum ledger coverage is specified in §6.)
 - **Phase A — server skeleton + sandbox launcher** (small/medium): MCP server
   process, capability-scoped investigation registry, atomic revision/locking,
   `investigation_start/status`, sanitized run-capsule creation, and state
@@ -489,7 +555,26 @@ owning `(state, workspace, executor, queue, emit)` and exposing
 Dependency note: CLI-3 (human-first display) is in flight and unaffected —
 it improves the eval harness we are keeping regardless.
 
-## 8. Risks and open questions
+### 8.1 Zero-effort onboarding (Phase C deliverables)
+
+Phase C's acceptance bar is that a fresh session in either harness can start
+cracking a new cipher with no setup ceremony. Named deliverables:
+
+- a README quickstart covering both clients end to end;
+- a checked-in project `.mcp.json` entry plus a copy-paste Codex
+  `config.toml` snippet, so neither client requires hand-written wiring;
+- a stable `decipher mcp-serve` launch command — the single command both
+  client configurations invoke — shipped as a named deliverable, not an
+  internal detail;
+- the fresh-crack flow works identically in both harnesses: paste ciphertext
+  inline into `investigation_start` (an inline payload, never a path
+  parameter; see §9.1) and go;
+- a documented no-API-key degradation mode: without server-side API keys,
+  `request_independent_verification` is unavailable and solution declaration
+  stays gated (the server says why rather than erroring opaquely), while
+  observation, hypothesis, experiment, and repair tools keep working.
+
+## 9. Risks and open questions
 
 1. **Verifier independence** (§3.4) — recommended resolution: server-side,
    small API spend. This is the one place "fully subscription-funded" is
@@ -523,7 +608,32 @@ it improves the eval harness we are keeping regardless.
     replication rule in §6, and do not retire controls based on an anecdotal
     win.
 
-## 9. Relationship to the existing roadmap
+### 9.1 Server operations
+
+Operational decisions v1 must make explicitly rather than inherit by accident:
+
+- **Single daemon vs per-client stdio.** Each client spawns its own stdio
+  server process, but background experiment threads need exactly ONE owner —
+  a thread living in one client's server process dies with that client. The
+  rule: the locked on-disk registry coordinates *state* across processes, not
+  *live threads*. Background experiments run under a single owning process
+  (a daemon, or the launcher-designated owner); other server processes observe
+  submissions and results through the registry, never by adopting another
+  process's threads.
+- **Credential boundary.** The server process holds the API keys needed for
+  server-side verify episodes (§3.4); there is no tool, resource, or error
+  path through which a client can read key material. Clients present only the
+  opaque investigation capability.
+- **Storage and retention.** Phase A must fix where the investigation
+  registry, run capsules, and MCP-produced artifacts live on disk, and their
+  retention policy, so capsule sanitization and artifact provenance stay
+  auditable rather than ad hoc.
+- **INV investigation creation.** Real-unknown (INV) investigations are
+  created by passing ciphertext inline in the `investigation_start` payload —
+  never via a filesystem path parameter — extending the no-path-params rule
+  (§3.5, §4.4) to the exploratory consumer as well.
+
+## 10. Relationship to the existing roadmap
 
 - M5.3 is complete and unaffected.
 - **M5.4 (repair reframe / interpretation packets):** host-independent data
@@ -535,7 +645,7 @@ it improves the eval harness we are keeping regardless.
   real unsolved ciphers, no firewall requirement, long exploratory sessions —
   exactly the subscription-economics sweet spot.
 
-## 10. Initial policy-provenance seed
+## 11. Initial policy-provenance seed
 
 Phase 0 should expand this table with exact artifact/test references before
 implementation:
@@ -545,7 +655,7 @@ implementation:
 | Ground-truth firewall | Solver workflow previously consumed grading data | Invariant | Hard server/capsule boundary |
 | Fresh positive verification before solved declaration | Agents declared readable or memorized-looking junk | Invariant | Hard, hash-bound server gate |
 | Transactional repair evidence binding | Readers proposed prose or unsupported mappings as edits | Invariant | Hard compiler/install validation |
-| Duplicate expensive-call suppression | Agents repeated unchanged searches and reads | Evidence + resource invariant | Hard exact-duplicate block; telemetry for near-duplicates |
+| Duplicate expensive-call suppression | Agents repeated unchanged searches and reads | Evidence mechanism (§3.3 class 2), with a resource dimension | Hard exact-duplicate block; telemetry for near-duplicates |
 | Context-family prior and override rationale | Agents wandered into unrelated families despite explicit context | Investigative policy with budget consequences | Strong advisory + coverage telemetry initially; retain a bounded-spend guard until ablated |
 | Scalar-selected workflow focus | Needed a deterministic branch when agents failed to choose | Investigative policy | Diverse portfolio; scalar is one signal only |
 | Verifier-to-repair/broaden thresholds | Agents polished basin-wide gibberish or abandoned useful local damage | Investigative policy | Advisory route with policy id; record client choice and outcome |
