@@ -11,9 +11,9 @@ import pytest
 
 from agent.model_provider import ModelProviderError, ModelResponse, ModelUsage, TextBlock, ToolUseBlock
 from investigation import sessions as sessions_mod
+from investigation.host import _unbound_edit_claims
 from investigation.loop_v3 import (
     _fresh_compare_winner,
-    _unbound_edit_claims,
     run_v3,
 )
 from investigation.sessions import SessionCapabilities
@@ -1436,9 +1436,9 @@ def test_s2_experiment_submit_records_pending_pointer_when_exhausted(verify_fake
     entry["evidence_failed_pairs"] = ["p1", "p2"]
     state.repair_saturation[saturation_key(h, att_key)] = entry
 
-    import investigation.loop_v3 as loop_v3_mod
+    import investigation.host as host_mod
     monkeypatch.setattr(
-        loop_v3_mod, "dispatch_experiment_submit",
+        host_mod, "dispatch_experiment_submit",
         lambda *a, **k: {"experiment_id": "exp999", "status": "pending"},
     )
     lead = ScriptedSession([

@@ -30,7 +30,8 @@ from agent.model_provider import ModelResponse, ModelUsage, TextBlock, ToolUseBl
 from agent.narrate import NarrateAgentRenderer, _compact_args, _format_elapsed
 from investigation import sessions as sessions_mod
 from investigation.episodes import EpisodeSpec, run_episode
-from investigation.loop_v3 import _episode_result_digest, run_v3
+from investigation.host import _episode_result_digest
+from investigation.loop_v3 import run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry, InvestigationState
 from models.alphabet import Alphabet

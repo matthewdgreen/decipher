@@ -20,7 +20,8 @@ import pytest
 
 from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
 from agent.model_provider import ModelResponse, ModelUsage, TextBlock, ToolUseBlock
-from investigation.loop_v3 import _resync_attestation_branch_on_rename, run_v3
+from investigation.host import _resync_attestation_branch_on_rename
+from investigation.loop_v3 import run_v3
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry, InvestigationState
 from models.alphabet import Alphabet

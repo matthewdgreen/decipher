@@ -13,6 +13,8 @@ This package implements Milestone M1 of the v3 redesign (see
   their conversation format and expose a small event surface.
 - ``loop_v3``  — ``run_v3``: the lead loop over the existing tool executor,
   with the declaration policy disabled (``NoGatesPolicy``).
+- ``host``     — ``InvestigationHost``: the loop-independent lead
+  dispatch layer shared by run_v3 (and, later, the MCP server).
 """
 from investigation.state import (
     BudgetEntry,

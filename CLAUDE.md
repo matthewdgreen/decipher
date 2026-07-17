@@ -92,7 +92,10 @@ src/
                             Ollama, OpenRouter adapters + live pricing fetch
   investigation/          — V3 agent loop (investigation lead) + investigator mode INV-0
     state.py              — InvestigationState: serializable source of truth for a v3 run (M1)
-    loop_v3.py            — run_v3 lead loop: context rebuilt from state each turn (M1)
+    loop_v3.py            — run_v3 lead turn loop; dispatch lives in host.py (M1)
+    host.py               — InvestigationHost: loop-independent lead dispatch
+                            layer (episodes, installs, repair transactions, budget seam) extracted
+                            from loop_v3
     episodes.py           — Fresh-context worker episodes the lead delegates to (M2)
     experiments.py        — Background automated-solver experiment queue (M4)
     actions.py            — Composite hypothesis actions for the v3 surfaces (M3)
