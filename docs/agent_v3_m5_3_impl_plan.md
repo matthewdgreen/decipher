@@ -1,9 +1,15 @@
 # M5.3 Implementation Plan + Codex-INV Coordination Contract
 
 2026-07-16. Fable implements M5.3 (v3 control reliability, spec
-`docs/specs/agent_v3_m5_3_control_reliability_spec.md`); Codex implements INV
-(family diagnosis) in parallel. This file is the shared contract so the two
-tracks don't collide.
+`docs/specs/agent_v3_m5_3_control_reliability_spec.md`).
+
+**UPDATE 2026-07-17: Codex's INV work is PAUSED until M5.3 completes — Fable
+has full ownership of the whole repo for this task; there is no live conflict.
+The file-ownership / shared-file guardrails below are therefore RELAXED (touch
+whatever the slice needs, incl. tools_v2.py/cli.py freely). The PHASE SEQUENCE
+still stands — it is driven by intra-M5.3 coupling on `loop_v3.py`, not by
+Codex. Keep the ownership map below as the record of what INV will re-own when
+it resumes.**
 
 ## File ownership
 
