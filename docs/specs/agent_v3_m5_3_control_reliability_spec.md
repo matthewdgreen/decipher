@@ -4,6 +4,14 @@ Status: proposed 2026-07-16. No implementation has landed. This milestone is
 the targeted follow-on to M5.2; it must complete before another paid acceptance
 packet or a full M6 bake-off.
 
+**Revision 3 amendment, 2026-07-16.** The reliability clarifications and
+forward-compatible seams in `docs/repair_reframe_m53_comments.md` are now
+normative for this milestone. The sections below incorporate the executable
+requirements directly. The future `InterpretationPacket`, deterministic
+compiler, annotation ledger, and recovered-reading terminal remain deferred to
+M5.4 and gated by `docs/repair_mechanism_rethink.md`; M5.3 must preserve those
+seams without implementing them prematurely.
+
 ## Motivation
 
 M5.2 established the intended strategist/worker architecture:
@@ -198,6 +206,11 @@ reading contract remains in force, duplicate/saturation policy limits how many
 readings may run for unchanged evidence, and the per-run cost ceiling remains
 the final paid guard.
 
+This envelope applies only to the legacy M5.3 prose-reading episode. It is not
+a default for the deferred M5.4 `InterpretationPacket` producer, whose design
+allows one tool-free structured response by default and at most one batched
+lookup plus one final response.
+
 Exploration and submission must have separate accounting. When exploration
 ends or reaches its cap, preserve one submit-only completion attempt with the
 full structured-output allowance. Exploratory calls may not consume this
@@ -213,11 +226,13 @@ workers do not run word-hypothesis repair menus.
 
 ### Per-run paid ceiling
 
-Add a v3 `max_cost_usd` option enforced between provider calls. Once reached,
-the loop must make no further paid call. It should select the best supported
-branch and terminate honestly, preserving `unsolved` when no positive
-attestation exists. This is distinct from the bake-off runner's matrix-level
-launch guard.
+Add a v3 `max_cost_usd` option enforced before **every** paid provider send:
+lead turns and worker sends, including mid-episode continuation and submit-only
+sends. Once reached, the active episode ends with an explicit budget-class
+result and the loop must make no further paid call. It should select the best
+supported branch and terminate honestly, preserving `unsolved` when no
+positive attestation exists. This is distinct from the bake-off runner's
+matrix-level launch guard.
 
 ### Local acceptance
 
@@ -229,6 +244,8 @@ launch guard.
 - Exhausting exploratory calls still leaves one submit-only attempt with an
   8,192-token output allowance.
 - A cost ceiling prevents the next paid call and produces a complete artifact.
+- A ceiling reached between two worker sends marks the episode
+  budget-terminated and prevents all subsequent lead and worker sends.
 
 ### Reading-usability acceptance
 
@@ -250,13 +267,20 @@ establish model reading quality. The first paid smoke must therefore report
 both actual exploratory-call use and the usability fields above before the
 default reading budget can be reduced.
 
+The paid-smoke report must also include, per reading, requested versus executed
+calls and the report-only fraction of usable readings containing at least one
+non-empty `repair_text` fragment. This statistic does not gate acceptance, but
+it distinguishes readings useful only for interpretation from compile-ready
+legacy readings.
+
 ## Slice 2 - Repair Saturation and Workflow Escape
 
 Track repair-cycle identity with:
 
 - candidate content hash;
 - latest verifier-attestation id or anomaly digest;
-- reading id and reading content digest;
+- `interpretation_id` and `interpretation_digest` (M5.3 values are the legacy
+  Reading id/digest; generic names avoid a later state-format split);
 - generated finalist content hashes; and
 - transaction outcome and failure reason.
 
@@ -264,8 +288,23 @@ For one unchanged candidate and one unchanged attestation, permit by default:
 
 - one fresh reading;
 - up to two distinct repair transactions; and
-- no repeated transaction with the same source/reading pair, regardless of
-  whether the prior transaction installed a winner or failed.
+- no repeated evidence evaluation with the same source/interpretation pair.
+
+Classify failures before consuming saturation budget:
+
+- **process failure**: evidence was not adjudicated, including
+  `no_winner_named_with_multiple_changed_finalists`, `worker_did_not_apply`,
+  unsupported/fabricated winner names, episode runner errors, and schema
+  failures. Permit exactly one linked retry (`retry_of`), which does not count
+  toward saturation. A second process failure for the pair counts as evidence
+  failure;
+- **evidence failure**: the pair was evaluated and did not support installation,
+  including `unsupported`, `no_changed_finalists`, `all_finalists_rejected`,
+  no-op, and materially non-improving adjudication. It counts toward saturation
+  and the pair cannot be rerun.
+
+Do not emit a combined `ambiguous_or_unchanged_finalists` reason; it erases the
+process/evidence distinction required by this policy.
 
 After two no-op, unsupported, ambiguous, or materially non-improving repair
 transactions, enter a durable `repair_exhausted` workflow state. Its menu is:
@@ -277,30 +316,55 @@ transactions, enter a durable `repair_exhausted` workflow state. Its menu is:
 A new candidate hash or genuinely new verifier evidence resets saturation. A
 newly worded goal does not. Resume must preserve the counters.
 
+`repair_exhausted` must be explicit in the episode-kind phase map and exclude
+reading and repair. Its allowed episode kinds are `search`, `compare`, and
+`verify`. Unknown workflow phases fail closed to `verify` (or raise in tests)
+with a warning rather than defaulting to all kinds. While an alternate
+experiment is pending, the state remains `repair_exhausted` and offers collect;
+it resets only on a new candidate hash or genuinely new verifier evidence.
+
 ### Local acceptance
 
 - Repeated readings on unchanged content and attestation are suppressed.
-- A failed source/reading transaction cannot be rerun under a new `as_name`.
-- Two distinct failed repairs move the state to `repair_exhausted`.
+- An evidence-failed source/interpretation pair cannot be rerun under a new
+  `as_name`; one process-failure retry can succeed and install.
+- Two distinct evidence-failed repairs move the state to `repair_exhausted`.
 - New changed content returns to `candidate_reading` and requires verification.
 - Serialization/resume preserves the same next action.
+- With an experiment pending, allowed kinds exclude reading/repair and the menu
+  names the pending experiment.
 
 ## Slice 3 - Batched and Cached Word Hypotheses
 
 Add a composite `hypothesis_test_words` operation that accepts a bounded list
 of word/span hypotheses. It must:
 
-1. resolve stable spans and reject malformed hypotheses cheaply;
-2. build or retrieve the branch's repair menu once;
-3. evaluate menu-backed hypotheses from that shared packet;
-4. score only surviving injected hypotheses;
-5. deduplicate equivalent edit sets;
-6. return a small diverse finalist set with collateral evidence; and
-7. optionally install only the explicitly selected forks.
+1. accept only `claim_type="word"` in M5.3; future `boundary`/`op` fields are
+   documented as reserved but rejected with `unsupported_reserved_field` until
+   implemented, never silently ignored;
+2. resolve granular host-owned anchors and reject malformed hypotheses cheaply:
+   one `word_id` or a contiguous `{start_token_id, end_token_id}` run inside a
+   content-hash-bound window. Existing 120-token window ids alone are too
+   coarse. Raw `word_index`/`char_start` remain legacy singleton-parity inputs
+   and are discouraged on model-facing surfaces;
+3. return `not_expressible_as_key_edit` as typed data, including span and word
+   lengths, when one-character-per-token compilation is impossible;
+4. build or retrieve the branch's repair menu once;
+5. evaluate menu-backed hypotheses from that shared packet;
+6. score only surviving injected hypotheses;
+7. deduplicate equivalent edit sets;
+8. return a small diverse finalist set with collateral evidence; and
+9. optionally install only the explicitly selected forks.
 
-Cache the expensive menu by candidate content hash, null mask, language,
-language-model variant, and repair config. The existing singleton
+Cache the expensive menu using digests of the exact resolved builder inputs:
+base key, null mask, boundary spans, language, resolved repair config,
+dictionary path, and language-model path. A proven-sufficient proxy is allowed
+only if its sufficiency is documented. The existing singleton
 `hypothesis_test_word` becomes a wrapper over the batch core.
+
+This batch tool is a performance substrate for M5.4, not the proposed
+deterministic assertion compiler itself. The deferred oracle experiment tests a
+small reference implementation of that compiler directly.
 
 Repair episodes should receive the batch operation as the preferred interface.
 Once batch parity is proven, reduce the repair episode's ordinary tool-call
@@ -311,6 +375,8 @@ budget from twelve to approximately six.
 - A batch of eight hypotheses constructs the repair menu exactly once.
 - Batched and singleton results agree for the same hypothesis and configuration.
 - Cache invalidates on key, mask, boundary, model, or config changes.
+- Identically rendered branches with different resolved per-call configs do
+  not share a cache entry.
 - The replay fixture's cumulative word-hypothesis time falls by at least 70%.
 
 ## Slice 4 - Host-Validated Repair Acceptance
@@ -335,7 +401,10 @@ evidence and do not install.
 
 - A fabricated best-branch name is rejected.
 - A changed fork produced by a failed tool call is rejected.
-- An unadjudicated winner among multiple finalists is rejected.
+- An unadjudicated winner among multiple changed finalists is rejected with
+  process-failure reason `no_winner_named_with_multiple_changed_finalists`;
+  genuinely unchanged or rejected finalist sets use distinct evidence-failure
+  reasons.
 - A supported singleton with bounded collateral installs and requires fresh
   verification.
 - Acceptance records contain enough evidence for artifact review.
@@ -379,15 +448,25 @@ Extend the text-only verifier result with separate fields:
 - `reader_accepts_as_solution` (boolean); and
 - a concise gloss, anomaly list, and uncertainty note.
 
-The verifier still receives only candidate plaintext and generic permitted
-context. It receives no benchmark plaintext, key, score, alignment, or
+The M5.3 solution verifier still receives only canonical key-derived candidate
+plaintext and generic permitted context. It receives no benchmark plaintext,
+key, score, alignment, annotated editorial reconstruction, or
 post-hoc accuracy. Its instructions should explain generally that historical
 decipherments may preserve lacunae, abbreviation scars, uncertain boundaries,
 and editorial omissions. It must quote or point to the candidate evidence for
 its judgments.
 
-Only `reader_accepts_as_solution` can satisfy the declaration gate. The other
-fields route work:
+**Explicit policy decision:** this intentionally reverses documented design C6.
+A fresh **positive** attestation with `reader_accepts_as_solution=true` is now
+required for `meta_declare_solution`; an absent, stale, weak, or negative
+attestation cannot satisfy the solved gate. Weak fresh attestations remain
+routing evidence. Ship the schema change together with migrations for
+`AttestationPolicy`, positive-attestation/fallback tiering, context routing,
+repair-agenda seeding, state serialization/resume defaults, analyzer output,
+and the verify contract. Legacy serialized attestations load conservatively as
+not positive unless their old fields establish the new condition.
+
+The other fields route work:
 
 - high language confidence + high recoverability + local damage -> one bounded
   repair cycle;
@@ -398,6 +477,11 @@ fields route work:
 This lets the system say "likely correct basin with recoverable meaning, but
 not a complete solution" without either rejecting all useful evidence or
 declaring a damaged text solved.
+
+Do not overload this solved gate with future recovered-reading semantics. M5.4
+may add `meta_declare_recovered_reading` with separate accounting and a
+composite attestation hash over key text, interpretation packet, annotated
+reading, and annotation ledger. That action remains out of M5.3.
 
 ## Slice 7 - Observability and Analyzer Parity
 
@@ -421,8 +505,10 @@ declaration, final branch, attestation status, and cost. Add sections for:
 - workflow branch vs score-selected branch; and
 - cumulative time spent rebuilding or evaluating repair hypotheses.
 
-The M5.2 smoke artifact should become a frozen analyzer regression fixture or a
-trimmed equivalent should be committed under tests.
+Commit only a **trimmed** M5.2 analyzer regression fixture. Remove benchmark
+ground truth, expected plaintext, alignment blocks, and raw model message
+bodies; retain only the structural fields the analyzer consumes. Add a test
+that rejects fixture keys associated with ground truth or expected answers.
 
 ## Verification Sequence
 
@@ -430,6 +516,10 @@ trimmed equivalent should be committed under tests.
 
 Run the episode, workflow, experiment, repair, state/resume, analyzer, and
 ground-truth-firewall tests touched by the slice. Do not run a paid model.
+Claim and update the pre-existing stale assertion in
+`tests/test_lead_context.py::test_negative_partial_attestation_creates_repair_action_menu`
+to the Slice-2 menu contract; record that it predated M5.3 rather than leaving
+it ambient red or reverting the improved menu wording.
 
 ### B. Scripted end-to-end replay
 
@@ -517,262 +607,9 @@ until the focused Stage-1 packet passes and the user approves the larger spend.
 
 ---
 
-# Review comments (Fable, 2026-07-16) — BINDING for M5.3
+## Revision 3 Review Rationale
 
-Outcome of the M5.3 spec review + the repair-mechanism design review + Sol's
-comments, reconciled and independently verified (three Fable passes, all
-served by claude-fable-5). **Part A** = amendments to land in M5.3 (A1-A8).
-**Part B** = small forward-compatibility seams to cut in M5.3 so the repair
-reframe stays possible without re-scoping (B1-B3). **Part C** (the deferred
-M5.4 `typed repair` reframe, gated on an oracle experiment) and the firewall
-notes live in `docs/repair_reframe_m53_comments.md`; the rationale is in
-`docs/repair_mechanism_rethink.md`. Do NOT build Part C in M5.3.
-
-## Part A — amendments to M5.3 slices
-
-### A1 (P1 | Slice 1) Reading budget and usability — mostly landed; two residuals
-
-Status: the substance of this clarification was already incorporated into the
-spec by commit `4b85e20` (provisional restoration of the 16-call / 8,192-token
-/ 300-second envelope, the submit-only reserve, the reading-usability
-acceptance section, design principle 8, and the binding 4/8/12/16 calibration
-requirement). Note the code today is still at 4/4,096/180
-(`src/investigation/episodes.py:299`) — both the call-count and the
-output-token reversion are real and Slice 1 restores both.
-
-Residuals to fold in:
-
-1. The paid-smoke report (Verification C) must cite, per reading episode, the
-   requested-vs-executed call ledger (Slice 7 already specifies collecting
-   it) — i.e. the smoke report is not complete without actual
-   exploratory-call consumption numbers next to the usability fields.
-2. Add one report-only (not gated) usability statistic: the fraction of
-   usable readings that carried at least one non-empty `repair_text`
-   fragment. A reading that is `ok` and bound but contains zero compile-ready
-   fragments is usable for verification but useless for repair; the
-   calibration decision needs to see that rate.
-
-### A2 (P0 | Slice 2 × Slice 4) Distinguish process failure from evidence failure before burning a (source, reading) pair
-
-Slice 2 currently says: "no repeated transaction with the same source/reading
-pair, regardless of whether the prior transaction installed a winner or
-failed", and two failed repairs move the state to `repair_exhausted`. As
-written, this burns saturation budget on failures that never evaluated the
-evidence.
-
-Amendment — classify transaction failures:
-
-- **Process failures** — the worker or harness failed before the evidence was
-  actually adjudicated: Slice-4 rejections with reasons in the family
-  `unadjudicated winner among multiple finalists`, `worker_did_not_apply`,
-  `fabricated/unsupported winner name`, episode runner errors, schema
-  failures. These permit **exactly one retry** of the same (source, reading)
-  pair, recorded with a `retry_of: <transaction_id>` link, and do **not**
-  count toward the two-transaction saturation threshold. A second process
-  failure on the same pair counts as an evidence failure (the pipeline is
-  telling you something).
-- **Evidence failures** — the pair was genuinely evaluated and did not
-  support an install: `unsupported`, no-op, `ambiguous_or_unchanged_finalists`,
-  materially non-improving install. These count toward saturation and the
-  pair may not be rerun.
-
-Code note: today's duplicate suppression
-(`src/investigation/loop_v3.py:1010-1028`) matches only
-`status == "installed"` transactions, so *any* failed pair is currently
-rerunnable — the spec's stricter rule is correct and needed; it just needs
-this carve-out so Slice 2 and Slice 4 compose instead of conflict.
-
-Acceptance addition: a Slice-4 `unadjudicated winner` rejection followed by a
-retried, successful adjudication of the same pair installs; the same pair
-failing twice on evidence saturates.
-
-### A3 (P0 | Slice 6) The declaration-gate change silently reverses design C6 — decide it explicitly and ship a consumer migration map
-
-Slice 6 states: "Only `reader_accepts_as_solution` can satisfy the
-declaration gate." Today's gate is **content-hash-match-only**:
-`AttestationPolicy` (`src/agent/tools_v2.py:2337-2389`) explicitly documents
-(design C6) that a weak attestation — `reader_accepts` false, low coherence —
-does **not** block declaration; only an absent or stale attestation blocks,
-and the weakness is carried into the artifact. Requiring positivity is a
-defensible design change, but it is a *reversal* of a documented decision and
-must be (a) named as such and decided explicitly, not landed as a side
-effect, and (b) accompanied by a migration map for every consumer of the
-current attestation shape:
-
-1. `AttestationPolicy.check_declare_solution` — the gate itself
-   (`src/agent/tools_v2.py:2337`).
-2. `_is_positive_attestation` — `reader_accepts` AND `coherence >= 7`
-   (`src/investigation/loop_v3.py:71-74`), used by the fallback tiering.
-3. Fallback tier selection — `fresh_positive_attestation` tier
-   (`src/investigation/loop_v3.py:151-166`).
-4. Context routing — `DECLARE_COHERENCE` / `REPAIRABLE_COHERENCE_MIN`
-   constants and the coherence-threshold routing
-   (`src/investigation/context.py:54-57` and `:120-136`) must be re-expressed
-   against the new fields (`semantic_recoverability`, `damage_scope`,
-   `repairability`), or explicitly kept on `coherence` with a stated reason.
-5. Repair-agenda seeding — `verify_anomaly` items are created from
-   attestation anomalies (`src/investigation/loop_v3.py:642-668`).
-6. `AttestationRecord` serialization — new fields must round-trip through
-   `to_dict`/state save/load (`src/investigation/state.py:112-133`);
-   previously serialized states carrying single-`coherence` attestations must
-   either load with mapped defaults or be declared format-incompatible.
-7. `_VERIFY_SCHEMA` (`src/investigation/episodes.py:232-245`) and the verify
-   contract prose.
-
-Also see B3: whatever the gate decision, `reader_accepts_as_solution` must
-not absorb "recovered reading" semantics.
-
-### A4 (P1 | Slice 1) Cost-ceiling scope: every paid send, including mid-episode
-
-"Enforced between provider calls" is ambiguous about worker episodes.
-Amendment: `max_cost_usd` is checked before **every** paid provider send —
-lead turns *and* episode-worker sends, including mid-episode continuation
-sends inside reading/repair/verify workers. A ceiling reached mid-episode
-ends that episode immediately with an explicit budget-class result (the
-episode ledger shows it), after which the loop performs its honest
-termination path (best supported branch, `unsolved` preserved without
-positive attestation). The bake-off runner's matrix-level launch guard
-remains a separate mechanism.
-
-Acceptance addition: a ceiling that trips between two worker sends produces a
-complete artifact with the episode marked budget-terminated and no further
-paid call from either lead or worker.
-
-### A5 (P0 | Slice 2) `repair_exhausted` must not silently un-gate episode kinds; make the phase map fail-closed
-
-`allowed_episode_kinds` falls back to **all** kinds for an unknown phase:
-`by_phase.get(str(phase), list(EPISODE_KINDS_FOR_CONTEXT))`
-(`src/investigation/context.py:167-177`). Introducing the new
-`repair_exhausted` workflow state without touching this map would therefore
-*allow* reading and repair episodes in exactly the state whose purpose is to
-stop them.
-
-Amendment:
-
-1. Add an explicit `repair_exhausted` entry. Suggested set:
-   `["search", "compare", "verify"]` — matching the Slice 2 escape menu
-   (alternate search experiment, compare finalists, honest termination);
-   the hard requirement is that `reading` and `repair` are excluded.
-2. Make the fallback fail-closed: an unknown phase returns the most
-   restrictive useful set (suggest `["verify"]`, or raise in tests) plus a
-   logged warning, so the *next* new state cannot repeat this bug.
-3. Specify the pending-experiment window: when saturation recommends an
-   alternate search experiment and it has been submitted but not collected,
-   the workflow **stays** in `repair_exhausted` with a "collect the
-   experiment" action; it must not flap back to a repair-family state until
-   a new candidate hash or genuinely new verifier evidence exists (the
-   spec's own reset rule). Resume must preserve this too (the counters are
-   already specced to survive resume; the pending-experiment linkage must as
-   well).
-
-Acceptance addition: with saturation reached and an experiment pending,
-`allowed_episode_kinds` contains neither `reading` nor `repair`, and the
-rendered workflow menu names the pending experiment.
-
-### A6 (P2 | Slice 2/7) Claim the pre-existing failing `test_lead_context` test
-
-`tests/test_lead_context.py::test_negative_partial_attestation_creates_repair_action_menu`
-fails on `main` today (verified: it asserts `"repair episode"` appears in the
-`repair_required` action menu; the current menu wording is "Run or reuse one
-reading episode … / Run one repair_transaction …"). It is a stale assertion
-that predates M5.3, not an M5.3 regression — but M5.3's Slice 2 rewrites the
-workflow menu, so this milestone must claim it: update the assertion to the
-menu contract Slice 2 defines, and note in the slice's test evidence that the
-failure predated the milestone. Do not leave it ambient red through the
-milestone, and do not "fix" it by reverting menu wording.
-
-### A7 (P2 | Slice 7) The analyzer regression fixture must be trimmed of ground truth and message bodies
-
-Slice 7 allows "a frozen analyzer regression fixture or a trimmed
-equivalent". Tighten to: the committed fixture **must** be trimmed. Strip
-benchmark `ground_truth` / expected plaintext / alignment blocks and raw
-model message bodies; keep the structural fields the analyzer reads (episode
-ledger shapes, budgets requested/executed, repair transactions, workflow
-transitions, costs, declaration state). Add a test asserting the fixture
-contains no ground-truth keys — same class as the existing runtime firewall
-tests. Rationale: committed fixtures are read by future sessions and tools;
-a fixture carrying the answer key for a live benchmark page is a standing
-firewall leak in the repo itself.
-
-### A8 (P1 | Slice 3) Cache key: exact builder inputs, or a written sufficiency proof
-
-The specced cache key (candidate content hash, null mask, language, LM
-variant, repair config) is a proxy. The menu builder actually consumes
-`(cipher_text, base_key, mask, language, config, dictionary_path,
-model_path)` (`src/investigation/actions.py:926-935`), and the per-call
-config comes from `_word_repair_menu_config(args)` — i.e., partially
-model-visible knobs. Either:
-
-1. key the cache on digests of the **exact builder inputs** (base-key digest,
-   mask digest, boundary-spans digest, resolved config digest, resolved
-   dictionary/model paths); or
-2. include a short written proof in the spec that the proxy is sufficient —
-   e.g.: the rendered candidate text plus boundaries determine the decode
-   projection of every token *present* in the ciphertext; base-key entries
-   for absent tokens cannot affect the menu; `dictionary_path`/`model_path`
-   are pure functions of (language, variant); and the "repair config"
-   component is defined as the **resolved** config digest, not the raw args.
-
-Either way, the acceptance test "cache invalidates on key, mask, boundary,
-model, or config changes" should include the adversarial case: two branches
-whose rendered text is identical but whose configs differ per-call.
-
----
-
-## Part B — repair-reframe seams to cut in M5.3
-
-Context (reconciling Sol's P1-8 with the frozen in-flight scope): the design
-review concluded that the repair *interface* is mis-framed — prose readings
-as the mandatory compile source, vote-on-mismatch key inference — and that a
-typed-packet interface should replace it in a follow-on milestone (Part C),
-gated on experiments. Sol argued for landing only the orthogonal M5.3
-controls now. The adjudicated position: **all M5.3 slices land**, because
-Slices 2 and 4 are interface-agnostic guardrails (saturation and
-host-validated acceptance are what make *any* repair interface safe, and they
-transfer wholesale to the packet model), and the entrenchment risk is
-concentrated in three specific spots, each neutralized by a small seam
-amendment below rather than by re-scoping in-flight work. Each seam is
-schema/naming-level; none changes M5.3 runtime behavior beyond what is
-stated.
-
-### B1 (P1 | Slice 3) `hypothesis_test_words` input headroom: claim type, op reserve, span ids, typed rejection
-
-1. Each batch item carries a `claim_type` field — enum, default and only
-   currently-accepted value `"word"`, with `"boundary"` reserved — and a
-   reserved (accepted-but-unused) `op` field. This is headroom, not behavior:
-   M5.3 evaluates word claims exactly as specced.
-2. Items may reference spans by host-owned `span_id` (the stable ids the
-   reading packet already mints in `src/investigation/reading.py`) as an
-   alternative to `word_index`/`char_start`. Raw positional refs stay
-   accepted for parity with the singleton.
-3. A hypothesis whose word length does not match the span's token count is
-   rejected as **typed data** — reason `not_expressible_as_key_edit`, with
-   the span/word lengths — not as a schema or validation error. Same outcome
-   in M5.3 (nothing installs), but the follow-on milestone turns that typed
-   rejection into a pointer at the annotation channel without changing the
-   wire shape, and models get a legible reason instead of a generic error.
-
-### B2 (P1 | Slice 2) Name the saturation-identity component generically
-
-The repair-cycle identity tuple's "reading id and reading content digest"
-components should be stored as `interpretation_id` / `interpretation_digest`
-(today these are always a Reading's id/digest). Pure naming in the state
-format; no logic change. The follow-on milestone's interpretation packets
-then join the saturation machinery without a serialized-state migration or a
-parallel counter system.
-
-### B3 (P2 | Slice 6) Do not overload the solved gate with "recovered reading" semantics
-
-Land the multi-field verifier contract and its routing table as specced. But
-keep the boundary clean: `reader_accepts_as_solution` answers exactly "is
-this candidate complete enough to declare **solved**". The honest terminal
-for "correct basin, meaning recovered, residual inexpressible by any key"
-is a **separate** future action (`meta_declare_recovered_reading`, Part C)
-with its own gate and its own accounting, excluded from solved statistics.
-Slice 6 should therefore route the high-recoverability/incomplete case to
-"one bounded repair cycle, then compare/hold or honest unsolved" — never to
-declaration — and the verifier fields should be treated as evidence usable by
-*both* future gates. No Slice 6 wording should imply that high
-`semantic_recoverability` plus carried weakness can satisfy
-`meta_declare_solution`; that would recreate the C6 ambiguity of A3 in a new
-form.
+The detailed review history, rejected alternatives, and forward-compatible M5.4
+seams are preserved in `docs/repair_reframe_m53_comments.md`. The executable
+M5.3 requirements are integrated above; if the companion rationale conflicts
+with this specification, this specification controls.

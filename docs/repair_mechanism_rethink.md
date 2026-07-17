@@ -1,6 +1,6 @@
 # Repair Mechanism Rethink — Design Note and Experiment Proposal
 
-Status: design review, **revision 2**, 2026-07-16. Author: independent
+Status: design review, **revision 3**, 2026-07-16. Author: independent
 second-opinion review (Fable), verified read-only against the code as of
 `4b85e20`. No code was changed. Revision 2 folds in the adjudicated results of
 GPT-5.6-Sol's design review of revision 1 (ten comments; adjudication table in
@@ -11,6 +11,34 @@ M5.3 implementation is in flight concurrently; the recommendations below are
 written to be foldable into that work, not to preempt it. The consolidated
 M5.3 amendment block lives in the companion document
 `docs/repair_reframe_m53_comments.md`.
+
+### Revision 3 decisions (Codex critical review)
+
+Revision 3 makes the following changes explicit so they are easy to audit in
+the sections below:
+
+1. recovered-reading attestation binds to a composite interpretation digest,
+   not only the unchanged key-derived content hash;
+2. the isolated-occurrence signature is treated as triage evidence, never as
+   proof that an LLM replacement is a true transcription scar;
+3. model-facing repair references use granular host-owned word/token anchors,
+   not the existing coarse 120-token window id alone;
+4. solver-supported null masks remain canonical structural state and are not
+   folded into the noncanonical editorial-override ledger;
+5. Phase 0 tests a reference implementation of the proposed deterministic
+   compiler, rather than treating the current menu-backed word probe as that
+   compiler;
+6. the future packet producer defaults to one structured provider response,
+   with at most one batched lookup round-trip, rather than inheriting the
+   legacy reading episode's 16-call safety envelope;
+7. residual composition admits ambiguous/unclassified cases and includes a
+   human-reviewed audit sample;
+8. the false-override gate uses per-claim and affected-token denominators with
+   confidence bounds;
+9. process-versus-evidence failure reasons are split before saturation policy
+   consumes them; and
+10. reserved future operation fields are rejected until implemented rather
+    than accepted and silently ignored.
 
 ---
 
@@ -133,9 +161,13 @@ menu rebuilds, and verification for zero net progress. That is precisely
 Note the inverse of this pattern for later (§4.4, C3): "the implied global
 edit fails collateral adjudication *while every other occurrence of the
 symbol agrees with the current decode*" is a deterministic, host-computable
-signature that distinguishes an isolated scar from a genuine key error. The
-poison bug and the scar-detection opportunity are the same fact read in two
-directions.
+signature of an **occurrence-specific conflict rather than a global key
+error**. It does *not* prove that the model's local replacement is correct, or
+that the source contains a transcription scar; a wrong but attractive word
+hypothesis produces the same signature. The poison bug and this useful triage
+signal are the same fact read in two directions, but independent source or
+review evidence is still required before the conflict may be described as a
+supported scar.
 
 ---
 
@@ -276,7 +308,7 @@ Correct in direction on both moves, with three amendments this review adds:
 2. Span binding alone does not solve E3: a span assertion over a scarred
    position implies a key edit whose collateral check fails (that is the
    *correct* outcome — the mechanism surfaces the conflict instead of
-   poisoning), but without a typed override channel the surfaced conflict
+   poisoning), but without a typed annotation channel the surfaced conflict
    still has nowhere to go. Assertions and overrides are two halves of one
    fix; shipping only the first moves the dead end one step later.
 3. The typed end state needs more than Slice 6's verifier fields: it needs an
@@ -292,13 +324,13 @@ before accepting. Verdicts:
 
 | # | Sol's point | Verdict | Adjudication |
 |---|---|---|---|
-| P0-1 | A rejected collateral adjudication is not evidence of a scar; auto-promoting a failed edit to an override launders guesses | **Accept, sharpened** | Correct: revision 1's C3 made the rejected assertion the "natural producer" of an override, and its Arm S+O auto-recorded on rejection — that converts every wrong word guess into readable invented text. Rejection is a necessary *trigger*, never sufficient *evidence*. Sharpening: the "independent evidence" Sol demands can be deterministic and host-computed — the **scar signature** (§1.2 inverse): the implied global edit fails collateral *while all other occurrences of the symbol agree with the current decode*. Promotion therefore requires an explicit typed claim from the model **and** a host-verified signature **and** budget headroom; otherwise only an unresolved, non-rendering annotation is recorded. See C3. |
-| P0-2 | The reader→repair handoff survives revision 1; one primary reader call should return a single `InterpretationPacket`; no second LLM translates the first's interpretation | **Accept core; challenge the strictest reading** | Correct that revision 1's "assertion packets coequal with readings" plus a separate Phase-1 "assertion episode" recreates the turn-heavy pipeline. The reading episode already emits `repair_text` per fragment; extending its result schema so *the same call* returns typed assertions + annotations + holes removes the translation step outright. Two bounded exceptions survive, and should: (a) the packet-producing episode keeps its small in-episode tool budget (corpus lookups) — "one call" means one worker/episode, not zero tool calls; (b) after deterministic compilation, surfaced conflicts and collateral failures still need *adjudication*, and a bounded worker deciding among **compiled alternatives** is not a second LLM re-deriving intent from prose — it is exactly the seam M5.3 Slice 4 formalizes. See C1. |
+| P0-1 | A rejected collateral adjudication is not evidence of a scar; auto-promoting a failed edit to an override launders guesses | **Accept; revision 3 removes the overclaim** | Correct: revision 1's C3 made the rejected assertion the "natural producer" of an override. Revision 2 still overclaimed that the deterministic occurrence signature supplied independent evidence of the replacement's truth. It does not: it proves only that the conflict is local rather than a globally supported key edit. C3 now separates proposed, occurrence-conflict-supported, and source-supported annotations; only the last may be described as a supported transcription correction. |
+| P0-2 | The reader→repair handoff survives revision 1; one primary reader call should return a single `InterpretationPacket`; no second LLM translates the first's interpretation | **Accept** | Correct that revision 1's separate assertion episode recreated the turn-heavy pipeline. The packet producer now defaults to one tool-free structured response, with at most one batched lookup and one final response. A later adjudicator may compare already-compiled alternatives, but no second LLM re-derives assertions from prose. See C1. |
 | P1-3 | Override representation too weak; needs host-owned span, op enum, diplomatic/editorial split, scope, confidence/evidence/provenance/review | **Accept** | Revision 1's `(token_index, type, proposed_char)` cannot express E4/E5 (deletion, insertion, expansion) — precisely the length-changing material the banded aligner currently guesses at. One trim: keep the *model-emitted* core minimal (span ref, op, type, payload, confidence); the host fills provenance, evidence links, and review status. See C3. |
 | P1-4 | Overrides must not participate in ordinary solver scoring; keep separate outputs; ranking stays key-derived; verifier sees both versions + ledger | **Accept, strengthened** | Revision 1 said "scoring counts them" — a penalty model. Sol is right that no penalty survives contact with a language score that rewards invented corrections. An additional architectural argument Sol did not make: the entire M5 machinery (attestation freshness, reading binding, duplicate suppression, snapshot change detection) keys on `_candidate_content_hash` over the canonical render (`decoded_text_v1`). If overrides entered that render, every override would churn content hashes and invalidate attestations and readings wholesale. Keeping the canonical render strictly key+boundary-derived preserves the hash-binding machinery *unchanged*. See C3. |
 | P1-5 | Phase-0 firewall description inaccurate; it feeds true plaintext into repair input; label it an oracle compiler test, keep it out of benchmark artifacts | **Accept** | Revision 1's §7.7 claimed "no ground truth flows into any repair … input" while Arm P literally sets `repair_text` to the true plaintext. The test is legitimate — isolating the mechanism under a granted premise — but the description was wrong. Relabeled and isolated in §7. |
-| P1-6 | Phase 0 cannot validate override *recognition*; add negative controls and a false-override rate; a small live Phase 1 is mandatory before adoption | **Accept** | With a perfect oracle, S+O trivially produces correct overrides; the risk being bought is false overrides under attractive-but-wrong proposals, which the oracle design never exercises. Arm N added; Phase 1 changed from conditional to mandatory-but-small: Phase 0 grants exactly the premise (perfect interpretation quality) that live runs must supply. See §7.5–7.6. |
-| P1-7 | Stricter "span-flexible" definition: alignment-free only at exactly 1 char per ciphertext token; never compile length-changing material into key mappings; model-facing inputs use host-owned span ids, never raw token indices | **Accept** | Verified: direct compilation (actions.py:539-541) is alignment-free precisely at delta = 0 in *characters per token*; everything else is banded guessing. Host-owned span ids already exist (`reading.py`, opaque `span_id`), but fragments may still carry raw `token_indices` and `hypothesis_test_word` takes `word_index`/`char_start` — so the tightening is real, cheap, and codifies the better half of existing practice. See C2. |
+| P1-6 | Phase 0 cannot validate annotation recognition; add negative controls and a false-support rate; a small live Phase 1 is mandatory before adoption | **Accept, strengthened in revision 3** | A perfect oracle trivially supplies correct annotations. Arm N therefore measures false support under attractive-but-wrong proposals, with per-claim, case-level, and affected-token denominators plus confidence bounds. Phase 1 remains mandatory because Phase 0 grants exactly the interpretation quality that live runs must supply. |
+| P1-7 | Stricter "span-flexible" definition: alignment-free only at exactly 1 char per ciphertext token; never compile length-changing material into key mappings; model-facing inputs use host-owned span ids, never raw token indices | **Accept; granular-anchor requirement added** | Existing host span ids identify coarse windows, not exact word/token runs. C1 now requires separate window, word, and opaque token anchors; assertions use a word id or validated contiguous token-anchor pair. Direct compilation remains legal only at exactly one proposed character per selected ciphertext token. |
 | P1-8 | Landing all of M5.3 first may entrench the obsolete workflow; land orthogonal controls, amend saturation/batching around the packet now, run the oracle experiment before further prose-first investment | **Partial accept** | Agree: experiment before further prose-first investment; Slice 3 schema headroom now; saturation identity made packet-ready now. Disagree with withholding the non-orthogonal slices: Slices 2 and 4 are *interface-agnostic guardrails* — saturation and host-validated acceptance are what make any repair interface safe, and they transfer to the packet model wholesale once the identity tuple is named generically. The entrenchment risk is concentrated in three specific spots (Slice 3 hard-coding untyped same-length claims, Slice 2 keying identity on readings only, Slice 6 overloading the solved gate), each neutralized by a small amendment rather than by re-scoping a milestone that is already being implemented. See §5 and companion doc Part B. |
 | P2-9 | "Reading recovered" should be a separate terminal action, not a solution-declaration subtype; excluded from solved statistics | **Accept** | A subtype on `meta_declare_solution` would flow through every consumer that branches on a solved declaration (scorer, bake-off summaries, analyzer, fallback tiering) and silently inflate solved statistics. A distinct `meta_declare_recovered_reading` gets its own gate, artifact type, and accounting bucket. It must share the hash-binding discipline of the solution gate. See C4. |
 | P2-10 | Don't assume the residual 9% is predominantly transcription/null/diplomatic; measure the composition first | **Accept** | See §2 caveat and §7 Step 0. Cheap, grading-side, and it correctly sizes M5.4 before it is built. M5.1's basin-retention results are a live warning that some residual may be wrong-basin rather than inexpressible. |
@@ -320,24 +352,34 @@ InterpretationPacket {
   editorial_reading: str,          # human-readable; may contain brackets;
                                    #   NEVER a compile source
   assertions: [                    # the ONLY compile source
-    {span_id, claim: word | boundary, payload, confidence}
+    {span_ref, claim: word | boundary, payload, confidence}
   ],
   annotations: [                   # typed non-key observations;
                                    #   never compile to key mappings
-    {span_id, occurrence?, type: scar | null | abbreviation | lacuna | editorial,
+    {span_ref, occurrence?, type: scar | null | abbreviation | lacuna | editorial,
      surface?, note, confidence}
   ],
-  holes: [ {span_id, note} ],      # explicit unresolved regions
+  holes: [ {span_ref, note} ],     # explicit unresolved regions
   overall_confidence
 }
 ```
 
-- Produced by one fresh-context worker with the existing small in-episode
-  tool budget (bounded corpus lookups stay legal; "single call" means one
-  worker episode, not zero tools).
-- `span_id` values are host-owned (the `reading.py` stable-span machinery,
-  already in place); raw token indices disappear from the model-facing
-  surface (P1-7).
+- Produced by one fresh-context structured response **without tools by
+  default**. If the first response explicitly requests lexical help, the host
+  may perform one bounded batched corpus lookup and permit one final structured
+  response. The M5.4 producer therefore permits at most two paid sends and
+  does not inherit the legacy reading episode's provisional 16-call M5.3
+  safety envelope.
+- `candidate_content_hash` and all resolved provenance are written by the host,
+  not trusted from model output.
+- Model-facing references are granular host-owned anchors. The reading packet
+  exposes coarse `window_id` values for context, stable `word_id` values for
+  current words, and opaque `token_id` values for individual rendered tokens.
+  `span_ref` is either one `word_id` or a contiguous
+  `{start_token_id, end_token_id}` pair within one window. The host resolves
+  and validates contiguity. Existing 120-token window ids alone are too coarse
+  to bind a word assertion, and raw numeric token indices disappear from the
+  model-facing surface.
 - `repair_transaction` consumes the packet directly. The packet replaces the
   prose Reading as the structural precondition; the prose survives *inside*
   it as the editorial layer, feeding verification and the human reader — the
@@ -361,59 +403,86 @@ the substrate), under the strict rule (P1-7):
 - vote-on-mismatch inference and banded alignment are retired as key-inference
   mechanisms. Conflicting assertions touching the same symbol are surfaced as
   explicit conflicts with per-occurrence evidence, not majority-resolved;
+- a `boundary` assertion changes canonical word-span state through the existing
+  boundary API and therefore changes the canonical content hash;
+- occurrence-level `null` observations remain annotations. A symbol-level null
+  hypothesis may be promoted only through the existing solver-supported
+  null-mask machinery; that produces canonical structural state, changes the
+  projected token stream and content hash, and requires fresh verification. It
+  is not an editorial override;
 - the batch input schema carries `claim` type headroom from day one
   (companion doc, amendment B1), so M5.4 widens it without a wire break.
 
-**C3 — Typed positional overrides, without laundering.**
-A branch gains an `overrides` ledger, but an override is *earned*, never
-inferred. Promotion requires all three:
+**C3 — Typed positional annotations, without laundering.**
+A branch gains a noncanonical annotation ledger. An annotation is never a key
+fact, and its support status is explicit:
 
 1. an **explicit typed annotation** in the packet for that occurrence — the
    model's own claim, stated as a claim (P0-1). A failed assertion with no
    matching annotation records only an unresolved annotation: non-rendering,
    no readability credit, visible in the ledger as open;
 2. a **host-verified signature**, deterministic and ground-truth-free: for
-   `scar`, the implied global edit fails collateral adjudication *while all
-   other occurrences of the symbol agree with the current decode* (the §1.2
-   inverse); for `null`/`abbreviation`, the analogous typed checks (e.g.
-   distributional nulls consistent with the existing null-mask machinery);
+   an occurrence conflict, the implied global edit fails collateral
+   adjudication while all other occurrences of the symbol remain consistent
+   with the current key (the §1.2 inverse). This earns only
+   `occurrence_conflict_supported`; it does not prove the proposed replacement
+   or justify labeling the source a transcription scar;
 3. **headroom in the honesty budget** (counts by type, bounded per run).
 
+Support levels are `open`, `proposed`, `occurrence_conflict_supported`,
+`independently_reviewed`, and `source_supported`. Independent linguistic review
+can produce only `independently_reviewed`; it remains an editorial conjecture.
+Only manuscript/OCR evidence or corroborating transcription evidence can
+produce `source_supported`. A semantically attractive local replacement
+without source evidence is rendered with uncertainty and never reported as a
+cryptographically established transcription correction. The honesty budget
+applies separately to each support level.
+
 Representation (P1-3): model-emitted core
-`{span_id, occurrence, op ∈ {replace, delete, insert_after, expand, boundary},
+`{span_ref, occurrence, op ∈ {replace, delete, insert_after, expand},
 type, payload (diplomatic surface vs editorial expansion as separate fields),
 confidence}`; host-filled `{resolved token position, evidence links,
-provenance, review_status}`. Scope is occurrence-level or symbol-level; the
-existing homophonic null masks become the symbol-scope special case of this
-vocabulary.
+provenance, review_status}`. The annotation ledger is occurrence-level and
+noncanonical. Symbol-level null masks remain canonical structural solver state
+under C2 and use a separate structural-hypothesis record.
 
-Scoring and rendering (P1-4, strengthened): overrides **never** enter the
+Scoring and rendering (P1-4, strengthened): annotations **never** enter the
 canonical render or any internal score. Three separate outputs:
 
 - the **key-derived text and scores** — canonical, hash-bound; every existing
   consumer (attestation binding, duplicate suppression, ranking, fallback
   selection) is untouched;
 - the **annotated reading** — a separate artifact with its own hash, where
-  overrides render visibly (`applic[a]re`);
-- the **override ledger** — burden metrics: counts by type, affected token
-  fraction, open vs promoted.
+  conjectural or supported additions render visibly (`applic[a]re`, with
+  support status available to the presentation layer);
+- the **annotation ledger** — burden metrics: counts by type and support level,
+  affected-token fraction, and open vs reviewed.
 
 Native branch ranking stays key-derived. The verifier receives both texts and
-the full ledger and judges them as what they are.
+the full ledger only in recovered-reading verification; ordinary solution
+verification receives key-derived text alone.
 
 **C4 — `meta_declare_recovered_reading`: a separate terminal action** (P2-9).
-Not a subtype of `meta_declare_solution`. Its gate: a fresh attestation
-hash-bound to the *key-derived* text (same discipline as the solution gate),
-verifier judgment rendered with the override ledger and annotated reading in
-view, high `semantic_recoverability` (Slice 6 field), and override burden
-within budget. Its artifact carries the override census and verifier fields.
-It is excluded from solved-result statistics everywhere (scorer, bake-off
-summaries, analyzer); it exists precisely so that a solved-in-substance
-diplomatic page stops masquerading as either "solved" or "unsolved".
+Not a subtype of `meta_declare_solution`. It uses a distinct recovered-reading
+attestation whose binding digest covers
+`{key_content_hash, interpretation_packet_hash, annotated_reading_hash,
+annotation_ledger_hash}`. Any change to the packet, annotation text, support
+status, or ledger makes this attestation stale. The recovered-reading verifier
+sees the key-derived text, visibly annotated reading, and complete burden
+ledger; the ordinary solution verifier sees only key-derived text and remains
+bound only to its canonical content hash.
+
+The recovered-reading gate additionally requires high
+`semantic_recoverability` (Slice 6 field), explicit uncertainty, and annotation
+burden within budget. Its artifact carries both hashes, the annotation census,
+and verifier fields. It is excluded from solved-result statistics everywhere
+(scorer, bake-off summaries, analyzer); it exists precisely so that a
+solved-in-substance diplomatic page stops masquerading as either "solved" or
+"unsolved".
 
 **C5 — Measure before building** (P2-10). The residual-composition study of
 §7 Step 0 runs before M5.4 is scoped. If genuine key errors dominate the
-residual, the override channel loses urgency and search/repair quality is the
+residual, the annotation channel loses urgency and search/repair quality is the
 real frontier; if E3/E4/E5 dominates, the expressibility argument of §2 is
 confirmed with numbers.
 
@@ -434,7 +503,7 @@ re-scoping in-flight work.
 |---|---|---|
 | 1 (budgets) | hard per-call enforcement, no model-raised caps, cost ceiling, reading envelope + usability acceptance | Orthogonal; land as amended by `4b85e20`. Both enforcement defects were verified in code (§1.1). Cost-ceiling scope needs the mid-episode clarification (amendment A4). |
 | 2 (saturation) | repair-cycle identity, `repair_exhausted` | Interface-agnostic guardrail; land it. Seams: identity component named `interpretation_id` (B2) so packets join without a state migration; process- vs evidence-failure carve-out (A2); `repair_exhausted` must be added to the episode-kind map, whose unknown-phase fallback is currently *all kinds* (A5). |
-| 3 (batch/cache) | `hypothesis_test_words`, menu cache | **The substrate for C2.** Seams: claim-type + op headroom, `span_id` accepted alongside positional refs, non-same-length rejected as typed data not schema error (B1); cache keyed on exact builder inputs or proven-sufficient proxy (A8). Do not otherwise disturb its scope mid-flight. |
+| 3 (batch/cache) | `hypothesis_test_words`, menu cache | **A performance substrate, not the proposed compiler itself.** Seams: typed word claims, granular host-owned span references, and non-same-length rejection as typed data (B1); future fields are documented but rejected until implemented; cache keyed on exact builder inputs or a proven-sufficient proxy (A8). Phase 0 supplies a separate reference compiler so it actually tests C2. |
 | 4 (host-validated acceptance) | edits bound to tool evidence, acceptance policy | Interface-agnostic guardrail; land it. An assertion-driven repair produces *cleaner* evidence for it (explicit claims instead of inferred votes). Feeds the A2 failure classification. |
 | 5 (typed experiments) | typed experiment config | Orthogonal; land as specced. |
 | 6 (diplomatic verification) | multi-field verifier contract | **The routing half of C4.** Land the fields and routing. Two cautions: the "only `reader_accepts_as_solution` satisfies the gate" sentence silently reverses documented design C6 and needs an explicit decision plus a consumer migration map (A3); and the solved gate must not absorb "recovered reading" semantics — that is C4's separate terminal, deferred to M5.4 (B3). |
@@ -475,8 +544,9 @@ out" nor "M5.3 will fix it" is the right response.**
 - The fix is bounded, and after Sol's review it is also *tighter* than
   revision 1's version: one interpretation producer emitting a typed packet
   (no reader→repair translation), a deterministic 1-char-per-token compiler
-  (no alignment guessing), an override channel that must be earned by claim +
-  signature + budget (no laundering), strictly separated outputs (no score
+  (no alignment guessing), a typed annotation channel whose support level is
+  explicit and never inferred from semantic plausibility alone, strictly
+  separated outputs (no score
   contamination, no hash churn), and a separate honest terminal state (no
   solved-statistics pollution). Keep everything else.
 
@@ -484,7 +554,7 @@ Where this disagrees with the orchestrator: point 2 overstates the key
 bottleneck (boundaries and null masks are existing non-key channels — the
 real chokepoint is the prose-reading channel and the absence of positional
 vocabulary); point 5 understates what "primary" requires (batch +
-span-flexible + typed, and span binding without the override channel just
+span-flexible + typed, and span binding without the annotation channel just
 moves the dead end). Where this disagrees with Sol: the first-round inversion
 trades away the consistency property that makes the whole exercise
 cryptanalysis rather than creative writing; on the second round, only two
@@ -506,15 +576,24 @@ grading side only** — the same firewall class as `benchmark/scorer.py` —
 classify every residual character/word error into:
 
 - **E1**: symbol consistently mis-mapped (all occurrences wrong the same way);
-- **E3**: isolated deviation (symbol correct elsewhere; single-occurrence
-  mismatch — the scar signature);
+- **E3 candidate**: isolated occurrence conflict (symbol correct elsewhere;
+  single-occurrence mismatch). This is not labeled a transcription scar
+  without corroborating source evidence;
 - **E4/E5**: editorial material — bracketed insertions, lacunae,
   abbreviation expansions in the diplomatic plaintext with no ciphertext
   counterpart;
 - **E2**: boundary/segmentation mismatches;
-- **grading artifacts**: alignment/normalization effects of the scorer itself.
+- **grading artifacts**: alignment/normalization effects of the scorer itself;
+- **ambiguous/unclassified**: the available transcription, alignment, and
+  plaintext do not justify a unique causal label.
 
-Output: per-page fractions by class. This report sizes M5.4: a residual
+Each classification carries a confidence and the evidence used. At least 10%
+of labeled residuals, every low-confidence label, and every proposed E3 label
+receive human review against the canonical transcription and available source
+notes/images. Report both raw automated fractions and reviewed fractions; do
+not silently redistribute `ambiguous/unclassified` cases.
+
+Output: per-page fractions by class and confidence. This report sizes M5.4: a residual
 dominated by E1 says the frontier is search/repair quality, not
 expressibility; a residual dominated by E3/E4/E5 confirms §2 with numbers.
 No new runtime code; one grading-side script over stored artifacts. It never
@@ -583,9 +662,10 @@ generator's polyalphabetic/transposition families are out of scope here.
 
 ### 7.3 Arms
 
-All mechanism arms drive the landed composites through
-`WorkspaceToolExecutor` + `execute_composite` directly (as the episode runner
-does), in-process.
+Arm P and the optional S-menu comparator drive landed composites through
+`WorkspaceToolExecutor` + `execute_composite` in-process. Arm S-ref and S+A use
+the explicitly specified reference compiler in the isolated harness so the
+experiment can test the proposed mechanism before it ships.
 
 - **Arm P — prose alignment (today's path).** Build reading fragments exactly
   as a reading episode would: 120-token windows (matching
@@ -593,30 +673,36 @@ does), in-process.
   the window with true spacing, confidence 1.0, host token provenance. Apply
   via one `hypothesis_apply_reading` call (then one repair round-trip per
   residual, if any).
-- **Arm S — span-binding assertions.** For each decoded word differing from
-  the true reading, one span→word assertion via `hypothesis_test_word`
-  (`install=true` on accept); migrate to `hypothesis_test_words` when Slice 3
-  lands (the singleton is specced to become a wrapper, so results carry
-  over). Boundary corrections issued as span edits where the primitive
-  allows; where the 1-char-per-token rule blocks a correction, record
-  `inexpressible_by_arm`.
-- **Arm S+O — assertions + earned overrides (the C3 end state, simulated).**
-  As Arm S, but the oracle also emits **typed annotations** for the injected
-  scars (simulating the packet's annotation channel), and the harness applies
-  the full C3 promotion rule exactly as the host would: explicit typed claim
-  **and** deterministic scar-signature verification **and** budget headroom.
-  No auto-promotion of rejected assertions (P0-1): a rejected assertion with
-  no matching annotation is recorded as an unresolved annotation, not an
-  override. Final artifact = key + boundaries + override ledger; the
-  override-rendered text is scored *separately* from the key-derived text
-  (P1-4).
-- **Arm N — negative controls (P1-6).** As Arms S and S+O, but the "oracle"
+- **Arm S-ref — proposed deterministic span compiler.** The experiment script
+  contains a small, pure reference implementation of C2: resolve host-owned
+  granular anchors, require exactly one proposed character per ciphertext
+  token, emit exact symbol→letter assertions, surface conflicts without
+  majority voting, and compile boundaries separately. It performs no menu
+  generation, language scoring, or automatic install decision. Correct key
+  assertions are applied together on one fork, followed by the same collateral
+  measurements used for all arms. This is the arm that tests the reframe.
+- **Arm S-menu — current direct word-probe substrate (secondary comparator).**
+  Run the same oracle word assertions through `hypothesis_test_words` after
+  Slice 3 lands. This arm measures parity and menu/cache economics; it is not
+  treated as the proposed deterministic compiler. Where the
+  1-char-per-token rule blocks a correction, record `inexpressible_by_arm`.
+- **Arm S+A — assertions + typed annotations (the C3 end state, simulated).**
+  As Arm S-ref, but the oracle also emits typed annotations for injected
+  occurrence errors. The harness assigns support levels exactly as C3 does:
+  explicit claim plus deterministic signature can reach only
+  `occurrence_conflict_supported`; source support is available only because the
+  oracle ledger supplies source evidence, and is labeled as oracle-only in the
+  artifact. A rejected assertion with no matching annotation remains open.
+  Final artifact = key + boundaries + annotation ledger; annotated text is
+  scored separately from key-derived text.
+- **Arm N — negative controls (P1-6).** As Arms S-ref and S+A, but the "oracle"
   is adversarial: proposals are incorrect yet linguistically attractive —
   same-length dictionary words that differ from the truth, plausible
   length-changing variants (abbreviation-like contractions/expansions), and
   scar *claims* on positions that are not scarred. Measures whether the
-  promotion rule (specifically the scar-signature check) rejects attractive
-  falsehoods. Run at the same M/N/K matrix.
+  support rules reject attractive falsehoods. Include isolated wrong-word
+  proposals, locally fluent wrong-basin passages, and false annotation claims.
+  Run at the same M/N/K matrix.
 
 ### 7.4 Metrics (per case × arm)
 
@@ -627,22 +713,25 @@ does), in-process.
 3. `poison_count`: installed key edits touching symbols whose mapping was
    already true (predicted for Arm P at M>0 by §1.2; the per-scar prediction
    is deterministic and checkable).
-4. `scar_handling` per scar: silently-poisoned / surfaced-and-rejected /
-   override-promoted / annotation-only.
+4. `occurrence_error_handling`: silently-poisoned / surfaced-and-rejected /
+   open annotation / occurrence-conflict-supported / source-supported.
 5. `boundary_closure` (G1).
 6. `mechanism_calls` and `wall_seconds` (menu-rebuild economics; ties into
    Slice 3's ≥70% target).
-7. `override_precision` / `override_recall` against the injected scar ledger
-   (Arms S+O and N).
-8. **`false_override_rate`** (Arm N): overrides promoted for claims that are
-   wrong — the laundering rate the promotion rule must hold near zero.
+7. annotation precision/recall by support level against the injected ledger
+   (Arms S+A and N).
+8. **False-support metrics** (Arm N), with explicit denominators:
+   - false supported annotations / all false annotation claims;
+   - cases containing at least one false supported annotation / all cases;
+   - falsely affected tokens / all rendered tokens; and
+   - 95% Wilson confidence intervals for the per-claim rate.
 
 ### 7.5 Pre-registered adjudication
 
 - **H-mech is supported** if, at M ≥ 3 with a perfect proposal, Arm P has
   median `poison_count ≥ 1` or median `char_acc_final < ceiling − 1 pt`,
-  while Arm S achieves `key_error_closure ≥ 0.9` with strictly less poison at
-  comparable call counts. → proceed toward M5.4, subject to the override
+  while Arm S-ref achieves `key_error_closure ≥ 0.9` with strictly less poison at
+  comparable call counts. → proceed toward M5.4, subject to the annotation
   gate below and Phase 1.
 - **H-tune is supported** if Arm P reaches the ceiling with ~zero poison and
   the arms differ only in calls/latency. → M5.3 Slices 1–3 are the complete
@@ -651,12 +740,14 @@ does), in-process.
 - **Both fail** similarly → the bottleneck is elsewhere (proposal quality or
   verification), and neither reframe is justified by this evidence; revisit
   after Phase 1.
-- **Override-channel gate** (independent of the above): C3 is adopted only if
-  Arm S+O shows high `override_recall` on injected scars **and** Arm N's
-  `false_override_rate` is at or near zero (pre-registered: median 0 per
-  case, mean < 0.05). If the scar-signature check cannot reject Arm N's
-  attractive falsehoods, C3 as designed launders and must be reworked or
-  dropped — regardless of how well the oracle arm performs. If S+O ≈ S on
+- **Annotation-channel gate** (independent of the above): C3 is adopted only if
+  Arm S+A shows high recall for occurrence conflicts **and** Arm N produces no
+  false `source_supported` or `independently_reviewed` annotations, a per-claim
+  false `occurrence_conflict_supported` rate below 1% whose 95% Wilson upper
+  bound is below 2%, and a falsely affected-token fraction below 0.1%. Report
+  case-level failures separately; one high-impact false annotation blocks
+  adoption even when aggregate rates pass. If the support checks cannot reject Arm N's
+  attractive falsehoods, C3 must be reworked or dropped. If S+A ≈ S-ref on
   accuracy and the ledger adds nothing, the Slice 6 verifier vocabulary
   suffices and no artifact-level override layer is needed.
 
@@ -666,20 +757,18 @@ does), in-process.
   only; can be prepared as a standalone script without touching `src/`.
 - **Phase 0 (the oracle compiler test)**: one new script,
   `scripts/run_repair_mechanism_experiment.py` (~350 lines: build → corrupt →
-  executor → composites → score → JSONL summary), plus the Arm N adversarial
-  proposal generator. Full matrix (2 languages × 2 regimes × 2 N × 3 M ×
-  [2 K] × 20 seeds ≈ 500 cases × 4 arms) runs in minutes, offline, $0.
-  **Not written now** — code is frozen under the concurrent Codex rework;
-  this section is the spec for it. Schedule after M5.3 Slice 3 lands (so
-  Arm S can use the batch primitive), though Arms P and S-singleton can run
-  against today's code at any time.
+  reference compiler → optional production composites → score → JSONL
+  summary), plus the Arm N adversarial proposal generator. Full matrix runs
+  offline for $0. Arm P and Arm S-ref do **not** wait for Slice 3; run them
+  after Step 0 so the architectural decision is not circular. Add Arm S-menu
+  after Slice 3 lands to measure production parity and cache economics.
 - **Phase 1 (mandatory, small, before any M5.4 adoption — P1-6)**: even if
   Phase 0 is decisive, a small live phase runs before the packet workflow is
   adopted, because Phase 0 grants exactly the premise (perfect interpretation
   quality) that live runs must supply — packet-production quality is
   unmeasurable offline. Same damaged branches, real episodes: a reading
   episode feeding today's `repair_transaction` (Arm P-live) vs a
-  packet-producing reading episode feeding the deterministic compiler
+  packet producer capped at two sends feeding the deterministic compiler
   (Arm S-live), `gpt-5.5`, measuring end-to-end turns/$ to ceiling, poison
   rates, packet usability (assertion validity rate, annotation quality), and
   false-override behavior under the M5.3 harness. A handful of runs with
@@ -704,10 +793,10 @@ does), in-process.
   only the candidate packet; no benchmark plaintext, key, alignment, or
   accuracy enters routing, repair, scoring, retries, verification, or
   declaration (M5.3 design principle 1 preserved verbatim).
-- **The override channel (C3) is itself firewall-relevant**: overrides are
-  *typed proposals*, never ground truth; the promotion rule (claim +
-  deterministic signature + budget) and the Arm N false-override gate exist
-  precisely so the channel cannot silently substitute assertion for
-  evidence. Overrides never alter the canonical key-derived text, its hash,
-  or any internal score (P1-4), so no consumer of the honest artifact can be
-  influenced by them unknowingly.
+- **The annotation channel (C3) is itself firewall-relevant**: annotations are
+  typed proposals, never ground truth. Deterministic occurrence-conflict
+  support is explicitly weaker than source support, and Arm N's false-support
+  gate exists so the channel cannot silently substitute assertion for
+  evidence. Annotations never alter canonical key-derived text, its hash, or
+  any internal score, so no consumer of the honest artifact can be influenced
+  by them unknowingly.

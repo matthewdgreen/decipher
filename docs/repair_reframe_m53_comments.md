@@ -1,13 +1,21 @@
 # M5.3 Consolidated Amendment Block — Reliability Clarifications + Repair-Reframe Seams
 
-Status: proposed 2026-07-16, pending user review; intended to be appended to
-`docs/specs/agent_v3_m5_3_control_reliability_spec.md` once approved. Author:
+Status: proposed 2026-07-16, **revision 3**, pending user review; retained as
+the detailed rationale for requirements now integrated directly into
+`docs/specs/agent_v3_m5_3_control_reliability_spec.md`. Author:
 Fable design synthesis, read-only pass. All file/line references verified
 against `main @ 4b85e20`. Sources reconciled here: the M5.3 spec review's
 eight required clarifications, GPT-5.6-Sol's design review of the repair
 rethink (ten comments), and the revised design note
-`docs/repair_mechanism_rethink.md` (revision 2), which carries the full
+`docs/repair_mechanism_rethink.md` (revision 3), which carries the full
 rationale and the adjudication of each Sol comment.
+
+Revision-3 edits are incorporated directly below: legacy reading budgets are
+explicitly nonprecedential for M5.4, failure reasons are split before
+saturation, the positive solution-attestation decision is explicit, batch
+seams use granular anchors and reject unused future fields, and the deferred
+annotation/recovered-reading contracts use separate support levels and
+composite hash binding.
 
 Structure:
 
@@ -47,6 +55,12 @@ Residuals to fold in:
    fragments is usable for verification but useless for repair; the
    calibration decision needs to see that rate.
 
+Scope clarification from repair-rethink revision 3: this 16-call envelope is a
+temporary safety setting for the **legacy M5.3 prose-reading episode only**. It
+must not become the default for M5.4's `InterpretationPacket` producer, which
+uses one tool-free structured response by default and at most one batched
+lookup plus one final response.
+
 ### A2 (P0 | Slice 2 × Slice 4) Distinguish process failure from evidence failure before burning a (source, reading) pair
 
 Slice 2 currently says: "no repeated transaction with the same source/reading
@@ -58,18 +72,20 @@ evidence.
 Amendment — classify transaction failures:
 
 - **Process failures** — the worker or harness failed before the evidence was
-  actually adjudicated: Slice-4 rejections with reasons in the family
-  `unadjudicated winner among multiple finalists`, `worker_did_not_apply`,
-  `fabricated/unsupported winner name`, episode runner errors, schema
-  failures. These permit **exactly one retry** of the same (source, reading)
+  actually adjudicated: `no_winner_named_with_multiple_changed_finalists`,
+  `worker_did_not_apply`, `fabricated/unsupported winner name`, episode runner
+  errors, and schema failures. These permit **exactly one retry** of the same
+  (source, reading)
   pair, recorded with a `retry_of: <transaction_id>` link, and do **not**
   count toward the two-transaction saturation threshold. A second process
   failure on the same pair counts as an evidence failure (the pipeline is
   telling you something).
-- **Evidence failures** — the pair was genuinely evaluated and did not
-  support an install: `unsupported`, no-op, `ambiguous_or_unchanged_finalists`,
-  materially non-improving install. These count toward saturation and the
-  pair may not be rerun.
+- **Evidence failures** — the pair was genuinely evaluated and did not support
+  an install: `unsupported`, `no_changed_finalists`,
+  `all_finalists_rejected`, no-op, or materially non-improving adjudication.
+  These count toward saturation and the pair may not be rerun. Do not use one
+  combined `ambiguous_or_unchanged_finalists` reason: it erases the distinction
+  this policy depends on.
 
 Code note: today's duplicate suppression
 (`src/investigation/loop_v3.py:1010-1028`) matches only
@@ -77,22 +93,24 @@ Code note: today's duplicate suppression
 rerunnable — the spec's stricter rule is correct and needed; it just needs
 this carve-out so Slice 2 and Slice 4 compose instead of conflict.
 
-Acceptance addition: a Slice-4 `unadjudicated winner` rejection followed by a
+Acceptance addition: a Slice-4
+`no_winner_named_with_multiple_changed_finalists` rejection followed by a
 retried, successful adjudication of the same pair installs; the same pair
 failing twice on evidence saturates.
 
-### A3 (P0 | Slice 6) The declaration-gate change silently reverses design C6 — decide it explicitly and ship a consumer migration map
+### A3 (P0 | Slice 6) Explicit decision: replace design C6 with a positive-attestation solution gate and ship a consumer migration map
 
 Slice 6 states: "Only `reader_accepts_as_solution` can satisfy the
 declaration gate." Today's gate is **content-hash-match-only**:
 `AttestationPolicy` (`src/agent/tools_v2.py:2337-2389`) explicitly documents
 (design C6) that a weak attestation — `reader_accepts` false, low coherence —
 does **not** block declaration; only an absent or stale attestation blocks,
-and the weakness is carried into the artifact. Requiring positivity is a
-defensible design change, but it is a *reversal* of a documented decision and
-must be (a) named as such and decided explicitly, not landed as a side
-effect, and (b) accompanied by a migration map for every consumer of the
-current attestation shape:
+and the weakness is carried into the artifact. Revision 3 makes the decision
+explicit: `meta_declare_solution` requires a fresh **positive** solution
+attestation. This intentionally reverses design C6 rather than landing as a
+side effect. Weak but fresh attestations remain useful routing evidence and may
+support the future recovered-reading gate, but cannot satisfy solved
+declaration. Ship this consumer migration map with the change:
 
 1. `AttestationPolicy.check_declare_solution` — the gate itself
    (`src/agent/tools_v2.py:2337`).
@@ -230,20 +248,24 @@ amendment below rather than by re-scoping in-flight work. Each seam is
 schema/naming-level; none changes M5.3 runtime behavior beyond what is
 stated.
 
-### B1 (P1 | Slice 3) `hypothesis_test_words` input headroom: claim type, op reserve, span ids, typed rejection
+### B1 (P1 | Slice 3) `hypothesis_test_words` input headroom: typed word claims, granular anchors, typed rejection
 
-1. Each batch item carries a `claim_type` field — enum, default and only
-   currently-accepted value `"word"`, with `"boundary"` reserved — and a
-   reserved (accepted-but-unused) `op` field. This is headroom, not behavior:
-   M5.3 evaluates word claims exactly as specced.
-2. Items may reference spans by host-owned `span_id` (the stable ids the
-   reading packet already mints in `src/investigation/reading.py`) as an
-   alternative to `word_index`/`char_start`. Raw positional refs stay
-   accepted for parity with the singleton.
+1. Each batch item carries a `claim_type` field whose only currently accepted
+   value is `"word"`. Future values such as `"boundary"` and an `op` field are
+   reserved in documentation, but a caller that supplies them before
+   implementation receives `unsupported_reserved_field`; no field is accepted
+   and silently ignored. M5.3 evaluates word claims exactly as specced.
+2. Existing 120-token reading-window ids are too coarse for exact word repair.
+   Slice 3 mints granular host-owned `word_id` values and opaque per-token
+   anchors within each window. A batch item may use one `word_id` or a
+   contiguous `{start_token_id, end_token_id}` run. The host validates
+   contiguity and content-hash binding. Raw positional refs remain accepted
+   only for singleton parity and are marked legacy/model-discouraged; the
+   future packet surface exposes only host-owned anchors.
 3. A hypothesis whose word length does not match the span's token count is
-   rejected as **typed data** — reason `not_expressible_as_key_edit`, with
-   the span/word lengths — not as a schema or validation error. Same outcome
-   in M5.3 (nothing installs), but the follow-on milestone turns that typed
+   rejected as **typed data** — reason `not_expressible_as_key_edit`, with the
+   span/word lengths — not as a schema or validation error. Same outcome in
+   M5.3 (nothing installs), but the follow-on milestone turns that typed
    rejection into a pointer at the annotation channel without changing the
    wire shape, and models get a legible reason instead of a generic error.
 
@@ -282,29 +304,41 @@ Full definitions and rationale: `docs/repair_mechanism_rethink.md` (rev 2),
 1. **`InterpretationPacket`** — the reading episode's result extended so one
    worker call returns editorial reading + typed span assertions + typed
    non-key annotations + holes; the packet (not prose) becomes the repair
-   precondition; no second episode translates prose.
+   precondition; no second episode translates prose. The producer defaults to
+   one tool-free structured response and permits at most one batched lookup
+   plus one final response. Assertions use granular host-owned word/token
+   anchors, not coarse window ids or raw numeric positions.
 2. **Deterministic compiler** — assertions compile to key edits only at
    1 proposed char ↔ 1 ciphertext token; vote-on-mismatch inference and
    banded alignment retired as key-inference mechanisms
    (`src/investigation/actions.py:539-585` is the code being replaced).
-3. **Typed positional overrides** — earned by explicit claim + host-verified
-   deterministic signature + honesty budget; never auto-promoted from
-   rejected edits; never entering the canonical render, content hashes, or
-   internal scores (key-derived text/scores, annotated reading, and override
-   ledger are three separate outputs).
+3. **Typed positional annotations** — explicit proposals with separate support
+   levels. The deterministic occurrence-conflict signature proves only that a
+   global key edit is unsupported; it does not prove the replacement or a
+   transcription scar. Independent linguistic review remains an editorial
+   support level; source support requires manuscript/OCR or corroborating
+   transcription evidence. Annotations never
+   enter canonical render, content hashes, or internal scores. Solver-supported
+   symbol-level null masks remain canonical structural state, not annotations.
 4. **`meta_declare_recovered_reading`** — a separate hash-bound terminal
-   action, excluded from solved-result statistics.
+   action, excluded from solved-result statistics. Its attestation binds to a
+   composite of key content, packet, annotated reading, and annotation-ledger
+   hashes; ordinary solution attestation remains key-text-only.
 
 Gates before M5.4 is scoped/adopted (in order):
 
 - **Gate 1 — residual-composition measurement**: grading-side classification
   of stored borg_0109v/0045v candidates' residual errors (genuine key error /
-  isolated scar / editorial-lacuna / boundary / grading artifact). Sizes the
-  milestone; no runtime code.
+  isolated occurrence conflict / editorial-lacuna / boundary / grading
+  artifact / ambiguous). Labels carry confidence, with every proposed scar,
+  every low-confidence item, and at least a 10% sample human-reviewed. Sizes
+  the milestone; no runtime code.
 - **Gate 2 — oracle compiler test** (design note §7.1–7.5): LLM-free, $0,
-  perfect-proposal and adversarial-proposal arms driven through the
-  production composites in-process; includes negative controls and a
-  pre-registered false-override-rate gate. Scheduled after Slice 3 lands.
+  perfect-proposal and adversarial-proposal arms. A small reference
+  implementation tests the proposed deterministic compiler directly; the
+  production menu-backed batch tool is a secondary comparator after Slice 3,
+  not a substitute for the compiler. Includes negative controls and a
+  pre-registered false-support gate with per-claim and affected-token rates.
 - **Gate 3 — small mandatory live Phase 1** with separate spend approval,
   regardless of how decisive Gate 2 is (Gate 2 grants the very premise —
   perfect interpretation quality — that live runs must supply).
@@ -323,3 +357,7 @@ Gates before M5.4 is scoped/adopted (in order):
   description of it as ground-truth-free. This corrects the prior design
   note's inaccurate firewall wording (Sol P1-5, accepted).
 - Gate 1 is grading-side only, the same class as `benchmark/scorer.py`.
+- Gate 3's recovered-reading attestation must bind to the packet, annotated
+  reading, and annotation-ledger hashes in addition to the canonical key-text
+  hash; changing noncanonical interpretation state must make the attestation
+  stale even when the key-derived text is unchanged.
