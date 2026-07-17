@@ -956,6 +956,9 @@ def validate_model(
         # Ensure the all-IDs set is populated.  _get_openrouter_live_pricing()
         # triggers the disk-cache load and lazy network fetch as a side-effect.
         _get_openrouter_live_pricing(cache_path=cache_path)
+        # Tracks whether the id set below reflects a live fetch made THIS call
+        # (vs. a possibly-stale disk cache). Gates the single self-heal refresh.
+        fetched_fresh = False
 
         if _OPENROUTER_ALL_MODEL_IDS is None:
             # Disk cache exists but predates the all_model_ids field (old format),
@@ -963,17 +966,33 @@ def validate_model(
             # also rewrites the cache in the new format.
             try:
                 fetch_openrouter_pricing(timeout=timeout, cache_path=cache_path)
+                fetched_fresh = True
             except Exception:  # noqa: BLE001
                 return True, ""  # Cannot reach OpenRouter — don't block the run.
 
         if _OPENROUTER_ALL_MODEL_IDS is not None:
             if model in _OPENROUTER_ALL_MODEL_IDS:
                 return True, ""
+            # Self-heal a stale cache before rejecting: the id set may have come
+            # from a disk cache (<=24h old) written BEFORE a freshly-listed model
+            # existed on OpenRouter. When it did NOT come from a fetch we just
+            # ran (``fetched_fresh``), force exactly ONE live refresh and
+            # re-check. A genuinely invalid id still falls through to the hint
+            # below — this is bounded to a single extra fetch, never a loop.
+            if not fetched_fresh:
+                try:
+                    fetch_openrouter_pricing(timeout=timeout, cache_path=cache_path)
+                except Exception:  # noqa: BLE001
+                    pass  # network unreachable — fall through to the not-found hint
+                else:
+                    if _OPENROUTER_ALL_MODEL_IDS and model in _OPENROUTER_ALL_MODEL_IDS:
+                        return True, ""
             # Build a helpful suggestion list: models whose ID contains any
-            # component of the supplied name (split on "/").
+            # component of the supplied name (split on "/"). Uses the freshest
+            # id set available after the refresh above.
             parts = [p.lower() for p in model.replace(":", "/").split("/") if p]
             suggestions = sorted(
-                mid for mid in _OPENROUTER_ALL_MODEL_IDS
+                mid for mid in (_OPENROUTER_ALL_MODEL_IDS or set())
                 if any(p in mid.lower() for p in parts)
             )[:5]
             hint = f"Model '{model}' was not found on OpenRouter."
