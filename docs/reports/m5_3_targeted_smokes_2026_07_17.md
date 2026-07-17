@@ -44,6 +44,30 @@ pre-registered accuracy targets (91.0% < 93%; 66.7% < 70%). Per the master
 specification, this is now a search/selection-quality question rather than a
 reason to enlarge worker budgets.
 
+### Candidate-selection follow-up
+
+A local artifact replay found that the first run's apparent no-boundary
+finalist was partly a rendering defect, not a genuinely unsegmented candidate.
+`key_with_null_mask_v1` preserved boundaries only when a branch had a custom
+word-span overlay; ordinary branches with canonical manuscript boundaries were
+silently flattened before scoring and verification. Replaying the exact saved
+key and null mask with the source boundaries preserved changes no symbol
+mapping and changes the post-hoc result from 96.5% character / 0.0% word to
+96.5% character / 82.1% word. The historical verifier rejection is bound to
+the old flattened content hash and therefore is not evidence against the
+corrected rendering.
+
+The renderer now uses the branch's effective word spans in all null-mask
+branches. This narrows, but does not remove, the Stage-1 blocker. With corrected
+rendering, the 96.5% / 82.1% branch ranks third under the ground-truth-free
+scalar ordering, behind two 91.3% / 67.9% branches. The fixed rerun never
+generated the stronger null-mask basin at all and topped out at 91.0% / 66.7%.
+The remaining investigation is therefore twofold: retain and adjudicate the
+strong candidate when it exists, and determine why candidate generation fails
+to reproduce it reliably. See
+`docs/reports/m5_3_borg_candidate_selection_2026_07_17.md` for the complete
+branch and timeline comparison.
+
 ## Diplomatic Verification
 
 The first exact control used a no-boundary synthetic. Its plaintext was exactly

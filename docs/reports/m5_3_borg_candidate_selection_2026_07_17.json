@@ -1,0 +1,708 @@
+[
+  {
+    "artifact": "artifacts/m5_3_targeted_smokes/repair_path/v3/borg_single_B_borg_0109v/1/borg_single_B_borg_0109v/8d5bce9769b1.json",
+    "run_id": "8d5bce9769b1",
+    "test_id": "borg_single_B_borg_0109v",
+    "status": "unsolved",
+    "language": "la",
+    "source_word_count": 78,
+    "branch_roles": {
+      "best_scored_branch": "nullmask_main",
+      "workflow_branch": "nullmask_main",
+      "latest_installed_branch": null,
+      "declared_or_selected_branch": "nullmask_main"
+    },
+    "selected_branch": "nullmask_main",
+    "post_hoc_best_branch": "nullmask_main",
+    "post_hoc_best_branches": [
+      "nullmask_main",
+      "wide_nullmask_result"
+    ],
+    "findings": [
+      "Historical snapshots flattened canonical source boundaries for null-mask branch(es): nullmask_main.",
+      "Historical verifier rejection(s) were bound to the unsegmented content for: nullmask_main. Corrected renderings require fresh verification.",
+      "Post-hoc best nullmask_main, wide_nullmask_result ranked 3 by the ground-truth-free scalar ordering."
+    ],
+    "timeline": [
+      {
+        "iteration": 1,
+        "branch": "automated_preflight",
+        "dict_rate": 0.3718,
+        "quad": -5.3387,
+        "has_boundaries": true,
+        "preview": "ETIAM | QUAS | IN | TALI | CUR | PLICARE | U | UEL | AN | PULLA | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRA | CERTA | EXER | LITE | TITUR | SI | AUTEM | AMNES "
+      },
+      {
+        "iteration": 3,
+        "branch": "anneal_simple_1",
+        "dict_rate": 0.4744,
+        "quad": -5.234,
+        "has_boundaries": true,
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AT | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | ETER | LITE | TITUR | SI | AUTEM | OMNES "
+      },
+      {
+        "iteration": 14,
+        "branch": "nullmask_main",
+        "dict_rate": 0.6842,
+        "quad": -5.6084,
+        "has_boundaries": false,
+        "preview": "ETIAMQUODINTALICURPLICAREUUELAPULLOETBREUITERUTRLURESMANERENTUIUIETHIEPROCERTOEAERLIBEBITURSIAUTEMOMNESPULLIMORIEBANTUREASIMILITERMORIEBATUETQUIASEMELAPPLISUILPULLISAQUIOMNEMORIEBA"
+      }
+    ],
+    "branches": [
+      {
+        "branch": "anneal_simple_1",
+        "parent": "main",
+        "created_iteration": 3,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution",
+          "rejected"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.47435897435897434,
+        "quad": -5.233984170269181,
+        "content_hash": "94be8b84d0c980f7deca0752238fc69a6d115d067a7a10e21311bde1448574bc",
+        "attestations": [
+          {
+            "branch": "anneal_simple_1",
+            "content_hash": "94be8b84d0c980f7deca0752238fc69a6d115d067a7a10e21311bde1448574bc",
+            "renderer_id": "decoded_text_v1",
+            "episode_id": "309e1f7f54f3",
+            "coherence": 2,
+            "reader_accepts": false,
+            "gloss": "The recoverable fragments seem to say something about chicks: that in some case more should remain alive; if all the chicks die, similarly something will die; because it was night the speaker could not give more chicks; even if they had given them, something would have happened; the care is very pleasant/sweet and without pain. This is only a rough impression from isolated Latin words, not a continuous sense.",
+            "anomalies": [
+              "Opening syntax is not Latin: \"ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AT | PULLO\" strings particles and fragments without a governed construction; \"PLICARE\" is an infinitive hanging without sense.",
+              "Non-words or badly corrupted forms: \"TREUITER\", \"RLURES\" (probably intended \"PLURES\"), \"ETER\", \"TITUR\", \"APPLIS\", \"PULLUSA\", \"DATER\", \"DATUISSEMUS\", \"TERASSEM\", \"DEDECTU\", \"POTESTQUITUS\", \"EUA\".",
+              "The clause \"UT | RLURES | MANERENT | UIUI\" is partly recoverable as \"ut plures manerent vivi\", but as written \"RLURES\" is not a Latin word.",
+              "\"ET | DIE | PRO | CERTO | ETER | LITE | TITUR\" contains Latin pieces but no intelligible syntax; \"ETER LITE TITUR\" is not parseable Latin.",
+              "\"SI | AUTEM | OMNES | PULLI | MORIETANTUR\" uses a malformed verb; classical/medieval Latin would expect something like \"morientur\" or \"morirentur\", not \"morietantur\".",
+              "\"ET | SIMILITER | MORIETATU\" repeats the malformed death-verb and lacks a subject or finite form acceptable as Latin.",
+              "\"ET | QUIA | SEMEL | APPLIS | UI | L | PULLUSA | QUI | OMNE | MORIETANTUR\" has scattered Latin particles but broken morphology and agreement: \"PULLUSA\", \"OMNE\" with plural sense, and \"MORIETANTUR\".",
+              "\"ET | QUIA | I | NOCTE | ERAT | NON | POTUI | PLURES | PULLOS | DATER\" is almost recoverable as \"quia in nocte erat, non potui plures pullos dare\", but \"I\" and \"DATER\" are not acceptable as written.",
+              "\"ETSI | DATUISSEMUS | L | TERASSEM | EUM | DEI | TR | TIA\" has a recognizable concessive \"etsi\" but the following forms do not make coherent Latin.",
+              "\"SED | DEDECTU | PULL | RUM | MORIETATURA\" is fragmented; \"PULL RUM\" may conceal \"pullorum\", but \"DEDECTU\" and \"MORIETATURA\" do not yield a normal clause.",
+              "\"ET | IST | CURA | EST | MULTUM | SUAUI | ET | SINE | DOLORET\" is partly Latin-like, perhaps \"ista cura est multum suavis et sine dolore\", but \"IST\", case/agreement, and \"DOLORET\" are wrong.",
+              "Final \"ET | D | RI | POTESTQUITUS | EUA\" is not recoverable Latin."
+            ],
+            "created_turn": 6,
+            "target_language_confidence": 0.75,
+            "semantic_recoverability": 0.25,
+            "damage_scope": "basin_wide",
+            "repairability": "broaden",
+            "reader_accepts_as_solution": false,
+            "uncertainty_note": "Some individual corruptions look like OCR/cipher-letter errors concealing plausible Latin phrases, especially around \"plures manerent vivi\" and \"non potui plures pullos dare\". I am less sure whether a known manuscript context could explain some isolated abbreviations, but the density of malformed words and failed syntax is too high to accept as a genuine reading."
+          }
+        ],
+        "post_hoc": {
+          "char_accuracy": 0.9130434782608695,
+          "word_accuracy": 0.6794871794871795,
+          "correct_chars": 315,
+          "total_chars": 345,
+          "correct_words": 53,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AT | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | ETER | LITE | TITUR | SI | AUTEM | OMNES | PULLI | MORIETANTUR | ET | SIMILITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 1,
+        "post_hoc_rank": 3
+      },
+      {
+        "branch": "wide_simple_result",
+        "parent": null,
+        "created_iteration": 14,
+        "roles": [],
+        "tags": [],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.47435897435897434,
+        "quad": -5.256624452116842,
+        "content_hash": "f191c3a45eed93f9fef8d6a2b6cc525e9776166ebe0fa2d92db8348b1b8a5aa2",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.9130434782608695,
+          "word_accuracy": 0.6794871794871795,
+          "correct_chars": 315,
+          "total_chars": 345,
+          "correct_words": 53,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AN | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | MIE | PRO | CERTO | ETER | LITE | TITUR | SI | AUTEM | OMNES | PULLI | MORIETANTUR | ET | SIMILITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 2,
+        "post_hoc_rank": 3
+      },
+      {
+        "branch": "nullmask_main",
+        "parent": null,
+        "created_iteration": 14,
+        "roles": [
+          "best_scored_branch",
+          "workflow_branch",
+          "declared_or_selected_branch"
+        ],
+        "tags": [
+          "null_mask_finalist",
+          "rejected"
+        ],
+        "renderer": "key_with_null_mask_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 78,
+        "mapped_count": 22,
+        "dict_rate": 0.47435897435897434,
+        "quad": -5.303351698422171,
+        "content_hash": "c08ea41287d0f595c3cd73b1a582fae413ddceaa38daf0e124fe4acd9cac78ee",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.9650145772594753,
+          "word_accuracy": 0.8205128205128205,
+          "correct_chars": 331,
+          "total_chars": 343,
+          "correct_words": 64,
+          "total_words": 78
+        },
+        "preview": "ETIAM QUOD IN TALI CUR PLICARE U UEL A PULLO ET BREUITER UT RLURES MANERENT UIUI ET HIE PRO CERTO EAER LIBE BITUR SI AUTEM OMNES PULLI MORIEBANTUR EA SIMILITER MORIEBATU ET QUIA SEMEL APPLIS UI L PULLISA QUI OMNE MORIEBA",
+        "historical_boundary_loss": true,
+        "unsegmented_variant": {
+          "content_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+          "attestations": [
+            {
+              "branch": "nullmask_main",
+              "content_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+              "renderer_id": "decoded_text_v1",
+              "episode_id": "9b2556e5e8c3",
+              "coherence": 2,
+              "reader_accepts": false,
+              "gloss": "The text seems to be trying to say something about chicks/pullos: that more might remain alive; if all the chicks died, someone or something likewise died; because it was night the speaker could not have more chicks; if they had had them, the speaker would have freed/saved someone, but through lack of chicks he/she/it was dying; it then calls this a cure/care that is very pleasant and painless. Much of the connective and object structure is unrecoverable.",
+              "anomalies": [
+                "\"ETIAMQUODINTALICURPLICARE\" contains recognizable pieces (etiam quod in tali, perhaps cur, plicare) but no coherent Latin clause as written.",
+                "\"UTRLURES\" looks like a corruption of \"ut plures\", but \"rlures\" is not a Latin word.",
+                "\"MANERENTUIUI\" can be read as \"manerent vivi\", but the fused form and following syntax are damaged.",
+                "\"ETHIEPROCERTOEAERLIBEBITUR\" includes possible \"et hic/pro certo\" but \"eaer libebitur\" is not intelligible Latin; \"libebitur\" is especially suspect here.",
+                "\"SIAUTEMOMNESPULLIMORIEBANTUREASIMILITERMORIEBATU\" has Latin words, but the tense/person/ending and reference are broken: \"moriebatu\" is not a valid form, and \"ea similiter\" is syntactically unclear.",
+                "\"ETQUIASEMELAPPLISUILPULLISAQUIOMNEMORIEBANTUR\" has several non-words or corruptions: \"APPLISUIL\", \"AQUI\", and a mismatched \"omne moriebantur\" if that is intended.",
+                "\"ETQUIAINOCTEERATNONPOTUIPLURESPULLOSHABERET\" shifts from first-person \"non potui\" to third-person/subjunctive \"haberet\" in a way that does not make a coherent clause.",
+                "\"SIHABUISSEMUSLBERASSEMEUMDEIARTIA\" has possible \"si habuissemus\" and \"liberassem eum\", but \"LBERASSEM\" is misspelled/corrupt and \"DEIARTIA\" is not intelligible Latin.",
+                "\"SEDDEFECTUPULLRUMMORIEBATURA\" has possible \"sed defectu pullorum\", but \"PULLRUM\" and \"MORIEBATURA\" are corrupt; the latter is not a valid finite verb form.",
+                "\"ETISTCURAESTMULTUMSUAUIETSINEDOLORE\" is close to Latin, perhaps \"et ista cura est multum suavis et sine dolore\", but as written \"ist\" is incomplete and \"multum suavi\" is grammatically off unless heavily emended.",
+                "\"ETFRIPOTESTQUIBUSEUA\" is not recoverable as Latin; \"FRI\" and \"EUA\" are not meaningful in this context."
+              ],
+              "created_turn": 15,
+              "target_language_confidence": 0.7,
+              "semantic_recoverability": 0.25,
+              "damage_scope": "basin_wide",
+              "repairability": "broaden",
+              "reader_accepts_as_solution": false,
+              "uncertainty_note": "I am least sure whether some of the odd spans are abbreviation scars from a medical or veterinary recipe, since phrases like \"defectu pullorum\" and \"ista cura est ... sine dolore\" could belong to a real text. Even allowing for such damage, the corruption is too pervasive for the candidate to stand as a solved reading."
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.9650145772594753,
+            "word_accuracy": 0.0,
+            "correct_chars": 331,
+            "total_chars": 343,
+            "correct_words": 0,
+            "total_words": 77
+          },
+          "preview": "ETIAMQUODINTALICURPLICAREUUELAPULLOETBREUITERUTRLURESMANERENTUIUIETHIEPROCERTOEAERLIBEBITURSIAUTEMOMNESPULLIMORIEBANTUREASIMILITERMORIEBATUETQUIASEMELAPPLISUILPULLISAQUIOMNEMORIEBANTURETQUIAINOCTEERATNONPOTUIPLURESPULLOS"
+        },
+        "solver_rank": 3,
+        "post_hoc_rank": 1
+      },
+      {
+        "branch": "wide_nullmask_result",
+        "parent": "main",
+        "created_iteration": 24,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution",
+          "null_mask_finalist"
+        ],
+        "renderer": "key_with_null_mask_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 78,
+        "mapped_count": 22,
+        "dict_rate": 0.47435897435897434,
+        "quad": -5.303351698422171,
+        "content_hash": "c08ea41287d0f595c3cd73b1a582fae413ddceaa38daf0e124fe4acd9cac78ee",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.9650145772594753,
+          "word_accuracy": 0.8205128205128205,
+          "correct_chars": 331,
+          "total_chars": 343,
+          "correct_words": 64,
+          "total_words": 78
+        },
+        "preview": "ETIAM QUOD IN TALI CUR PLICARE U UEL A PULLO ET BREUITER UT RLURES MANERENT UIUI ET HIE PRO CERTO EAER LIBE BITUR SI AUTEM OMNES PULLI MORIEBANTUR EA SIMILITER MORIEBATU ET QUIA SEMEL APPLIS UI L PULLISA QUI OMNE MORIEBA",
+        "historical_boundary_loss": false,
+        "unsegmented_variant": {
+          "content_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+          "attestations": [
+            {
+              "branch": "nullmask_main",
+              "content_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+              "renderer_id": "decoded_text_v1",
+              "episode_id": "9b2556e5e8c3",
+              "coherence": 2,
+              "reader_accepts": false,
+              "gloss": "The text seems to be trying to say something about chicks/pullos: that more might remain alive; if all the chicks died, someone or something likewise died; because it was night the speaker could not have more chicks; if they had had them, the speaker would have freed/saved someone, but through lack of chicks he/she/it was dying; it then calls this a cure/care that is very pleasant and painless. Much of the connective and object structure is unrecoverable.",
+              "anomalies": [
+                "\"ETIAMQUODINTALICURPLICARE\" contains recognizable pieces (etiam quod in tali, perhaps cur, plicare) but no coherent Latin clause as written.",
+                "\"UTRLURES\" looks like a corruption of \"ut plures\", but \"rlures\" is not a Latin word.",
+                "\"MANERENTUIUI\" can be read as \"manerent vivi\", but the fused form and following syntax are damaged.",
+                "\"ETHIEPROCERTOEAERLIBEBITUR\" includes possible \"et hic/pro certo\" but \"eaer libebitur\" is not intelligible Latin; \"libebitur\" is especially suspect here.",
+                "\"SIAUTEMOMNESPULLIMORIEBANTUREASIMILITERMORIEBATU\" has Latin words, but the tense/person/ending and reference are broken: \"moriebatu\" is not a valid form, and \"ea similiter\" is syntactically unclear.",
+                "\"ETQUIASEMELAPPLISUILPULLISAQUIOMNEMORIEBANTUR\" has several non-words or corruptions: \"APPLISUIL\", \"AQUI\", and a mismatched \"omne moriebantur\" if that is intended.",
+                "\"ETQUIAINOCTEERATNONPOTUIPLURESPULLOSHABERET\" shifts from first-person \"non potui\" to third-person/subjunctive \"haberet\" in a way that does not make a coherent clause.",
+                "\"SIHABUISSEMUSLBERASSEMEUMDEIARTIA\" has possible \"si habuissemus\" and \"liberassem eum\", but \"LBERASSEM\" is misspelled/corrupt and \"DEIARTIA\" is not intelligible Latin.",
+                "\"SEDDEFECTUPULLRUMMORIEBATURA\" has possible \"sed defectu pullorum\", but \"PULLRUM\" and \"MORIEBATURA\" are corrupt; the latter is not a valid finite verb form.",
+                "\"ETISTCURAESTMULTUMSUAUIETSINEDOLORE\" is close to Latin, perhaps \"et ista cura est multum suavis et sine dolore\", but as written \"ist\" is incomplete and \"multum suavi\" is grammatically off unless heavily emended.",
+                "\"ETFRIPOTESTQUIBUSEUA\" is not recoverable as Latin; \"FRI\" and \"EUA\" are not meaningful in this context."
+              ],
+              "created_turn": 15,
+              "target_language_confidence": 0.7,
+              "semantic_recoverability": 0.25,
+              "damage_scope": "basin_wide",
+              "repairability": "broaden",
+              "reader_accepts_as_solution": false,
+              "uncertainty_note": "I am least sure whether some of the odd spans are abbreviation scars from a medical or veterinary recipe, since phrases like \"defectu pullorum\" and \"ista cura est ... sine dolore\" could belong to a real text. Even allowing for such damage, the corruption is too pervasive for the candidate to stand as a solved reading."
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.9650145772594753,
+            "word_accuracy": 0.0,
+            "correct_chars": 331,
+            "total_chars": 343,
+            "correct_words": 0,
+            "total_words": 77
+          },
+          "preview": "ETIAMQUODINTALICURPLICAREUUELAPULLOETBREUITERUTRLURESMANERENTUIUIETHIEPROCERTOEAERLIBEBITURSIAUTEMOMNESPULLIMORIEBANTUREASIMILITERMORIEBATUETQUIASEMELAPPLISUILPULLISAQUIOMNEMORIEBANTURETQUIAINOCTEERATNONPOTUIPLURESPULLOS"
+        },
+        "solver_rank": 3,
+        "post_hoc_rank": 1
+      },
+      {
+        "branch": "automated_preflight",
+        "parent": "main",
+        "created_iteration": 0,
+        "roles": [],
+        "tags": [
+          "automated_preflight",
+          "no_llm",
+          "rejected"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.3717948717948718,
+        "quad": -5.338705021166596,
+        "content_hash": "ba731f8d356648a08399939f3c099dc3140c8f1ac519a3f90853f70c5bb1985d",
+        "attestations": [
+          {
+            "branch": "automated_preflight",
+            "content_hash": "ba731f8d356648a08399939f3c099dc3140c8f1ac519a3f90853f70c5bb1985d",
+            "renderer_id": "decoded_text_v1",
+            "episode_id": "926f20cefe1d",
+            "coherence": 2,
+            "reader_accepts": false,
+            "gloss": "Only a very rough topic can be guessed: something about pullets/chicks, keeping more alive, perhaps mating/assigning them, and giving more pullets; it ends with a claim that some care is very pleasant and without pay/salary. Clause-level sense is mostly unrecoverable because the words do not form sustained Latin syntax.",
+            "anomalies": [
+              "\"IN | TALI | CUR | PLICARE | U | UEL | AN | PULLA\" has no coherent Latin construction; \"CUR\" as 'why' followed by infinitive \"PLICARE\" and isolated \"U\" is syntactically broken.",
+              "\"TREUITER\" is not a Latin word as written; perhaps a corruption of \"breviter\" or similar, but the span \"ET | TREUITER | UT\" does not parse.",
+              "\"RLURES\" is a non-word, likely intended for \"plures\", but as written in \"UT | RLURES | MANERENT | UIUI\" it is damaged.",
+              "\"ET | DIE | PRA | CERTA | EXER | LITE | TITUR\" is a run of fragments/non-words; \"pra\", \"exer\", \"titur\" are not functioning Latin words here.",
+              "\"SI | AUTEM | AMNES | PULLI | MARIETANTUR\": \"amnes\" means rivers, not 'all' (probably \"omnes\"), and \"marietantur\" is not standard Latin; the clause is semantically and morphologically suspect.",
+              "\"EX | SIMILITER | MARIETATU\" is ungrammatical; \"ex\" has no object and \"marietatu\" is not a normal form.",
+              "\"SEMEL | APPLIS | UI | L | PULLISI\" contains multiple non-words or isolated letters and cannot be construed.",
+              "\"QUI | AMNE | MARIETANTUR\" has apparent corruption of \"omne/omnes\" and the same nonstandard \"marietantur\"; agreement and sense are broken.",
+              "\"I | NACTE | ERAT | NAN | PATUI\" includes isolated \"I\", non-word/odd form \"nacte\", and \"nan\" for perhaps \"non\"; the syntax is not Latin as written.",
+              "\"PLURES | PULLAS | DATER\" has a non-Latin verb form \"dater\" in this context; perhaps \"dare\", but the clause is broken.",
+              "\"ETSI | DATUISSEMUS | L | TERASSEM | EUM\" includes the non-form \"datuissemus\" and isolated \"L\"; \"terassem\" is not normal Latin.",
+              "\"SEI | XR | TIA | SES | SERECTU | PULL | RUM | MARIETATURI\" is largely fragmentary/non-Latin, with isolated letters and split words; no recoverable syntax.",
+              "\"SINE | SALAREN\" seems to aim at \"sine salario\" but \"salaren\" is not a Latin form.",
+              "\"ET | R | RI | PATESTQUITUS | EUA\" is not Latin; isolated letters plus \"patestquitus\" and \"eua\" yield no parse."
+            ],
+            "created_turn": 1,
+            "target_language_confidence": 0.55,
+            "semantic_recoverability": 0.15,
+            "damage_scope": "basin_wide",
+            "repairability": "broaden",
+            "reader_accepts_as_solution": false,
+            "uncertainty_note": "Some repeated forms may reflect a medieval or documentary technical vocabulary about poultry, and several corruptions are close to Latin words such as \"plures\", \"omnes\", \"dare\", or \"salario\". Still, the density of non-words and broken syntax makes the exact reading impossible to accept as genuine Latin text."
+          }
+        ],
+        "post_hoc": {
+          "char_accuracy": 0.8492753623188406,
+          "word_accuracy": 0.5256410256410257,
+          "correct_chars": 293,
+          "total_chars": 345,
+          "correct_words": 41,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUAS | IN | TALI | CUR | PLICARE | U | UEL | AN | PULLA | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRA | CERTA | EXER | LITE | TITUR | SI | AUTEM | AMNES | PULLI | MARIETANTUR | EX | SIMILITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 5,
+        "post_hoc_rank": 5
+      },
+      {
+        "branch": "homophonic_anneal_1",
+        "parent": "main",
+        "created_iteration": 11,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.21794871794871795,
+        "quad": -5.844556869610062,
+        "content_hash": "06f32180e6a848a4bb045c8ec736de7b88c17f838f8dc60338188d3fb34082bd",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.4,
+          "word_accuracy": 0.0,
+          "correct_chars": 138,
+          "total_chars": 345,
+          "correct_words": 0,
+          "total_words": 78
+        },
+        "preview": "ISAET | DEUM | AS | SERA | MET | TRAMETI | E | EIR | EC | TERRU | IS | NTIEASIT | ES | TRETIN | TESITISS | EAEA | IS | TAI | TTU | MITSU | ISIT | RANI | NASET | NA | EESIT | UTSIN | TERRA | TUTAINESSET | IS | NATORASIT |",
+        "historical_boundary_loss": false,
+        "solver_rank": 6,
+        "post_hoc_rank": 6
+      }
+    ]
+  },
+  {
+    "artifact": "artifacts/m5_3_targeted_smokes/repair_path_fixed/v3/borg_single_B_borg_0109v/1/borg_single_B_borg_0109v/ac129831aebc.json",
+    "run_id": "ac129831aebc",
+    "test_id": "borg_single_B_borg_0109v",
+    "status": "unsolved",
+    "language": "la",
+    "source_word_count": 78,
+    "branch_roles": {
+      "best_scored_branch": "hillclimb_subst_1",
+      "workflow_branch": "hillclimb_subst_1",
+      "latest_installed_branch": null,
+      "declared_or_selected_branch": "hillclimb_subst_1"
+    },
+    "selected_branch": "hillclimb_subst_1",
+    "post_hoc_best_branch": "automated_preflight",
+    "post_hoc_best_branches": [
+      "automated_preflight",
+      "hillclimb_subst_1"
+    ],
+    "findings": [],
+    "timeline": [
+      {
+        "iteration": 1,
+        "branch": "automated_preflight",
+        "dict_rate": 0.4744,
+        "quad": -5.2714,
+        "has_boundaries": true,
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AS | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | PIE | PRO | CERTO | ETER | LITE | TITUR | SI | AUTEM | OMNES "
+      },
+      {
+        "iteration": 3,
+        "branch": "hillclimb_subst_1",
+        "dict_rate": 0.5,
+        "quad": -5.2624,
+        "has_boundaries": true,
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AB | PULLO | ET | NREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | EXER | LINE | NITUR | SI | AUTEM | OMNES "
+      }
+    ],
+    "branches": [
+      {
+        "branch": "hillclimb_subst_1",
+        "parent": "main",
+        "created_iteration": 3,
+        "roles": [
+          "best_scored_branch",
+          "workflow_branch",
+          "declared_or_selected_branch"
+        ],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.5,
+        "quad": -5.262424893430198,
+        "content_hash": "bf3c4cec5ec8c1c983ba35113e43f33ad4668f171f7dc564a9b4fcb23b8684c4",
+        "attestations": [
+          {
+            "branch": "hillclimb_subst_1",
+            "content_hash": "bf3c4cec5ec8c1c983ba35113e43f33ad4668f171f7dc564a9b4fcb23b8684c4",
+            "renderer_id": "decoded_text_v1",
+            "episode_id": "d1cfafe8727b",
+            "coherence": 3,
+            "reader_accepts": false,
+            "gloss": "The recoverable sense seems to concern chicks: somehow arranging or explaining matters so that more might remain alive; if all the chicks were dying/died similarly; because once something was applied to the chicks, all were dying; because it was night the writer could not give more chicks, even if they had given them; by God's/Christ's grace perhaps, but because of a lack/defect of chicks they would die; and this care/cure is very pleasant and without pain, with a final clause largely unrecoverable.",
+            "anomalies": [
+              "\"CUR PLICARE U UEL AB PULLO\" does not form a clear Latin phrase; \"plicare\" is possible, but the construction is broken.",
+              "\"NREUITER\" is not a Latin word as written, though it may intend \"breviter\".",
+              "\"RLURES\" is not a Latin word as written, likely \"plures\".",
+              "\"DIE PRO CERTO EXER LINE NITUR\" is syntactically and lexically incoherent; \"exer line nitur\" is not readable Latin.",
+              "\"MORIENANTUR\" / \"MORIENATU\" recur as nonstandard forms; they seem to intend something like \"moriebantur\" or \"morientur\" but are not acceptable as written.",
+              "\"EX SIMALITER\" is ungrammatical; \"simaliter\" is not classical/medieval Latin as written for \"similiter\".",
+              "\"SEMEL APPLIS UI L PULLISA\" is a run of broken forms; only \"semel\" is clear.",
+              "\"QUI OMNE MORIENANTUR\" has agreement/syntax problems: \"qui\" with \"omne\" and the corrupt verb form do not cohere.",
+              "\"PULLOS DANER\" and \"DANUISSEMUS\" are non-forms; they may point to \"dare\" / \"dedissemus\" or similar but are not Latin as written.",
+              "\"L NERASSEM EUM DEI XR TIA\" is highly damaged; \"DEI XR TIA\" may conceal \"Dei/Christi gratia,\" but the clause is unreadable.",
+              "\"DEAECTU PULL RUM MORIENATURA\" appears to intend \"defectu pullorum ...\" but is broken and syntactically incomplete.",
+              "\"SINE DOLOREB\" has an impossible ending; expected \"dolore\" or similar.",
+              "\"A RI POTESTQUINUS EUA\" is not recoverable Latin; \"potest\" is visible, but the surrounding string is nonsensical."
+            ],
+            "created_turn": 6,
+            "target_language_confidence": 0.72,
+            "semantic_recoverability": 0.35,
+            "damage_scope": "distributed",
+            "repairability": "broaden",
+            "reader_accepts_as_solution": false,
+            "uncertainty_note": "I am least sure whether the many malformed words reflect a heavily damaged but systematic transcription of a genuine Latin original, since several errors look like plausible letter confusions. Even allowing for that, the text as presented is too pervasively corrupt to read as an acceptable solved decipherment."
+          }
+        ],
+        "post_hoc": {
+          "char_accuracy": 0.9101449275362319,
+          "word_accuracy": 0.6666666666666666,
+          "correct_chars": 314,
+          "total_chars": 345,
+          "correct_words": 52,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AB | PULLO | ET | NREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | EXER | LINE | NITUR | SI | AUTEM | OMNES | PULLI | MORIENANTUR | EX | SIMALITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 1,
+        "post_hoc_rank": 1
+      },
+      {
+        "branch": "automated_preflight",
+        "parent": "main",
+        "created_iteration": 0,
+        "roles": [],
+        "tags": [
+          "automated_preflight",
+          "no_llm",
+          "rejected"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.47435897435897434,
+        "quad": -5.271438804792445,
+        "content_hash": "e98eb7db944130ba1119798500026c353e962ccb735a439028375a6acde725da",
+        "attestations": [
+          {
+            "branch": "automated_preflight",
+            "content_hash": "e98eb7db944130ba1119798500026c353e962ccb735a439028375a6acde725da",
+            "renderer_id": "decoded_text_v1",
+            "episode_id": "699c65c6575f",
+            "coherence": 2,
+            "reader_accepts": false,
+            "gloss": "The recoverable fragments seem to say something about chicks/young birds: that in some circumstance more would remain alive; if all the chicks died, similarly something else would die; because it was night the writer could not have/obtain more chicks; there is mention of care being very pleasant and without pain. Much of the wording between these fragments is not interpretable as Latin clauses.",
+            "anomalies": [
+              "\"CUR PLICARE U UEL AS PULLO\" does not form a Latin phrase; \"U\" and \"AS\" are unexplained fragments and the syntax around \"plicare\" is broken.",
+              "\"TREUITER\" is not a recognizable Latin word in this context.",
+              "\"RLURES\" looks like a damaged/non-word form, perhaps intended for \"plures\".",
+              "\"PRO CERTO ETER LITE TITUR\" contains real-looking pieces but no coherent Latin construction; \"ETER\" and \"TITUR\" are fragmentary/non-words as written.",
+              "\"OMNES PULLI MORIETANTUR\" is intelligible in intent, but \"morietantur\" is not a normal Latin form for 'will die' or 'may die'.",
+              "\"SIMLLITER MORIETATU\" has misspelling/non-form: \"simlliter\" for perhaps \"similiter\", and \"morietatu\" is not a valid finite form.",
+              "\"APPLIS UI L PULLASI QUI OMNE MORIETANTUR\" is heavily broken: \"applis\", isolated \"UI L\", \"pullasi\", and singular \"omne\" with plural sense do not make a Latin clause.",
+              "\"ET QUIA L NOCTE ERAT\" has an unexplained isolated \"L\" and awkward syntax.",
+              "\"NON POTUI PLURES PULLOS PATER\" is not grammatical as written; \"pater\" is 'father' or a verb form in other contexts, not fitting after \"potui plures pullos\".",
+              "\"ETSI PATUISSEMUS L TERASSEM EUM\" is syntactically incoherent, with isolated \"L\" and unclear \"terassem\".",
+              "\"DEI TR TIA\" consists of fragments rather than a Latin phrase.",
+              "\"DEDECTU PULL RUM MORIETATURI\" is broken: \"dedectu\" is suspect, \"pull rum\" is split, and \"morietaturi\" is a participial/future-looking form without clear agreement or construction.",
+              "\"IST CURA EST MULTUM SUAUI\" has nonstandard \"ist\" and case/adverb problems around \"multum suaui\".",
+              "\"SINE DOLORES\" is wrong case for a normal Latin phrase; one expects \"sine doloribus\" or similar.",
+              "\"D RI POTESTQUITUS EUA\" is not recoverable Latin; \"potestquitus\" and \"eua\" do not form a valid ending."
+            ],
+            "created_turn": 1,
+            "target_language_confidence": 0.55,
+            "semantic_recoverability": 0.25,
+            "damage_scope": "basin_wide",
+            "repairability": "broaden",
+            "reader_accepts_as_solution": false,
+            "uncertainty_note": "Some spans could be abbreviation scars or OCR-like misreadings of a real Latin original, especially where near-words appear (\"RLURES\" for \"PLURES\", \"SIMLLITER\" for \"SIMILITER\"). But the density of malformed words and broken syntax is too high to accept the candidate as genuine Latin as it stands."
+          }
+        ],
+        "post_hoc": {
+          "char_accuracy": 0.9101449275362319,
+          "word_accuracy": 0.6666666666666666,
+          "correct_chars": 314,
+          "total_chars": 345,
+          "correct_words": 52,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUOD | IN | TALI | CUR | PLICARE | U | UEL | AS | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | PIE | PRO | CERTO | ETER | LITE | TITUR | SI | AUTEM | OMNES | PULLI | MORIETANTUR | ET | SIMLLITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 2,
+        "post_hoc_rank": 1
+      },
+      {
+        "branch": "auto_subst_transform_1",
+        "parent": "main",
+        "created_iteration": 4,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.4358974358974359,
+        "quad": -5.289717418729206,
+        "content_hash": "3bc1f7da05f197eee53e08d0a4bcfe483a5d6b74974d38e9c61f4ae0ab660722",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.8956521739130435,
+          "word_accuracy": 0.6153846153846154,
+          "correct_chars": 309,
+          "total_chars": 345,
+          "correct_words": 48,
+          "total_words": 78
+        },
+        "preview": "ETIAM | CUOD | IN | TALI | CUR | PLICARE | U | UEL | AO | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | EAER | LITE | TITUR | SI | AUTEM | OMNES | PULLI | MORIETANTUR | EA | SIMELITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 3,
+        "post_hoc_rank": 4
+      },
+      {
+        "branch": "wide_targeted_repair_1",
+        "parent": "main",
+        "created_iteration": 16,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.4358974358974359,
+        "quad": -5.307437661240231,
+        "content_hash": "2a6ea2d85cae21a30eca2cf16478647d217ce19cabf239dd519dd21f8e010cbf",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.8956521739130435,
+          "word_accuracy": 0.6153846153846154,
+          "correct_chars": 309,
+          "total_chars": 345,
+          "correct_words": 48,
+          "total_words": 78
+        },
+        "preview": "ETIAM | RUOD | IN | TALI | CUR | PLICARE | U | UEL | AM | PULLO | ET | TREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | EAER | LITE | TITUR | SI | AUTEM | OMNES | PULLI | MORIETANTUR | EA | SIMALITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 4,
+        "post_hoc_rank": 4
+      },
+      {
+        "branch": "legacy_wide_alt_1",
+        "parent": "main",
+        "created_iteration": 11,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.4358974358974359,
+        "quad": -5.314199012610104,
+        "content_hash": "612450b912dc2aa1435ea23a31a3d07f812f78cf41b687ec8455b85e4d7a49ae",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.8956521739130435,
+          "word_accuracy": 0.6282051282051282,
+          "correct_chars": 309,
+          "total_chars": 345,
+          "correct_words": 49,
+          "total_words": 78
+        },
+        "preview": "ETIAM | QUOT | IN | TALI | CUR | PLICARE | U | UEL | AT | PULLO | ET | NREUITER | UT | RLURES | MANERENT | UIUI | ET | LIE | PRO | CERTO | EAER | LINE | NITUR | SI | AUTEM | OMNES | PULLI | MORIENANTUR | EA | SIMELITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 5,
+        "post_hoc_rank": 3
+      },
+      {
+        "branch": "broad_subst_1",
+        "parent": null,
+        "created_iteration": 8,
+        "roles": [],
+        "tags": [],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.4358974358974359,
+        "quad": -5.317474913825557,
+        "content_hash": "eda06a543549c604132c0c229e077b3d56584cb4426fa9fd3d289b0dddc104f0",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.8956521739130435,
+          "word_accuracy": 0.6153846153846154,
+          "correct_chars": 309,
+          "total_chars": 345,
+          "correct_words": 48,
+          "total_words": 78
+        },
+        "preview": "ETIAM | CUOD | IN | TALI | CUR | PLICARE | U | UEL | AM | PULLO | ET | NREUITER | UT | RLURES | MANERENT | UIUI | ET | DIE | PRO | CERTO | EXER | LINE | NITUR | SI | AUTEM | OMNES | PULLI | MORIENANTUR | EX | SIMULITER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 6,
+        "post_hoc_rank": 4
+      },
+      {
+        "branch": "legacy_wide_alt_2",
+        "parent": "main",
+        "created_iteration": 20,
+        "roles": [],
+        "tags": [
+          "hypothesis",
+          "mode:monoalphabetic_substitution"
+        ],
+        "renderer": "decoded_text_v1",
+        "boundary_mode": "source",
+        "rendered_word_count": 155,
+        "mapped_count": 23,
+        "dict_rate": 0.3974358974358974,
+        "quad": -5.305135922215605,
+        "content_hash": "a9f5bcc4878f77ba4d03596b0359015814595bc69dbff40a937b06c7570aac8e",
+        "attestations": [],
+        "post_hoc": {
+          "char_accuracy": 0.7768115942028986,
+          "word_accuracy": 0.3717948717948718,
+          "correct_chars": 268,
+          "total_chars": 345,
+          "correct_words": 29,
+          "total_words": 78
+        },
+        "preview": "ETAEM | QUOD | AN | TELA | CUR | PLACERE | U | UEL | ET | PULLO | ET | TREUATER | UT | RLURES | MENERENT | UAUA | ET | RAE | PRO | CERTO | EIER | LATE | TATUR | SA | EUTEM | OMNES | PULLA | MORAETENTUR | EI | SAMALATER |",
+        "historical_boundary_loss": false,
+        "solver_rank": 7,
+        "post_hoc_rank": 7
+      }
+    ]
+  }
+]

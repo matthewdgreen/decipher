@@ -52,11 +52,15 @@ def _metadata_decoded_text(workspace: Workspace, branch_name: str) -> str | None
     if branch.key and mask:
         cipher_alpha = workspace.cipher_text.alphabet
         pt_alpha = workspace.plaintext_alphabet
-        cuts = (
-            {start for start, _end in workspace.effective_word_spans(branch_name) if start}
-            if branch.word_spans is not None
-            else set()
-        )
+        # Preserve the branch's effective boundaries, including canonical
+        # source boundaries when no custom overlay is installed.  Null-mask
+        # rendering previously kept boundaries only for custom overlays,
+        # silently flattening ordinary boundary-preserved manuscripts.
+        cuts = {
+            start
+            for start, _end in workspace.effective_word_spans(branch_name)
+            if start
+        }
         parts: list[str] = []
         previous_index: int | None = None
         for index, token in enumerate(workspace.effective_tokens(branch_name)):
