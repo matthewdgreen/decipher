@@ -1,0 +1,442 @@
+# Agent Loop v3 M5.3 - Control and Repair Reliability
+
+Status: proposed 2026-07-16. No implementation has landed. This milestone is
+the targeted follow-on to M5.2; it must complete before another paid acceptance
+packet or a full M6 bake-off.
+
+## Motivation
+
+M5.2 established the intended strategist/worker architecture:
+
+- the lead verified the automated preflight on turn 1;
+- a negative verification produced concrete reading and repair work;
+- repair transactions isolated edits and installed only explicit winners;
+- changed candidates required fresh verification; and
+- the run ended honestly `unsolved` rather than declaring damaged Latin solved.
+
+The first paid M5.2 smoke also showed that the host still gives the model too
+much freedom inside that architecture. A four-call reading could execute a
+larger batched tool response before the budget check. The lead could request a
+new reading and repair transaction repeatedly against essentially unchanged
+content. Each `hypothesis_test_word` rebuilt an expensive menu. An otherwise
+reasonable attempt to escape into a fresh automated search failed because the
+model-facing experiment schema did not expose the actual configuration
+contract. The run therefore spent 25 turns and $4.01 circling a useful but
+damaged basin.
+
+M5.3 is a host-control milestone, not a prompt-tuning milestone. The host must
+enforce bounded work, recognize saturation, make the efficient operation the
+obvious operation, and preserve honest termination.
+
+## Prior Results
+
+### M6 bake-off baseline
+
+The stored M6 bake-off contains 22 completed rows. On the three preflight-on
+`borg_single_B_borg_0109v` replicates:
+
+| Loop | Mean char | Mean word | Mean cost | Outcome pattern |
+|---|---:|---:|---:|---|
+| v2 | 96.1% | 75.4% | $3.31 | 3/3 solved |
+| v3 | 91.0% | 66.7% | $2.17 | 3/3 unattested fallback declarations |
+
+V3 was cheaper but selected the same preflight basin in all three replicates
+and did not verify or repair it successfully. On `borg_0045v`, v3 was also
+cheaper but unstable: two runs retained the 83.6% basin while one selected a
+34.1% result.
+
+The synthetic controls were encouraging. With preflight enabled, v3 solved
+`synth_en_250nb_s4` exactly in two turns for $0.17 and solved
+`synth_en_200honb_s6` at 99.9% in two turns for $0.20. The weakness was not the
+basic architecture; it was recovery when the first candidate was strong but
+imperfect.
+
+### M5.1 focused acceptance
+
+M5.1 added earlier verification and honest declaration behavior. Its three
+preflight-on `borg_0109v` replicates all verified on turn 13, but all retained
+the 91.0%/66.7% basin. Costs were $2.74, $2.59, and $3.21. Two completed
+`borg_0045v` replicates retained 83.6% character accuracy and cost $3.39 and
+$3.31. The six-run packet stopped before the final replicate under its budget
+ceiling.
+
+This proved that declaration timing was not the main accuracy limitation. V3
+needed a reliable path from negative verification to either a better candidate
+or a timely decision to broaden.
+
+### M5.2 targeted smoke
+
+Artifact:
+`artifacts/m5_2_targeted_smoke_20260716/v3/borg_single_B_borg_0109v/1/borg_single_B_borg_0109v/d3eccab14a40.json`
+
+Configuration: OpenAI `gpt-5.5`, v3, automated preflight enabled, 25 turns,
+one replicate, $5 launch ceiling.
+
+| Metric | Result |
+|---|---:|
+| status | honestly unsolved |
+| runtime | 1,644.6 seconds |
+| actual cost | $4.0089 |
+| preflight char / word | 89.6% / 62.8% |
+| selected char / word | 91.3% / 67.9% |
+| verification | first ran on turn 1; no positive attestation |
+| episode count | 20 |
+| lead `episode_run` calls | 12 |
+| repair transactions | 8 |
+| `hypothesis_test_word` calls | 35 |
+| cumulative `hypothesis_test_word` time | 456.3 seconds |
+
+The run made real progress over preflight and produced a useful semantic
+summary about treatment of chicks, mortality, night-time work, and a painless
+care procedure. It nevertheless fell short of the focused 93% character / 70%
+word target and spent most of the extra budget revisiting the same basin.
+
+The smoke exposed these concrete failures:
+
+1. Episode tool-call limits were checked after a complete model-emitted batch.
+   Readings configured for four calls executed up to thirteen calls; repairs
+   executed up to fifteen.
+2. The model could raise `max_tool_calls` above the host default.
+3. Rewording a reading or repair goal allowed effectively duplicate work on
+   unchanged candidate content and unchanged verifier evidence.
+4. Each singleton word hypothesis rebuilt the complete repair menu.
+5. The lead correctly attempted an alternate automated search on turn 4, but
+   guessed unsupported config keys (`target_language`, `allow_homophones`, and
+   `max_runtime_seconds`) because the tool schema exposed only an unstructured
+   `config` object.
+6. The host validated that a repair worker named a changed branch, but did not
+   independently enforce the full collateral-evidence acceptance contract.
+7. Workspace telemetry displayed an internally best-scored branch as
+   `branch`, which obscured the distinct workflow-focused and latest-installed
+   branches.
+8. `inspect_artifact.py` did not parse the v3 top-level shape correctly: model
+   provider, iteration count, declaration state, and final branch appeared
+   unknown or false even though the detailed episode sections were present.
+
+## Diplomatic-Text Complication
+
+The post-hoc alignment revealed a separate evaluation issue. The benchmark
+plaintext is corrected/diplomatic Latin with editorial insertions and lacunae,
+for example:
+
+```text
+cur[a ap] plicare [5, 4] uel [6] pullo[s]
+hi[nc] pro certo eger libe[ra] bitur
+```
+
+The solver-facing candidate is a flat decoded token stream. Editorial brackets
+and omissions do not survive that representation cleanly, so even exact or
+near-exact spans can look like broken continuous Latin. The verifier was right
+not to declare the candidate solved, but a single `coherence` value conflated
+four questions:
+
+- Is the target language recognizable?
+- Is the broad meaning recoverable?
+- Is the damage local or basin-wide?
+- Is the candidate complete enough to declare solved?
+
+Runtime must not receive benchmark plaintext or post-hoc alignment. The general
+fix is to separate these judgments in the verifier contract, not to expose the
+answer or add Borg-specific prompting.
+
+## Design Principles
+
+1. Ground truth remains post-hoc grading only. It must not affect routing,
+   repair, scoring, retries, verification, or declaration.
+2. Host policy, not model obedience, enforces budgets and workflow transitions.
+3. Content hashes and evidence hashes define whether work is new. Reworded
+   goals do not create new evidence.
+4. Expensive common setup is built once and reused across candidate probes.
+5. Verification distinguishes a promising damaged basin from a solved text.
+6. A failed repair cycle creates pressure to broaden or stop, not to restate
+   the same reading indefinitely.
+7. Paid tests remain single-cell and explicitly capped until local acceptance
+   is complete.
+
+## Slice 1 - Hard Episode and Cost Budgets
+
+### Episode call enforcement
+
+Enforce the tool-call cap before each ordinary or composite call. If a model
+emits more calls than remain in the budget:
+
+- execute only the calls that fit;
+- synthesize a paired `budget_exhausted` result for every skipped tool use;
+- still accept a valid `episode_submit_result`; and
+- make the overshoot visible in the episode ledger and analyzer.
+
+The model-facing `max_tool_calls` argument may lower the registered host budget
+but may never raise it. Clamp it to `1..default_max_tool_calls`, or remove it
+from the model-facing schema and select overrides only in host code.
+
+### Per-run paid ceiling
+
+Add a v3 `max_cost_usd` option enforced between provider calls. Once reached,
+the loop must make no further paid call. It should select the best supported
+branch and terminate honestly, preserving `unsolved` when no positive
+attestation exists. This is distinct from the bake-off runner's matrix-level
+launch guard.
+
+### Local acceptance
+
+- A response containing ten ordinary calls under a four-call budget executes
+  exactly four.
+- Every emitted tool use receives exactly one tool result.
+- A requested budget of eight on a four-call reading remains four.
+- A submit tool in an over-budget batch can still finish the episode.
+- A cost ceiling prevents the next paid call and produces a complete artifact.
+
+## Slice 2 - Repair Saturation and Workflow Escape
+
+Track repair-cycle identity with:
+
+- candidate content hash;
+- latest verifier-attestation id or anomaly digest;
+- reading id and reading content digest;
+- generated finalist content hashes; and
+- transaction outcome and failure reason.
+
+For one unchanged candidate and one unchanged attestation, permit by default:
+
+- one fresh reading;
+- up to two distinct repair transactions; and
+- no repeated transaction with the same source/reading pair, regardless of
+  whether the prior transaction installed a winner or failed.
+
+After two no-op, unsupported, ambiguous, or materially non-improving repair
+transactions, enter a durable `repair_exhausted` workflow state. Its menu is:
+
+1. run one alternate search/basin experiment;
+2. compare genuinely distinct existing finalists; or
+3. declare honestly unsolved.
+
+A new candidate hash or genuinely new verifier evidence resets saturation. A
+newly worded goal does not. Resume must preserve the counters.
+
+### Local acceptance
+
+- Repeated readings on unchanged content and attestation are suppressed.
+- A failed source/reading transaction cannot be rerun under a new `as_name`.
+- Two distinct failed repairs move the state to `repair_exhausted`.
+- New changed content returns to `candidate_reading` and requires verification.
+- Serialization/resume preserves the same next action.
+
+## Slice 3 - Batched and Cached Word Hypotheses
+
+Add a composite `hypothesis_test_words` operation that accepts a bounded list
+of word/span hypotheses. It must:
+
+1. resolve stable spans and reject malformed hypotheses cheaply;
+2. build or retrieve the branch's repair menu once;
+3. evaluate menu-backed hypotheses from that shared packet;
+4. score only surviving injected hypotheses;
+5. deduplicate equivalent edit sets;
+6. return a small diverse finalist set with collateral evidence; and
+7. optionally install only the explicitly selected forks.
+
+Cache the expensive menu by candidate content hash, null mask, language,
+language-model variant, and repair config. The existing singleton
+`hypothesis_test_word` becomes a wrapper over the batch core.
+
+Repair episodes should receive the batch operation as the preferred interface.
+Once batch parity is proven, reduce the repair episode's ordinary tool-call
+budget from twelve to approximately six.
+
+### Performance acceptance
+
+- A batch of eight hypotheses constructs the repair menu exactly once.
+- Batched and singleton results agree for the same hypothesis and configuration.
+- Cache invalidates on key, mask, boundary, model, or config changes.
+- The replay fixture's cumulative word-hypothesis time falls by at least 70%.
+
+## Slice 4 - Host-Validated Repair Acceptance
+
+The host must not accept a changed snapshot merely because the worker reports
+`applied=true`. Before installation, bind the claimed winner to episode tool
+evidence and require:
+
+- every claimed edit appears in a successful composite-action result;
+- the winner snapshot is one of the recorded changed finalists;
+- no unresolved error invalidates a claimed edit;
+- the winner was included in final adjudication when multiple finalists exist;
+- deterministic collateral limits are satisfied; and
+- the acceptance decision and component deltas are stored in the transaction.
+
+Small scalar decreases may be allowed for strong local-language repairs, but
+only under an explicit, tested, ground-truth-free policy. The policy must not
+be improvised by the worker. Unsupported or ambiguous outcomes remain review
+evidence and do not install.
+
+### Local acceptance
+
+- A fabricated best-branch name is rejected.
+- A changed fork produced by a failed tool call is rejected.
+- An unadjudicated winner among multiple finalists is rejected.
+- A supported singleton with bounded collateral installs and requires fresh
+  verification.
+- Acceptance records contain enough evidence for artifact review.
+
+## Slice 5 - Typed Experiments and Alternate Search
+
+Replace the opaque model-facing `experiment_submit.config` object with the
+registered experiment type's actual schema. For `automated_solver`, expose the
+supported keys, enums, defaults, and concise descriptions. Make these facts
+explicit:
+
+- language is derived by the host and must not be supplied;
+- `cipher_system` is the family hint;
+- homophonic behavior is selected through supported solver/refinement fields;
+- unsupported runtime controls are not accepted; and
+- the lead should collect/install the experiment result rather than submitting
+  duplicate jobs.
+
+When a repair cycle saturates, the workflow should recommend one alternate
+search experiment with a valid family-consistent configuration. A structured
+validation error should return a corrected example and keep the search escape
+prominent on the next turn instead of silently returning the workflow to
+repair.
+
+### Local acceptance
+
+- Provider-visible schema rejects unknown config keys before dispatch.
+- A scripted lead can submit a valid simple-substitution rerun without guessing
+  language or unsupported homophonic flags.
+- A validation error produces a valid corrected configuration example.
+- Saturated repair transitions to alternate search, then compare/verify.
+
+## Slice 6 - Diplomatic Verification Contract
+
+Extend the text-only verifier result with separate fields:
+
+- `target_language_confidence` (0..1);
+- `semantic_recoverability` (0..1);
+- `damage_scope` (`local`, `distributed`, or `basin_wide`);
+- `repairability` (`local_repair`, `broaden`, or `none`);
+- `reader_accepts_as_solution` (boolean); and
+- a concise gloss, anomaly list, and uncertainty note.
+
+The verifier still receives only candidate plaintext and generic permitted
+context. It receives no benchmark plaintext, key, score, alignment, or
+post-hoc accuracy. Its instructions should explain generally that historical
+decipherments may preserve lacunae, abbreviation scars, uncertain boundaries,
+and editorial omissions. It must quote or point to the candidate evidence for
+its judgments.
+
+Only `reader_accepts_as_solution` can satisfy the declaration gate. The other
+fields route work:
+
+- high language confidence + high recoverability + local damage -> one bounded
+  repair cycle;
+- recognizable language + distributed damage -> compare or alternate search;
+- low language confidence or basin-wide damage -> broaden;
+- high acceptance -> declare promptly.
+
+This lets the system say "likely correct basin with recoverable meaning, but
+not a complete solution" without either rejecting all useful evidence or
+declaring a damaged text solved.
+
+## Slice 7 - Observability and Analyzer Parity
+
+Workspace snapshots and human output must distinguish:
+
+- `best_scored_branch`;
+- `workflow_branch`;
+- `latest_installed_branch`; and
+- `declared_or_selected_branch` when present.
+
+Update `scripts/inspect_artifact.py` for the v3 artifact shape. The summary
+must correctly show provider/model, loop version, iterations, solved/unsolved
+declaration, final branch, attestation status, and cost. Add sections for:
+
+- episode budget requested vs executed;
+- suppressed over-budget calls;
+- repair cycles grouped by content hash;
+- saturation transitions;
+- installed and rejected repair transactions;
+- experiment validation failures;
+- workflow branch vs score-selected branch; and
+- cumulative time spent rebuilding or evaluating repair hypotheses.
+
+The M5.2 smoke artifact should become a frozen analyzer regression fixture or a
+trimmed equivalent should be committed under tests.
+
+## Verification Sequence
+
+### A. Focused local tests after each slice
+
+Run the episode, workflow, experiment, repair, state/resume, analyzer, and
+ground-truth-firewall tests touched by the slice. Do not run a paid model.
+
+### B. Scripted end-to-end replay
+
+Use a scripted provider and a stored/trimmed version of the M5.2 sequence to
+prove:
+
+- verification occurs early;
+- one reading feeds a bounded repair transaction;
+- repeated no-op repair saturates;
+- alternate search is offered and accepts a valid config;
+- no worker exceeds its call budget;
+- termination is honest; and
+- the analyzer reports the full path correctly.
+
+### C. One paid targeted smoke
+
+Only after local acceptance, request user approval for one run:
+
+- provider/model: OpenAI `gpt-5.5`;
+- case: `borg_single_B_borg_0109v`;
+- loop: v3 only;
+- automated preflight: on;
+- maximum iterations: 25;
+- target cost: below $3;
+- hard per-run ceiling: $5.
+
+Paid acceptance targets:
+
+1. verification by turn 3;
+2. no episode exceeds its registered call cap;
+3. at most two readings and two repair transactions per candidate hash;
+4. alternate search after repair saturation;
+5. no invalid experiment configuration;
+6. no repeated unchanged reading/repair cycle;
+7. character accuracy >=93%;
+8. word accuracy >=70%;
+9. honest `unsolved` is allowed without positive attestation; and
+10. artifact/analyzer agree on status, branch, verification, and cost.
+
+If the run misses the control targets, stop and inspect locally. Do not spend
+on additional replicates. If control targets pass but accuracy misses, diagnose
+search/repair quality before changing budgets.
+
+### D. Focused Stage-1 packet
+
+Only after the single paid smoke passes may the prior M5.1 Stage-1 packet be
+reopened: `borg_0109v` and `borg_0045v`, three replicates each, v3 only,
+preflight on. Obtain separate user approval for that spend.
+
+### E. Full M6 bake-off
+
+The paired M6 rerun and default-loop decision remain explicitly out of scope
+until the focused Stage-1 packet passes and the user approves the larger spend.
+
+## Non-Goals
+
+- No ground-truth-guided routing, repair, scoring, retry, or declaration.
+- No Borg-specific plaintext hints or verifier rules.
+- No larger worker budgets as a substitute for host control.
+- No broad prompt expansion.
+- No automatic default switch from v2 to v3.
+- No full bake-off during this milestone without explicit user approval.
+
+## Deliverables
+
+1. Hard per-call episode budgeting and a true per-run paid ceiling.
+2. Durable repair-saturation state and duplicate suppression.
+3. Batched/cached word-hypothesis evaluation.
+4. Host-validated repair acceptance.
+5. Typed experiment schemas and a reliable alternate-search transition.
+6. Diplomatic-text-aware, ground-truth-free verification fields.
+7. V3-aware workspace telemetry and artifact analysis.
+8. Focused local/replay test evidence.
+9. One separately approved paid smoke report before any larger evaluation.

@@ -35,7 +35,7 @@ log-likelihood — reuse `analysis/dictionary.py`, `analysis/ngram.py`,
 in priority order:
 
 1. **Keyword columnar** (complete + incomplete): for a candidate column
-   count W (try a bounded range, e.g. 2..12 or до token_count//4), search
+   count W (try a bounded range, e.g. 2..12 or up to token_count//4), search
    over column ORDERINGS. W is small, so either (a) enumerate permutations
    for W ≤ ~8 with beam/branch-and-bound on partial column-adjacency
    n-gram score, or (b) SA/hill-climb over the ordering for larger W. Invert
