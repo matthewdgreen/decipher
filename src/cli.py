@@ -1518,6 +1518,17 @@ def cmd_diagnose(args: argparse.Namespace) -> None:
         print(format_diagnosis(report))
 
 
+def cmd_mcp_serve(args: argparse.Namespace) -> None:
+    from mcp_server.server import serve_stdio
+
+    serve_stdio(
+        registry_dir=args.registry_dir,
+        verify_provider=args.verify_provider,
+        verify_model=args.verify_model,
+        max_cost_usd=args.max_cost_usd,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="decipher",
@@ -2019,12 +2030,28 @@ def main() -> None:
     diag.add_argument("--max-period", dest="max_period", type=int, default=26,
                       help="Maximum key period for periodic analysis (default 26).")
 
+    mcp = subparsers.add_parser(
+        "mcp-serve",
+        help="Run the Decipher MCP stdio server (tools for Claude Code / Codex)",
+    )
+    mcp.add_argument("--registry-dir", default=None,
+        help="Investigation registry directory "
+             "(default: $DECIPHER_MCP_REGISTRY or ~/.config/decipher/investigations)")
+    mcp.add_argument("--verify-provider", default="auto",
+        choices=["auto", "anthropic", "openai", "gemini", "openrouter", "ollama", "none"],
+        help="Provider for server-side verify episodes (default: auto-detect; "
+             "'none' forces keyless degradation)")
+    mcp.add_argument("--verify-model", default=None,
+        help="Model id for verify episodes (default: the provider's default model)")
+    mcp.add_argument("--max-cost-usd", type=float, default=5.0,
+        help="Per-investigation paid ceiling for server-side verify spend (BUD-1)")
+
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         sys.exit(1)
-    if args.command not in ("doctor", "diagnose"):
+    if args.command not in ("doctor", "diagnose", "mcp-serve"):
         _require_rust_fast_kernel()
 
     dispatch = {
@@ -2034,6 +2061,7 @@ def main() -> None:
         "resume-artifact": cmd_resume_artifact,
         "testgen": cmd_testgen,
         "diagnose": cmd_diagnose,
+        "mcp-serve": cmd_mcp_serve,
     }
     dispatch[args.command](args)
 

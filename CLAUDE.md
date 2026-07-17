@@ -12,6 +12,10 @@ A CLI research tool for classical cipher cryptanalysis. Primary focus:
 - **AI-assisted decipherment** using Claude tool-use API
 - **Benchmark evaluation** against a dataset of solved historical ciphers
 
+**Cracking a cipher via MCP:** a checked-in `.mcp.json` exposes the
+`decipher` MCP server (bootstrap: `sh scripts/bootstrap.sh`). Doctrine and
+tool reference: `docs/mcp_onboarding.md`.
+
 ---
 
 ## Claude Code Orchestration Strategy

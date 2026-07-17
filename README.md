@@ -87,6 +87,24 @@ packets, and longer synthetic runs, see
 
 ## Quick Start
 
+### Zero-effort agent quickstart (Claude Code / Codex)
+
+    git clone <this-repository>
+    cd decipher
+    codex          # or: claude
+    > I would like to crack a cipher.
+
+The checked-in `.mcp.json` (Claude Code) and `.codex/config.toml` (Codex,
+after you trust the project) launch the Decipher MCP server via
+`scripts/mcp_launch.sh`. On a fresh clone the launcher reports
+`bootstrap_required`; the agent (or you) runs `sh scripts/bootstrap.sh`
+once — it creates `.venv`, installs Decipher, builds the Rust kernels if
+`cargo` is present, and health-checks with `decipher doctor --json`. Then
+reconnect and paste your cipher. Without any API key everything works
+except independent verification: you still get diagnosis, background
+solvers, repairs, and your best candidate labeled "promising but not
+independently verified" (see `docs/mcp_onboarding.md`).
+
 The repository ships with two small benchmark fixtures so you can confirm a
 fresh clone works end-to-end without any external data or API keys.
 

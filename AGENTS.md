@@ -47,6 +47,19 @@ Licensing note:
 
 ---
 
+## Cracking a cipher (MCP quick path)
+
+This repo ships an MCP server exposing the investigation surface. A checked-in
+`.codex/config.toml` / `.mcp.json` wires it up once the project is trusted;
+`sh scripts/bootstrap.sh` prepares a fresh clone. Methodology, tool
+reference, and recovery live in **`docs/mcp_onboarding.md`** — read that
+(not this file's development notes) when the task is *cracking a cipher*
+rather than developing Decipher. After an investigation exists,
+`investigation_status` is the authoritative briefing; do not treat onboarding
+prose as live investigation state.
+
+---
+
 ## Key Files
 
 ```

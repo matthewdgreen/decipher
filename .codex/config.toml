@@ -1,0 +1,7 @@
+# Loaded by Codex after the user trusts this project.
+# Personal-config fallback (troubleshooting): copy this block into
+# ~/.codex/config.toml with an absolute path in args.
+
+[mcp_servers.decipher]
+command = "sh"
+args = ["scripts/mcp_launch.sh"]

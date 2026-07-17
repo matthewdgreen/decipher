@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "decipher": {
+      "command": "sh",
+      "args": ["scripts/mcp_launch.sh"]
+    }
+  }
+}

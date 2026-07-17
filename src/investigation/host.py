@@ -1211,17 +1211,21 @@ class InvestigationHost:
         return probe_hash, scores
 
 
-    def _dispatch_repair_transaction(self, tu: dict[str, Any], turn: int) -> str:
-        """Run, validate, install, and record one bounded repair operation."""
-        args = tu.get("input") or {}
-        branch = str(args.get("branch") or "")
+    def check_repair_preconditions(
+        self, *, branch: str, reading_id_arg: str, turn: int
+    ) -> dict[str, Any]:
+        """Bounded-repair precondition checks (Part 8.1 extraction).
+
+        Returns ``{"blocked": <payload>}`` for any early-return gate (payloads
+        byte-identical to the pre-split dispatcher) or ``{"ok": True, ...}`` with
+        the resolved bindings the caller needs to run and install the repair.
+        Zero behavior change: this is code motion out of
+        ``_dispatch_repair_transaction``.
+        """
         if not self.workspace.has_branch(branch):
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={"status": "failed", "reason": "unknown_branch", "branch": branch},
-            )
+            return {"blocked": {"status": "failed", "reason": "unknown_branch", "branch": branch}}
         source_hash = _branch_hash(self.workspace, branch)
-        reading_id = str(args.get("reading_id") or "")
+        reading_id = reading_id_arg
         reading_data = self.state.readings.get(reading_id) if reading_id else None
         if reading_data is None and not reading_id:
             candidates = [
@@ -1235,34 +1239,25 @@ class InvestigationHost:
                 )
                 reading_id = str(reading_data.get("reading_id") or "")
         if reading_data is None:
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "failed",
-                    "reason": "fresh_reading_required",
-                    "branch": branch,
-                    "content_hash": source_hash,
-                },
-            )
+            return {"blocked": {
+                "status": "failed",
+                "reason": "fresh_reading_required",
+                "branch": branch,
+                "content_hash": source_hash,
+            }}
         reading = Reading.from_dict(reading_data)
         if reading.branch != branch:
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "failed", "reason": "reading_branch_mismatch",
-                    "branch": branch, "reading_branch": reading.branch,
-                },
-            )
+            return {"blocked": {
+                "status": "failed", "reason": "reading_branch_mismatch",
+                "branch": branch, "reading_branch": reading.branch,
+            }}
         if reading.candidate_content_hash != source_hash:
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "failed", "reason": "stale_or_unbound_reading",
-                    "branch": branch,
-                    "source_content_hash": source_hash,
-                    "reading_content_hash": reading.candidate_content_hash,
-                },
-            )
+            return {"blocked": {
+                "status": "failed", "reason": "stale_or_unbound_reading",
+                "branch": branch,
+                "source_content_hash": source_hash,
+                "reading_content_hash": reading.candidate_content_hash,
+            }}
         from investigation.reading import interpretation_digest as _interp_digest
         from investigation.state import (
             attestation_key, get_or_create_saturation_entry,
@@ -1286,15 +1281,12 @@ class InvestigationHost:
             None,
         )
         if duplicate is not None:
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "duplicate_suppressed",
-                    "reason": "source_and_reading_already_handled",
-                    "transaction_id": duplicate.get("transaction_id"),
-                    "installed": duplicate.get("installed_branch"),
-                },
-            )
+            return {"blocked": {
+                "status": "duplicate_suppressed",
+                "reason": "source_and_reading_already_handled",
+                "transaction_id": duplicate.get("transaction_id"),
+                "installed": duplicate.get("installed_branch"),
+            }}
 
         latest_attestation = latest_attestation_for_hash(
             self.state.verify_attestations, source_hash
@@ -1305,37 +1297,31 @@ class InvestigationHost:
         entry = self.state.repair_saturation.get(sat_key)
 
         if entry is not None and entry.get("exhausted"):
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "blocked",
-                    "reason": "repair_saturated",
-                    "branch": branch,
-                    "saturation_key": sat_key,
-                    "evidence_failures": int(entry.get("evidence_failures") or 0),
-                    "note": (
-                        "Repair is exhausted for this candidate content and "
-                        "verifier evidence. Run one alternate search/basin "
-                        "experiment, compare genuinely distinct finalists, or "
-                        "declare honestly unsolved."
-                    ),
-                },
-            )
+            return {"blocked": {
+                "status": "blocked",
+                "reason": "repair_saturated",
+                "branch": branch,
+                "saturation_key": sat_key,
+                "evidence_failures": int(entry.get("evidence_failures") or 0),
+                "note": (
+                    "Repair is exhausted for this candidate content and "
+                    "verifier evidence. Run one alternate search/basin "
+                    "experiment, compare genuinely distinct finalists, or "
+                    "declare honestly unsolved."
+                ),
+            }}
         if entry is not None and pair in (entry.get("evidence_failed_pairs") or []):
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={
-                    "status": "blocked",
-                    "reason": "pair_evidence_failed",
-                    "branch": branch,
-                    "pair_digest": pair,
-                    "note": (
-                        "This source/interpretation pair was already evidence-"
-                        "evaluated and failed; it cannot be rerun under a new "
-                        "name. Provide genuinely new content or evidence."
-                    ),
-                },
-            )
+            return {"blocked": {
+                "status": "blocked",
+                "reason": "pair_evidence_failed",
+                "branch": branch,
+                "pair_digest": pair,
+                "note": (
+                    "This source/interpretation pair was already evidence-"
+                    "evaluated and failed; it cannot be rerun under a new "
+                    "name. Provide genuinely new content or evidence."
+                ),
+            }}
         retry_of = None
         if entry is not None and int((entry.get("process_failures") or {}).get(pair, 0)) >= 1:
             retry_of = next(
@@ -1357,47 +1343,22 @@ class InvestigationHost:
             if anomalies else
             "Use only the stored reading's supported fragments; avoid speculative edits."
         )
-        episode_payload = json.loads(self._dispatch_episode_run({
-            "id": f"{tu.get('id')}:repair",
-            "name": "episode_run",
-            "input": {
-                "kind": "repair",
-                "goal": str(args.get("goal") or "Repair the bound candidate conservatively."),
-                "branches": [branch],
-                "reading_id": reading_id,
-                "context_note": note,
-            },
-        }, turn))
-        transaction_id = uuid.uuid4().hex[:12]
-        base_record = {
-            "transaction_id": transaction_id,
-            "source_branch": branch,
-            "source_content_hash": source_hash,
-            "reading_id": reading_id,                 # operational pointer into state.readings
-            "interpretation_id": reading_id,          # B2 identity component (== reading_id in M5.3)
-            "interpretation_digest": interp_digest,   # B2 identity component
-            "attestation_key": att_key,
-            "saturation_key": sat_key,
-            "pair_digest": pair,
-            "retry_of": retry_of,
-            "episode_id": episode_payload.get("episode_id"),
-            "addressed_anomalies": anomalies,
-            "created_turn": turn,
+        return {
+            "ok": True, "source_hash": source_hash, "reading_id": reading_id,
+            "interp_digest": interp_digest, "att_key": att_key, "sat_key": sat_key,
+            "pair": pair, "retry_of": retry_of, "anomalies": anomalies, "note": note,
         }
-        if episode_payload.get("status") != "ok":
-            record = {
-                **base_record, "status": "failed",
-                "reason": episode_payload.get("failure_reason") or episode_payload.get("error"),
-            }
-            settled = self._settle_repair_outcome(
-                record=record, entry_args=(source_hash, att_key, pair),
-                changed_hashes=[], turn=turn,
-            )
-            return self._record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn,
-                payload={**settled, "episode": episode_payload},
-            )
 
+
+    def validate_and_install_repair(
+        self, *, tu: dict[str, Any], turn: int, branch: str, source_hash: str,
+        att_key: str, pair: str, base_record: dict[str, Any],
+        episode_payload: dict[str, Any], as_name: str,
+    ) -> str:
+        """Validate the repair worker's forks against the eight acceptance
+        checks and install the accepted winner (Part 8.1 extraction; verbatim
+        code motion of the post-episode dispatcher body with three parameter
+        substitutions)."""
         episode_id = str(episode_payload.get("episode_id") or "")
         ledger_entry = next(
             (
@@ -1568,7 +1529,7 @@ class InvestigationHost:
         winner_snapshot = next(
             s for s in snapshots if str(s.get("name") or "") == winner
         )
-        probe_hash, after = self._probe_snapshot_scores(winner_snapshot, transaction_id)
+        probe_hash, after = self._probe_snapshot_scores(winner_snapshot, base_record["transaction_id"])
         dict_before, dict_after = before.get("dict_rate"), after.get("dict_rate")
         quad_before, quad_after = before.get("quad"), after.get("quad")
         dict_delta = (
@@ -1616,7 +1577,7 @@ class InvestigationHost:
             "input": {
                 "episode_id": episode_id,
                 "branch": winner,
-                "as_name": str(args.get("as_name") or f"repair_tx_{turn}_{branch}"),
+                "as_name": as_name,
             },
         }, turn))
         installed = str(install_payload.get("installed") or "")
@@ -1635,12 +1596,12 @@ class InvestigationHost:
             )
         result_hash = _branch_hash(self.workspace, installed)
         self.workspace.get_branch(installed).metadata["repair_transaction"] = {
-            "transaction_id": transaction_id,
+            "transaction_id": base_record["transaction_id"],
             "source_branch": branch,
             "source_content_hash": source_hash,
-            "reading_id": reading_id,
+            "reading_id": base_record["reading_id"],
             "episode_id": episode_id,
-            "addressed_anomalies": anomalies,
+            "addressed_anomalies": base_record["addressed_anomalies"],
         }
         record = {
             **base_record,
@@ -1665,7 +1626,7 @@ class InvestigationHost:
                 and item.get("content_hash") == source_hash
             ):
                 item["status"] = "addressed"
-                item["addressed_by_transaction"] = transaction_id
+                item["addressed_by_transaction"] = base_record["transaction_id"]
                 item["addressed_turn"] = turn
         self.state.add_evidence(
             "repair_transaction", turn=turn,
@@ -1675,6 +1636,65 @@ class InvestigationHost:
         self._emit("repair_transaction_complete", dict(record), outer_iteration=turn)
         return self._record_dispatch_result(
             name="repair_transaction", tu=tu, turn=turn, payload=payload
+        )
+
+
+    def _dispatch_repair_transaction(self, tu: dict[str, Any], turn: int) -> str:
+        """Run, validate, install, and record one bounded repair operation."""
+        args = tu.get("input") or {}
+        branch = str(args.get("branch") or "")
+        pre = self.check_repair_preconditions(
+            branch=branch, reading_id_arg=str(args.get("reading_id") or ""), turn=turn
+        )
+        if "blocked" in pre:
+            return self._record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn, payload=pre["blocked"],
+            )
+        episode_payload = json.loads(self._dispatch_episode_run({
+            "id": f"{tu.get('id')}:repair",
+            "name": "episode_run",
+            "input": {
+                "kind": "repair",
+                "goal": str(args.get("goal") or "Repair the bound candidate conservatively."),
+                "branches": [branch],
+                "reading_id": pre["reading_id"],
+                "context_note": pre["note"],
+            },
+        }, turn))
+        transaction_id = uuid.uuid4().hex[:12]
+        base_record = {
+            "transaction_id": transaction_id,
+            "source_branch": branch,
+            "source_content_hash": pre["source_hash"],
+            "reading_id": pre["reading_id"],                 # operational pointer into state.readings
+            "interpretation_id": pre["reading_id"],          # B2 identity component (== reading_id in M5.3)
+            "interpretation_digest": pre["interp_digest"],   # B2 identity component
+            "attestation_key": pre["att_key"],
+            "saturation_key": pre["sat_key"],
+            "pair_digest": pre["pair"],
+            "retry_of": pre["retry_of"],
+            "episode_id": episode_payload.get("episode_id"),
+            "addressed_anomalies": pre["anomalies"],
+            "created_turn": turn,
+        }
+        if episode_payload.get("status") != "ok":
+            record = {
+                **base_record, "status": "failed",
+                "reason": episode_payload.get("failure_reason") or episode_payload.get("error"),
+            }
+            settled = self._settle_repair_outcome(
+                record=record, entry_args=(pre["source_hash"], pre["att_key"], pre["pair"]),
+                changed_hashes=[], turn=turn,
+            )
+            return self._record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={**settled, "episode": episode_payload},
+            )
+        return self.validate_and_install_repair(
+            tu=tu, turn=turn, branch=branch, source_hash=pre["source_hash"],
+            att_key=pre["att_key"], pair=pre["pair"], base_record=base_record,
+            episode_payload=episode_payload,
+            as_name=str(args.get("as_name") or f"repair_tx_{turn}_{branch}"),
         )
 
 

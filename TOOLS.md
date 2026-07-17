@@ -1666,3 +1666,40 @@ line per outstanding experiment plus summaries of any that just completed. With
 | `experiment_id` | string | specific experiment to collect; omit to poll all |
 | `install` | boolean | install the result as a new branch |
 | `as_name` | string | branch name when `install=true` |
+
+
+---
+
+## MCP server surface (v1)
+
+The `decipher` MCP stdio server (`src/mcp_server/`, `decipher mcp-serve` or
+`python -m mcp_server`) exposes 23 tools to Claude Code / Codex. Full schemas
+live in `src/mcp_server/tools.py`; methodology and recovery in
+`docs/mcp_onboarding.md` §3; the binding spec is
+`docs/specs/mcp_server_spec.md`.
+
+| Tool | Class | Purpose |
+|---|---|---|
+| `investigation_start` | create | Start a new investigation from inline ciphertext. |
+| `investigation_list` | read | List stored investigations, newest first. |
+| `investigation_status` | read | The full self-briefing rebuilt from server state. |
+| `observe_overview` | read | Compact measured facts for cheap re-orientation. |
+| `observe_diagnosis` | read | Ranked LLM-free cipher-family diagnosis. |
+| `decode_show` | read | Paired encoded/decoded rows for a branch. |
+| `hypothesis_next_steps` | read | Advisory next-step suggestions (WF-1). |
+| `candidate_list` | read | The candidate portfolio with labeled signals (WF-6). |
+| `candidate_show` | read | Full detail for one candidate branch. |
+| `branch_adjudicate` | read | Read-only comparison table over 2-8 branches. |
+| `hypothesis_branch_create` | mutate | Create a hypothesis branch. |
+| `hypothesis_branch_update` | mutate | Update a hypothesis branch. |
+| `hypothesis_branch_reject` | mutate | Mark a hypothesis rejected/superseded. |
+| `experiment_submit` | mutate | Queue a background automated-solver experiment. |
+| `experiment_collect` | mutate | Adjudicate/install a queued experiment. |
+| `reading_record` | mutate | Record your hash-bound reading of a branch. |
+| `comparison_record` | mutate | Record your ranking (best_partial vs accepts split). |
+| `repair_hypotheses_test` | mutate | Compile word hypotheses into scratch forks. |
+| `repair_transaction` | mutate | Host-validated install of one compiled winner. |
+| `request_independent_verification` | mutate | Run a fresh independent reader (gates declaration). |
+| `act_set_model_variant` | mutate | Select the language-model variant. |
+| `meta_declare_solution` | mutate | Declare solved (hard-gated on verification). |
+| `meta_declare_unsolved` | mutate | Declare honestly unsolved (never gated). |
