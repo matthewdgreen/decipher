@@ -8,6 +8,13 @@ and failures should identify a missing tool, a weak tool, a wrong agent choice,
 or a benchmark data issue.
 
 Current planning split:
+- The next bounded agent-loop follow-up is **M5.3a candidate retention and
+  sparse-null reliability**, specified in
+  `docs/specs/agent_v3_m5_3a_candidate_reliability_spec.md`. It splits compare
+  ranking from solved acceptance, protects a diverse finalist portfolio,
+  adds sparse-null coverage debt, and requires repeated no-LLM Borg replays
+  plus matched synthetic null/no-null controls before one separately approved
+  paid smoke. It does not authorize a Stage-1 packet or M6 bake-off.
 - The Agent Loop Redesign plan is considered complete after Milestone 4 smoke
   coverage.
 - New Copiale/generalization work is tracked in
