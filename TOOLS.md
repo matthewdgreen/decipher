@@ -1639,7 +1639,7 @@ screens, null-mask bake-offs).
 |-----------|------|-------|
 | `type` | string | **required** — e.g. `automated_solver` |
 | `branch` | string | branch to run on |
-| `config` | object | solver configuration overrides |
+| `config` | object | TYPED per-type schema (M5.3 Slice 5): for `automated_solver`, supported keys `cipher_system`, `homophonic_budget`/`homophonic_refinement`/`homophonic_solver`, `transform_search`(+profile/max), `model_variant` — each with enums/defaults advertised. **Do NOT set `language`** (host-derived). Unknown/unsupported keys are rejected before dispatch; a validation error returns a valid `corrected_example`. |
 | `note` | string | optional label |
 | `resubmit` | string | optional prior experiment id to re-run |
 

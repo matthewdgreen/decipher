@@ -14,13 +14,16 @@ from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
 from analysis import model_registry
 from investigation import experiments as exp
 from investigation.experiments import (
+    EXPERIMENT_SUBMIT_TOOL,
     EXPERIMENT_TYPES,
     ExperimentQueue,
     apply_config_defaults,
     compute_arbiter,
+    corrected_config_example,
     dedup_key,
     dispatch_experiment_collect,
     dispatch_experiment_submit,
+    model_facing_config_schema,
     register_experiment_type,
     validate_experiment_config,
 )
@@ -135,6 +138,143 @@ def test_submit_config_error_is_structured_not_raised():
         {"type": "automated_solver", "branch": "main", "config": {"transform_search": "promote"}}, 1,
     )
     assert "config_errors" in out
+
+
+# ---------------------------------------------------------------------------
+# Slice 5 — typed experiment schema + alternate-search config (M5.3)
+# ---------------------------------------------------------------------------
+def test_model_facing_config_schema_shape():
+    """The provider-visible `config` schema exposes the real keys/enums/defaults,
+    folds in the universal `model_variant`, and is host-language-firewalled."""
+    schema = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
+    # Same object the builder returns for automated_solver.
+    assert schema == model_facing_config_schema("automated_solver")
+    assert schema["type"] == "object"
+    # Provider-side unknown-key rejection.
+    assert schema["additionalProperties"] is False
+    props = schema["properties"]
+    # language is host-derived: it must NOT be a supplied key.
+    assert "language" not in props
+    # Universal key folded in.
+    assert "model_variant" in props
+    # Real enums exposed (homophonic behavior selected via these fields).
+    assert props["homophonic_solver"]["enum"] == ["zenith_native", "legacy"]
+    assert set(props["homophonic_refinement"]["enum"]) >= {
+        "none", "targeted_repair", "null_masks",
+    }
+    # `promote` is deliberately absent from transform_search (F5 purity break).
+    assert "promote" not in props["transform_search"]["enum"]
+    # Defaults + concise descriptions are advertised.
+    assert props["homophonic_solver"]["default"] == "zenith_native"
+    assert props["transform_search"]["default"] == "off"
+    assert all(props[k].get("description") for k in props)
+    # Nullable fields keep the local-validator type-list dialect.
+    assert props["transform_search_max_generated_candidates"]["type"] == ["integer", "null"]
+    assert props["model_variant"]["type"] == ["string", "null"]
+
+
+def test_advertised_schema_matches_validated_contract():
+    """Every advertised key/enum is exactly what dispatch validation enforces —
+    no drift between what the model is told and what it is held to."""
+    advertised = model_facing_config_schema("automated_solver")["properties"]
+    for key, sub in exp._AUTOMATED_SOLVER_SCHEMA["properties"].items():
+        assert key in advertised
+        assert advertised[key]["type"] == sub["type"]
+        if "enum" in sub:
+            assert advertised[key]["enum"] == sub["enum"]
+    # The advertised key set equals validated (schema props) ∪ universal keys.
+    allowed = set(exp._AUTOMATED_SOLVER_SCHEMA["properties"]) | {"model_variant"}
+    assert set(advertised) == allowed
+
+
+@pytest.mark.parametrize(
+    "bad_key", ["target_language", "allow_homophones", "max_runtime_seconds", "language"]
+)
+def test_provider_schema_rejects_unknown_config_keys_before_dispatch(bad_key):
+    """The M5.2 smoke guessed target_language/allow_homophones/max_runtime_seconds;
+    plus the host-derived `language`. Each is rejected BEFORE a queue record is
+    created, and the error carries a valid corrected example + schema."""
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    out = dispatch_experiment_submit(
+        q, state, state.workspace, _fake_executor(),
+        {"type": "automated_solver", "branch": "main", "config": {bad_key: "x"}}, 1,
+    )
+    assert out["error"] == "invalid experiment config"
+    assert any(bad_key in e for e in out["config_errors"])
+    # Rejected before dispatch: nothing was queued.
+    assert state.experiment_queue == []
+    # Structured recovery: a valid corrected example + the schema contract.
+    assert validate_experiment_config("automated_solver", out["corrected_example"]) == []
+    assert out["config_schema"]["additionalProperties"] is False
+    assert "language" in out["note"]
+
+
+def test_validation_error_returns_valid_corrected_example():
+    """A structured validation error yields a valid, family-consistent example."""
+    # Homophonic intent (allow_homophones flag) → corrected example uses the
+    # supported homophonic_* mechanism, not the guessed flag.
+    homo = corrected_config_example(
+        "automated_solver",
+        {"allow_homophones": True, "target_language": "de", "max_runtime_seconds": 900},
+    )
+    assert validate_experiment_config("automated_solver", homo) == []
+    assert homo.get("cipher_system") == "homophonic_substitution"
+    assert homo.get("homophonic_solver") == "zenith_native"
+    assert "allow_homophones" not in homo and "target_language" not in homo
+
+    # A supported key with a bad enum value is dropped so the default applies.
+    fixed = corrected_config_example("automated_solver", {"transform_search": "promote"})
+    assert validate_experiment_config("automated_solver", fixed) == []
+    assert "transform_search" not in fixed  # invalid value dropped → default
+
+    # A supported key with a valid value is preserved verbatim.
+    kept = corrected_config_example(
+        "automated_solver", {"cipher_system": "vigenere", "bogus": 1}
+    )
+    assert kept == {"cipher_system": "vigenere"}
+
+
+def test_scripted_simple_substitution_rerun_without_language_or_homophonic_flags():
+    """A scripted lead submits a valid simple-substitution rerun WITHOUT guessing
+    `language` or unsupported homophonic flags: the config validates, the host
+    stamps the run language, and the homophonic defaults are inert/untouched."""
+    _ct, state = _make_state()  # state.language == "en"
+    # Swap in a trivial runner for the real automated_solver type so the submit
+    # completes inline without invoking the heavy solver stack (schema/defaults
+    # stay the real ones).
+    entry = EXPERIMENT_TYPES["automated_solver"]
+    orig_runner = entry["runner"]
+    entry["runner"] = lambda cipher, snapshot, config: {
+        "status": "completed", "solver": "fake", "error_message": None,
+        "elapsed_seconds": 0.0, "key": {}, "final_decryption": "X", "steps": [],
+    }
+    try:
+        q = ExperimentQueue(synchronous=True)
+        out = dispatch_experiment_submit(
+            q, state, state.workspace, _fake_executor(),
+            {
+                "type": "automated_solver",
+                "branch": "main",
+                # No `language`, no `allow_homophones` — just the family hint.
+                "config": {"cipher_system": "simple_substitution"},
+            },
+            1,
+        )
+    finally:
+        entry["runner"] = orig_runner
+
+    assert "error" not in out and "config_errors" not in out
+    assert out.get("experiment_id")
+    record = state.experiment_queue[-1]
+    cfg = record["config"]
+    # Host-derived language was stamped (the model never supplied it).
+    assert cfg["language"] == "en"
+    assert cfg["cipher_system"] == "simple_substitution"
+    # Homophonic defaults are present but were not guessed by the model.
+    assert cfg["homophonic_solver"] == "zenith_native"
+    assert cfg["homophonic_refinement"] == "none"
+    assert cfg["transform_search"] == "off"
 
 
 # ---------------------------------------------------------------------------

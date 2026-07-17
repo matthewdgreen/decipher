@@ -61,8 +61,21 @@ _UNIVERSAL_CONFIG_KEYS = frozenset({"model_variant"})
 # The ``transform_search`` enum EXCLUDES ``"promote"`` (F5): promote reads prior
 # artifacts from disk (a purity break) and raises when its companion arg is
 # absent.
+#
+# ``additionalProperties: false`` is declared here so the model-facing schema
+# (Slice 5) can carry the provider-side unknown-key rejection verbatim. NOTE:
+# the local ``validate_against_schema`` dialect does NOT interpret
+# ``additionalProperties`` (it only understands type/enum/properties/required/
+# items). Host-side unknown-key rejection therefore lives in the explicit
+# whitelist in ``validate_experiment_config``; this key is documentation + the
+# provider contract, not something the local validator enforces.
+#
+# ``language`` is deliberately NOT a property: it is host-derived
+# (``config["language"] = state.language`` at dispatch) and the model must not
+# supply it — an emitted ``language`` key is rejected as an unknown key.
 _AUTOMATED_SOLVER_SCHEMA: dict[str, Any] = {
     "type": "object",
+    "additionalProperties": False,
     "properties": {
         "homophonic_budget": {"type": "string", "enum": ["full", "screen"]},
         "homophonic_refinement": {
@@ -82,6 +95,53 @@ _AUTOMATED_SOLVER_SCHEMA: dict[str, Any] = {
         "cipher_system": {"type": "string"},
         "model_variant": {"type": ["string", "null"]},
     },
+}
+
+# Concise, model-facing per-field help for ``automated_solver``. Surfaced in the
+# ``experiment_submit`` tool schema (Slice 5) so the model sees the real contract
+# instead of guessing keys/flags. Homophonic behavior is selected THROUGH these
+# fields, never via free-form flags such as ``allow_homophones``; runtime
+# controls such as ``max_runtime_seconds`` are not accepted.
+_AUTOMATED_SOLVER_FIELD_DOCS: dict[str, str] = {
+    "cipher_system": (
+        "Cipher-family HINT that routes the automated solver, e.g. "
+        "'simple_substitution', 'homophonic_substitution', 'vigenere', "
+        "'transposition'. Free-form string; '' lets the router auto-detect."
+    ),
+    "homophonic_budget": (
+        "Compute budget for the homophonic annealer: 'full' (default) or the "
+        "cheaper 'screen' pass."
+    ),
+    "homophonic_refinement": (
+        "Post-anneal refinement for homophonic ciphers. Select homophonic "
+        "handling HERE (e.g. 'targeted_repair', 'null_masks'), not via free-form "
+        "flags. 'none' disables refinement."
+    ),
+    "homophonic_solver": (
+        "Homophonic solver engine: 'zenith_native' (Zenith-parity SA, default) "
+        "or 'legacy'."
+    ),
+    "transform_search": (
+        "Transform/transposition screen breadth over the branch. 'off' (default) "
+        "disables it; 'auto'/'screen'/'wide'/'rank'/'full' widen the search."
+    ),
+    "transform_search_profile": (
+        "Named profile for the transform search (e.g. 'broad'). Applies only when "
+        "transform_search is enabled."
+    ),
+    "transform_search_max_generated_candidates": (
+        "Optional integer cap on transform candidates; null = solver default."
+    ),
+    "model_variant": (
+        "Language-model variant slug (null = host default). Universal across "
+        "experiment types; validated against the run language at submit."
+    ),
+}
+
+# Per-type field-doc registry (parallel to EXPERIMENT_TYPES). A type without an
+# entry simply exposes its raw schema with no per-field prose.
+_FIELD_DOCS: dict[str, dict[str, str]] = {
+    "automated_solver": _AUTOMATED_SOLVER_FIELD_DOCS,
 }
 
 _AUTOMATED_SOLVER_DEFAULTS: dict[str, Any] = {
@@ -204,6 +264,14 @@ def validate_experiment_config(exp_type: str, config: dict[str, Any]) -> list[st
     Returns a list of human-readable errors (empty == valid). Never raises — a
     validation failure is a structured tool error, and this is a firewall
     surface (Part 1/Part 6).
+
+    Slice 5: the explicit whitelist loop below IS the host-side unknown-key
+    rejection. ``additionalProperties: false`` is advertised in the model-facing
+    schema so the provider rejects unknown keys before dispatch, but the local
+    ``validate_against_schema`` dialect cannot express/enforce it — so the belt
+    that guarantees rejection at dispatch is this whitelist (host-derived
+    ``language`` and the M5.2 smoke's ``target_language``/``allow_homophones``/
+    ``max_runtime_seconds`` all fail here).
     """
     errors: list[str] = []
     if exp_type not in EXPERIMENT_TYPES:
@@ -217,6 +285,105 @@ def validate_experiment_config(exp_type: str, config: dict[str, Any]) -> list[st
             )
     errors.extend(validate_against_schema(config, schema, path="config"))
     return errors
+
+
+def _field_docs(exp_type: str) -> dict[str, str]:
+    return dict(_FIELD_DOCS.get(exp_type) or {})
+
+
+def model_facing_config_schema(exp_type: str) -> dict[str, Any]:
+    """Build the provider-visible ``config`` schema for one experiment type.
+
+    Starts from the registered type's actual validation schema and enriches each
+    property with its ``default`` (from ``config_defaults``) and a concise
+    ``description`` (from ``_FIELD_DOCS``). Folds in the universal keys
+    (``model_variant``) even for types whose own schema omits them, and stamps
+    ``additionalProperties: false`` so a strict provider rejects unknown keys
+    before the call reaches dispatch (A9: validation failures are structured,
+    never a crash). ``language`` is intentionally absent — it is host-derived.
+    """
+    schema = _config_schema(exp_type)
+    defaults = _config_defaults(exp_type)
+    docs = _field_docs(exp_type)
+    props_in = schema.get("properties") or {}
+    props: dict[str, Any] = {}
+    for key, sub in props_in.items():
+        entry = dict(sub)
+        if key in defaults:
+            entry["default"] = defaults[key]
+        if docs.get(key):
+            entry["description"] = docs[key]
+        props[key] = entry
+    # Fold universal keys that the type's own schema did not already list.
+    for key in sorted(_UNIVERSAL_CONFIG_KEYS):
+        if key not in props:
+            entry: dict[str, Any] = {"type": ["string", "null"]}
+            if key in defaults:
+                entry["default"] = defaults[key]
+            if docs.get(key):
+                entry["description"] = docs[key]
+            props[key] = entry
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "description": (
+            "Per-type solver configuration (all keys optional; defaults shown). "
+            "`language` is HOST-DERIVED from the run and must NOT be supplied. "
+            "`cipher_system` is a family hint. Select homophonic behavior through "
+            "the homophonic_* fields, not free-form flags. Unknown keys and "
+            "runtime controls (e.g. max_runtime_seconds) are rejected."
+        ),
+        "properties": props,
+    }
+
+
+def corrected_config_example(
+    exp_type: str, user_config: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Return a VALID, family-consistent config the model can copy after a
+    validation error.
+
+    Keeps the user's supported keys whose values already validate, drops unknown
+    keys (host-derived ``language``, guessed ``target_language`` /
+    ``allow_homophones`` / ``max_runtime_seconds``) and drops values that fail
+    the enum/type check (so the type default applies). When the rejected input
+    signals homophonic intent, seeds the correct homophonic_* fields so the
+    example demonstrates the supported mechanism. Firewall: the returned example
+    is guaranteed valid (falls back to ``{}`` — all defaults — if anything is
+    off), never raises.
+    """
+    if exp_type not in EXPERIMENT_TYPES:
+        return {}
+    schema = _config_schema(exp_type)
+    props = schema.get("properties") or {}
+    allowed = set(props.keys()) | set(_UNIVERSAL_CONFIG_KEYS)
+    example: dict[str, Any] = {}
+    for key, value in (user_config or {}).items():
+        if key not in allowed:
+            continue  # drop unknown/host-only key
+        sub = props.get(key)
+        if sub is None or not validate_against_schema(value, sub):
+            example[key] = value  # supported key with an already-valid value
+        # else: invalid enum/type value dropped -> the type default applies
+    if _looks_homophonic(user_config):
+        example.setdefault("cipher_system", "homophonic_substitution")
+        example.setdefault("homophonic_solver", "zenith_native")
+    if validate_experiment_config(exp_type, example):
+        return {}  # firewall: never return an example that would itself fail
+    return example
+
+
+def _looks_homophonic(user_config: dict[str, Any] | None) -> bool:
+    """Heuristic: did the (rejected) input signal homophonic intent?
+
+    True when any supplied key name contains ``homophon`` (e.g. the smoke's
+    ``allow_homophones``) or the ``cipher_system`` hint mentions homophonic.
+    """
+    for key in (user_config or {}):
+        if "homophon" in str(key).lower():
+            return True
+    cs = str((user_config or {}).get("cipher_system") or "").lower()
+    return "homophon" in cs
 
 
 def apply_config_defaults(exp_type: str, config: dict[str, Any]) -> dict[str, Any]:
@@ -660,22 +827,45 @@ EXPERIMENT_SUBMIT_TOOL = {
     "description": (
         "Queue a long-running automated-solver experiment on a branch; it runs "
         "in the BACKGROUND while you keep working, and you adjudicate it later "
-        "with experiment_collect. Type `automated_solver` runs the no-LLM solver "
-        "stack (homophonic anneal, transform screens via transform_search, "
-        "null-mask bakeoffs via homophonic_refinement=null_masks). `config` "
-        "overrides its options; `model_variant` selects a language model. Pass "
-        "`resubmit=<experiment_id>` to re-run an orphaned/failed experiment from "
-        "its stored snapshot (works even after resume). Returns the experiment id "
-        "and queue slots; duplicate specs dedup to a prior completed run for free."
+        "with experiment_collect (collect/install the result rather than "
+        "submitting duplicate jobs). Type `automated_solver` runs the no-LLM "
+        "solver stack (homophonic anneal, transform screens via transform_search, "
+        "null-mask bakeoffs via homophonic_refinement=null_masks). `config` is "
+        "typed per experiment type (see its schema); its keys are the ONLY "
+        "supported controls. Do NOT set `language` — it is host-derived from the "
+        "run. Select homophonic behavior via the homophonic_* fields, not "
+        "free-form flags. Pass `resubmit=<experiment_id>` to re-run an orphaned/"
+        "failed experiment from its stored snapshot (works even after resume). "
+        "Returns the experiment id and queue slots; duplicate specs dedup to a "
+        "prior completed run for free. An invalid config returns a structured "
+        "error with a corrected, family-consistent example to copy."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "type": {"type": "string"},
-            "branch": {"type": "string"},
-            "config": {"type": "object"},
+            "type": {
+                "type": "string",
+                "description": (
+                    "Experiment type. Supported: 'automated_solver' (the no-LLM "
+                    "solver stack). Its `config` is validated against the schema "
+                    "below."
+                ),
+            },
+            "branch": {
+                "type": "string",
+                "description": (
+                    "Branch to run the experiment on (required unless `resubmit`)."
+                ),
+            },
+            "config": model_facing_config_schema("automated_solver"),
             "note": {"type": "string"},
-            "resubmit": {"type": "string"},
+            "resubmit": {
+                "type": "string",
+                "description": (
+                    "Re-run an orphaned/failed experiment id from its stored "
+                    "snapshot (mutually exclusive with `branch`/`config`)."
+                ),
+            },
         },
         "required": ["type"],
     },
@@ -754,7 +944,21 @@ def dispatch_experiment_submit(
     user_config = dict(args.get("config") or {})
     config_errors = validate_experiment_config(exp_type, user_config)
     if config_errors:
-        return {"error": "invalid experiment config", "config_errors": config_errors}
+        # Slice 5: a structured validation error carries a VALID corrected
+        # example (family-consistent) plus a note so the model can fix its call
+        # without guessing. Also surface the supported-key contract inline.
+        return {
+            "error": "invalid experiment config",
+            "config_errors": config_errors,
+            "corrected_example": corrected_config_example(exp_type, user_config),
+            "config_schema": model_facing_config_schema(exp_type),
+            "note": (
+                "`language` is host-derived and must not be supplied; select "
+                "homophonic behavior via the homophonic_* fields (not free-form "
+                "flags like allow_homophones); runtime controls such as "
+                "max_runtime_seconds are not accepted. Copy `corrected_example`."
+            ),
+        }
 
     # F1b: resolve model_variant at submit on the lead thread; default from the
     # lead executor's current selection.
