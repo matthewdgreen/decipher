@@ -139,7 +139,7 @@ def _episode_result_digest(
 
         positive = attestation_is_positive(data)
         verdict = "POSITIVE" if positive else "NEGATIVE"
-        gloss = _truncate_text(data.get("gloss"), 90)
+        gloss = _truncate_text(data.get("gloss"), 240)
         lang = _fmt_unit(data.get("target_language_confidence"))
         recov = _fmt_unit(data.get("semantic_recoverability"))
         scope = str(data.get("damage_scope") or "?")
@@ -152,7 +152,7 @@ def _episode_result_digest(
 
     if kind == "search":
         best = data.get("best_branch")
-        notes = _truncate_text(data.get("notes"), 80)
+        notes = _truncate_text(data.get("notes"), 240)
         if data.get("improved") and best:
             head = f"improved → {best}"
         else:
@@ -160,7 +160,7 @@ def _episode_result_digest(
         return f"{head} — {notes}" if notes else head
 
     if kind == "reading":
-        text = _truncate_text(data.get("reading_text"), 60)
+        text = _truncate_text(data.get("reading_text"), 200)
         conf = data.get("overall_confidence")
         conf_str = _fmt_unit(conf) if conf is not None else "?"
         return f'proposed "{text}" (confidence {conf_str})'
@@ -183,7 +183,7 @@ def _episode_result_digest(
     if kind == "survey":
         findings = data.get("findings") or []
         if findings:
-            return _truncate_text(findings[0], 90)
+            return _truncate_text(findings[0], 240)
         return "survey complete"
 
     return f"{kind} complete"

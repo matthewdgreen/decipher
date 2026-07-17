@@ -379,7 +379,9 @@ def describe_tool_action(tool: str, args: dict[str, Any] | None = None) -> str:
 
     if tool == "episode_run":
         kind = str(args.get("kind") or "").strip() or "focused"
-        goal = _truncate(args.get("goal"), 90)
+        # CLI-3 follow-up (user report): the goal IS the human explanation —
+        # never truncate it on the primary action line; terminals wrap.
+        goal = str(args.get("goal") or "").strip()
         base = f"Launching a {kind} episode"
         return f"{base}: {goal}" if goal else base
     if tool == "episode_install_branch":

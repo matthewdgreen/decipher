@@ -989,13 +989,14 @@ def test_describe_tool_action_v3_lead_patterns():
     ) == "Switching the language model to 'historical_1600_1899'"
 
 
-def test_describe_tool_action_goal_truncated_to_90():
+def test_describe_tool_action_goal_never_truncated():
+    # CLI-3 follow-up (user report): the goal IS the human explanation on the
+    # primary action line — it must render in full; terminals wrap.
     long_goal = "x" * 200
     out = describe_tool_action("episode_run", {"kind": "search", "goal": long_goal})
     assert out.startswith("Launching a search episode: ")
-    assert out.endswith("…")
-    # 90-char cap on the goal portion.
-    assert len(out.split(": ", 1)[1]) == 90
+    assert out.split(": ", 1)[1] == long_goal
+    assert "…" not in out
 
 
 def test_describe_tool_action_fallbacks():
