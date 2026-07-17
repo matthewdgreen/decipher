@@ -302,3 +302,53 @@ def test_experiment_budget_bucket_additive():
     assert bucket["elapsed_seconds"] == 12.5
     assert bucket["input_tokens"] == 0
     assert bucket["cost_usd"] == 0.0
+
+
+def test_s2_saturation_roundtrip_preserves_next_action():
+    """M5.3 Slice 2: repair_saturation survives serialize/resume and preserves
+    the exact next action; a legacy artifact without the key loads to {}."""
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+    from investigation.context import workflow_state
+    from investigation.state import (
+        attestation_key, new_saturation_entry, saturation_key,
+    )
+
+    raw = "abcde"  # single word decoding to CATON
+    alpha = Alphabet.from_text(raw, ignore_chars=set())
+    ct = CipherText(raw=raw, alphabet=alpha, separator=None)
+    ws = Workspace(ct)
+    pt = ws.plaintext_alphabet
+    for sym, letter in {"a": "C", "b": "A", "c": "T", "d": "O", "e": "N"}.items():
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(letter))
+    state = InvestigationState(workspace=ws, language="en")
+    h = _candidate_content_hash(_decoded_text_for_panel(ws, "main"))
+    att = {
+        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
+        "episode_id": "prior", "coherence": 4, "reader_accepts": False,
+        "gloss": "partial", "anomalies": ["broken word"], "created_turn": 1,
+    }
+    state.verify_attestations.append(att)
+    att_key = attestation_key(att)
+    entry = new_saturation_entry(h, att_key, 1)
+    entry["evidence_failures"] = 2
+    entry["exhausted"] = True
+    entry["evidence_failed_pairs"] = ["p1", "p2"]      # already sorted (normalizer sorts)
+    entry["finalist_hashes"] = ["ha", "hb"]
+    entry["process_failures"] = {"pp": 1}
+    state.repair_saturation[saturation_key(h, att_key)] = entry
+
+    restored = InvestigationState.from_artifact_dict(
+        json.loads(json.dumps(state.to_artifact_dict()))
+    )
+    assert restored.repair_saturation == state.repair_saturation
+
+    ex1 = _executor_for(state)
+    ex2 = _executor_for(restored)
+    assert workflow_state(state, ex1)["state"] == "repair_exhausted"
+    assert workflow_state(restored, ex2) == workflow_state(state, ex1)
+
+    # A legacy artifact predating the key loads with an empty map.
+    legacy = state.to_artifact_dict()
+    del legacy["repair_saturation"]
+    reloaded = InvestigationState.from_artifact_dict(json.loads(json.dumps(legacy)))
+    assert reloaded.repair_saturation == {}

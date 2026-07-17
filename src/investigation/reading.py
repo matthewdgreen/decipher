@@ -13,6 +13,8 @@ plaintext, and the firewall covers this surface (Part 8).
 from __future__ import annotations
 
 import bisect
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -21,6 +23,41 @@ from typing import Any
 def new_reading_id() -> str:
     """A 12-hex-char reading id (same convention as episode ids)."""
     return uuid.uuid4().hex[:12]
+
+
+def interpretation_digest(reading: dict[str, Any]) -> str:
+    """Content digest of a stored Reading dict (M5.3 Slice 2 / B2).
+
+    Two readings with byte-identical machine-actionable content on the same
+    candidate are the SAME interpretation regardless of reading_id, source,
+    created_turn, or wording of the goal that produced them (master spec
+    Design Principle 3). Includes per-fragment confidence (it changes
+    applicability via MIN_REPAIR_FRAGMENT_CONFIDENCE) and the bound candidate
+    hash; excludes reading_id, source, created_turn, and overall_confidence
+    (advisory only). In M5.3 the interpretation is always a legacy Reading;
+    M5.4 InterpretationPackets reuse this seam without a state migration.
+    """
+    fragments = []
+    for f in reading.get("fragments") or []:
+        if not isinstance(f, dict):
+            continue
+        fragments.append({
+            "text": f.get("text"),
+            "repair_text": f.get("repair_text"),
+            "span_id": f.get("span_id"),
+            "token_indices": f.get("token_indices"),
+            "start": f.get("start"),
+            "end": f.get("end"),
+            "confidence": f.get("confidence"),
+        })
+    payload = {
+        "candidate_content_hash": reading.get("candidate_content_hash"),
+        "fragments": fragments,
+        "holes": [str(h) for h in reading.get("holes") or []],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
 
 
 # ---------------------------------------------------------------------------

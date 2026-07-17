@@ -359,3 +359,84 @@ def test_late_turn_attestation_hint():
     assert "Attestation reminder" not in _joined(19, 20)
     # No max_turns -> no hint (nothing to bound against).
     assert "Attestation reminder" not in _joined(19, None)
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 2 — repair_exhausted workflow phase (pure context tests)
+# ---------------------------------------------------------------------------
+import pytest
+
+from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+from investigation.context import allowed_episode_kinds
+from investigation.state import (
+    attestation_key, new_saturation_entry, saturation_key,
+)
+
+
+def _seed_exhausted(state, *, pending=None, evidence_failures=2):
+    """Seed a negative attestation on main + an exhausted saturation entry
+    keyed on main's (content, verifier evidence). Returns (hash, att_key)."""
+    h = _candidate_content_hash(_decoded_text_for_panel(state.workspace, "main"))
+    att = {
+        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
+        "episode_id": "prior", "coherence": 4, "reader_accepts": False,
+        "gloss": "partial", "anomalies": ["broken word"], "created_turn": 1,
+    }
+    state.verify_attestations.append(att)
+    att_key = attestation_key(att)
+    entry = new_saturation_entry(h, att_key, 1)
+    entry["evidence_failures"] = evidence_failures
+    entry["exhausted"] = True
+    if pending is not None:
+        entry["pending_experiment_id"] = pending
+    state.repair_saturation[saturation_key(h, att_key)] = entry
+    return h, att_key
+
+
+def test_s2_new_content_returns_to_candidate_reading():
+    state = _state()
+    ex = _executor(state)
+    _seed_exhausted(state)
+    state.readings["r1"] = {"reading_id": "r1", "branch": "main"}
+    assert workflow_state(state, ex)["state"] == "repair_exhausted"
+    # Changing the best branch content re-keys the saturation entry, so the
+    # candidate returns to candidate_reading (new content requires verification).
+    ct_alpha = state.workspace.cipher_text.alphabet
+    pt = state.workspace.plaintext_alphabet
+    state.workspace.set_mapping("main", ct_alpha.id_for("A"), pt.id_for("Z"))
+    menu = workflow_state(state, ex)
+    assert menu["state"] != "repair_exhausted"
+    assert menu["state"] == "candidate_reading"
+
+
+def test_s2_pending_experiment_offers_collect_and_excludes_repair_kinds():
+    state = _state()
+    ex = _executor(state)
+    _seed_exhausted(state, pending="exp123")
+    state.experiment_queue.append({
+        "experiment_id": "exp123", "type": "automated_solver",
+        "status": "running", "collected": False,
+    })
+    menu = workflow_state(state, ex)
+    assert menu["state"] == "repair_exhausted"
+    assert any("exp123" in a and "experiment_collect" in a for a in menu["actions"])
+    assert allowed_episode_kinds(state, ex) == ["search", "compare", "verify"]
+    # Once collected, the collect action drops (the other three remain).
+    state.experiment_queue[0]["collected"] = True
+    menu2 = workflow_state(state, ex)
+    assert not any("exp123" in a for a in menu2["actions"])
+    assert len(menu2["actions"]) == 3
+
+
+def test_s2_unknown_phase_fails_closed_to_verify_with_warning(monkeypatch):
+    import investigation.context as ctx_mod
+
+    state = _state()
+    ex = _executor(state)
+    monkeypatch.setattr(
+        ctx_mod, "workflow_state",
+        lambda *a, **k: {"state": "someday_phase", "branch": None, "actions": []},
+    )
+    with pytest.warns(RuntimeWarning):
+        kinds = allowed_episode_kinds(state, ex)
+    assert kinds == ["verify"]

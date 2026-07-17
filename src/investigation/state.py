@@ -12,6 +12,8 @@ exchanges (F1), and the relocated repair agenda (F5). ``episode_ledger`` and
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -160,6 +162,110 @@ class AttestationRecord:
         )
 
 
+def attestation_key(attestation: dict[str, Any] | None) -> str:
+    """Identity of one verifier-evidence unit (M5.3 Slice 2).
+
+    Primary component is the verify episode id (AttestationRecord has no id
+    field; episode_id is unique per verify episode). Fallback for records
+    without an episode_id (hand-seeded tests, legacy data): a digest over the
+    verdict content (anomalies + coherence + reader_accepts). "none" when no
+    attestation exists for the candidate.
+
+    Known seam (documented, not built): keying by episode_id means a re-verify
+    of unchanged content mints new verifier evidence and resets saturation.
+    Re-verification of unchanged content is already discouraged by the system
+    prompt and workflow hints; if paid runs show saturation laundering via
+    re-verification, switch the primary component to the content digest below
+    (a one-line change; both forms are specified here).
+    """
+    if not attestation:
+        return "none"
+    episode_id = str(attestation.get("episode_id") or "")
+    if episode_id:
+        return f"ep:{episode_id}"
+    payload = {
+        "anomalies": [str(a) for a in attestation.get("anomalies") or []],
+        "coherence": int(attestation.get("coherence") or 0),
+        "reader_accepts": bool(attestation.get("reader_accepts")),
+    }
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"digest:{digest}"
+
+
+def saturation_key(candidate_content_hash: str, att_key: str) -> str:
+    """Key of one repair-saturation entry: (candidate content, verifier evidence).
+
+    A new candidate hash OR genuinely new verifier evidence yields a new key —
+    saturation reset is automatic (a fresh entry). A reworded goal changes
+    neither component, so it never resets saturation.
+    """
+    return hashlib.sha1(
+        f"{candidate_content_hash}|{att_key}".encode("utf-8")
+    ).hexdigest()
+
+
+def pair_digest(source_content_hash: str, interp_digest: str) -> str:
+    """Identity of one evaluated source/interpretation pair.
+
+    DIGEST-based (not reading_id-based): re-running a byte-identical reading
+    under a fresh reading_id or a new as_name is the same pair.
+    """
+    return hashlib.sha1(
+        f"{source_content_hash}|{interp_digest}".encode("utf-8")
+    ).hexdigest()
+
+
+def latest_attestation_for_hash(
+    attestations: list[dict[str, Any]], content_hash: str
+) -> dict[str, Any] | None:
+    """Newest attestation matching ``content_hash`` by (created_turn, episode_id).
+
+    Single shared selection rule — context._fresh_attestation and the
+    repair-transaction dispatcher must both use THIS function (the dispatcher
+    previously tie-broke on created_turn only)."""
+    matches = [a for a in attestations if a.get("content_hash") == content_hash]
+    return max(
+        matches,
+        key=lambda a: (int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
+        default=None,
+    )
+
+
+def new_saturation_entry(
+    candidate_content_hash: str, att_key: str, turn: int
+) -> dict[str, Any]:
+    """Fresh repair-saturation entry (all JSON-native; see field table)."""
+    return {
+        "candidate_content_hash": candidate_content_hash,
+        "attestation_key": att_key,
+        "evidence_failures": 0,
+        "process_failures": {},
+        "evidence_failed_pairs": [],
+        "finalist_hashes": [],
+        "readings": 0,
+        "exhausted": False,
+        "pending_experiment_id": None,
+        "created_turn": turn,
+        "updated_turn": turn,
+    }
+
+
+def get_or_create_saturation_entry(
+    state: "InvestigationState",
+    candidate_content_hash: str,
+    att_key: str,
+    turn: int,
+) -> dict[str, Any]:
+    key = saturation_key(candidate_content_hash, att_key)
+    entry = state.repair_saturation.get(key)
+    if entry is None:
+        entry = new_saturation_entry(candidate_content_hash, att_key, turn)
+        state.repair_saturation[key] = entry
+    return entry
+
+
 def _serialize_cipher(state: "InvestigationState") -> dict[str, Any]:
     """Serialize the full CipherText + plaintext alphabet (A3).
 
@@ -242,6 +348,13 @@ class InvestigationState:
     # content hashes, the worker episode, installed branch, and anomalies the
     # transaction attempted to address. This is durable across resume.
     repair_transactions: list[dict[str, Any]] = field(default_factory=list)
+    # M5.3 Slice 2: durable repair-saturation counters, keyed by
+    # saturation_key(candidate_content_hash, attestation_key). Keying by
+    # (content, evidence) makes reset-on-new-content/new-evidence automatic
+    # (a new pair is a fresh entry) and makes reworded goals irrelevant (the
+    # goal is not in the key). Entries are created/mutated ONLY by loop_v3;
+    # context.py reads them. Absent from pre-M5.3 artifacts -> empty on load.
+    repair_saturation: dict[str, dict[str, Any]] = field(default_factory=dict)
     branch_aliases: list[dict[str, Any]] = field(default_factory=list)
     call_signature_counts: dict[str, int] = field(default_factory=dict)
     no_new_information_streak: int = 0
@@ -397,6 +510,15 @@ class InvestigationState:
             "repair_transactions": [
                 dict(item) for item in self.repair_transactions
             ],
+            "repair_saturation": {
+                str(key): {
+                    **entry,
+                    "process_failures": dict(entry.get("process_failures") or {}),
+                    "evidence_failed_pairs": list(entry.get("evidence_failed_pairs") or []),
+                    "finalist_hashes": list(entry.get("finalist_hashes") or []),
+                }
+                for key, entry in self.repair_saturation.items()
+            },
             "branch_aliases": [dict(item) for item in self.branch_aliases],
             "call_signature_counts": dict(self.call_signature_counts),
             "no_new_information_streak": self.no_new_information_streak,
@@ -456,6 +578,11 @@ class InvestigationState:
             repair_transactions=[
                 dict(item) for item in data.get("repair_transactions") or []
             ],
+            repair_saturation={
+                str(key): _normalize_saturation_entry(value)
+                for key, value in (data.get("repair_saturation") or {}).items()
+                if isinstance(value, dict)
+            },
             branch_aliases=[dict(item) for item in data.get("branch_aliases") or []],
             call_signature_counts={
                 str(key): int(value)
@@ -484,6 +611,32 @@ class InvestigationState:
             turn=int(data.get("turn") or 0),
         )
         return state
+
+
+def _normalize_saturation_entry(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "candidate_content_hash": str(value.get("candidate_content_hash") or ""),
+        "attestation_key": str(value.get("attestation_key") or "none"),
+        "evidence_failures": int(value.get("evidence_failures") or 0),
+        "process_failures": {
+            str(k): int(v)
+            for k, v in (value.get("process_failures") or {}).items()
+        },
+        "evidence_failed_pairs": sorted(
+            str(p) for p in value.get("evidence_failed_pairs") or []
+        ),
+        "finalist_hashes": sorted(
+            str(h) for h in value.get("finalist_hashes") or []
+        ),
+        "readings": int(value.get("readings") or 0),
+        "exhausted": bool(value.get("exhausted")),
+        "pending_experiment_id": (
+            str(value["pending_experiment_id"])
+            if value.get("pending_experiment_id") else None
+        ),
+        "created_turn": int(value.get("created_turn") or 0),
+        "updated_turn": int(value.get("updated_turn") or 0),
+    }
 
 
 def _normalize_loaded_experiment_records(

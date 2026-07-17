@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import warnings
 from typing import Any
 
 from agent.loop_shared import (
@@ -57,6 +58,62 @@ LATE_VERIFY_TURNS = 4
 POST_ATTEST_PATIENCE = 2
 
 
+def _repair_exhausted_menu(
+    state: InvestigationState, branch: str | None, sat_key: str,
+    entry: dict[str, Any],
+) -> dict[str, Any]:
+    actions = [
+        (
+            "Run one alternate search/basin experiment via experiment_submit; "
+            "repair on this candidate and verifier evidence is exhausted."
+        ),
+        (
+            "Compare genuinely distinct existing finalists "
+            "(compare episode or branch_adjudicate)."
+        ),
+        (
+            "Declare honestly unsolved with meta_declare_unsolved if no "
+            "distinct hypothesis remains."
+        ),
+    ]
+    pending = entry.get("pending_experiment_id")
+    if pending and any(
+        str(record.get("experiment_id") or "") == str(pending)
+        and not record.get("collected")
+        for record in state.experiment_queue
+    ):
+        actions.append(
+            f"Collect pending experiment `{pending}` with experiment_collect; "
+            "the state stays repair_exhausted until content or verifier "
+            "evidence changes."
+        )
+    return {
+        "state": "repair_exhausted",
+        "branch": branch,
+        "saturation_key": sat_key,
+        "actions": actions,
+    }
+
+
+def _exhausted_entry_for(
+    state: InvestigationState, branch: str | None,
+    attestation: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """The (key, entry) pair when repair is exhausted for this branch's
+    current content + this attestation; None otherwise. Read-only."""
+    from investigation.state import attestation_key, saturation_key
+
+    if not branch:
+        return None
+    key = saturation_key(
+        _branch_content_hash(state, branch), attestation_key(attestation)
+    )
+    entry = state.repair_saturation.get(key)
+    if entry is not None and entry.get("exhausted"):
+        return key, entry
+    return None
+
+
 def workflow_state(
     state: InvestigationState,
     executor: Any,
@@ -96,12 +153,22 @@ def workflow_state(
                     ],
                 }
             else:
+                exhausted = _exhausted_entry_for(
+                    state, repaired_branch, repaired_attestation
+                )
+                if exhausted is not None:
+                    return _repair_exhausted_menu(
+                        state, repaired_branch, exhausted[0], exhausted[1]
+                    )
                 return {
                     "state": "repair_required",
                     "branch": repaired_branch,
                     "actions": [
                         "Run a fresh reading on the newly verified anomalies.",
-                        "Use a new repair_transaction bound to that changed content.",
+                        (
+                            "Use a new repair_transaction (an isolated repair "
+                            "episode) bound to that changed content."
+                        ),
                     ],
                 }
     best, _scores = _best_branch_for_auto_declare(
@@ -122,6 +189,9 @@ def workflow_state(
         if coherence >= REPAIRABLE_COHERENCE_MIN or (
             attestation.get("gloss") and attestation.get("anomalies")
         ):
+            exhausted = _exhausted_entry_for(state, best, attestation)
+            if exhausted is not None:
+                return _repair_exhausted_menu(state, best, exhausted[0], exhausted[1])
             return {
                 "state": "repair_required",
                 "branch": best,
@@ -129,7 +199,8 @@ def workflow_state(
                     "Run or reuse one reading episode on the attested branch.",
                     (
                         "Run one repair_transaction with that reading; it "
-                        "validates and installs the supported changed fork."
+                        "runs an isolated repair episode, then validates and "
+                        "installs the supported changed fork."
                     ),
                     "Reverify the transaction's changed content.",
                 ],
@@ -171,10 +242,20 @@ def allowed_episode_kinds(state: InvestigationState, executor: Any) -> list[str]
         "searching": ["survey", "search", "reading", "compare", "repair", "verify"],
         "candidate_reading": ["search", "reading", "compare", "repair", "verify"],
         "repair_required": ["reading", "compare", "repair", "verify"],
+        "repair_exhausted": ["search", "compare", "verify"],
         "broaden_required": ["survey", "search", "compare", "verify"],
         "verified": ["compare", "verify"],
     }
-    return list(by_phase.get(str(phase), list(EPISODE_KINDS_FOR_CONTEXT)))
+    kinds = by_phase.get(str(phase))
+    if kinds is None:
+        warnings.warn(
+            f"unknown workflow phase {phase!r}; failing closed to "
+            "verify-only episode kinds",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return ["verify"]
+    return list(kinds)
 
 
 # Kept local to avoid importing ``episodes`` into the context builder (which
@@ -625,15 +706,10 @@ def _branch_content_hash(state: InvestigationState, branch: str) -> str:
 def _fresh_attestation(
     state: InvestigationState, branch: str
 ) -> dict[str, Any] | None:
-    content_hash = _branch_content_hash(state, branch)
-    matches = [
-        a for a in state.verify_attestations
-        if a.get("content_hash") == content_hash
-    ]
-    return max(
-        matches,
-        key=lambda a: (int(a.get("created_turn") or 0), str(a.get("episode_id") or "")),
-        default=None,
+    from investigation.state import latest_attestation_for_hash
+
+    return latest_attestation_for_hash(
+        state.verify_attestations, _branch_content_hash(state, branch)
     )
 
 

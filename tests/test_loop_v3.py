@@ -799,8 +799,8 @@ class TransactionReadingWorkerFake:
     def send(self, blocks, tools=None, max_tokens=8192):
         self._budget.append(BudgetEntry("episode:reading", "openai", self.model, 10, 5, 0))
         result = {
-            "reading_text": "COTON",
-            "fragments": [{"text": "COTON", "repair_text": "COTON", "confidence": 0.95}],
+            "reading_text": "LATER",
+            "fragments": [{"text": "LATER", "repair_text": "LATER", "confidence": 0.95}],
             "holes": [],
             "overall_confidence": 0.95,
         }
@@ -926,13 +926,29 @@ def test_repair_transaction_runs_validates_installs_and_requires_reverify(verify
 
     assert art.status == "solved"
     repaired = next(branch for branch in art.branches if branch.name == "transaction_repaired")
-    assert repaired.decryption == "COTON"
+    assert repaired.decryption == "LATER"
     transactions = art.investigation_state["repair_transactions"]
     assert len(transactions) == 1
     assert transactions[0]["status"] == "installed"
     assert transactions[0]["reverification_required"] is True
     assert transactions[0]["source_content_hash"] != transactions[0]["result_content_hash"]
     assert transactions[0]["addressed_anomalies"] == ["damaged middle word"]
+    # B2 identity fields + Slice-4 acceptance record (host-validated install).
+    assert transactions[0]["interpretation_id"] == transactions[0]["reading_id"]
+    assert len(transactions[0]["interpretation_digest"]) == 64
+    assert transactions[0]["retry_of"] is None
+    acceptance = transactions[0]["acceptance"]
+    assert acceptance["policy"] == "default_deny_v1"
+    assert [c["check"] for c in acceptance["checks"]] == [
+        "winner_named", "worker_applied", "winner_fork_evidence",
+        "edit_claims_bound", "winner_adjudicated", "no_op_probe",
+        "scalar_non_decrease",
+    ]
+    assert all(c["passed"] for c in acceptance["checks"])
+    assert acceptance["score_deltas"]["dict_rate_delta"] >= 0
+    assert acceptance["score_deltas"]["quad_delta"] >= 0
+    assert transactions[0]["installed_branch"] in acceptance["supported_forks"] or \
+        transactions[0]["worker_winner"] in acceptance["supported_forks"]
     agenda = art.investigation_state["repair_agenda"]
     assert agenda[0]["status"] == "addressed"
     assert agenda[0]["addressed_by_transaction"] == transactions[0]["transaction_id"]
@@ -1075,3 +1091,523 @@ def test_m53_cost_ceiling_between_two_worker_sends_terminates_episode():
     assert art.status == "unsolved"
     assert art.solution is None
     assert art.investigation_state is not None
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slices 2 + 4 — repair saturation, identity, host-validated acceptance
+# ---------------------------------------------------------------------------
+from agent.loop_shared import _candidate_content_hash as _cc_hash
+from agent.loop_shared import _decoded_text_for_panel as _dt_panel
+from agent.tools_v2 import NoGatesPolicy, WorkspaceToolExecutor
+from investigation.context import allowed_episode_kinds, workflow_state
+from investigation.reading import Reading, build_candidate_reading_packet
+from investigation.state import (
+    attestation_key, new_saturation_entry, pair_digest, saturation_key,
+)
+
+
+_REPAIR_PROGRAMS: list = []
+
+
+class ProgrammableRepairWorker:
+    """Repair worker driven by a FIFO of per-episode programs.
+
+    Each program is ``{"apply": [apply-arg dicts], "result": callable(forks)->dict}``.
+    ``apply`` entries lacking reading_text/fragments/reading_id get the injected
+    reading id; ``result`` receives the created fork names (in call order)."""
+
+    def __init__(self, provider, system, role):
+        self.model = "fake-repair"; self.provider_name = "openai"
+        self.capabilities = SessionCapabilities(); self._budget = []
+        prog = _REPAIR_PROGRAMS.pop(0) if _REPAIR_PROGRAMS else {
+            "apply": [],
+            "result": (lambda forks: {
+                "applied": True, "best_branch": None, "edits": [],
+                "verdicts": [], "collateral": {}, "notes": "",
+            }),
+        }
+        self._applies = list(prog.get("apply") or [])
+        self._result_fn = prog["result"]
+        self._step = 0
+        self._reading_id = None
+
+    def send(self, blocks, tools=None, max_tokens=8192):
+        self._budget.append(BudgetEntry("episode:repair", "openai", self.model, 10, 5, 0))
+        if self._reading_id is None:
+            m = re.search(r"id `([0-9a-f]{12})`", json.dumps(blocks, default=str))
+            self._reading_id = m.group(1) if m else None
+        if self._step < len(self._applies):
+            apply_args = dict(self._applies[self._step])
+            apply_args.setdefault("branch", "main")
+            if not any(k in apply_args for k in ("reading_text", "fragments", "reading_id")):
+                apply_args["reading_id"] = self._reading_id
+            self._step += 1
+            return ModelResponse(
+                content=[ToolUseBlock(id=f"ap{self._step}",
+                                      name="hypothesis_apply_reading", input=apply_args)],
+                usage=ModelUsage(10, 5, 0))
+        forks: list[str] = []
+        for message in blocks:
+            for block in message.get("content") or []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                try:
+                    payload = json.loads(block.get("content") or "")
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if isinstance(payload, dict) and isinstance(payload.get("fork"), str):
+                    if payload["fork"] not in forks:
+                        forks.append(payload["fork"])
+        result = self._result_fn(forks)
+        return ModelResponse(
+            content=[ToolUseBlock(id="sub", name="episode_submit_result",
+                                  input={"result": result, "summary": "programmed"})],
+            usage=ModelUsage(10, 5, 0))
+
+    def usage_entries(self): return list(self._budget)
+    def export_transcript(self): return {"provider": "openai", "exchanges": []}
+
+
+def _main_hash(state):
+    return _cc_hash(_dt_panel(state.workspace, "main"))
+
+
+def _seed_reading(state, text, *, reading_id=None, created_turn=0):
+    packet = build_candidate_reading_packet(state.workspace, "main").to_dict()
+    reading = Reading.from_episode_result(
+        {"reading_text": text,
+         "fragments": [{"text": text, "repair_text": text, "confidence": 0.95}],
+         "holes": [], "overall_confidence": 0.9},
+        branch="main", source="lead", created_turn=created_turn,
+        reading_id=reading_id, candidate_packet=packet,
+    )
+    state.readings[reading.reading_id] = reading.to_dict()
+    return reading.reading_id
+
+
+def _seed_negative_attestation(state, *, episode_id="prior_verify"):
+    h = _main_hash(state)
+    state.verify_attestations.append({
+        "branch": "main", "content_hash": h, "renderer_id": "decoded_text_v1",
+        "episode_id": episode_id, "coherence": 4, "reader_accepts": False,
+        "gloss": "partly readable", "anomalies": ["damaged middle word"],
+        "created_turn": 0,
+    })
+    return h
+
+
+def _slice_executor(state):
+    return WorkspaceToolExecutor(
+        workspace=state.workspace, language="en",
+        word_set={"LATER", "WATER"}, word_list=["LATER", "WATER"],
+        pattern_dict={}, declaration_policy=NoGatesPolicy())
+
+
+def _register_programmable_repair(programs):
+    _REPAIR_PROGRAMS[:] = list(programs)
+    sessions_mod.register_session_builder("episode:repair", ProgrammableRepairWorker)
+
+
+def _lead_results(art, tool_name):
+    return [
+        json.loads(tc.result) for tc in art.tool_calls
+        if tc.tool_name == tool_name and tc.episode_id is None
+    ]
+
+
+def _tool_result_payloads(art):
+    """Parsed tool_result payloads from the recorded exchange messages.
+
+    Successful episode_run lead calls return directly (not through the call
+    logger), so their results only appear here, not in art.tool_calls."""
+    out = []
+    for message in art.messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                try:
+                    out.append(json.loads(block.get("content") or ""))
+                except (TypeError, json.JSONDecodeError):
+                    pass
+    return out
+
+
+def _entry_for(art, content_hash, att_key):
+    return art.investigation_state["repair_saturation"][
+        saturation_key(content_hash, att_key)
+    ]
+
+
+_NO_FORK_APPLIED = lambda forks: {  # noqa: E731
+    "applied": True, "best_branch": None, "edits": [],
+    "verdicts": [], "collateral": {}, "notes": "",
+}
+
+
+def _run_single_repair(program, *, reading_text="LATER", cipher_id="s4"):
+    ct, state = _keyed_catton_state()
+    _seed_reading(state, reading_text)
+    _register_programmable_repair([program])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction",
+                          input={"branch": "main", "as_name": "transaction_repaired"})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=5,
+                     cipher_id=cipher_id, resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+    return art
+
+
+# --- Slice 2 -----------------------------------------------------------------
+
+def test_s2_repeated_reading_suppressed_on_unchanged_content(verify_fake):
+    sessions_mod.register_session_builder("episode:reading", TransactionReadingWorkerFake)
+    try:
+        ct, state = _keyed_catton_state()
+        h = _seed_negative_attestation(state)
+        lead = ScriptedSession([
+            [ToolUseBlock(id="r1", name="episode_run",
+                          input={"kind": "reading", "goal": "read", "branches": ["main"]})],
+            [ToolUseBlock(id="r2", name="episode_run",
+                          input={"kind": "reading", "goal": "read again", "branches": ["main"]})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=6,
+                     cipher_id="s2_reading_suppress", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:reading", None)
+
+    payloads = _tool_result_payloads(art)
+    first = next(p for p in payloads if p.get("kind") == "reading" and p.get("reading_id"))
+    suppressed = next(p for p in payloads if p.get("reason") == "duplicate_reading_suppressed")
+    assert suppressed["status"] == "blocked"
+    assert suppressed["existing_reading_id"] == first["reading_id"]
+    assert [e["kind"] for e in art.episodes] == ["reading"]
+    assert _entry_for(art, h, "ep:prior_verify")["readings"] == 1
+
+
+def test_s2_evidence_failed_pair_blocked_under_new_as_name(verify_fake):
+    ct, state = _keyed_catton_state()
+    h = _seed_negative_attestation(state)
+    _seed_reading(state, "LATER")
+    _register_programmable_repair([{"apply": [], "result": _NO_FORK_APPLIED}])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction", input={"branch": "main"})],
+            [ToolUseBlock(id="t2", name="repair_transaction",
+                          input={"branch": "main", "as_name": "second_try"})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=6,
+                     cipher_id="s2_pair_blocked", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    tx = art.investigation_state["repair_transactions"]
+    assert len(tx) == 1
+    assert tx[0]["status"] == "failed"
+    assert tx[0]["reason"] == "no_changed_finalists"
+    assert tx[0]["failure_class"] == "evidence"
+    assert tx[0]["counted_evidence_failure"] is True
+    second = _lead_results(art, "repair_transaction")[1]
+    assert second["status"] == "blocked"
+    assert second["reason"] == "pair_evidence_failed"
+    entry = _entry_for(art, h, "ep:prior_verify")
+    assert entry["evidence_failures"] == 1
+    assert entry["exhausted"] is False
+
+
+def test_s2_one_process_retry_can_succeed_and_install(verify_fake):
+    ct, state = _keyed_catton_state()
+    h = _seed_negative_attestation(state)
+    _seed_reading(state, "LATER")
+    _register_programmable_repair([
+        {"apply": [{"reading_text": "LATER", "as_name": "fork_a"}],
+         "result": lambda forks: {"applied": False, "best_branch": forks[0] if forks else None,
+                                  "edits": [], "verdicts": [], "collateral": {}, "notes": ""}},
+        {"apply": [{"reading_text": "LATER", "as_name": "fork_b"}],
+         "result": lambda forks: {"applied": True, "best_branch": forks[0] if forks else None,
+                                  "edits": [], "verdicts": [], "collateral": {}, "notes": ""}},
+    ])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction",
+                          input={"branch": "main", "as_name": "tx1"})],
+            [ToolUseBlock(id="t2", name="repair_transaction",
+                          input={"branch": "main", "as_name": "tx2"})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=6,
+                     cipher_id="s2_process_retry", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    tx = art.investigation_state["repair_transactions"]
+    assert len(tx) == 2
+    assert tx[0]["reason"] == "worker_did_not_apply"
+    assert tx[0]["failure_class"] == "process"
+    assert tx[0]["counted_evidence_failure"] is False
+    assert tx[0]["retry_of"] is None
+    assert tx[1]["status"] == "installed"
+    assert tx[1]["retry_of"] == tx[0]["transaction_id"]
+    entry = _entry_for(art, h, "ep:prior_verify")
+    assert entry["evidence_failures"] == 0
+    assert entry["process_failures"][tx[0]["pair_digest"]] == 1
+    assert entry["exhausted"] is False
+
+
+def test_s2_two_evidence_failures_enter_repair_exhausted(verify_fake):
+    ct, state = _keyed_catton_state()
+    h = _seed_negative_attestation(state)
+    rid1 = _seed_reading(state, "LATER")
+    rid2 = _seed_reading(state, "WATER")
+    _register_programmable_repair([
+        {"apply": [], "result": _NO_FORK_APPLIED},
+        {"apply": [], "result": _NO_FORK_APPLIED},
+    ])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction",
+                          input={"branch": "main", "reading_id": rid1})],
+            [ToolUseBlock(id="t2", name="repair_transaction",
+                          input={"branch": "main", "reading_id": rid2})],
+            [ToolUseBlock(id="t3", name="repair_transaction",
+                          input={"branch": "main", "reading_id": rid1})],
+            [ToolUseBlock(id="t4", name="episode_run",
+                          input={"kind": "reading", "goal": "read", "branches": ["main"]})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=8,
+                     cipher_id="s2_exhausted", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    entry = _entry_for(art, h, "ep:prior_verify")
+    assert entry["evidence_failures"] == 2
+    assert entry["exhausted"] is True
+
+    restored = InvestigationState.from_artifact_dict(art.investigation_state)
+    ex = _slice_executor(restored)
+    menu = workflow_state(restored, ex)
+    assert menu["state"] == "repair_exhausted"
+    joined = " ".join(menu["actions"])
+    assert "experiment_submit" in joined
+    assert "genuinely distinct" in joined
+    assert "meta_declare_unsolved" in joined
+    assert allowed_episode_kinds(restored, ex) == ["search", "compare", "verify"]
+
+    tx3 = _lead_results(art, "repair_transaction")[2]
+    assert tx3["reason"] == "repair_transaction_not_ready"
+    assert tx3["workflow_state"] == "repair_exhausted"
+    reading_block = _lead_results(art, "episode_run")[-1]
+    assert reading_block["reason"] == "episode_kind_not_available"
+    assert reading_block["allowed_kinds"] == ["compare", "search", "verify"]
+
+
+def test_s2_experiment_submit_records_pending_pointer_when_exhausted(verify_fake, monkeypatch):
+    ct, state = _keyed_catton_state()
+    h = _seed_negative_attestation(state)
+    att_key = "ep:prior_verify"
+    entry = new_saturation_entry(h, att_key, 0)
+    entry["evidence_failures"] = 2
+    entry["exhausted"] = True
+    entry["evidence_failed_pairs"] = ["p1", "p2"]
+    state.repair_saturation[saturation_key(h, att_key)] = entry
+
+    import investigation.loop_v3 as loop_v3_mod
+    monkeypatch.setattr(
+        loop_v3_mod, "dispatch_experiment_submit",
+        lambda *a, **k: {"experiment_id": "exp999", "status": "pending"},
+    )
+    lead = ScriptedSession([
+        [ToolUseBlock(id="x1", name="experiment_submit", input={"type": "automated_solver"})],
+        [TextBlock(text="stop")],
+    ])
+    art = run_v3(ct, session=lead, language="en", max_iterations=5,
+                 cipher_id="s2_pending", resume_state=state)
+
+    entry_after = _entry_for(art, h, att_key)
+    assert entry_after["pending_experiment_id"] == "exp999"
+
+    restored = InvestigationState.from_artifact_dict(art.investigation_state)
+    restored.experiment_queue.append({
+        "experiment_id": "exp999", "type": "automated_solver",
+        "status": "running", "collected": False,
+    })
+    ex = _slice_executor(restored)
+    menu = workflow_state(restored, ex)
+    assert menu["state"] == "repair_exhausted"
+    assert sum("exp999" in a for a in menu["actions"]) == 1
+
+
+# --- Slice 4 -----------------------------------------------------------------
+
+def test_s4_fabricated_winner_rejected(verify_fake):
+    art = _run_single_repair({
+        "apply": [{"reading_text": "LATER", "as_name": "real_fork"}],
+        "result": lambda forks: {"applied": True, "best_branch": "branch_i_invented",
+                                 "edits": [], "verdicts": [], "collateral": {}, "notes": ""},
+    }, cipher_id="s4_fabricated")
+    tx = art.investigation_state["repair_transactions"][0]
+    assert tx["status"] == "failed"
+    assert tx["reason"] == "unsupported_winner"
+    assert tx["failure_class"] == "process"
+    assert tx["counted_evidence_failure"] is False
+    assert "transaction_repaired" not in {b.name for b in art.branches}
+    first = tx["acceptance"]["checks"][0]
+    assert first["check"] == "winner_named"
+    assert first["passed"] is False
+
+
+def test_s4_fork_from_failed_call_rejected(verify_fake, monkeypatch):
+    import investigation.actions as actions_mod
+
+    def _boom(executor, args, state_readings, turn):
+        ws = executor.workspace
+        name = str(args.get("as_name") or "failfork")
+        if not ws.has_branch(name):
+            ws.fork(name, from_branch=str(args.get("branch") or "main"))
+            ca = ws.cipher_text.alphabet
+            pa = ws.plaintext_alphabet
+            ws.set_mapping(name, ca.id_for("a"), pa.id_for("L"))
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(actions_mod, "_hypothesis_apply_reading", _boom)
+    ct, state = _keyed_catton_state()
+    _seed_reading(state, "LATER")
+    _register_programmable_repair([{
+        "apply": [{"reading_text": "LATER", "as_name": "failfork"}],
+        "result": lambda forks: {"applied": True, "best_branch": "failfork",
+                                 "edits": [], "verdicts": [], "collateral": {}, "notes": ""},
+    }])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction",
+                          input={"branch": "main", "as_name": "transaction_repaired"})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=5,
+                     cipher_id="s4_failed_call", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    tx = art.investigation_state["repair_transactions"][0]
+    assert tx["reason"] == "winner_fork_from_failed_call"
+    assert tx["failure_class"] == "process"
+    assert "transaction_repaired" not in {b.name for b in art.branches}
+    failing = next(c for c in tx["acceptance"]["checks"] if not c["passed"])
+    assert failing["check"] == "winner_fork_evidence"
+
+
+def test_s4_unadjudicated_multi_finalist_and_evidence_reason_split(verify_fake):
+    art_a = _run_single_repair({
+        "apply": [{"reading_text": "LATER", "as_name": "fa"},
+                  {"reading_text": "WATER", "as_name": "fb"}],
+        "result": lambda forks: {"applied": True, "best_branch": forks[0],
+                                 "edits": [], "verdicts": [], "collateral": {}, "notes": ""},
+    }, cipher_id="s4_multi_a")
+    txa = art_a.investigation_state["repair_transactions"][0]
+    assert txa["reason"] == "no_winner_named_with_multiple_changed_finalists"
+    assert txa["failure_class"] == "process"
+    assert next(c for c in txa["acceptance"]["checks"] if not c["passed"])["check"] == "winner_adjudicated"
+
+    art_b = _run_single_repair({
+        "apply": [{"reading_text": "LATER", "as_name": "fa"},
+                  {"reading_text": "WATER", "as_name": "fb"}],
+        "result": lambda forks: {"applied": True, "best_branch": None,
+                                 "edits": [], "verdicts": [], "collateral": {}, "notes": ""},
+    }, cipher_id="s4_multi_b")
+    txb = art_b.investigation_state["repair_transactions"][0]
+    assert txb["reason"] == "no_winner_named_with_multiple_changed_finalists"
+    assert txb["failure_class"] == "process"
+    assert next(c for c in txb["acceptance"]["checks"] if not c["passed"])["check"] == "winner_named"
+
+    art_c = _run_single_repair({"apply": [], "result": _NO_FORK_APPLIED}, cipher_id="s4_multi_c")
+    txc = art_c.investigation_state["repair_transactions"][0]
+    assert txc["reason"] == "no_changed_finalists"
+    assert txc["failure_class"] == "evidence"
+
+    art_d = _run_single_repair({
+        "apply": [{"reading_text": "LATER", "as_name": "fa"}],
+        "result": lambda forks: {"applied": True, "best_branch": None, "edits": [],
+                                 "verdicts": [{"action": "apply_reading", "target": forks[0],
+                                               "verdict": "rejected"}],
+                                 "collateral": {}, "notes": ""},
+    }, cipher_id="s4_multi_d")
+    txd = art_d.investigation_state["repair_transactions"][0]
+    assert txd["reason"] == "all_finalists_rejected"
+    assert txd["failure_class"] == "evidence"
+
+    for art in (art_a, art_b, art_c, art_d):
+        assert "ambiguous_or_unchanged_finalists" not in json.dumps(art.investigation_state, default=str)
+        for tc in art.tool_calls:
+            assert "ambiguous_or_unchanged_finalists" not in (tc.result or "")
+
+
+def test_s4_scalar_decrease_default_denied(verify_fake):
+    art = _run_single_repair({
+        "apply": [{"reading_text": "COTON", "as_name": "coton_fork"}],
+        "result": lambda forks: {"applied": True, "best_branch": forks[0],
+                                 "edits": [], "verdicts": [], "collateral": {}, "notes": ""},
+    }, reading_text="COTON", cipher_id="s4_scalar")
+    tx = art.investigation_state["repair_transactions"][0]
+    assert tx["status"] == "failed"
+    assert tx["reason"] == "materially_non_improving"
+    assert tx["failure_class"] == "evidence"
+    assert tx["counted_evidence_failure"] is True
+    failing = next(c for c in tx["acceptance"]["checks"] if not c["passed"])
+    assert failing["check"] == "scalar_non_decrease"
+    assert tx["acceptance"]["score_deltas"]["quad_delta"] < 0
+    assert tx["acceptance"]["scores_before"] is not None
+    assert tx["acceptance"]["scores_after"] is not None
+    assert "transaction_repaired" not in {b.name for b in art.branches}
+    assert [e["kind"] for e in art.episodes] == ["repair"]
+    payload = _lead_results(art, "repair_transaction")[0]
+    assert payload["saturation"]["remaining_before_exhausted"] == 1
+
+
+def test_s4_no_op_named_winner_is_evidence_no_op(verify_fake):
+    art = _run_single_repair({
+        "apply": [],
+        "result": lambda forks: {"applied": True, "best_branch": "main", "edits": [],
+                                 "verdicts": [], "collateral": {}, "notes": ""},
+    }, cipher_id="s4_noop")
+    tx = art.investigation_state["repair_transactions"][0]
+    assert tx["reason"] == "no_op"
+    assert tx["failure_class"] == "evidence"
+
+
+def test_s4_duplicate_by_interpretation_digest(verify_fake):
+    ct, state = _keyed_catton_state()
+    rid1 = _seed_reading(state, "LATER", reading_id="a" * 12)
+    rid2 = _seed_reading(state, "LATER", reading_id="b" * 12)
+    _register_programmable_repair([{
+        "apply": [{"reading_text": "LATER", "as_name": "first_fork"}],
+        "result": lambda forks: {"applied": True, "best_branch": forks[0], "edits": [],
+                                 "verdicts": [], "collateral": {}, "notes": ""},
+    }])
+    try:
+        lead = ScriptedSession([
+            [ToolUseBlock(id="t1", name="repair_transaction",
+                          input={"branch": "main", "reading_id": rid1,
+                                 "as_name": "transaction_repaired"})],
+            [ToolUseBlock(id="t2", name="repair_transaction",
+                          input={"branch": "main", "reading_id": rid2})],
+            [TextBlock(text="stop")],
+        ])
+        art = run_v3(ct, session=lead, language="en", max_iterations=6,
+                     cipher_id="s4_dup_digest", resume_state=state)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:repair", None)
+
+    tx = art.investigation_state["repair_transactions"]
+    assert len(tx) == 1
+    assert tx[0]["status"] == "installed"
+    second = _lead_results(art, "repair_transaction")[1]
+    assert second["status"] == "duplicate_suppressed"
+    assert second["reason"] == "source_and_reading_already_handled"

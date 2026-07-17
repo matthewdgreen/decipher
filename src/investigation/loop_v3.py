@@ -247,6 +247,148 @@ def _tool_status(result: str) -> str:
     return "ok"
 
 
+# M5.3 Slice 4: the scalar-decrease acceptance policy hook. ``None`` = default
+# deny (reject any net scalar decrease). No worker-improvisable policy is
+# implemented in M5.3; a tested, ground-truth-free policy object is an M5.4
+# non-goal represented by this stub.
+REPAIR_ACCEPTANCE_POLICY: Any = None  # M5.4 hook; None = default deny
+
+
+# M5.3 Slice 2: the enumerated evidence-class failure reasons. Everything else
+# (precondition/process failure modes, provider error strings, new episode
+# failure modes) classifies as ``process`` so an unknown reason never silently
+# consumes saturation budget on first occurrence.
+_EVIDENCE_FAILURE_REASONS = frozenset({
+    "no_changed_finalists",
+    "no_op",
+    "all_finalists_rejected",
+    "materially_non_improving",
+})
+
+
+def _classify_failure_reason(reason: Any) -> str:
+    """'evidence' for the enumerated evidence reasons; 'process' otherwise.
+
+    Default-process is deliberate: an unknown reason (new episode failure
+    modes, provider error strings) must not silently consume saturation
+    budget on first occurrence — the second-process-failure rule converts
+    repeats into evidence failures."""
+    return "evidence" if str(reason or "") in _EVIDENCE_FAILURE_REASONS else "process"
+
+
+_REPAIR_COMPOSITE_NAMES = frozenset({
+    "hypothesis_apply_reading", "hypothesis_test_word",
+    "hypothesis_test_words", "branch_adjudicate",
+})
+
+
+def _extract_repair_evidence(tool_calls: list[Any]) -> dict[str, Any]:
+    """Parse the repair episode's composite ToolCall results into the
+    evidence sets the acceptance checks bind against. ``tool_calls`` is the
+    episode-filtered list; each item has .tool_name and .result (JSON str).
+
+    A result is SUCCESSFUL iff it parses to a dict with status == "ok" and no
+    top-level "error" key. Failed results contribute nothing to
+    supported_forks / edit_evidence (this, plus the failed_result_forks scan,
+    realizes "no unresolved error invalidates a claimed edit")."""
+    supported_forks: set[str] = set()
+    edit_evidence: set[str] = set()
+    adjudicated_sets: list[set[str]] = []
+    batch_finalist_forks: set[str] = set()
+    failed_result_forks: set[str] = set()
+    for call in tool_calls:
+        if getattr(call, "tool_name", None) not in _REPAIR_COMPOSITE_NAMES:
+            continue
+        try:
+            parsed = json.loads(getattr(call, "result", "") or "")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        ok = parsed.get("status") == "ok" and "error" not in parsed
+        fork_fields: list[str] = []
+        if isinstance(parsed.get("fork"), str):
+            fork_fields.append(parsed["fork"])
+        if isinstance(parsed.get("installed_fork"), str):
+            fork_fields.append(parsed["installed_fork"])
+        for name in parsed.get("installed") or []:
+            if isinstance(name, str):
+                fork_fields.append(name)
+        items = [i for i in parsed.get("items") or [] if isinstance(i, dict)]
+        for item in items:
+            if isinstance(item.get("installed_fork"), str):
+                fork_fields.append(item["installed_fork"])
+        if not ok:
+            failed_result_forks.update(fork_fields)
+            continue
+        if call.tool_name == "branch_adjudicate":
+            adjudicated_sets.append({
+                str(row.get("branch") or "")
+                for row in parsed.get("rows") or []
+                if isinstance(row, dict)
+            })
+            continue
+        supported_forks.update(fork_fields)
+        edit_evidence.update(
+            str(e).strip() for e in parsed.get("edits") or []
+        )
+        for item in items:
+            if item.get("status") == "ok":
+                edit_evidence.update(
+                    str(e).strip() for e in item.get("edits") or []
+                )
+        for finalist in parsed.get("finalists") or []:
+            if isinstance(finalist, dict) and isinstance(
+                finalist.get("installed_fork"), str
+            ):
+                batch_finalist_forks.add(finalist["installed_fork"])
+    return {
+        "supported_forks": supported_forks,
+        "edit_evidence": edit_evidence,
+        "adjudicated_sets": adjudicated_sets,
+        "batch_finalist_forks": batch_finalist_forks,
+        "failed_result_forks": failed_result_forks,
+    }
+
+
+def _worker_rejected_targets(result: dict[str, Any]) -> set[str]:
+    """Fork names the worker's own verdicts explicitly reject."""
+    rejected: set[str] = set()
+    for verdict in result.get("verdicts") or []:
+        if not isinstance(verdict, dict):
+            continue
+        word = str(verdict.get("verdict") or "").strip().lower()
+        if "reject" in word or word in {"discard", "discarded", "invalid", "not viable"}:
+            rejected.add(str(verdict.get("target") or ""))
+    return rejected
+
+
+def _winner_adjudication_summary(
+    tool_calls: list[Any], winner: str
+) -> dict[str, Any] | None:
+    """The adjudication_summary of the LAST successful composite result that
+    produced ``winner`` (top-level for the singleton, item-level for the
+    batch; ``hypothesis_apply_reading`` has none → None)."""
+    summary: dict[str, Any] | None = None
+    for call in tool_calls:
+        if getattr(call, "tool_name", None) not in _REPAIR_COMPOSITE_NAMES:
+            continue
+        try:
+            parsed = json.loads(getattr(call, "result", "") or "")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        if not (parsed.get("status") == "ok" and "error" not in parsed):
+            continue
+        if parsed.get("fork") == winner or parsed.get("installed_fork") == winner:
+            summary = parsed.get("adjudication_summary")
+        for item in parsed.get("items") or []:
+            if isinstance(item, dict) and item.get("installed_fork") == winner:
+                summary = item.get("adjudication_summary")
+    return summary if isinstance(summary, dict) else None
+
+
 def run_v3(
     cipher_text: CipherText,
     claude_api: Any = None,
@@ -714,6 +856,7 @@ def run_v3(
             "context_note": args.get("context_note"),
             "max_tool_calls": args.get("max_tool_calls"),
         }
+        _reading_att_key = "none"
         if kind in {"reading", "repair"}:
             reading_branches = [
                 name for name in inputs["branches"] if workspace.has_branch(name)
@@ -722,6 +865,45 @@ def run_v3(
                 return json.dumps({
                     "error": f"{kind} requires exactly one existing branch"
                 })
+            if kind == "reading":
+                from investigation.state import (
+                    attestation_key, latest_attestation_for_hash, saturation_key,
+                )
+                reading_branch = reading_branches[0]
+                content_hash = _branch_hash(workspace, reading_branch)
+                _reading_att_key = attestation_key(latest_attestation_for_hash(
+                    state.verify_attestations, content_hash
+                ))
+                sat_entry = state.repair_saturation.get(
+                    saturation_key(content_hash, _reading_att_key)
+                )
+                if sat_entry is not None and int(sat_entry.get("readings") or 0) >= 1:
+                    existing = max(
+                        (
+                            r for r in state.readings.values()
+                            if r.get("candidate_content_hash") == content_hash
+                        ),
+                        key=lambda r: (
+                            int(r.get("created_turn") or 0),
+                            str(r.get("reading_id") or ""),
+                        ),
+                        default=None,
+                    )
+                    return json.dumps({
+                        "status": "blocked",
+                        "reason": "duplicate_reading_suppressed",
+                        "branch": reading_branch,
+                        "content_hash": content_hash,
+                        "existing_reading_id": (
+                            str(existing.get("reading_id")) if existing else None
+                        ),
+                        "note": (
+                            "A reading already exists for this exact content "
+                            "and verifier evidence. Reuse it via "
+                            "repair_transaction, or produce new content or new "
+                            "verifier evidence first."
+                        ),
+                    }, ensure_ascii=False)
             inputs["candidate_packet"] = build_candidate_reading_packet(
                 workspace, reading_branches[0]
             ).to_dict()
@@ -817,6 +999,16 @@ def run_v3(
             )
             state.readings[reading.reading_id] = reading.to_dict()
             payload["reading_id"] = reading.reading_id
+            from investigation.state import get_or_create_saturation_entry
+            packet_hash = str(
+                (inputs.get("candidate_packet") or {}).get("content_hash") or ""
+            )
+            if packet_hash:
+                sat_entry = get_or_create_saturation_entry(
+                    state, packet_hash, _reading_att_key, turn
+                )
+                sat_entry["readings"] = int(sat_entry.get("readings") or 0) + 1
+                sat_entry["updated_turn"] = turn
         state.add_evidence(
             f"episode:{result.kind}",
             turn=turn,
@@ -981,6 +1173,76 @@ def run_v3(
         _restore_branch_into(scratch, snap)
         return _branch_hash(scratch, str(snap["name"]))
 
+    def _settle_repair_outcome(
+        *, record: dict[str, Any], entry_args: tuple[str, str, str],
+        changed_hashes: list[str], turn: int,
+    ) -> dict[str, Any]:
+        """Update the saturation entry for one FINISHED transaction record
+        (failed or installed), stamp failure_class/counted_evidence_failure on
+        failures, append the record to state.repair_transactions, and attach a
+        compact ``saturation`` summary to the returned payload."""
+        from investigation.state import get_or_create_saturation_entry
+
+        source_hash, att_key, pair = entry_args
+        entry = get_or_create_saturation_entry(state, source_hash, att_key, turn)
+        entry["updated_turn"] = turn
+        if changed_hashes:
+            entry["finalist_hashes"] = sorted(
+                set(entry.get("finalist_hashes") or []) | set(changed_hashes)
+            )
+        if record.get("status") == "failed":
+            failure_class = _classify_failure_reason(record.get("reason"))
+            record["failure_class"] = failure_class
+            counted = False
+            if failure_class == "process":
+                prior = int((entry.get("process_failures") or {}).get(pair, 0))
+                entry.setdefault("process_failures", {})[pair] = prior + 1
+                if prior >= 1:
+                    # Second process failure for the pair counts as evidence.
+                    counted = True
+            else:
+                counted = True
+            if counted:
+                entry["evidence_failures"] = int(entry.get("evidence_failures") or 0) + 1
+                failed_pairs = set(entry.get("evidence_failed_pairs") or [])
+                failed_pairs.add(pair)
+                entry["evidence_failed_pairs"] = sorted(failed_pairs)
+                if entry["evidence_failures"] >= 2:
+                    entry["exhausted"] = True
+            record["counted_evidence_failure"] = counted
+        state.repair_transactions.append(record)
+        record_with_summary = {
+            **record,
+            "saturation": {
+                "evidence_failures": int(entry.get("evidence_failures") or 0),
+                "remaining_before_exhausted": max(
+                    0, 2 - int(entry.get("evidence_failures") or 0)
+                ),
+                "exhausted": bool(entry.get("exhausted")),
+            },
+        }
+        return record_with_summary
+
+    def _probe_snapshot_scores(
+        snapshot: dict[str, Any], transaction_id: str
+    ) -> tuple[str, dict[str, float | None]]:
+        """Restore the winner snapshot into the live workspace under a
+        reserved probe name, hash + quick-score it with the SAME renderer and
+        scoring the branch cards use, and always delete the probe."""
+        from investigation.state import _restore_branch_into
+
+        probe_name = f"__repair_probe_{transaction_id}"
+        snap = copy.deepcopy(snapshot)
+        snap["name"] = probe_name
+        try:
+            _restore_branch_into(workspace, snap)
+            probe_hash = _branch_hash(workspace, probe_name)
+            scores = executor._compute_quick_scores(probe_name)
+        finally:
+            if workspace.has_branch(probe_name):
+                workspace.delete(probe_name)
+        return probe_hash, scores
+
     def _dispatch_repair_transaction(tu: dict[str, Any], turn: int) -> str:
         """Run, validate, install, and record one bounded repair operation."""
         args = tu.get("input") or {}
@@ -1033,12 +1295,25 @@ def run_v3(
                     "reading_content_hash": reading.candidate_content_hash,
                 },
             )
+        from investigation.reading import interpretation_digest as _interp_digest
+        from investigation.state import (
+            attestation_key, get_or_create_saturation_entry,
+            latest_attestation_for_hash, pair_digest, saturation_key,
+        )
+
+        interp_digest = _interp_digest(reading_data)
         duplicate = next(
             (
                 item for item in reversed(state.repair_transactions)
                 if item.get("status") == "installed"
                 and item.get("source_content_hash") == source_hash
-                and item.get("reading_id") == reading_id
+                and (
+                    item.get("interpretation_id", item.get("reading_id")) == reading_id
+                    or (
+                        item.get("interpretation_digest")
+                        and item.get("interpretation_digest") == interp_digest
+                    )
+                )
             ),
             None,
         )
@@ -1053,15 +1328,58 @@ def run_v3(
                 },
             )
 
-        matching_attestations = [
-            item for item in state.verify_attestations
-            if item.get("content_hash") == source_hash
-        ]
-        latest_attestation = max(
-            matching_attestations,
-            key=lambda item: int(item.get("created_turn") or 0),
-            default=None,
+        latest_attestation = latest_attestation_for_hash(
+            state.verify_attestations, source_hash
         )
+        att_key = attestation_key(latest_attestation)
+        sat_key = saturation_key(source_hash, att_key)
+        pair = pair_digest(source_hash, interp_digest)
+        entry = state.repair_saturation.get(sat_key)
+
+        if entry is not None and entry.get("exhausted"):
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "blocked",
+                    "reason": "repair_saturated",
+                    "branch": branch,
+                    "saturation_key": sat_key,
+                    "evidence_failures": int(entry.get("evidence_failures") or 0),
+                    "note": (
+                        "Repair is exhausted for this candidate content and "
+                        "verifier evidence. Run one alternate search/basin "
+                        "experiment, compare genuinely distinct finalists, or "
+                        "declare honestly unsolved."
+                    ),
+                },
+            )
+        if entry is not None and pair in (entry.get("evidence_failed_pairs") or []):
+            return _record_dispatch_result(
+                name="repair_transaction", tu=tu, turn=turn,
+                payload={
+                    "status": "blocked",
+                    "reason": "pair_evidence_failed",
+                    "branch": branch,
+                    "pair_digest": pair,
+                    "note": (
+                        "This source/interpretation pair was already evidence-"
+                        "evaluated and failed; it cannot be rerun under a new "
+                        "name. Provide genuinely new content or evidence."
+                    ),
+                },
+            )
+        retry_of = None
+        if entry is not None and int((entry.get("process_failures") or {}).get(pair, 0)) >= 1:
+            retry_of = next(
+                (
+                    str(item.get("transaction_id") or "")
+                    for item in reversed(state.repair_transactions)
+                    if item.get("pair_digest") == pair
+                    and item.get("status") == "failed"
+                    and item.get("failure_class") == "process"
+                ),
+                None,
+            )
         anomalies = [
             str(item) for item in (latest_attestation or {}).get("anomalies") or []
         ]
@@ -1087,7 +1405,13 @@ def run_v3(
             "transaction_id": transaction_id,
             "source_branch": branch,
             "source_content_hash": source_hash,
-            "reading_id": reading_id,
+            "reading_id": reading_id,                 # operational pointer into state.readings
+            "interpretation_id": reading_id,          # B2 identity component (== reading_id in M5.3)
+            "interpretation_digest": interp_digest,   # B2 identity component
+            "attestation_key": att_key,
+            "saturation_key": sat_key,
+            "pair_digest": pair,
+            "retry_of": retry_of,
             "episode_id": episode_payload.get("episode_id"),
             "addressed_anomalies": anomalies,
             "created_turn": turn,
@@ -1097,10 +1421,13 @@ def run_v3(
                 **base_record, "status": "failed",
                 "reason": episode_payload.get("failure_reason") or episode_payload.get("error"),
             }
-            state.repair_transactions.append(record)
+            settled = _settle_repair_outcome(
+                record=record, entry_args=(source_hash, att_key, pair),
+                changed_hashes=[], turn=turn,
+            )
             return _record_dispatch_result(
                 name="repair_transaction", tu=tu, turn=turn,
-                payload={**record, "episode": episode_payload},
+                payload={**settled, "episode": episode_payload},
             )
 
         episode_id = str(episode_payload.get("episode_id") or "")
@@ -1122,30 +1449,195 @@ def run_v3(
             if digest != source_hash:
                 changed[name] = digest
         requested = str(result.get("best_branch") or "")
-        if requested in changed:
-            winner = requested
-        elif not requested and len(changed) == 1:
-            winner = next(iter(changed))
-        else:
-            reason = "unsupported_winner" if requested else "ambiguous_or_unchanged_finalists"
+        snapshot_names = {
+            str(snapshot.get("name") or "")
+            for snapshot in snapshots
+            if snapshot.get("name")
+        }
+        rejected_targets = _worker_rejected_targets(result)
+        episode_calls = [
+            tc for tc in episode_tool_calls
+            if getattr(tc, "episode_id", None) == episode_id
+        ]
+        evidence = _extract_repair_evidence(episode_calls)
+
+        acceptance_checks: list[dict[str, Any]] = []
+        before = executor._compute_quick_scores(branch)
+        after: dict[str, Any] | None = None
+        score_deltas: dict[str, Any] | None = None
+        adjudicated_flag: bool | None = None if len(changed) <= 1 else False
+
+        def _acceptance() -> dict[str, Any]:
+            return {
+                "policy": "default_deny_v1",
+                "checks": acceptance_checks,
+                "supported_forks": sorted(evidence["supported_forks"]),
+                "edit_evidence_count": len(evidence["edit_evidence"]),
+                "adjudicated": adjudicated_flag,
+                "scores_before": before,
+                "scores_after": after,
+                "score_deltas": score_deltas,
+            }
+
+        def _fail(reason: str) -> str:
             record = {
                 **base_record, "status": "failed", "reason": reason,
                 "claimed_winner": requested or None,
                 "changed_finalists": sorted(changed),
+                "finalist_hashes": sorted(changed.values()),
+                "acceptance": _acceptance(),
             }
-            state.repair_transactions.append(record)
-            return _record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn, payload=record
+            payload = _settle_repair_outcome(
+                record=record, entry_args=(source_hash, att_key, pair),
+                changed_hashes=sorted(changed.values()), turn=turn,
             )
-        if not bool(result.get("applied")):
-            record = {
-                **base_record, "status": "failed", "reason": "worker_did_not_apply",
-                "claimed_winner": winner,
-            }
-            state.repair_transactions.append(record)
             return _record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn, payload=record
+                name="repair_transaction", tu=tu, turn=turn, payload=payload
             )
+
+        # Check 1 — winner_named: resolve the authoritative winner.
+        winner = ""
+        if requested:
+            if requested not in snapshot_names:
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": False,
+                    "requested": requested, "detail": "not_a_snapshot",
+                })
+                return _fail("unsupported_winner")
+            if requested not in changed:
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": False,
+                    "requested": requested, "detail": "named_but_unchanged",
+                })
+                return _fail("no_op")
+            winner = requested
+            acceptance_checks.append({
+                "check": "winner_named", "passed": True, "winner": winner,
+            })
+        else:
+            if len(changed) == 0:
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": False,
+                    "detail": "no_changed_finalists",
+                })
+                return _fail("no_changed_finalists")
+            if all(name in rejected_targets for name in changed):
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": False,
+                    "detail": "all_finalists_rejected",
+                })
+                return _fail("all_finalists_rejected")
+            if len(changed) == 1:
+                winner = next(iter(changed))
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": True, "winner": winner,
+                })
+            else:
+                acceptance_checks.append({
+                    "check": "winner_named", "passed": False,
+                    "detail": "no_winner_named", "changed": sorted(changed),
+                })
+                return _fail("no_winner_named_with_multiple_changed_finalists")
+
+        # Check 2 — worker_applied.
+        applied = bool(result.get("applied"))
+        acceptance_checks.append({"check": "worker_applied", "passed": applied})
+        if not applied:
+            return _fail("worker_did_not_apply")
+
+        # Check 3 — winner_fork_evidence.
+        fork_ok = (
+            winner in evidence["supported_forks"]
+            and winner not in evidence["failed_result_forks"]
+        )
+        acceptance_checks.append({"check": "winner_fork_evidence", "passed": fork_ok})
+        if not fork_ok:
+            return _fail("winner_fork_from_failed_call")
+
+        # Check 4 — edit_claims_bound.
+        claimed_edits = [str(e).strip() for e in result.get("edits") or []]
+        unbound = sorted(e for e in claimed_edits if e not in evidence["edit_evidence"])
+        acceptance_checks.append({
+            "check": "edit_claims_bound", "passed": not unbound,
+            "claimed": len(claimed_edits), "unbound": unbound,
+        })
+        if unbound:
+            return _fail("unsupported_edit_claim")
+
+        # Check 5 — winner_adjudicated (only material with >=2 changed finalists).
+        if len(changed) >= 2:
+            adjudicated_flag = any(
+                winner in s and any(m in s for m in changed if m != winner)
+                for s in evidence["adjudicated_sets"]
+            ) or winner in evidence["batch_finalist_forks"]
+            acceptance_checks.append({
+                "check": "winner_adjudicated", "passed": adjudicated_flag,
+            })
+            if not adjudicated_flag:
+                return _fail("no_winner_named_with_multiple_changed_finalists")
+        else:
+            acceptance_checks.append({
+                "check": "winner_adjudicated", "passed": True, "trivial": True,
+            })
+
+        # Check 6 — collateral_within_limits (appended only when it can compare).
+        adj_summary = _winner_adjudication_summary(episode_calls, winner) or {}
+        damaged = adj_summary.get("damaged_occurrences")
+        improved = adj_summary.get("improved_occurrences")
+        if isinstance(damaged, (int, float)) and isinstance(improved, (int, float)):
+            collateral_ok = damaged <= improved
+            acceptance_checks.append({
+                "check": "collateral_within_limits", "passed": collateral_ok,
+                "damaged_occurrences": damaged, "improved_occurrences": improved,
+            })
+            if not collateral_ok:
+                return _fail("materially_non_improving")
+
+        # Checks 7 + 8 — one probe restore serves both.
+        winner_snapshot = next(
+            s for s in snapshots if str(s.get("name") or "") == winner
+        )
+        probe_hash, after = _probe_snapshot_scores(winner_snapshot, transaction_id)
+        dict_before, dict_after = before.get("dict_rate"), after.get("dict_rate")
+        quad_before, quad_after = before.get("quad"), after.get("quad")
+        dict_delta = (
+            dict_after - dict_before
+            if isinstance(dict_before, (int, float)) and isinstance(dict_after, (int, float))
+            else None
+        )
+        quad_delta = (
+            quad_after - quad_before
+            if isinstance(quad_before, (int, float)) and isinstance(quad_after, (int, float))
+            else None
+        )
+        score_deltas = {"dict_rate_delta": dict_delta, "quad_delta": quad_delta}
+
+        # Check 7 — no_op_probe (defensive re-check with the live renderer).
+        no_op_ok = probe_hash != source_hash
+        acceptance_checks.append({
+            "check": "no_op_probe", "passed": no_op_ok, "probe_hash": probe_hash,
+        })
+        if not no_op_ok:
+            return _fail("no_op")
+
+        # Check 8 — scalar_non_decrease (default deny on any measured decrease).
+        decreased = (
+            (dict_delta is not None and dict_delta < 0)
+            or (quad_delta is not None and quad_delta < 0)
+        )
+        # Default deny: any measured scalar decrease rejects. REPAIR_ACCEPTANCE_POLICY
+        # is the M5.4 hook; no allow-policy branch is implemented yet, so the guard
+        # asserts the invariant rather than carrying a dead alternative.
+        assert REPAIR_ACCEPTANCE_POLICY is None
+        scalar_ok = not decreased
+        acceptance_checks.append({
+            "check": "scalar_non_decrease", "passed": scalar_ok,
+            "deltas": dict(score_deltas),
+        })
+        if not scalar_ok:
+            return _fail("materially_non_improving")
+
+        acceptance = _acceptance()
 
         install_payload = json.loads(_dispatch_episode_install({
             "id": f"{tu.get('id')}:install",
@@ -1161,10 +1653,14 @@ def run_v3(
             record = {
                 **base_record, "status": "failed", "reason": "install_failed",
                 "install": install_payload,
+                "acceptance": acceptance,
             }
-            state.repair_transactions.append(record)
+            payload = _settle_repair_outcome(
+                record=record, entry_args=(source_hash, att_key, pair),
+                changed_hashes=sorted(changed.values()), turn=turn,
+            )
             return _record_dispatch_result(
-                name="repair_transaction", tu=tu, turn=turn, payload=record
+                name="repair_transaction", tu=tu, turn=turn, payload=payload
             )
         result_hash = _branch_hash(workspace, installed)
         workspace.get_branch(installed).metadata["repair_transaction"] = {
@@ -1185,8 +1681,12 @@ def run_v3(
             "reverification_required": True,
             "edits": [str(item) for item in result.get("edits") or []],
             "collateral": dict(result.get("collateral") or {}),
+            "acceptance": acceptance,
         }
-        state.repair_transactions.append(record)
+        payload = _settle_repair_outcome(
+            record=record, entry_args=(source_hash, att_key, pair),
+            changed_hashes=sorted(changed.values()), turn=turn,
+        )
         for item in state.repair_agenda:
             if (
                 item.get("status", "open") == "open"
@@ -1203,7 +1703,7 @@ def run_v3(
         )
         emit("repair_transaction_complete", dict(record), outer_iteration=turn)
         return _record_dispatch_result(
-            name="repair_transaction", tu=tu, turn=turn, payload=record
+            name="repair_transaction", tu=tu, turn=turn, payload=payload
         )
 
     def _dispatch_tool(tu: dict[str, Any], turn: int) -> str:
@@ -1248,7 +1748,8 @@ def run_v3(
             }, outer_iteration=turn)
         if name == "episode_run":
             requested_kind = str(args.get("kind") or "")
-            if requested_kind not in current_episode_kinds:
+            live_kinds = set(allowed_episode_kinds(state, executor))
+            if requested_kind not in live_kinds:
                 return _record_dispatch_result(
                     name=name,
                     tu=tu,
@@ -1257,7 +1758,7 @@ def run_v3(
                         "status": "blocked",
                         "reason": "episode_kind_not_available",
                         "requested_kind": requested_kind,
-                        "allowed_kinds": sorted(current_episode_kinds),
+                        "allowed_kinds": sorted(live_kinds),
                         "workflow_state": workflow_state(state, executor)["state"],
                     },
                 )
@@ -1334,6 +1835,21 @@ def run_v3(
                 raise
             except Exception as exc:  # noqa: BLE001
                 result_obj = {"error": f"experiment tool {name} failed: {exc}"}
+            if (
+                name == "experiment_submit"
+                and isinstance(result_obj, dict)
+                and result_obj.get("experiment_id")
+            ):
+                menu = workflow_state(state, executor)
+                if menu.get("state") == "repair_exhausted":
+                    entry = state.repair_saturation.get(
+                        str(menu.get("saturation_key") or "")
+                    )
+                    if entry is not None:
+                        entry["pending_experiment_id"] = str(
+                            result_obj["experiment_id"]
+                        )
+                        entry["updated_turn"] = turn
             return json.dumps(result_obj, ensure_ascii=False)
         # M3: the lead hosts the composites too (Part 2). state.readings is the
         # lead's readings map; execute_composite logs the ToolCall + returns the
