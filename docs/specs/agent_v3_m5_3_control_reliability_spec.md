@@ -306,8 +306,11 @@ Classify failures before consuming saturation budget:
 Do not emit a combined `ambiguous_or_unchanged_finalists` reason; it erases the
 process/evidence distinction required by this policy.
 
-After two no-op, unsupported, ambiguous, or materially non-improving repair
-transactions, enter a durable `repair_exhausted` workflow state. Its menu is:
+After two **evidence-failed** repair transactions (no-op, unsupported, all
+finalists rejected, or materially non-improving) for the same candidate and
+verifier evidence, enter a durable `repair_exhausted` workflow state. Process
+failures advance this counter only through the second-process-failure rule
+above. Its menu is:
 
 1. run one alternate search/basin experiment;
 2. compare genuinely distinct existing finalists; or
@@ -345,7 +348,9 @@ of word/span hypotheses. It must:
 2. resolve granular host-owned anchors and reject malformed hypotheses cheaply:
    one `word_id` or a contiguous `{start_token_id, end_token_id}` run inside a
    content-hash-bound window. Existing 120-token window ids alone are too
-   coarse. Raw `word_index`/`char_start` remain legacy singleton-parity inputs
+   coarse; Slice 3 mints these `word_id`/token anchors host-side and exposes
+   them in the host-built candidate packet, so models never need raw numeric
+   offsets. Raw `word_index`/`char_start` remain legacy singleton-parity inputs
    and are discouraged on model-facing surfaces;
 3. return `not_expressible_as_key_edit` as typed data, including span and word
    lengths, when one-character-per-token compilation is impossible;
@@ -394,8 +399,9 @@ evidence and require:
 
 Small scalar decreases may be allowed for strong local-language repairs, but
 only under an explicit, tested, ground-truth-free policy. The policy must not
-be improvised by the worker. Unsupported or ambiguous outcomes remain review
-evidence and do not install.
+be improvised by the worker; absent such a policy, any net scalar decrease
+rejects the installation (default deny). Unsupported or ambiguous outcomes
+remain review evidence and do not install.
 
 ### Local acceptance
 
@@ -464,7 +470,10 @@ routing evidence. Ship the schema change together with migrations for
 `AttestationPolicy`, positive-attestation/fallback tiering, context routing,
 repair-agenda seeding, state serialization/resume defaults, analyzer output,
 and the verify contract. Legacy serialized attestations load conservatively as
-not positive unless their old fields establish the new condition.
+not positive unless their old fields establish the new condition (for legacy
+records: positive iff `reader_accepts` was true and `coherence >= 7`, the
+prior `_is_positive_attestation` condition). The fallback tier
+`fresh_positive_attestation` re-keys on the same new positive condition.
 
 The other fields route work:
 
@@ -472,7 +481,14 @@ The other fields route work:
   repair cycle;
 - recognizable language + distributed damage -> compare or alternate search;
 - low language confidence or basin-wide damage -> broaden;
-- high acceptance -> declare promptly.
+- `reader_accepts_as_solution=true` -> declare promptly.
+
+Initial routing thresholds are host constants and calibration defaults,
+tunable only with paid-smoke or equivalent targeted evidence: high (and
+recognizable) language confidence is `target_language_confidence >= 0.7`;
+high recoverability is `semantic_recoverability >= 0.5`. `coherence` remains
+in the verifier schema as a clamped 0-10 report-only legacy field during
+M5.3; it no longer gates declaration, routing, or fallback-tier selection.
 
 This lets the system say "likely correct basin with recoverable meaning, but
 not a complete solution" without either rejecting all useful evidence or

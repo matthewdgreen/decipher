@@ -5,8 +5,9 @@ second-opinion review (Fable), verified read-only against the code as of
 `4b85e20`. No code was changed. Revision 2 folds in the adjudicated results of
 GPT-5.6-Sol's design review of revision 1 (ten comments; adjudication table in
 §4.3) and aligns with the amended M5.3 spec
-(`docs/specs/agent_v3_m5_3_control_reliability_spec.md`, which as of `4b85e20`
-already incorporates the reading-budget/usability clarifications). Codex's
+(`docs/specs/agent_v3_m5_3_control_reliability_spec.md`; the reading-budget/
+usability clarifications landed at `4b85e20`, and as of `d4cbe55` the full
+Part A/B amendment set is integrated normatively into the spec body). Codex's
 M5.3 implementation is in flight concurrently; the recommendations below are
 written to be foldable into that work, not to preempt it. The consolidated
 M5.3 amendment block lives in the companion document
@@ -678,9 +679,11 @@ experiment can test the proposed mechanism before it ships.
   granular anchors, require exactly one proposed character per ciphertext
   token, emit exact symbol→letter assertions, surface conflicts without
   majority voting, and compile boundaries separately. It performs no menu
-  generation, language scoring, or automatic install decision. Correct key
-  assertions are applied together on one fork, followed by the same collateral
-  measurements used for all arms. This is the arm that tests the reframe.
+  generation, language scoring, or automatic install decision. Assertions that
+  compile under these rules are applied together on one fork, followed by the
+  same collateral measurements used for all arms (in Arm N this includes
+  adversarial assertions that compile; nothing is pre-filtered for truth).
+  This is the arm that tests the reframe.
 - **Arm S-menu — current direct word-probe substrate (secondary comparator).**
   Run the same oracle word assertions through `hypothesis_test_words` after
   Slice 3 lands. This arm measures parity and menu/cache economics; it is not

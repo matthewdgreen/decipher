@@ -123,12 +123,19 @@ declaration. Ship this consumer migration map with the change:
    (`src/investigation/context.py:54-57` and `:120-136`) must be re-expressed
    against the new fields (`semantic_recoverability`, `damage_scope`,
    `repairability`), or explicitly kept on `coherence` with a stated reason.
+   Resolved in the spec: routing is re-expressed against the new fields with
+   initial calibration constants (language confidence >= 0.7, recoverability
+   >= 0.5); `coherence` stays in the schema as a clamped report-only legacy
+   field in M5.3 and no longer gates declaration, routing, or fallback
+   tiering.
 5. Repair-agenda seeding — `verify_anomaly` items are created from
    attestation anomalies (`src/investigation/loop_v3.py:642-668`).
 6. `AttestationRecord` serialization — new fields must round-trip through
    `to_dict`/state save/load (`src/investigation/state.py:112-133`);
    previously serialized states carrying single-`coherence` attestations must
    either load with mapped defaults or be declared format-incompatible.
+   Resolved in the spec: load with the conservative mapping (positive iff the
+   old `reader_accepts` was true and `coherence >= 7`).
 7. `_VERIFY_SCHEMA` (`src/investigation/episodes.py:232-245`) and the verify
    contract prose.
 
@@ -298,8 +305,8 @@ form.
 
 ## Part C — deferred to the follow-on milestone (M5.4 "typed repair"); do not build in M5.3
 
-Full definitions and rationale: `docs/repair_mechanism_rethink.md` (rev 2),
-§4.4 and §7. Summary of what is deliberately **out** of M5.3:
+Full definitions and rationale: `docs/repair_mechanism_rethink.md`
+(revision 3), §4.4 and §7. Summary of what is deliberately **out** of M5.3:
 
 1. **`InterpretationPacket`** — the reading episode's result extended so one
    worker call returns editorial reading + typed span assertions + typed
