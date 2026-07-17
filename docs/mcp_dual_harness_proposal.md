@@ -545,9 +545,12 @@ extraction:
   server-side verify episodes (Option A), the experiment queue, candidate
   portfolios, client-authored evidence records, and deterministic repair
   compilation. No general server-side cognitive `episode_run` in v1.
-- **Phase C — client integration** (small): `.mcp.json` + Codex config,
-  canonical methodology, thin client-specific skill/instruction adapters, and
-  capability-scoped run directories.
+- **Phase C — bootstrap + client integration** (small/medium): the idempotent
+  clean-clone bootstrap/doctor contract, `.mcp.json` + trusted-project Codex
+  config, canonical methodology, thin client-specific skill/instruction
+  adapters, progressive intake, contribution guidance, and capability-scoped
+  run directories. Acceptance is the matrix in §8.1.6, not merely successful
+  MCP registration on a developer machine.
 - **Phase D — the §6 experiment** (mostly run-time + review): the staged pilot,
   then the minimum discriminating confirmation packet; write-up;
   policy-intervention audit; direction decision.
@@ -557,22 +560,181 @@ it improves the eval harness we are keeping regardless.
 
 ### 8.1 Zero-effort onboarding (Phase C deliverables)
 
-Phase C's acceptance bar is that a fresh session in either harness can start
-cracking a new cipher with no setup ceremony. Named deliverables:
+Phase C's acceptance bar is the following user experience:
 
-- a README quickstart covering both clients end to end;
-- a checked-in project `.mcp.json` entry plus a copy-paste Codex
-  `config.toml` snippet, so neither client requires hand-written wiring;
-- a stable `decipher mcp-serve` launch command — the single command both
-  client configurations invoke — shipped as a named deliverable, not an
-  internal detail;
-- the fresh-crack flow works identically in both harnesses: paste ciphertext
-  inline into `investigation_start` (an inline payload, never a path
-  parameter; see §9.1) and go;
-- a documented no-API-key degradation mode: without server-side API keys,
-  `request_independent_verification` is unavailable and solution declaration
-  stays gated (the server says why rather than erroring opaquely), while
-  observation, hypothesis, experiment, and repair tools keep working.
+```text
+git clone <decipher-repository>
+cd decipher
+codex                         # or: claude
+> I would like to crack a cipher.
+```
+
+From there, the agent owns setup and should ask the user only for information
+or approvals it cannot safely infer. "Zero effort" means **agent-managed
+setup**, not silent privilege escalation: the user may need to trust the
+repository, approve installation of a missing system dependency, authenticate
+GitHub, or reconnect once after first-time MCP activation. The user should not
+need to discover build commands, edit client configuration, understand
+Maturin, or read the project's internal architecture documents.
+
+#### 8.1.1 Clean-clone bootstrap contract
+
+Ship one checked-in, idempotent bootstrap entry point that requires only the
+platform shell and performs or coordinates the current documented build:
+
+- detect supported Python, Rust/Cargo, compiler/platform tools, and other hard
+  prerequisites before changing the checkout;
+- explain a missing system dependency with the exact official installation
+  link/command and request approval rather than invoking `sudo` or a package
+  manager silently;
+- create the virtual environment, install Python dependencies, build every
+  mandatory Rust extension in release mode, and install Decipher editable;
+- serialize concurrent bootstrap attempts so Claude and Codex cannot corrupt
+  the same environment;
+- record a build fingerprint and rebuild only when relevant Python/Cargo lock
+  files or native sources change;
+- finish by running a machine-readable health check equivalent to
+  `decipher doctor --json`; and
+- return a concise success result or one actionable failure, never a screen of
+  unclassified compiler output.
+
+The stable MCP command remains `decipher mcp-serve`, but both project configs
+invoke a checked-in, dependency-free launcher. If the environment is healthy,
+the launcher starts the server. If it is not, it fails quickly with a
+machine-readable `bootstrap_required` diagnostic so the still-functional host
+agent can run the bootstrap entry point. Do not hide a long build or system
+package installation inside MCP startup, where client timeouts and permission
+prompts are difficult to explain.
+
+#### 8.1.2 Client discovery and onboarding documents
+
+Neither client should require hand-written wiring:
+
+- Claude Code receives a checked-in project `.mcp.json` and a thin
+  client-native skill/command.
+- Codex receives a checked-in project `.codex/config.toml` containing the MCP
+  entry, loaded after the user trusts the project, plus the corresponding
+  skill/prompt adapter. A personal `~/.codex/config.toml` snippet may remain a
+  troubleshooting fallback, not the primary quickstart.
+- Both configurations invoke the same repository launcher and server
+  implementation.
+
+The agent should not ingest the README, TODO, historical specifications, and
+research archive wholesale. Define a small, versioned onboarding set:
+
+1. an operator quickstart with bootstrap, health-check, and recovery behavior;
+2. the canonical investigation methodology shared by both client adapters;
+3. the MCP capability/tool reference;
+4. privacy and publication rules; and
+5. an agent contribution guide for reproducible issues and PRs.
+
+Root `AGENTS.md` and `CLAUDE.md` point to this closed set and instruct the agent
+to load detailed references only when needed. `investigation_status` remains
+the authoritative briefing after an investigation exists; onboarding prose
+must not become a second store of live investigation state.
+
+#### 8.1.3 Progressive cipher intake
+
+The only usually required user input is the source material. If the user says
+only "I want to crack a cipher," the first response should be a simple request
+to paste it or identify an available text/image file. The agent then infers
+safe defaults and asks follow-up questions only when they would change the
+investigation materially.
+
+The intake contract can represent:
+
+- ciphertext or transcription, passed inline to `investigation_start`;
+- local text/image input read by the host agent and transcribed before the
+  inline MCP call (the MCP server still accepts no arbitrary path parameter);
+- whether existing spaces, line breaks, punctuation, and symbol distinctions
+  are believed meaningful;
+- known or suspected language, cipher family, provenance, and historical
+  context, each explicitly marked as fact, user hypothesis, or unknown;
+- whether internet research is permitted;
+- whether the material is private and whether any portion may appear in a
+  diagnostic report, issue, or PR; and
+- optional runtime/cost depth and independent-verification preferences.
+
+Defaults should favor progress: unknown language/family is valid, local
+ground-truth-free analysis may start immediately, private material is never
+published, and expensive/networked actions require the normal client approval
+boundary. Do not front-load an eight-question form when the missing answers can
+be inferred later from evidence.
+
+#### 8.1.4 No-API-key and recovery behavior
+
+An absent server-side API key must not block installation or investigation.
+Observation, diagnosis, local experiments, candidate management, and
+deterministic repair remain available. Independent verification is reported as
+unavailable, and the hard solved-declaration gate remains closed. The user
+still receives the strongest candidate and an explicit label such as
+"promising but not independently verified," plus instructions for adding a
+verification provider and resuming later.
+
+Common recovery paths must be first-class and testable:
+
+- missing/unsupported Python or Rust;
+- native build failure;
+- project not yet trusted, so project-local MCP config was ignored;
+- MCP server added or rebuilt but the client needs a reconnect/new session;
+- stale build fingerprint;
+- missing model or optional language resource;
+- unavailable API credentials; and
+- interrupted investigation resumed from server-held state in either client.
+
+Every failure should name the layer that failed (prerequisite, build, MCP
+discovery, server health, optional model, or provider) and preserve already
+completed work.
+
+#### 8.1.5 Agent-assisted issues and pull requests
+
+Decipher should help a frontier harness improve Decipher, but contribution is
+an explicit, user-approved side effect outside the cryptanalysis MCP security
+boundary. The MCP server does not hold GitHub credentials or publish content.
+The host coding agent may use Git and an authenticated GitHub CLI/plugin after
+the user approves the destination and the exact public payload.
+
+When a likely bug or reusable improvement is discovered, the agent should:
+
+1. preserve the investigation artifact, Decipher commit/build fingerprint,
+   effective configuration, and minimal reproduction;
+2. generate a redacted diagnostic bundle that excludes ciphertext, context,
+   keys, candidate plaintext, credentials, and private paths by default;
+3. explain whether the evidence supports a bug, documentation issue, feature
+   request, or merely an uncertain research observation;
+4. ask before creating any public issue, fork, branch, push, or PR;
+5. move code changes into a separate development branch/worktree rather than
+   mutating the frozen solver beneath an active scored investigation;
+6. add a focused regression test and run the documented verification; and
+7. prepare an issue/PR with provenance, expected/actual behavior, test output,
+   and an explicit statement of what was redacted.
+
+Users with no repository write access can still receive a ready-to-review
+issue draft or patch. Public disclosure of source ciphers is opt-in, never
+inferred from the fact that the user asked for help cracking them.
+
+#### 8.1.6 Clean-clone acceptance matrix
+
+Phase C is not complete until automated or documented human smoke tests cover:
+
+- a fresh supported macOS/Linux clone with Python and Rust already present;
+- each required system dependency missing in turn, with actionable recovery;
+- Claude project discovery from `.mcp.json`;
+- Codex discovery from trusted project `.codex/config.toml` and the untrusted
+  project diagnostic;
+- first-time MCP reconnect/restart behavior;
+- the bare request "I would like to crack a cipher" with no payload yet;
+- pasted ciphertext with no language or family context;
+- local text and image intake without exposing filesystem paths to MCP;
+- no API key, followed by later credential configuration and resume;
+- interrupted work resumed in the same client and handed to the other client;
+- a redacted issue dry run with no network publication; and
+- a user-approved issue/PR flow through an authenticated account.
+
+The quickstart may advertise the three-line experience only after these paths
+are reliable. A later packaged Codex/Claude plugin can remove the clone
+requirement, but it is a distribution enhancement rather than a prerequisite
+for the repository-first flow.
 
 ## 9. Risks and open questions
 
