@@ -15,14 +15,15 @@ M5.2 established the intended strategist/worker architecture:
 - the run ended honestly `unsolved` rather than declaring damaged Latin solved.
 
 The first paid M5.2 smoke also showed that the host still gives the model too
-much freedom inside that architecture. A four-call reading could execute a
-larger batched tool response before the budget check. The lead could request a
-new reading and repair transaction repeatedly against essentially unchanged
-content. Each `hypothesis_test_word` rebuilt an expensive menu. An otherwise
-reasonable attempt to escape into a fresh automated search failed because the
-model-facing experiment schema did not expose the actual configuration
-contract. The run therefore spent 25 turns and $4.01 circling a useful but
-damaged basin.
+much freedom inside that architecture. A reading nominally configured for four
+calls could execute a larger batched tool response before the budget check, so
+the smoke did not test whether four calls can produce a useful reading. The
+lead could request a new reading and repair transaction repeatedly against
+essentially unchanged content. Each `hypothesis_test_word` rebuilt an
+expensive menu. An otherwise reasonable attempt to escape into a fresh
+automated search failed because the model-facing experiment schema did not
+expose the actual configuration contract. The run therefore spent 25 turns
+and $4.01 circling a useful but damaged basin.
 
 M5.3 is a host-control milestone, not a prompt-tuning milestone. The host must
 enforce bounded work, recognize saturation, make the efficient operation the
@@ -64,6 +65,16 @@ This proved that declaration timing was not the main accuracy limitation. V3
 needed a reliable path from negative verification to either a better candidate
 or a timely decision to broaden.
 
+M5.1 forensics also found a distinct reading-worker exhaustion mode. With the
+original twelve-call budget, `gpt-5.5` commonly spent ten or eleven calls
+exploring and then failed to submit a structured reading. Commit `1d01ef4`
+raised the reading envelope to 16 calls, 8,192 output tokens, and 300 seconds,
+and added an explicit instruction to submit a useful partial reading early.
+M5.2 later reduced the registered reading budget to four calls, 4,096 output
+tokens, and 180 seconds. Because the batch-check bug allowed four-call readings
+to execute as many as thirteen calls, the M5.2 smoke is not evidence that this
+smaller production budget is usable.
+
 ### M5.2 targeted smoke
 
 Artifact:
@@ -95,7 +106,8 @@ The smoke exposed these concrete failures:
 
 1. Episode tool-call limits were checked after a complete model-emitted batch.
    Readings configured for four calls executed up to thirteen calls; repairs
-   executed up to fifteen.
+   executed up to fifteen. This proves an enforcement defect, not the
+   sufficiency of a four-call reading budget.
 2. The model could raise `max_tool_calls` above the host default.
 3. Rewording a reading or repair goal allowed effectively duplicate work on
    unchanged candidate content and unchanged verifier evidence.
@@ -152,6 +164,9 @@ answer or add Borg-specific prompting.
    the same reading indefinitely.
 7. Paid tests remain single-cell and explicitly capped until local acceptance
    is complete.
+8. A worker budget may be reduced only after a binding-cap test shows that the
+   worker still returns a usable result. Lower cost or earlier transition alone
+   is not evidence of usability.
 
 ## Slice 1 - Hard Episode and Cost Budgets
 
@@ -169,6 +184,33 @@ The model-facing `max_tool_calls` argument may lower the registered host budget
 but may never raise it. Clamp it to `1..default_max_tool_calls`, or remove it
 from the model-facing schema and select overrides only in host code.
 
+### Reading budget and submission reserve
+
+Do not make the current four-call reading budget the production default while
+fixing enforcement. Restore the M5.1 reading envelope provisionally:
+
+- at most 16 exploratory tool calls;
+- up to 8,192 output tokens for structured submission; and
+- a 300-second wall-clock ceiling.
+
+Treat these as a maximum safety envelope, not a target. The early-partial-
+reading contract remains in force, duplicate/saturation policy limits how many
+readings may run for unchanged evidence, and the per-run cost ceiling remains
+the final paid guard.
+
+Exploration and submission must have separate accounting. When exploration
+ends or reaches its cap, preserve one submit-only completion attempt with the
+full structured-output allowance. Exploratory calls may not consume this
+submission reserve. The submit-only phase receives the candidate packet and
+the worker's accumulated notes, exposes only `episode_submit_result`, and may
+return either a useful partial reading or an explicit `no_safe_reading` result.
+
+Four calls remains a useful enforcement fixture and a candidate future budget,
+but it must not become the default until a binding 4/8/12/16 calibration shows
+that reading quality is preserved. The batch/cache work in Slice 3 improves
+repair episodes; it does not justify reducing reading budgets because reading
+workers do not run word-hypothesis repair menus.
+
 ### Per-run paid ceiling
 
 Add a v3 `max_cost_usd` option enforced between provider calls. Once reached,
@@ -182,9 +224,31 @@ launch guard.
 - A response containing ten ordinary calls under a four-call budget executes
   exactly four.
 - Every emitted tool use receives exactly one tool result.
-- A requested budget of eight on a four-call reading remains four.
+- A requested budget of twenty on a sixteen-call reading remains sixteen.
 - A submit tool in an over-budget batch can still finish the episode.
+- Exhausting exploratory calls still leaves one submit-only attempt with an
+  8,192-token output allowance.
 - A cost ceiling prevents the next paid call and produces a complete artifact.
+
+### Reading-usability acceptance
+
+Budget enforcement is not sufficient by itself. A reading counts as usable
+only when all of the following are true:
+
+- status is `ok`, not `budget_exhausted` or an empty-output fallback;
+- `reading_text` or semantic gloss is non-empty and bound to the exact
+  candidate content hash;
+- cited fragments use valid stable span ids or explicitly identify an
+  unresolved hole;
+- the result contains at least one evidence-linked anomaly, actionable repair
+  clue, or a reasoned `no_safe_repair` conclusion; and
+- a repair transaction can consume the result without schema failure,
+  `fresh_reading_required`, or a no-op caused by a malformed reading packet.
+
+Local scripted tests prove shape, binding, and fallback behavior. They cannot
+establish model reading quality. The first paid smoke must therefore report
+both actual exploratory-call use and the usability fields above before the
+default reading budget can be reduced.
 
 ## Slice 2 - Repair Saturation and Workflow Escape
 
@@ -374,6 +438,7 @@ prove:
 
 - verification occurs early;
 - one reading feeds a bounded repair transaction;
+- reading exploration cannot consume the reserved submit-only attempt;
 - repeated no-op repair saturates;
 - alternate search is offered and accepts a valid config;
 - no worker exceeds its call budget;
@@ -396,18 +461,26 @@ Paid acceptance targets:
 
 1. verification by turn 3;
 2. no episode exceeds its registered call cap;
-3. at most two readings and two repair transactions per candidate hash;
-4. alternate search after repair saturation;
-5. no invalid experiment configuration;
-6. no repeated unchanged reading/repair cycle;
-7. character accuracy >=93%;
-8. word accuracy >=70%;
-9. honest `unsolved` is allowed without positive attestation; and
-10. artifact/analyzer agree on status, branch, verification, and cost.
+3. the first negative verification yields a usable reading by turn 5;
+4. no reading ends `budget_exhausted`, empty, or malformed;
+5. at most two readings and two repair transactions per candidate hash;
+6. at least one usable reading feeds a valid repair transaction, or records a
+   reasoned `no_safe_repair` conclusion;
+7. alternate search after repair saturation;
+8. no invalid experiment configuration;
+9. no repeated unchanged reading/repair cycle;
+10. character accuracy >=93%;
+11. word accuracy >=70%;
+12. honest `unsolved` is allowed without positive attestation; and
+13. artifact/analyzer agree on status, branch, verification, cost, reading
+    usability, and actual reading-call consumption.
 
-If the run misses the control targets, stop and inspect locally. Do not spend
-on additional replicates. If control targets pass but accuracy misses, diagnose
-search/repair quality before changing budgets.
+If the run misses the control or reading-usability targets, stop and inspect
+locally. Do not spend on additional replicates. If those targets pass but
+accuracy misses, diagnose search/repair quality before changing budgets. Do
+not lower the reading default from the provisional 16-call envelope on the
+basis of one successful run; first compare the stored reading packet under
+binding 4/8/12/16 limits or collect equivalent targeted evidence.
 
 ### D. Focused Stage-1 packet
 
@@ -439,4 +512,5 @@ until the focused Stage-1 packet passes and the user approves the larger spend.
 6. Diplomatic-text-aware, ground-truth-free verification fields.
 7. V3-aware workspace telemetry and artifact analysis.
 8. Focused local/replay test evidence.
-9. One separately approved paid smoke report before any larger evaluation.
+9. Reading-usability telemetry and a justified post-calibration default.
+10. One separately approved paid smoke report before any larger evaluation.
