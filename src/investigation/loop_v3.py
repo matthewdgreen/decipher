@@ -265,8 +265,17 @@ def run_v3(
     max_tokens: int = 8192,
     episode_models: dict[str, str] | None = None,
     experiment_queue: ExperimentQueue | None = None,
+    max_cost_usd: float | None = None,
 ) -> RunArtifact:
-    """Run one v3 lead session against a cipher. Returns a full RunArtifact."""
+    """Run one v3 lead session against a cipher. Returns a full RunArtifact.
+
+    ``max_cost_usd`` (M5.3 Slice 1) is the per-run paid ceiling, enforced before
+    EVERY paid provider send — lead turns and every worker send inside an episode,
+    including mid-episode continuation and the submit-only reserve. Once the
+    committed spend reaches it, the loop makes no further paid call: any active
+    episode ends budget-class, and the run terminates honestly (best supported
+    branch; ``unsolved`` preserved when no fresh positive attestation exists).
+    This is distinct from the bake-off runner's matrix-level launch guard."""
 
     run_id = uuid.uuid4().hex[:12]
 
@@ -394,6 +403,21 @@ def run_v3(
             e.cache_read_tokens for e in state.budget_ledger
         )
         artifact.estimated_cost_usd = state.total_cost()
+
+    def _committed_cost() -> float:
+        # M5.3 Slice 1: cost of every COMPLETED send (lead + prior + finished
+        # episodes), computed straight from the live ledgers so it is correct
+        # regardless of sync_budget() timing. It excludes any in-flight episode,
+        # whose own session spend the episode's cost guard adds on top; this is
+        # therefore the correct ``outer_cost_usd`` base to hand an episode.
+        return sum(
+            entry.cost()
+            for entry in (prior_budget + episode_budget + list(session.usage_entries()))
+        )
+
+    def _cost_ceiling_reached() -> bool:
+        # The lead-side per-run paid ceiling: refuse the next paid lead send.
+        return max_cost_usd is not None and _committed_cost() >= max_cost_usd
 
     # --- diagnostic-preflight evidence entry (M1 writes this) ---
     fingerprint = cipher_id_analysis.compute_cipher_fingerprint(
@@ -604,6 +628,7 @@ def run_v3(
             word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
             launching_turn=turn,
             on_event=_episode_event_forwarder(turn),
+            max_cost_usd=max_cost_usd, outer_cost_usd=_committed_cost(),
         )
         episode_tool_calls.extend(result.tool_calls)
         episode_budget.extend(
@@ -727,6 +752,7 @@ def run_v3(
             word_set=word_set, word_list=word_list, pattern_dict=pattern_dict,
             launching_turn=turn,
             on_event=_episode_event_forwarder(turn),
+            max_cost_usd=max_cost_usd, outer_cost_usd=_committed_cost(),
         )
         episode_tool_calls.extend(result.tool_calls)
         episode_budget.extend(
@@ -1338,10 +1364,30 @@ def run_v3(
     # at/after the turn limit (empty range).
     first_turn = (state.turn + 1) if resume_state is not None else 1
     turn = first_turn - 1
+    cost_ceiling_hit = False
     for turn in range(first_turn, max_iterations + 1):
         state.turn = turn
         workspace.set_iteration(turn)
         executor.set_iteration(turn)
+        # M5.3 Slice 1: the per-run paid ceiling gates the next paid LEAD send.
+        # An episode last turn may have pushed committed spend over the ceiling;
+        # refuse to send and fall through to honest termination (the fallback
+        # block below selects the best supported branch and preserves unsolved
+        # without a positive attestation). No further paid call is made.
+        if _cost_ceiling_reached():
+            cost_ceiling_hit = True
+            artifact.status = "exhausted"
+            artifact.error_message = (
+                f"Per-run cost ceiling reached before turn {turn}: "
+                f"${_committed_cost():.4f} >= ${max_cost_usd:.4f}. "
+                "No further paid call."
+            )
+            emit("cost_ceiling_reached", {
+                "turn": turn,
+                "total_cost_usd": _committed_cost(),
+                "max_cost_usd": max_cost_usd,
+            })
+            break
         # F4: adopt hypothesis branches that gained metadata via an install last
         # turn (or a resumed workspace) into the board once per turn.
         state.hypothesis_board.sync_from_workspace(workspace)
@@ -1611,6 +1657,11 @@ def run_v3(
                 "Automatic fallback declaration after agent/API error; "
                 "preserving the best available branch for inspection. "
                 f"Original error: {artifact.error_message}. "
+            )
+        elif cost_ceiling_hit:
+            reason = (
+                "Automatic fallback termination at the per-run cost ceiling; "
+                "preserving the best supported branch for inspection. "
             )
         else:
             reason = (

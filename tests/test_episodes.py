@@ -15,6 +15,7 @@ from investigation import sessions as sessions_mod
 from investigation.board import CARD_MIRROR_KEYS
 from investigation.episodes import (
     EPISODE_KINDS,
+    EpisodeBudget,
     EpisodeSpec,
     _build_episode_workspace,
     _episode_system_prompt,
@@ -998,3 +999,151 @@ def test_install_deep_copies_snapshot_no_ledger_aliasing():
     assert entry["branch_snapshots"][0]["metadata"]["notes"] == {"inner": ["a"]}
     assert entry["branch_snapshots"][0]["transform_pipeline"] == {
         "steps": [{"op": "reverse"}]}
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 1: hard episode budgets (per-call enforcement, clamp, reading
+# envelope restoration, submit reserve) — Verification A, no paid model.
+# ---------------------------------------------------------------------------
+def _tool_result_ids(blocks):
+    """Collect the tool_use_id of every tool_result block in a sent-blocks list."""
+    ids = []
+    for message in blocks:
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                ids.append(block["tool_use_id"])
+    return ids
+
+
+def test_m53_reading_envelope_restored_to_16_8192_300():
+    """Slice 1 requirement 3: the M5.2 reading reversion (4/4096/180) is restored
+    to the M5.1 safety envelope (16 calls / 8,192 output tokens / 300 s)."""
+    budget = EPISODE_KINDS["reading"]["budget"]
+    assert (
+        budget.max_tool_calls,
+        budget.max_output_tokens,
+        budget.wall_clock_seconds,
+    ) == (16, 8192, 300.0)
+
+
+def test_m53_max_tool_calls_clamp_cannot_raise_registered_budget():
+    """Slice 1 requirement 2: the model-facing max_tool_calls may LOWER the
+    registered budget but never RAISE it — clamp to 1..registered_max."""
+    # Reading is a 16-call envelope; requesting 20 stays 16 (spec fixture).
+    r20 = EpisodeSpec("reading", "read",
+                      inputs={"branches": ["main"], "max_tool_calls": 20})
+    assert r20.budget.max_tool_calls == 16
+    # The clamp only touches the call count, not output tokens / wall clock.
+    assert r20.budget.max_output_tokens == 8192
+    assert r20.budget.wall_clock_seconds == 300.0
+    # A request BELOW the cap lowers it.
+    assert EpisodeSpec("reading", "read",
+                       inputs={"branches": ["main"], "max_tool_calls": 3}
+                       ).budget.max_tool_calls == 3
+    # Survey default is 10; requesting 50 clamps to 10.
+    assert EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 50}
+                       ).budget.max_tool_calls == 10
+    # A registered 4-call budget with a requested 8 stays 4 (task fixture).
+    four = EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 8},
+                       budget=EpisodeBudget(4, 2048, 120.0))
+    assert four.budget.max_tool_calls == 4
+    # Non-positive / unparseable requests floor to 1 rather than raising.
+    assert EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 0}
+                       ).budget.max_tool_calls == 1
+
+
+def test_m53_over_budget_batch_executes_only_budgeted_calls():
+    """Slice 1 requirement 1: a 10-ordinary-call response under a 4-call budget
+    executes exactly 4; every emitted tool_use receives exactly one tool_result
+    (the 6 skipped calls get synthesized budget_exhausted results)."""
+    state = _simple_state()
+    spec = EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 4})
+    good = {"findings": ["f"], "suspected_modes": [], "recommended_next": []}
+    ten_calls = [
+        ToolUseBlock(id=f"t{i}", name="decode_show", input={"branch": "main"})
+        for i in range(10)
+    ]
+    fake = EpisodeFake([ten_calls, [_submit(good, tid="final")]])
+    res = run_episode(spec, state, session=fake)
+    assert res.status == "ok"
+    # Exactly four executed; six suppressed.
+    assert res.tool_call_count == 4
+    assert res.suppressed_over_budget_calls == 6
+    assert sum(1 for tc in res.tool_calls if tc.tool_name == "decode_show") == 4
+    # The ledger surfaces the overshoot.
+    assert state.episode_ledger[-1]["suppressed_over_budget_calls"] == 6
+    # Every one of the ten emitted tool_uses received exactly one tool_result in
+    # the recorded exchange (the final submit-only send carries messages+[nudge]).
+    final_send_blocks = fake.blocks_seen[-1]
+    result_ids = _tool_result_ids(final_send_blocks)
+    assert sorted(result_ids) == sorted(f"t{i}" for i in range(10))
+    assert len(result_ids) == 10  # no duplicates, no drops
+    # The six over-budget results are budget_exhausted; the four executed are not.
+    exhausted = []
+    for message in final_send_blocks:
+        if not isinstance(message, dict):
+            continue
+        for block in message.get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                if '"budget_exhausted"' in str(block.get("content") or ""):
+                    exhausted.append(block["tool_use_id"])
+    assert sorted(exhausted) == sorted(f"t{i}" for i in range(4, 10))
+
+
+def test_m53_submit_in_over_budget_batch_still_finishes_episode():
+    """Slice 1 requirement 1: a valid episode_submit_result in an over-budget
+    batch still finishes the episode (submit is accepted even over budget)."""
+    state = _simple_state()
+    spec = EpisodeSpec("survey", "g",
+                       inputs={"branches": ["main"], "max_tool_calls": 2})
+    good = {"findings": ["f"], "suspected_modes": [], "recommended_next": []}
+    # Four tool calls THEN a submit, all in ONE batch; budget is 2.
+    batch = [
+        ToolUseBlock(id=f"t{i}", name="decode_show", input={"branch": "main"})
+        for i in range(4)
+    ] + [_submit(good, tid="sub")]
+    fake = EpisodeFake([batch])
+    res = run_episode(spec, state, session=fake)
+    assert res.status == "ok"
+    assert res.result == good
+    # Only two calls executed before the submit closed the episode.
+    assert res.tool_call_count == 2
+    assert res.suppressed_over_budget_calls == 2
+    # The episode finished on the ONE batch — no submit-only reserve send needed.
+    assert len(fake.blocks_seen) == 1
+
+
+def test_m53_reading_submit_reserve_keeps_full_output_allowance():
+    """Slice 1: exhausting exploratory calls still leaves one submit-only attempt
+    with the reading envelope's full 8,192-token output allowance."""
+    class RecordingFake(EpisodeFake):
+        def __init__(self, scripts, **kw):
+            super().__init__(scripts, **kw)
+            self.max_tokens_seen = []
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self.max_tokens_seen.append(max_tokens)
+            return super().send(blocks, tools=tools, max_tokens=max_tokens)
+
+    state = _simple_state()
+    spec = EpisodeSpec("reading", "read", inputs={"branches": ["main"]})
+    reading_good = {"reading_text": "X", "fragments": [], "holes": [],
+                    "overall_confidence": 0.5}
+    sixteen = [
+        ToolUseBlock(id=f"c{i}", name="decode_show", input={"branch": "main"})
+        for i in range(16)
+    ]
+    fake = RecordingFake([sixteen, [_submit(reading_good, tid="final")]],
+                         role="episode:reading")
+    res = run_episode(spec, state, session=fake)
+    assert res.status == "ok"
+    assert res.tool_call_count == 16
+    # The submit-only reserve send used the full 8,192-token allowance.
+    assert fake.max_tokens_seen[-1] == 8192
+    assert [tool["name"] for tool in fake.tools_seen[-1]] == ["episode_submit_result"]

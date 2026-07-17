@@ -292,11 +292,17 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "corpus_lookup_word", "corpus_word_candidates",
             "score_panel", "score_dictionary",
         }),
-        # The host supplies the complete candidate packet and stable span ids,
-        # so reading is a bounded interpretation task rather than an open-ended
-        # tool exploration. Keep enough room for one optional lookup plus the
-        # structured submission.
-        "budget": EpisodeBudget(4, 4096, 180.0),
+        # M5.1 reading envelope, restored by M5.3 Slice 1 (commit 1d01ef4 set
+        # 16/8192/300; the M5.2 reduction to 4/4096/180 was never validated —
+        # the per-batch budget-check defect let 4-call readings execute as many
+        # as thirteen calls, so that smoke is not evidence the smaller budget is
+        # usable). This is a MAXIMUM safety envelope, not a target: the
+        # early-partial-reading contract stays in force, the duplicate/saturation
+        # policy bounds how many readings run for unchanged evidence, and the
+        # per-run cost ceiling is the final paid guard. Do not lower it below this
+        # until a binding 4/8/12/16 calibration shows reading quality is
+        # preserved.
+        "budget": EpisodeBudget(16, 8192, 300.0),
         "result_schema": _READING_SCHEMA,
         "tier": "reading",
         "contract": (
@@ -425,11 +431,24 @@ class EpisodeSpec:
             self.budget = entry["budget"]
         if not self.result_schema:
             self.result_schema = entry["result_schema"]
-        # Optional per-call override of the call cap.
+        # Optional per-call override of the call cap (M5.3 Slice 1). The
+        # model-facing `max_tool_calls` may LOWER the registered host budget but
+        # must never RAISE it — a worker cannot vote itself a larger budget.
+        # Clamp to 1..registered_max (the pre-override cap: the kind default, or
+        # an explicitly-passed budget). Non-positive integers floor to 1 (via the
+        # max(1, ...) below); UNPARSEABLE requests ("all", inf, a dict) are
+        # IGNORED (keep the registered budget). Either way it never raises above
+        # the registered cap.
         max_calls = self.inputs.get("max_tool_calls")
         if max_calls is not None:
+            registered_max = self.budget.max_tool_calls
+            try:
+                requested = int(max_calls)
+            except (TypeError, ValueError, OverflowError):
+                requested = registered_max
+            clamped = max(1, min(requested, registered_max))
             self.budget = EpisodeBudget(
-                int(max_calls), self.budget.max_output_tokens,
+                clamped, self.budget.max_output_tokens,
                 self.budget.wall_clock_seconds,
             )
         _validate_episode_toolset(set(self.toolset))
@@ -450,6 +469,10 @@ class EpisodeResult:
     summary: str = ""
     branch_snapshots: list[dict[str, Any]] = field(default_factory=list)
     tool_call_count: int = 0
+    # M5.3 Slice 1: count of over-budget tool_uses the host skipped (executed no
+    # tool for, synthesizing a paired budget_exhausted result instead). Makes the
+    # per-batch overshoot visible in the episode ledger / analyzer.
+    suppressed_over_budget_calls: int = 0
     elapsed_seconds: float = 0.0
     budget_entries: list[dict[str, Any]] = field(default_factory=list)
     raw_text: str | None = None
@@ -473,6 +496,7 @@ class EpisodeResult:
             "summary": self.summary,
             "branch_snapshots": self.branch_snapshots,
             "tool_call_count": self.tool_call_count,
+            "suppressed_over_budget_calls": self.suppressed_over_budget_calls,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "budget_entries": self.budget_entries,
             "agenda_additions": self.agenda_additions,
@@ -904,12 +928,22 @@ def run_episode(
     pattern_dict: dict[str, list[str]] | None = None,
     launching_turn: int = 0,
     on_event: Any = None,
+    max_cost_usd: float | None = None,
+    outer_cost_usd: float = 0.0,
 ) -> EpisodeResult:
     """Run one fresh-context episode worker. Returns a structured EpisodeResult.
 
     Never raises for ordinary failures (A9): schema/budget/handler issues become
     ``episode_failed`` results. ``KeyboardInterrupt`` is re-raised after the
     ledger entry + budget are merged.
+
+    ``max_cost_usd`` (M5.3 Slice 1, A4) is the per-run paid ceiling, checked
+    before EVERY paid worker send (including mid-episode continuation and the
+    submit-only reserve send). ``outer_cost_usd`` is the run's committed spend
+    OUTSIDE this episode (lead + prior/completed episodes); the guard adds this
+    episode's own session spend to it. A ceiling reached mid-episode ends the
+    episode immediately with an ``episode_failed(cost_ceiling_reached)`` result
+    (visible in the ledger) and makes no further send.
 
     ``on_event`` (default None) is an optional callback the v3 dispatcher passes
     so episode-internal progress is forwarded into the lead event stream: it
@@ -1017,8 +1051,19 @@ def run_episode(
 
     budget = spec.budget
     tool_call_count = 0
+    # M5.3 Slice 1: over-budget tool_uses the host skipped this episode.
+    overbudget_skips = 0
     schema_retry_used = False
     turn_cap = max(budget.max_tool_calls * 2 + 3, 12)
+
+    def _cost_ceiling_reached() -> bool:
+        # M5.3 Slice 1 (A4): the per-run paid ceiling. True once the run's
+        # committed spend outside this episode PLUS this episode's own session
+        # spend so far reaches ``max_cost_usd``. Checked before every worker send.
+        if max_cost_usd is None:
+            return False
+        episode_cost = sum(e.cost() for e in session.usage_entries())
+        return (outer_cost_usd + episode_cost) >= max_cost_usd
 
     def _episode_budget_entries() -> list[BudgetEntry]:
         # A7: re-tag every send under category f"episode:{kind}" (per-entry cost;
@@ -1061,6 +1106,7 @@ def run_episode(
             summary=(summary or "")[:800],
             branch_snapshots=snapshots,
             tool_call_count=tool_call_count,
+            suppressed_over_budget_calls=overbudget_skips,
             elapsed_seconds=time.time() - start,
             budget_entries=[e.to_dict() for e in budget_entries],
             raw_text=raw_text,
@@ -1079,6 +1125,12 @@ def run_episode(
 
     def _final_result_send() -> EpisodeResult:
         """Budget exhausted: one submit-only send, preserving structured output."""
+        # M5.3 Slice 1 (A4): the submit-only reserve is still a PAID send — the
+        # per-run ceiling gates it too. If reached, end budget-class with no send.
+        if _cost_ceiling_reached():
+            return _finish(
+                "episode_failed", failure_reason="cost_ceiling_reached"
+            )
         nudge = {"role": "user", "content": [{"type": "text", "text": (
             "Budget reached. Call episode_submit_result now. Do not call any "
             "other tool. Submit the best partial result you can support."
@@ -1106,9 +1158,16 @@ def run_episode(
         return _finish("episode_failed", failure_reason="budget_exhausted", raw_text=raw)
 
     def _run() -> EpisodeResult:
-        nonlocal tool_call_count, schema_retry_used
+        nonlocal tool_call_count, schema_retry_used, overbudget_skips
         try:
             for _turn in range(turn_cap):
+                # M5.3 Slice 1 (A4): the per-run paid ceiling is checked BEFORE
+                # every worker send, including the submit-only reserve reached via
+                # _final_result_send. If reached, end budget-class with NO send.
+                if _cost_ceiling_reached():
+                    return _finish(
+                        "episode_failed", failure_reason="cost_ceiling_reached"
+                    )
                 # A9: wall clock is checked BETWEEN tool calls (never mid-tool).
                 if time.time() - start > budget.wall_clock_seconds:
                     return _final_result_send()
@@ -1158,6 +1217,33 @@ def run_episode(
                             "episode_failed", failure_reason="schema_mismatch",
                             raw_text=json.dumps(proposed, ensure_ascii=False, default=str),
                         )
+                    # M5.3 Slice 1: enforce the tool-call cap BEFORE each ordinary
+                    # / composite call (not after the whole batch). A model may
+                    # emit more calls than remain; execute only those that fit and
+                    # synthesize a paired ``budget_exhausted`` result for every
+                    # SKIPPED tool_use so the recorded exchange has exactly one
+                    # tool_result per tool_use (an unpaired exchange 400s at
+                    # resume). A valid ``episode_submit_result`` is handled above,
+                    # so it is still accepted even in an over-budget batch.
+                    if tool_call_count >= budget.max_tool_calls:
+                        overbudget_skips += 1
+                        _emit_ep("episode_tool_call_skipped", {
+                            "turn": ep_turn, "tool": name,
+                            "reason": "budget_exhausted",
+                        })
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tu["id"],
+                            "content": json.dumps({
+                                "error": "budget_exhausted",
+                                "reason": (
+                                    "episode tool-call budget reached; this call "
+                                    "was not executed."
+                                ),
+                                "max_tool_calls": budget.max_tool_calls,
+                            }, ensure_ascii=False),
+                        })
+                        continue
                     _emit_ep("episode_tool_call", {
                         "turn": ep_turn, "tool": name,
                         "arguments": _compact_episode_args(args),

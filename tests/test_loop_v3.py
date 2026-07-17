@@ -973,3 +973,105 @@ def test_run_v3_interrupt_pairs_all_tool_results(monkeypatch):
     assert pair_sets(art.messages) == ({"x1", "x2"}, {"x1", "x2"})
     assert pair_sets(art.investigation_state["recent_exchanges"]) == (
         {"x1", "x2"}, {"x1", "x2"})
+
+
+# ---------------------------------------------------------------------------
+# M5.3 Slice 1: the per-run paid ceiling (max_cost_usd). Uses gpt-5.5 fake
+# sessions so estimate_provider_cost yields a nonzero, deterministic cost:
+#   lead send   (1000, 50, 100) -> $0.00605
+#   worker send (100,  20,   5) -> $0.0010775
+# No paid model is called — the sessions are scripted fakes (Verification A).
+# ---------------------------------------------------------------------------
+def test_m53_max_cost_usd_prevents_next_lead_send():
+    """A cost ceiling reached after the first lead send prevents the next paid
+    lead send and still produces a complete, honestly-terminated artifact."""
+    ct, _alpha = _caesar_cipher("THE DOG")
+    lead = ScriptedSession([
+        [ToolUseBlock(id="r1", name="decode_show", input={"branch": "main"})],
+        [ToolUseBlock(id="r2", name="decode_show", input={"branch": "main"})],
+    ], model="gpt-5.5")
+    # After turn 1's $0.00605 lead send, $0.003 is exceeded -> turn 2 is blocked.
+    art = run_v3(ct, session=lead, language="en", max_iterations=5,
+                 cipher_id="v3_cost_lead", max_cost_usd=0.003)
+    # Exactly one paid lead send happened.
+    assert len(lead.blocks_seen) == 1
+    assert any(event.event == "cost_ceiling_reached" for event in art.loop_events)
+    # Honest termination with a complete artifact.
+    assert art.status == "unsolved"
+    assert art.solution is None
+    assert art.investigation_state is not None
+    assert art.budget_by_category  # finalize ran
+    assert art.session_transcript is not None
+
+
+def test_m53_cost_ceiling_between_two_worker_sends_terminates_episode():
+    """A4: a ceiling that trips BETWEEN two worker sends ends the active episode
+    budget-class (no second worker send) and makes no further paid call."""
+    survey_good = {"findings": ["f"], "suspected_modes": [], "recommended_next": []}
+
+    class CostlyWorker:
+        """Two sends: a tool call, then a submit that must never fire."""
+
+        def __init__(self, provider=None, system="", role="episode:survey"):
+            self.model = "gpt-5.5"
+            self.provider_name = "openai"
+            self.capabilities = SessionCapabilities()
+            self._budget: list[BudgetEntry] = []
+            self._n = 0
+
+        def send(self, blocks, tools=None, max_tokens=8192):
+            self._budget.append(
+                BudgetEntry("episode:survey", "openai", "gpt-5.5", 100, 20, 5))
+            step = self._n
+            self._n += 1
+            if step == 0:
+                content = [ToolUseBlock(id="w0", name="decode_show",
+                                        input={"branch": "main"})]
+            else:  # would submit — but the ceiling must block this send
+                content = [ToolUseBlock(id="w1", name="episode_submit_result",
+                                        input={"result": survey_good,
+                                               "summary": "s"})]
+            return ModelResponse(content=content, usage=ModelUsage(100, 20, 5))
+
+        def usage_entries(self):
+            return list(self._budget)
+
+        def export_transcript(self):
+            return {"provider": "openai", "model": self.model, "exchanges": []}
+
+    workers: list[CostlyWorker] = []
+
+    def _builder(provider, system, role):
+        worker = CostlyWorker(provider, system, role)
+        workers.append(worker)
+        return worker
+
+    sessions_mod.register_session_builder("episode:survey", _builder)
+    try:
+        ct, _alpha = _caesar_cipher("THE DOG")
+        lead = ScriptedSession([
+            [ToolUseBlock(id="e1", name="episode_run", input={
+                "kind": "survey", "goal": "diagnose", "branches": ["main"]})],
+            [TextBlock(text="would continue")],
+        ], model="gpt-5.5")
+        # base after lead send = $0.00605 (< 0.0068 -> worker send 1 allowed);
+        # after worker send 1 = $0.0071275 (>= 0.0068 -> worker send 2 blocked).
+        art = run_v3(ct, session=lead, language="en", max_iterations=5,
+                     cipher_id="v3_cost_episode", max_cost_usd=0.0068)
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:survey", None)
+
+    # Exactly one worker send happened (the second was ceiling-blocked).
+    assert len(workers) == 1
+    assert len(workers[0]._budget) == 1
+    # The episode is recorded budget-terminated in the ledger.
+    assert art.episodes[-1]["kind"] == "survey"
+    assert art.episodes[-1]["status"] == "episode_failed"
+    assert art.episodes[-1]["failure_reason"] == "cost_ceiling_reached"
+    assert art.episodes[-1]["tool_call_count"] == 1
+    # No further paid lead send after the ceiling; complete honest artifact.
+    assert len(lead.blocks_seen) == 1
+    assert any(event.event == "cost_ceiling_reached" for event in art.loop_events)
+    assert art.status == "unsolved"
+    assert art.solution is None
+    assert art.investigation_state is not None
