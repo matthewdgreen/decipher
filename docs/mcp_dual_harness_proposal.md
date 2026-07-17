@@ -402,7 +402,68 @@ payload and allowed context; only the post-run grading layer sees ground truth:
   debugging observation, not evidence for decommissioning v3 or retiring a
   host-side control.
 
-## 7. Phased plan (sizes are rough; no code in this proposal)
+## 7. Modularity, refactoring cost, and the no-breakage rule
+
+**Hard rule (user, 2026-07-17): the current v3 agent must not break at all.
+No code duplication; the server and v3 share one implementation.**
+
+### 7.0 What the code actually requires (seam analysis)
+
+Reusable AS-IS, zero refactor, zero duplication — these are already
+loop-independent modules the MCP server imports directly:
+
+- `InvestigationState` + serialization (`investigation/state.py`) — the
+  shared substrate; the revision-checked store wraps it.
+- `context.py` (`workflow_state`, `build_lead_context`) — becomes the body of
+  `investigation_status` (rendered to one text blob).
+- `WorkspaceToolExecutor` + `AttestationPolicy` (`agent/tools_v2.py`) —
+  already constructed standalone with injected policy.
+- `episodes.run_episode` — already callable outside the loop (the lead
+  dispatches it); backs `request_independent_verification`.
+- The experiment queue (`experiments.py`) — dispatchers already take
+  `(queue, state, workspace, executor, args, turn)`.
+- Composites (`actions.execute_composite`), `model_provider`/`sessions`,
+  scorers, menus, solvers.
+
+**The one real refactor**: `run_v3`'s lead *dispatch layer* — the nested
+closures `_dispatch_episode_run` / `_dispatch_episode_install` /
+`_dispatch_repair_transaction` (+ `_settle_repair_outcome`, saturation
+bookkeeping, duplicate suppression, episode-kind gating), roughly 600–800
+lines entangled with the turn loop's `emit` and bookkeeping. Extract them
+into a loop-independent host object (working name `InvestigationHost`)
+owning `(state, workspace, executor, queue, emit)` and exposing
+`handle_tool(name, args) -> result`. After extraction:
+
+- `run_v3` becomes a thin driver: build context → `session.send` → for each
+  tool_use → `host.handle_tool` → bookkeeping. Same behavior, same events,
+  same artifacts.
+- The MCP server is a second thin driver over the *same* host (plus the
+  revision store and capsule layer). One implementation, two entry points.
+
+### 7.1 Why v3 cannot break
+
+1. The extraction lands FIRST as its own zero-behavior-change slice through
+   the standard pipeline (spec → coder → adversarial review → land), before
+   any MCP code exists.
+2. The entire existing suite (~1,690 tests) exercises the dispatch layer
+   THROUGH `run_v3` with scripted sessions — M5.3's saturation, acceptance,
+   and gate tests all drive the exact code being moved, so a
+   behavior-preservation failure is caught by construction, not by new tests.
+3. The Sequence-B replay test pins the end-to-end lead path.
+4. The MCP server is a new module + new entry point that *imports* the host;
+   the v3 CLI path never imports MCP code. Addition cannot break it.
+5. Optional belt-and-suspenders: one ~$1.3 paid parity smoke
+   (borg_0109v, v3) after the extraction lands, before Phase A.
+
+### 7.2 Cost estimate
+
+- Host extraction slice: comparable to one M5.3 slice (days, not weeks, at
+  the current cadence).
+- MCP server adapter: ~300–500 lines of new adapter/capsule/revision code
+  (Phases A–B), everything else reuse.
+- Client integration + doctrine files: small (Phase C).
+
+## 7½. Phased plan (sizes are rough; no code in this proposal)
 
 - **Phase 0 — policy archaeology + acceptance design** (small): build the
   provenance ledger; classify controls; define sanitized-capsule requirements,
