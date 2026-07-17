@@ -812,6 +812,14 @@ def _run_automated_impl(
                 solver_hints=solver_hints,
             )
             steps.append(step)
+        elif routing["route"] == "transposition":
+            solver, key, decryption, step = _run_transposition_solver(
+                cipher_text,
+                language,
+                cipher_system=cipher_system,
+                solver_hints=solver_hints,
+            )
+            steps.append(step)
         elif routing["route"] == "periodic_polyalphabetic":
             solver, key, decryption, step = _run_periodic_polyalphabetic(
                 cipher_text,
@@ -2851,6 +2859,44 @@ def _select_solver_path(
                 f"{pt_alpha.size}"
             ),
         }
+    # --- keyed-column transposition family (columnar/railfence/redefence/
+    # myszkowski/amsco/nihilist/cadenus) ---
+    # The pure_transposition route above already claims cipher systems whose
+    # name contains "transposition" (columnar/route/nihilist). Catch the ACA
+    # families whose names do not, plus unlabeled ciphers whose monogram
+    # distribution matches the language BY LETTER — a signature that a
+    # transposition preserves but a substitution/homophonic destroys. This runs
+    # only for A-Z-sized alphabets (larger alphabets were routed homophonic
+    # above), so a plain-substitution or homophonic cipher never reaches a
+    # transposition sweep.
+    if not is_mixed_transposition:
+        transposition_family = any(
+            token in cipher_name
+            for token in (
+                "railfence", "rail_fence", "redefence", "redefense",
+                "myszkowski", "amsco", "columnar", "nihilist", "cadenus",
+            )
+        )
+        content_suspicious = False
+        if not transposition_family and word_groups <= 1 and alphabet_size <= pt_alpha.size:
+            try:
+                from analysis.transposition_solver import transposition_suspicion
+
+                content_suspicious = bool(
+                    transposition_suspicion(cipher_text, language)["suspicious"]
+                )
+            except Exception:  # noqa: BLE001 — never let detection break routing
+                content_suspicious = False
+        if transposition_family or content_suspicious:
+            return {
+                "route": "transposition",
+                "solver": "transposition_permutation_search",
+                "reason": (
+                    f"cipher_system={cipher_system or 'unknown'}"
+                    if transposition_family
+                    else "monogram distribution matches language by letter"
+                ),
+            }
     if word_groups <= 1 and alphabet_size > 20:
         return {
             "route": "homophonic",
@@ -2969,7 +3015,92 @@ def _run_pure_transposition(
             "transform+homophonic Z340 path."
         ),
     }
-    return str(result.get("solver") or "pure_transposition_screen_rust"), {}, str(best.get("plaintext") or ""), step
+    # Additive: the Rust screen covers route/grid/matrix families but never
+    # searches keyword-COLUMN orderings, so it leaves real columnar/nihilist at
+    # the monoalphabetic floor. Run the permutation-search transposition solver
+    # and keep whichever decryption reads more like the target language.
+    rust_plaintext = str(best.get("plaintext") or "")
+    solver_name = str(result.get("solver") or "pure_transposition_screen_rust")
+    decryption = rust_plaintext
+    # The permutation search adds keyed-COLUMN coverage (real columnar /
+    # nihilist). The Rust screen already owns route/grid/matrix families
+    # (route, K3 TransMatrix), so skip the extra work there.
+    _perm_search_skip = ("route", "transmatrix", "kryptos", "k3")
+    if not any(token in cipher_system.lower() for token in _perm_search_skip):
+        try:
+            from analysis.transposition_solver import full_score, solve_transposition
+
+            perm = solve_transposition(
+                cipher_text, language=language, family_hint=cipher_system,
+            )
+            if perm.get("status") == "completed":
+                perm_plaintext = str(perm.get("plaintext") or "")
+                rust_score = full_score(rust_plaintext, language) if rust_plaintext else float("-inf")
+                perm_score = full_score(perm_plaintext, language) if perm_plaintext else float("-inf")
+                step["permutation_search"] = {
+                    "family": perm.get("family"),
+                    "params": perm.get("params"),
+                    "score": perm.get("score"),
+                    "dict_rate": perm.get("dict_rate"),
+                    "strategies_run": perm.get("strategies_run"),
+                    "elapsed_seconds": perm.get("elapsed_seconds"),
+                    "rust_full_score": round(rust_score, 6) if rust_score != float("-inf") else None,
+                    "permutation_full_score": round(perm_score, 6) if perm_score != float("-inf") else None,
+                    "adopted": perm_score > rust_score,
+                    "preview": perm_plaintext[:120],
+                }
+                if perm_score > rust_score:
+                    decryption = perm_plaintext
+                    solver_name = "transposition_permutation_search"
+        except Exception as exc:  # noqa: BLE001 — never let the additive solver break the run
+            step["permutation_search"] = {"status": "error", "error": str(exc)[:200]}
+    return solver_name, {}, decryption, step
+
+
+def _run_transposition_solver(
+    cipher_text: CipherText,
+    language: str,
+    cipher_system: str = "",
+    solver_hints: dict[str, Any] | None = None,
+) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    """Run the permutation-search transposition solver (keyed-column families).
+
+    Covers keyword columnar, railfence/redefence, myszkowski, amsco, and
+    nihilist transposition, scored by the existing dictionary + n-gram language
+    model and bounded by a time/candidate budget so a run never hangs.
+    """
+
+    from analysis.transposition_solver import solve_transposition
+
+    result = solve_transposition(
+        cipher_text, language=language, family_hint=cipher_system,
+    )
+    step = {
+        "name": "solve_transposition",
+        "solver": result.get("solver", "transposition_solver"),
+        "status": result.get("status"),
+        "cipher_system": cipher_system,
+        "family": result.get("family"),
+        "params": result.get("params"),
+        "score": result.get("score"),
+        "dict_rate": result.get("dict_rate"),
+        "budget_seconds": result.get("budget_seconds"),
+        "strategies_run": result.get("strategies_run"),
+        "candidate_count": result.get("candidate_count"),
+        "elapsed_seconds": result.get("elapsed_seconds"),
+        "top_candidates": result.get("candidates"),
+        "note": result.get("note"),
+    }
+    if result.get("status") != "completed":
+        raise ValueError(
+            str(result.get("reason") or "transposition solver produced no candidate")
+        )
+    return (
+        "transposition_permutation_search",
+        {},
+        str(result.get("plaintext") or ""),
+        step,
+    )
 
 
 def _run_periodic_polyalphabetic(

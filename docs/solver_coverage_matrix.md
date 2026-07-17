@@ -5,12 +5,19 @@ English case per family (35 families, `scripts/solver_coverage_sweep.py`,
 `artifacts/coverage_sweep/matrix.json`). Char accuracy vs ground truth.
 **This is a coverage probe, n=1/family — directional, not a leaderboard.**
 
+**Correction (2026-07-16):** the transposition-solver acceptance (n≥2, fresh
+seeds) showed `route_transposition` at ~0.36–0.75 on medium cases, NOT the
+0.988 originally recorded here — that figure was an easier n=1 probe. Route
+remains a GAP (deferred to the existing Rust route screen). columnar/railfence/
+redefence/myszkowski/amsco/nihilist_transposition are now SOLVED (~1.000) by
+the new transposition_solver (landed 2026-07-16); route + cadenus remain gaps.
+
 ## Genuinely solved (real cryptanalysis)
 
 | family | char | why it works |
 |---|---|---|
 | vigenere / beaufort / variant_beaufort / gronsfeld | 1.000 | periodic polyalphabetic solver |
-| route_transposition | 0.988 | transform search recovers the route permutation (verified: raw ct↔pt overlap only 0.25, a real solve) |
+
 | a1z26 / morse / tap_code | ~0.99 | **each is a 1:1 per-token substitution** — our symbol-general mono solver cracks any 1:1 encoding regardless of symbol shape |
 
 ## NOT solved — the ~0.40 "mono floor" (solver applied the WRONG attack)
