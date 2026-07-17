@@ -1610,10 +1610,17 @@ toolset and no benchmark context.
 | `kind` | string | **required** — `survey` / `search` / `reading` / `compare` / `repair` / `verify` |
 | `goal` | string | **required** — what the episode should accomplish |
 | `branches` | array[string] | **required** — branch name(s); `verify` requires EXACTLY ONE |
-| `search_tool` | string | for `search` episodes: which `search_*` tool to run |
+| `search_tool` | enum | **required for `search`** — `search_anneal`, `search_hill_climb`, `search_homophonic_anneal`, `search_periodic_polyalphabetic`, `search_pure_transposition`, or `search_word_repair_menu` |
 | `context_note` | string | optional guidance passed to the worker |
 | `max_tool_calls` | integer | optional per-episode tool-call cap |
 | `reading_id` | string | for `repair`: the reading to compile |
+
+The `search_tool` choices are derived from the canonical tool registry and are
+advertised directly to the provider. Long-running searches such as the full
+automated solver are not episode work; submit those through
+`experiment_submit(type="automated_solver", ...)`. If malformed provider output
+bypasses schema validation, the host returns the exact valid choices and an
+example of each route.
 
 ---
 

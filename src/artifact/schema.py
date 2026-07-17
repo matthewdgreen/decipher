@@ -113,6 +113,9 @@ class RunArtifact:
     cipher_token_count: int = 0
     cipher_word_count: int = 0
     max_iterations: int = 0
+    # Configured v3 paid-send ceiling. None means uncapped. This is provenance,
+    # distinct from estimated_cost_usd (the amount actually committed).
+    max_cost_usd: float | None = None
     automated_preflight: dict[str, Any] | None = None
     cipher_id_report: dict[str, Any] | None = None
     benchmark_context: dict[str, Any] | None = None

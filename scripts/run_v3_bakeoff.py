@@ -941,16 +941,7 @@ def _run_matrix(args: argparse.Namespace) -> int:
                 case, args.benchmark_root, args.cache_dir
             )
 
-            from benchmark.runner_v2 import BenchmarkRunnerV2
-
-            runner = BenchmarkRunnerV2(
-                claude_api=api,
-                max_iterations=args.max_iterations,
-                verbose=args.verbose,
-                artifact_dir=artifact_root / cell.artifact_subdir(),
-                automated_preflight=cell.preflight,
-                agent_loop=cell.loop,
-            )
+            runner = _make_runner(api, args, cell, artifact_root)
             language = "en" if case.kind == "synth" else None
             result = runner.run_test(test_data, language=language)
 
@@ -980,6 +971,27 @@ def _run_matrix(args: argparse.Namespace) -> int:
 
     print("[matrix] complete.")
     return EXIT_OK
+
+
+def _make_runner(
+    api: Any, args: argparse.Namespace, cell: Cell, artifact_root: Path
+) -> Any:
+    """Construct one matrix runner with the v3-only paid ceiling explicit.
+
+    Keeping this as a small helper makes entry-point passthrough directly
+    unit-testable without launching a benchmark case or provider call.
+    """
+    from benchmark.runner_v2 import BenchmarkRunnerV2
+
+    return BenchmarkRunnerV2(
+        claude_api=api,
+        max_iterations=args.max_iterations,
+        verbose=args.verbose,
+        artifact_dir=artifact_root / cell.artifact_subdir(),
+        automated_preflight=cell.preflight,
+        agent_loop=cell.loop,
+        max_cost_usd=(args.max_cost_per_run if cell.loop == "v3" else None),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1022,6 +1034,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-total-cost", type=float,
                    help="Stop before another run when spend plus the per-run "
                         "reserve would exceed this dollar ceiling.")
+    p.add_argument("--max-cost-per-run", type=float,
+                   help="Hard paid-send ceiling for each v3 run. The configured "
+                        "value is persisted in its artifact. This does not cap "
+                        "v2 cells; use with --loop v3 for focused acceptance.")
     p.add_argument("--budget-reserve-per-run", type=float, default=0.0,
                    help="Conservative next-run reserve used with "
                         "--max-total-cost (default 0).")

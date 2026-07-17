@@ -537,6 +537,17 @@ Claim and update the pre-existing stale assertion in
 to the Slice-2 menu contract; record that it predated M5.3 rather than leaving
 it ambient red or reverting the improved menu wording.
 
+Post-smoke hardening also requires the reproducible local performance check:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/benchmark_word_hypothesis_batch.py \
+  --count 8 --repeats 3 --require-reduction 0.70
+```
+
+It reports cold singleton, current cached-singleton, and batch arms separately.
+The >=70% gate compares the historical cold-singleton shape to the batch; the
+cached arm prevents cache gains from being misattributed to batching.
+
 ### B. Scripted end-to-end replay
 
 Use a scripted provider and a stored/trimmed version of the M5.2 sequence to
@@ -562,6 +573,12 @@ Only after local acceptance, request user approval for one run:
 - maximum iterations: 25;
 - target cost: below $3;
 - hard per-run ceiling: $5.
+
+The standard harness must enforce that ceiling with
+`--max-cost-per-run 5`; the configured value must appear as `max_cost_usd` in
+the saved artifact and in `scripts/inspect_artifact.py` output. Search episodes
+must select an exact provider-advertised `search_tool`; automated solver work
+uses the typed experiment queue rather than a made-up episode tool alias.
 
 Paid acceptance targets:
 

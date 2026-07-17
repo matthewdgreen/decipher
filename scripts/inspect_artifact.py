@@ -341,6 +341,7 @@ def derive_run_facts(artifact: dict) -> dict:
         attestation_status = "none"
 
     cost_usd = float(artifact.get("estimated_cost_usd") or 0.0)
+    max_cost_usd = artifact.get("max_cost_usd")
 
     return {
         "model": model,
@@ -354,6 +355,9 @@ def derive_run_facts(artifact: dict) -> dict:
         "final_branch": final_branch,
         "attestation_status": attestation_status,
         "cost_usd": cost_usd,
+        "max_cost_usd": (
+            float(max_cost_usd) if isinstance(max_cost_usd, (int, float)) else None
+        ),
     }
 
 
@@ -384,7 +388,10 @@ def format_header(artifact: dict) -> str:
             else f"  Accuracy: char={char_acc:.1%}"
         )
     lines.append(f"  Branch  : {facts['final_branch']}   attestation: {facts['attestation_status']}")
-    lines.append(f"  Cost    : ${facts['cost_usd']:.4f}")
+    cost_line = f"  Cost    : ${facts['cost_usd']:.4f}"
+    if facts["max_cost_usd"] is not None:
+        cost_line += f" / ${facts['max_cost_usd']:.2f} hard ceiling"
+    lines.append(cost_line)
     lines.append("=" * 70)
     return "\n".join(lines)
 

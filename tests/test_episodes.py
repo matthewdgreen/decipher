@@ -15,6 +15,7 @@ from investigation import sessions as sessions_mod
 from investigation.board import CARD_MIRROR_KEYS
 from investigation.episodes import (
     EPISODE_KINDS,
+    SEARCH_EPISODE_TOOL_NAMES,
     EpisodeBudget,
     EpisodeSpec,
     _build_episode_workspace,
@@ -182,6 +183,33 @@ def test_search_toolset_includes_companions():
     assert "search_review_pure_transposition_finalists" in ts
     assert "act_install_pure_transposition_finalists" in ts
     assert {"decode_show", "score_panel"} <= ts
+
+
+def test_search_tool_schema_uses_canonical_allowed_enum():
+    episode_run = next(
+        tool for tool in v3_lead_tool_definitions()
+        if tool["name"] == "episode_run"
+    )
+    schema = episode_run["input_schema"]["properties"]["search_tool"]
+    assert tuple(schema["enum"]) == SEARCH_EPISODE_TOOL_NAMES
+    assert "search_automated_solver" not in schema["enum"]
+    assert "search_review_word_repair_finalists" not in schema["enum"]
+    for name in schema["enum"]:
+        spec = EpisodeSpec(
+            kind="search", goal="test", inputs={"search_tool": name}
+        )
+        assert name in spec.toolset
+
+
+def test_search_episode_rejects_missing_and_alias_names_with_guidance():
+    with pytest.raises(ValueError, match="require search_tool"):
+        EpisodeSpec(kind="search", goal="test")
+    with pytest.raises(ValueError, match="experiment_submit") as exc:
+        EpisodeSpec(
+            kind="search", goal="test",
+            inputs={"search_tool": "automated_solver"},
+        )
+    assert "search_anneal" in str(exc.value)
 
 
 # ---------------------------------------------------------------------------

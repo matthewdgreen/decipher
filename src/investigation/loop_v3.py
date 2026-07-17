@@ -546,6 +546,7 @@ def run_v3(
         cipher_token_count=len(cipher_text.tokens),
         cipher_word_count=len(cipher_text.words),
         max_iterations=max_iterations,
+        max_cost_usd=max_cost_usd,
         automated_preflight=automated_preflight,
         benchmark_context=(
             benchmark_context.to_artifact_dict()
@@ -1011,7 +1012,29 @@ def run_v3(
         try:
             spec = EpisodeSpec(kind=kind, goal=str(args.get("goal") or ""), inputs=inputs)
         except Exception as exc:  # noqa: BLE001 - bad spec → structured error
-            return json.dumps({"error": f"invalid episode_run: {exc}"})
+            payload: dict[str, Any] = {
+                "error": f"invalid episode_run: {exc}",
+            }
+            if kind == "search":
+                from investigation.episodes import SEARCH_EPISODE_TOOL_NAMES
+                payload.update({
+                    "valid_search_tools": list(SEARCH_EPISODE_TOOL_NAMES),
+                    "episode_corrected_example": {
+                        "kind": "search",
+                        "goal": str(args.get("goal") or "Search this branch."),
+                        "branches": list(args.get("branches") or ["main"]),
+                        "search_tool": "search_anneal",
+                    },
+                    "automated_solver_example": {
+                        "tool": "experiment_submit",
+                        "input": {
+                            "type": "automated_solver",
+                            "branch": str(next(iter(args.get("branches") or []), "main")),
+                            "config": {},
+                        },
+                    },
+                })
+            return json.dumps(payload)
         ep_provider = _provider_for_model((episode_models or {}).get(kind))
         result = run_episode(
             spec, state, provider=ep_provider, language=language,

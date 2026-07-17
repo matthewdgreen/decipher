@@ -1077,6 +1077,30 @@ def test_m53_max_cost_usd_prevents_next_lead_send():
     assert art.investigation_state is not None
     assert art.budget_by_category  # finalize ran
     assert art.session_transcript is not None
+    assert art.max_cost_usd == pytest.approx(0.003)
+
+
+def test_invalid_search_episode_returns_exact_choices_and_both_routes():
+    """Provider-schema bypasses still get an actionable host correction."""
+    ct, _alpha = _caesar_cipher("THE DOG")
+    lead = ScriptedSession([
+        [ToolUseBlock(id="bad-search", name="episode_run", input={
+            "kind": "search", "goal": "run automated solver",
+            "branches": ["main"], "search_tool": "automated_solver",
+        })],
+        [TextBlock(text="stop")],
+    ])
+    art = run_v3(
+        ct, session=lead, language="en", max_iterations=2,
+        cipher_id="v3_invalid_search_name",
+    )
+    payload = next(
+        item for item in _tool_result_payloads(art)
+        if item.get("valid_search_tools")
+    )
+    assert "search_anneal" in payload["valid_search_tools"]
+    assert payload["episode_corrected_example"]["search_tool"] == "search_anneal"
+    assert payload["automated_solver_example"]["tool"] == "experiment_submit"
 
 
 def test_m53_cost_ceiling_between_two_worker_sends_terminates_episode():

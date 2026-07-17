@@ -601,3 +601,24 @@ def test_normalize_args_expands_tilde():
     assert args.artifact_root == os.path.join(home, "arts")
     assert args.summary == os.path.join(home, "sum.jsonl")
     assert args.cache_dir == os.path.join(home, "cache")
+
+
+def test_max_cost_per_run_parser_and_runner_passthrough(tmp_path):
+    args = bake.build_parser().parse_args([
+        "--max-cost-per-run", "5", "--max-iterations", "17",
+    ])
+    v3 = bake._make_runner(
+        object(), args,
+        bake.Cell("v3", "borg_single_B_borg_0109v", True, 1),
+        tmp_path,
+    )
+    assert v3.max_cost_usd == 5.0
+    assert v3.max_iterations == 17
+
+    # The v3 ceiling must never be presented as protection for v2 calls.
+    v2 = bake._make_runner(
+        object(), args,
+        bake.Cell("v2", "borg_single_B_borg_0109v", True, 1),
+        tmp_path,
+    )
+    assert v2.max_cost_usd is None

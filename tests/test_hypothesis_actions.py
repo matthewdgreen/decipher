@@ -751,9 +751,9 @@ def test_apply_reading_legacy_question_mark_is_not_a_wildcard():
 # hypothesis_test_words — M5.3 Slice 3 (batch + menu cache + B1 seams)
 # ---------------------------------------------------------------------------
 # Note: the spec's ">=70% cumulative word-hypothesis time" perf target is
-# measured against the recorded replay fixture by the Slice-7 replay harness,
-# NOT here. These tests assert the underlying single-menu-build property
-# directly (test_batch_builds_repair_menu_exactly_once and the cache tests).
+# measured by scripts/benchmark_word_hypothesis_batch.py against an explicit
+# pre-M5.3 cold-singleton arm, NOT by a wall-clock pytest assertion. These tests
+# pin the underlying single-menu-build property directly.
 def _counting_build(monkeypatch, counter):
     """Wrap automated_runner.build_word_repair_menu with a call counter."""
     real = automated_runner.build_word_repair_menu

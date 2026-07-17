@@ -519,6 +519,7 @@ def test_derive_run_facts_v3_artifact_shape():
         "loop_version": "v3",
         "status": "unsolved",
         "estimated_cost_usd": 1.25,
+        "max_cost_usd": 5.0,
         "tool_calls": [{"tool_name": "decode_show", "iteration": i} for i in range(1, 8)],
         "branch_roles": {
             "best_scored_branch": "main",
@@ -536,11 +537,13 @@ def test_derive_run_facts_v3_artifact_shape():
     assert facts["final_branch"] == "best"
     assert facts["declared"] is False
     assert facts["loop_version"] == "v3"
+    assert facts["max_cost_usd"] == 5.0
     assert facts["attestation_status"] == "1 recorded (0 positive)"
     header = inspect_artifact.format_header(artifact)
     assert "gpt-5.5" in header and "openai" in header and "v3" in header
     assert "unsolved" in header and "best" in header
     assert "1 recorded (0 positive)" in header
+    assert "$1.2500 / $5.00 hard ceiling" in header
 
     # Automated-runner-shaped dict with explicit keys still wins (backward compat).
     automated = {

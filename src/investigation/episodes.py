@@ -100,6 +100,17 @@ _HYPOTHESIS_HANDLERS = frozenset({
 # Tool-name prefixes an episode may never include.
 _FORBIDDEN_PREFIXES = ("meta_", "inspect_", "list_")
 
+# Provider-visible initiating tools for a search episode.  Derive this from the
+# canonical v2 registry so the episode schema cannot drift into a second list of
+# tool names.  Review-only tools are companions, while long-running searches
+# remain experiment-queue work and are excluded above.
+SEARCH_EPISODE_TOOL_NAMES = tuple(sorted(
+    name for name in VALID_TOOL_NAMES
+    if name.startswith("search_")
+    and not name.startswith("search_review_")
+    and name not in EPISODE_EXCLUDED_TOOLS
+))
+
 # search_tool → its review/rate/install companions (module constant; Part 4).
 _SEARCH_COMPANIONS: dict[str, list[str]] = {
     "search_word_repair_menu": [
@@ -480,9 +491,20 @@ def episode_toolset_for(kind: str, inputs: dict[str, Any]) -> set[str]:
     toolset = set(entry["toolset"])
     if kind == "search":
         search_tool = str(inputs.get("search_tool") or "").strip()
-        if search_tool:
-            toolset.add(search_tool)
-            toolset.update(_SEARCH_COMPANIONS.get(search_tool, []))
+        if not search_tool:
+            raise ValueError(
+                "search episodes require search_tool; choose one of: "
+                + ", ".join(SEARCH_EPISODE_TOOL_NAMES)
+            )
+        if search_tool not in SEARCH_EPISODE_TOOL_NAMES:
+            raise ValueError(
+                f"invalid search_tool {search_tool!r}; choose one of: "
+                + ", ".join(SEARCH_EPISODE_TOOL_NAMES)
+                + ". Long-running automated solver searches belong in "
+                  "experiment_submit(type='automated_solver'), not episode_run."
+            )
+        toolset.add(search_tool)
+        toolset.update(_SEARCH_COMPANIONS.get(search_tool, []))
     return toolset
 
 
@@ -713,7 +735,15 @@ EPISODE_RUN_TOOL = {
                     "requires EXACTLY ONE existing branch (the candidate to attest)."
                 ),
             },
-            "search_tool": {"type": "string"},
+            "search_tool": {
+                "type": "string",
+                "enum": list(SEARCH_EPISODE_TOOL_NAMES),
+                "description": (
+                    "Required only when kind='search'. Choose the exact local "
+                    "search tool to run. Long-running automated solver searches "
+                    "must use experiment_submit(type='automated_solver') instead."
+                ),
+            },
             "context_note": {"type": "string"},
             "max_tool_calls": {"type": "integer"},
             # A1/M3: hand a stored Reading to a (repair) episode by id.
