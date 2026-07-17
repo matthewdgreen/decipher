@@ -1035,9 +1035,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Stop before another run when spend plus the per-run "
                         "reserve would exceed this dollar ceiling.")
     p.add_argument("--max-cost-per-run", type=float,
-                   help="Hard paid-send ceiling for each v3 run. The configured "
-                        "value is persisted in its artifact. This does not cap "
-                        "v2 cells; use with --loop v3 for focused acceptance.")
+                   help="Pre-send paid-cost cutoff for each v3 run. No new call "
+                        "starts once committed cost reaches it; the final allowed "
+                        "call can overshoot. The value is persisted in artifacts. "
+                        "This does not cap v2 cells; use with --loop v3.")
     p.add_argument("--budget-reserve-per-run", type=float, default=0.0,
                    help="Conservative next-run reserve used with "
                         "--max-total-cost (default 0).")

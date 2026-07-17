@@ -199,7 +199,15 @@ _REPAIR_SCHEMA = {
     "properties": {
         "applied": {"type": "boolean"},
         "best_branch": {"type": ["string", "null"]},
-        "edits": {"type": "array", "items": {"type": "string"}},
+        "edits": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": (
+                "Exact host-generated edit labels copied verbatim from successful "
+                "tool results, one label per item (for example W:D->F). Put all "
+                "explanation in notes, never in this array."
+            ),
+        },
         "verdicts": {"type": "array", "items": {
             "type": "object",
             "properties": {
@@ -432,7 +440,9 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
             "diverse finalist set, and compare it before naming exactly one best "
             "changed branch. Report which edits you applied, per-action verdicts, "
             "collateral summaries, and notes. Nothing you fork lands until the "
-            "host repair transaction validates and installs it."
+            "host repair transaction validates and installs it. In the result's "
+            "`edits` array, copy ONLY exact host-generated edit labels from "
+            "successful tool results, one label per item; put prose in `notes`."
         ),
     },
     # M5 Part 1: the independent-reader `verify` episode. EMPTY toolset (text-only

@@ -11,7 +11,11 @@ import pytest
 
 from agent.model_provider import ModelProviderError, ModelResponse, ModelUsage, TextBlock, ToolUseBlock
 from investigation import sessions as sessions_mod
-from investigation.loop_v3 import _fresh_compare_winner, run_v3
+from investigation.loop_v3 import (
+    _fresh_compare_winner,
+    _unbound_edit_claims,
+    run_v3,
+)
 from investigation.sessions import SessionCapabilities
 from investigation.state import BudgetEntry, InvestigationState
 from models.alphabet import Alphabet
@@ -1101,6 +1105,31 @@ def test_invalid_search_episode_returns_exact_choices_and_both_routes():
     assert "search_anneal" in payload["valid_search_tools"]
     assert payload["episode_corrected_example"]["search_tool"] == "search_anneal"
     assert payload["automated_solver_example"]["tool"] == "experiment_submit"
+
+
+def test_repair_edit_claim_binding_accepts_only_host_evidenced_labels():
+    evidence = {"W:D->F", "S009:R->S", "c=R"}
+    claims = [
+        "W:D->F",
+        "Applied monoalphabetic key edit S009:R->S after review.",
+        "Installed c=R on the supported fork.",
+    ]
+    unbound, normalized = _unbound_edit_claims(claims, evidence)
+    assert unbound == []
+    assert normalized[claims[0]] == ["W:D->F"]
+    assert normalized[claims[1]] == ["S009:R->S"]
+    assert normalized[claims[2]] == ["c=R"]
+
+
+def test_repair_edit_claim_binding_rejects_invented_or_label_free_prose():
+    evidence = {"W:D->F"}
+    claims = [
+        "Applied W:D->F and also X:A->B.",
+        "Changed DEDECTU to DEFECTU.",
+    ]
+    unbound, normalized = _unbound_edit_claims(claims, evidence)
+    assert unbound == sorted(claims)
+    assert normalized == {}
 
 
 def test_m53_cost_ceiling_between_two_worker_sends_terminates_episode():

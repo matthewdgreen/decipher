@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import time
 import uuid
 from typing import Any
@@ -407,6 +408,35 @@ def _worker_rejected_targets(result: dict[str, Any]) -> set[str]:
         if "reject" in word or word in {"discard", "discarded", "invalid", "not viable"}:
             rejected.add(str(verdict.get("target") or ""))
     return rejected
+
+
+_EDIT_LABEL_IN_PROSE_RE = re.compile(
+    r"(?:[A-Za-z0-9_]+:[A-Z?]->[A-Z?]|[A-Za-z0-9_]+=[A-Z?])"
+)
+
+
+def _unbound_edit_claims(
+    claims: list[str], edit_evidence: set[str]
+) -> tuple[list[str], dict[str, list[str]]]:
+    """Bind worker edit claims to host-produced labels, failing closed.
+
+    Exact labels are preferred. A prose-bearing legacy claim is accepted only
+    when it contains mapping-shaped labels and every such label is present in
+    successful composite evidence. This handles ``Applied ... W:D->F ...``
+    without allowing invented mappings or unstructured prose through the gate.
+    """
+    unbound: list[str] = []
+    normalized: dict[str, list[str]] = {}
+    for claim in claims:
+        if claim in edit_evidence:
+            normalized[claim] = [claim]
+            continue
+        labels = _EDIT_LABEL_IN_PROSE_RE.findall(claim)
+        if labels and all(label in edit_evidence for label in labels):
+            normalized[claim] = labels
+            continue
+        unbound.append(claim)
+    return sorted(unbound), normalized
 
 
 def _winner_adjudication_summary(
@@ -1663,10 +1693,13 @@ def run_v3(
 
         # Check 4 — edit_claims_bound.
         claimed_edits = [str(e).strip() for e in result.get("edits") or []]
-        unbound = sorted(e for e in claimed_edits if e not in evidence["edit_evidence"])
+        unbound, normalized_claims = _unbound_edit_claims(
+            claimed_edits, evidence["edit_evidence"]
+        )
         acceptance_checks.append({
             "check": "edit_claims_bound", "passed": not unbound,
             "claimed": len(claimed_edits), "unbound": unbound,
+            "normalized_claims": normalized_claims,
         })
         if unbound:
             return _fail("unsupported_edit_claim")

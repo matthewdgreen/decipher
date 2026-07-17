@@ -390,7 +390,10 @@ def format_header(artifact: dict) -> str:
     lines.append(f"  Branch  : {facts['final_branch']}   attestation: {facts['attestation_status']}")
     cost_line = f"  Cost    : ${facts['cost_usd']:.4f}"
     if facts["max_cost_usd"] is not None:
-        cost_line += f" / ${facts['max_cost_usd']:.2f} hard ceiling"
+        cutoff = facts["max_cost_usd"]
+        cost_line += f" / ${cutoff:.2f} pre-send cutoff"
+        if facts["cost_usd"] > cutoff:
+            cost_line += f" (+${facts['cost_usd'] - cutoff:.4f} final-call overshoot)"
     lines.append(cost_line)
     lines.append("=" * 70)
     return "\n".join(lines)

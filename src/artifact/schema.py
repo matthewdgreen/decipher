@@ -113,8 +113,9 @@ class RunArtifact:
     cipher_token_count: int = 0
     cipher_word_count: int = 0
     max_iterations: int = 0
-    # Configured v3 paid-send ceiling. None means uncapped. This is provenance,
-    # distinct from estimated_cost_usd (the amount actually committed).
+    # Configured v3 pre-send cost cutoff. None means uncapped. A provider call
+    # already admitted below the cutoff can put final billed cost above it; the
+    # artifact/analyzer expose that last-call overshoot explicitly.
     max_cost_usd: float | None = None
     automated_preflight: dict[str, Any] | None = None
     cipher_id_report: dict[str, Any] | None = None

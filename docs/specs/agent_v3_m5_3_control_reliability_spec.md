@@ -574,11 +574,19 @@ Only after local acceptance, request user approval for one run:
 - target cost: below $3;
 - hard per-run ceiling: $5.
 
-The standard harness must enforce that ceiling with
+The standard harness must enforce that pre-send cutoff with
 `--max-cost-per-run 5`; the configured value must appear as `max_cost_usd` in
-the saved artifact and in `scripts/inspect_artifact.py` output. Search episodes
+the saved artifact and in `scripts/inspect_artifact.py` output. Since provider
+cost is known only after a response, the final call admitted below the cutoff
+may overshoot it; the analyzer must render that overshoot, and a separately
+authorized outer reserve remains the true spend bound. Search episodes
 must select an exact provider-advertised `search_tool`; automated solver work
 uses the typed experiment queue rather than a made-up episode tool alias.
+Repair workers must copy host-produced edit labels verbatim into their result's
+`edits` array. For robustness with legacy/prose-bearing model output, the host
+may normalize a claim only when every mapping-shaped label embedded in it is an
+exact member of successful composite evidence; invented or label-free claims
+still fail closed as `unsupported_edit_claim`.
 
 Paid acceptance targets:
 
