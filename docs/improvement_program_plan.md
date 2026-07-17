@@ -730,3 +730,24 @@ en de fr it la --per-family N --out <dir>`. All offline/deterministic.
 These 34 new families are now the concrete queue for docs/inv_family_roadmap.md
 (each can get a diagnosis discriminator + solver referral). Agentic system
 untouched throughout (Codex-owned).
+
+- **CipherLens** (https://github.com/LordAizen1/cipherlens) — noted 2026-07-15.
+  A **cipher-type IDENTIFICATION** project (does NOT decrypt) — so it competes
+  with our INV DIAGNOSIS layer, not our solvers. 15 statistical features
+  (entropy, IC, Kasiski, bigram entropy, …) → 3 ML models (Hybrid CNN 79.24%,
+  DL CNN 68.47%, XGBoost interpretable), classifying 22 ciphers across 6
+  families: monoalphabetic (Caesar/Affine/Atbash), polyalphabetic (Vigenere/
+  Autokey/Beaufort/Porta), transposition (columnar), POLYGRAPHIC (Playfair/
+  Hill/Four-square), FRACTIONATING (Bifid/Trifid/ADFGX/ADFGVX/Nihilist/
+  Polybius), and modern block ciphers (TEA/XTEA/Lucifer/LOKI/MISTY1). No
+  homophonic, no encodings. Python/FastAPI+PyTorch/XGBoost backend + Next.js
+  web UI; IIIT-Delhi B.Tech project (2025-26). REST API + Docker.
+  COMPARISON ANGLE (high value): CipherLens is the natural benchmark for
+  INV-0 — its 22-family set overlaps heavily with the families we just built
+  GENERATORS for (polygraphic/fractionating), and its 79.24% headline is a
+  concrete diagnosis-accuracy bar. INV-0 vs CipherLens on the generated
+  benchmark is a clean, LLM-free comparison; philosophy contrast = ML
+  classifier vs interpretable shuffle-null statistical discriminators. Ties
+  directly into docs/inv_family_roadmap.md (each family gets a discriminator)
+  and the INV model experiments. Distinct from ciphey (encoding/simple-cipher
+  SOLVER, out of our domain); CipherLens is IN our diagnosis domain.
