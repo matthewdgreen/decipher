@@ -217,6 +217,35 @@ OR escape hatch — not a through-the-server solve.
   finalist installs onto a branch, and the verify→declare gate applies. This
   cipher is the ready-made acceptance test.
 
+### Round 6 FIX LANDED + acceptance rerun — 2026-07-18
+
+The fix above shipped as the `quagmire3_shotgun` experiment type
+(spec `docs/specs/experiment_quagmire3_shotgun_spec.md`, commit `fe0c526`):
+Rust-shotgun dispatch with agent-budget defaults (hillclimbs=5000,
+restarts=250, keyword_lengths=[7], cycleword_lengths=[8]), a per-type
+installer that adopts finalists as mode-specific decoded branches (so the
+branch-bound verify→declare gate is reachable), `candidate_rank` on
+`experiment_collect`, and a misroute guard: `automated_solver` now REJECTS
+quagmire `cipher_system` hints with a structured redirect instead of silently
+running the generic periodic screen. Fable-reviewed; suite green.
+
+- **Acceptance: SOLVED 100% EXACT (566/566), entirely INSIDE the MCP
+  surface** — investigation `a0019702343e`, same round-6 cipher, sealed
+  answer untouched until offline grading. Route: `experiment_submit`
+  (defaults, 22.4 s solve) → `experiment_collect install=true`
+  (`exp_fc7604_main`) → `request_independent_verification` (positive:
+  `reader_accepts_as_solution=True`, coherence 9,
+  target_language_confidence 0.99, semantic_recoverability 0.95,
+  damage_scope local; $0.0219 verify spend) → `meta_declare_solution`
+  **accepted**. The registry now records a verified solved terminal where
+  round 6 had been forced to `unsolved`.
+- **Recovered key state is byte-identical to the sealed answer** (tableau
+  keyword `UWVABTC`, cycleword `WJGNHTSR`) — not merely an equivalent.
+  Top-4 finalists tied at the winning score.
+- **Both surface gaps closed as predicted by the one-change FIX note above;
+  no gate semantics changed** (the provenance ledger is untouched — the gate
+  was made *reachable* for this family, not altered).
+
 ### Borg real-manuscript pages (Latin) + a verifier-calibration finding
 Benchmark-recorded char accuracy per Borg Track-B page (no plaintext examined):
 - borg_0109v: consistently solved (median ~0.85, max 0.968).
