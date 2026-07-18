@@ -1481,10 +1481,10 @@ def _install_quagmire3_branch(
             "declaring."
         ),
         "key_type": "QuagmireKey",
-        "quagmire_type": metadata.get("quagmire_type", "quag3"),
+        "quagmire_type": metadata.get("quagmire_type") or "quag3",
         "alphabet_keyword": alphabet_keyword,
         "cycleword": cycleword,
-        "cycleword_shifts": metadata.get("cycleword_shifts", candidate.get("shifts")),
+        "cycleword_shifts": metadata.get("cycleword_shifts") or candidate.get("shifts"),
         "plaintext_alphabet": metadata.get("plaintext_alphabet"),
         "ciphertext_alphabet": metadata.get("ciphertext_alphabet"),
         "quagmire_score": candidate.get("score"),
