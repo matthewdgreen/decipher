@@ -1,0 +1,131 @@
+{
+ "cases": [
+  {
+   "investigation_id": "c56de7e6c600",
+   "client": "codex-mcp-client",
+   "finding": "repair guard false-reject: collateral_within_limits failed on objectively-correct corrections (TRAWLER not in common-words list); reader verified the corrected reading at 0.97",
+   "repair_transactions": [
+    {
+     "transaction_id": "972ac7027c64",
+     "source_branch": "homophonic_candidate",
+     "source_content_hash": "138032c902ff3eeba97f50913be64ef1e268e163769747cc6921782d56b45a60",
+     "reading_id": "6ad62565b7d5",
+     "interpretation_id": "6ad62565b7d5",
+     "interpretation_digest": "8745a9d8374c9db961f2f84057006fb4d982b40b7c8bf22bc152507603bbabaa",
+     "attestation_key": "none",
+     "saturation_key": "456804bd89ad1d8545322396c23bdb9698ab4814",
+     "pair_digest": "cdf345ebd43f67416cf403d9ef4c96f0974d05c8",
+     "retry_of": null,
+     "episode_id": "rc6c17ebf042",
+     "addressed_anomalies": [],
+     "created_turn": 7,
+     "compile_id": "rc6c17ebf042",
+     "mode": "client_compiled",
+     "status": "failed",
+     "reason": "materially_non_improving",
+     "claimed_winner": "wordtest_6_homophonic_candidate",
+     "changed_finalists": [
+      "wordtest_6_homophonic_candidate",
+      "wordtest_6_homophonic_candidate_2",
+      "wordtest_6_homophonic_candidate_3",
+      "wordtest_6_homophonic_candidate_4",
+      "wordtest_6_homophonic_candidate_5"
+     ],
+     "finalist_hashes": [
+      "1225f63fb8bbd97164f417c430c3297e6c716ed67696ecbae95ceff2f43bc16c",
+      "13e2d98415f38724272dc0a278eacf785f21cd3536827367e0fb9e89b46698d1",
+      "888cbc7d9b5e1b7f55d3cb5070457c47f1d90ea8376338f88a44c8de02e639a1",
+      "8bc894bc4f5a2fe239dabe5f1648c3b13d44f176c640a691f61bbbd04cf3d29b",
+      "a73211a4e43dc0918424d4d65b371333261d9228bc8f94288dd1b33cf8c5522c"
+     ],
+     "acceptance": {
+      "policy": "default_deny_v1",
+      "checks": [
+       {
+        "check": "winner_named",
+        "passed": true,
+        "winner": "wordtest_6_homophonic_candidate"
+       },
+       {
+        "check": "worker_applied",
+        "passed": true
+       },
+       {
+        "check": "winner_fork_evidence",
+        "passed": true
+       },
+       {
+        "check": "edit_claims_bound",
+        "passed": true,
+        "claimed": 2,
+        "unbound": [],
+        "normalized_claims": {
+         "S013:T->C": [
+          "S013:T->C"
+         ],
+         "S023:I->W": [
+          "S023:I->W"
+         ]
+        }
+       },
+       {
+        "check": "winner_adjudicated",
+        "passed": true
+       },
+       {
+        "check": "collateral_within_limits",
+        "passed": false,
+        "damaged_occurrences": 3,
+        "improved_occurrences": 0
+       }
+      ],
+      "supported_forks": [
+       "wordtest_6_homophonic_candidate",
+       "wordtest_6_homophonic_candidate_2",
+       "wordtest_6_homophonic_candidate_3",
+       "wordtest_6_homophonic_candidate_4",
+       "wordtest_6_homophonic_candidate_5"
+      ],
+      "edit_evidence_count": 4,
+      "adjudicated": true,
+      "scores_before": {
+       "dict_rate": 0.7288,
+       "quad": -5.0997
+      },
+      "scores_after": null,
+      "score_deltas": null
+     },
+     "failure_class": "evidence",
+     "counted_evidence_failure": true
+    }
+   ],
+   "verify_attestations": [
+    {
+     "reader_accepts_as_solution": false,
+     "target_language_confidence": 0.97,
+     "semantic_recoverability": 0.88,
+     "damage_scope": "local",
+     "coherence": 7,
+     "gloss": "A storm broke over the harbor just after midnight; fishing boats strained at their moorings while the crew of the rescue station watched the dark water for any sign of the missing trawler. By morning the wind had died and they found the vessel resting safely in a sheltered cove, with all seven sailors asleep below deck."
+    }
+   ]
+  },
+  {
+   "investigation_id": "776221457325",
+   "client": "codex-mcp-client",
+   "cipher": "no-boundary homophonic, 327 tokens, 50 symbols",
+   "finding": "98.2% mechanical char match; reader identified 6 correct single-symbol key fixes (HOLLOWED->FOLLOWED, DUST->DUSK, THANT->THANK, DEAR->YEAR ...) but NO repair_transaction was attempted at all \u2014 verifier verdict damage_scope='distributed' routed AWAY from local repair, even though the 6 errors are individually simple batch-repairable key edits.",
+   "verify_attestations": [
+    {
+     "reader_accepts_as_solution": false,
+     "target_language_confidence": 0.93,
+     "semantic_recoverability": 0.82,
+     "damage_scope": "distributed",
+     "coherence": 6
+    }
+   ],
+   "repair_transactions_count": 0
+  }
+ ],
+ "summary": "Two distinct persistence failures, same root: correct reading cannot be installed. Case c56de7e6c600 = repair attempted, guard false-rejected on collateral occurrence-count (materially_non_improving). Case 776221457325 = repair NOT attempted, 'distributed' verdict routed to broaden though the edits were individually simple. Both argue for reader-arbitrated acceptance + batch-repair-for-distributed-but-simple guidance."
+}
