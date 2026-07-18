@@ -94,3 +94,41 @@ prefers it, the repair installs. Preserves every invariant (reader independent,
 nothing installs on model say-so, mechanical checks stay default, worse repairs
 still fail). Directly fixes mode A; mode B gets a batch-repair doctrine line +
 confirmation the arbitration path handles scattered-edit batches.
+
+### Round 4 — substitution + columnar transposition — SELF-TEST (no LLM, $0)
+I ran the composite through the MCP server myself (automated solver only) to
+answer "would v3 handle it?" **Verdict: NO as-is — but it's a detection/routing
+gap, not a capability gap. Proven three ways:**
+1. Quick fingerprint: `monoalphabetic 1.00`, transposition 0.25 (anchoring trap:
+   transposition preserves letter freqs → IC 0.0603 reads as clean mono).
+2. Deep INV-0 diagnosis (9 panels, `observe_diagnosis`): `CONFIDENT: mono 1.00`.
+   The `order_layout` panel's `letters_substituted` atom ACTIVELY WEAKENS
+   transposition ("freqs displaced → substituted, not transposed"). It treats
+   substituted vs transposed as COMPETING, not COMPOSABLE. There is a
+   `transposition_homophonic` family but **NO substitution+transposition
+   composite family**.
+3. `transform_search: full` experiment: the router chose route=homophonic
+   ("single word-group + dense symbols → no-boundary homophonic"),
+   transform_pipeline=None — NEVER tried a transposition. Result 6.7% garbage.
+
+ISOLATION (decisive): I de-transposed by hand (known key) and ran the plain
+substitution solver on the correct-order stream → **exact plaintext, 100%,
+5s, dict_rate 0.85** (BENEATH THE ABBEY A FORGOTTEN CRYPT...). So the
+substitution/no-boundary stack is fully capable; the ENTIRE gap is:
+nothing detects/peels the transposition layer.
+
+THE GAP (backlog item — "composite sub+transposition"): the stack needs to
+recognize that a high-letter-accuracy-but-no-word-structure solve implies an
+ORDER layer, and screen columnar/other transpositions around the substitution
+solve. Currently (a) diagnosis has no composite family + letters_substituted
+suppresses transposition, and (b) the solver router's "no boundaries →
+homophonic" heuristic hijacks transform_search away from transposition. This
+CONFIRMS the INV "composite universally missed" finding at the TOOLING level
+(not just the LLMs). A v3 LLM agent likely can't rescue it either, because its
+transform_search tool routes away from the transposition.
+
+Implication for the ladder: Round 5 (homophonic + transposition) would hit the
+SAME gap and fail worse — NOT a useful next test until the composite
+detection/routing is fixed. Better next rungs that avoid this gap: Vigenère
+(polyalphabetic, different attack) or non-English (Latin/German, historical
+manuscript direction).
