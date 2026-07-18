@@ -73,8 +73,14 @@ your instrument bench and evidence store.
   your reading (`reading_record`), compile concrete word hypotheses
   (`repair_hypotheses_test`), then ask the host to validate and install one
   winner (`repair_transaction`). The host rejects unsupported edits and any
-  scoring regression; after two failed repair rounds on the same evidence it
-  latches exhausted — broaden instead of polishing.
+  scoring regression; if you are confident the mechanical counter is wrong
+  (correct words outside the common list), pass `verifier_arbitration=true` — an
+  independent reader then arbitrates the repaired fork, and only a reading it
+  judges strictly better installs; after two failed repair rounds on the same
+  evidence it latches exhausted — broaden instead of polishing. Distributed
+  damage that is a set of individually-simple key errors is still batch-repairable
+  via `repair_hypotheses_test` → `repair_transaction`; do not treat `distributed`
+  automatically as broaden-only (damage-scope routing is advisory — WF-4).
 - **Verify before declaring.** `request_independent_verification` has a fresh
   reader judge your branch. Declaration (`meta_declare_solution`) is hard-gated
   on a positive fresh verification of the exact current content. Honest
@@ -112,7 +118,7 @@ schemas.
 - `reading_record` (mutate) — record your hash-bound reading of a branch.
 - `comparison_record` (mutate) — record your ranking (best_partial vs accepts split).
 - `repair_hypotheses_test` (mutate) — compile word hypotheses into scratch forks.
-- `repair_transaction` (mutate) — host-validated install of one compiled winner.
+- `repair_transaction` (mutate) — host-validated install of one compiled winner (supports opt-in `verifier_arbitration`).
 - `request_independent_verification` (mutate) — run a fresh independent reader.
 - `act_set_model_variant` (mutate) — select the language-model variant.
 - `meta_declare_solution` (mutate) — declare solved (hard-gated on verification).

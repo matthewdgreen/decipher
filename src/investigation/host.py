@@ -208,6 +208,16 @@ def _fmt_unit(value: Any) -> str:
 REPAIR_ACCEPTANCE_POLICY: Any = None  # M5.4 hook; None = default deny
 
 
+# Verifier-arbitrated repair acceptance (docs/specs/verifier_arbitrated_repair_spec.md).
+# Pre-registered constants; motivating evidence:
+# docs/evidence/c56de7e6c600_repair_guard_false_reject.json. Changing any of
+# these requires new ledger-recorded evidence (REP-4 row).
+ARBITRATION_POLICY_ID = "verifier_arbitration_v1"
+ARBITRATION_MARGIN = 0.05
+ARBITRATION_FLOOR_TLC = 0.90
+ARBITRATION_FLOOR_RECOVERABILITY = 0.60
+
+
 # M5.3 Slice 2: the enumerated evidence-class failure reasons. Everything else
 # (precondition/process failure modes, provider error strings, new episode
 # failure modes) classifies as ``process`` so an unknown reason never silently
@@ -370,6 +380,57 @@ def _winner_adjudication_summary(
             if isinstance(item, dict) and item.get("installed_fork") == winner:
                 summary = item.get("adjudication_summary")
     return summary if isinstance(summary, dict) else None
+
+
+def _arbitration_verdict(
+    repaired: dict[str, Any], incumbent: dict[str, Any] | None
+) -> tuple[bool, str | None, dict[str, Any]]:
+    """Decide whether the independent reader prefers the repaired fork.
+
+    ``repaired`` is the arbitration AttestationRecord as a dict (fields
+    already clamped by the record constructor). ``incumbent`` is the newest
+    stored attestation for the PRE-repair source content, or None.
+    Returns (accepted, rule, detail); ``rule`` is None when rejected.
+
+    Rules, in order:
+    1. reader_accepts_as_solution — the reader accepts the repaired text
+       outright as a solution (the DECL-1 positive predicate).
+    2. margin_improvement — an incumbent with scalar fields exists; the
+       repaired reading must not decrease EITHER reader scalar and must gain
+       at least ARBITRATION_MARGIN combined.
+    3. absolute_floor — no usable incumbent baseline (none stored, or a
+       legacy record without target_language_confidence): with nothing to
+       compare against, only a strong absolute verdict can overrule the
+       mechanical reject. Floors are deliberately stricter than the WF-4
+       "high" routing thresholds (0.7 / 0.5, context.py).
+    """
+    r_tlc = clamp_unit_interval(repaired.get("target_language_confidence"))
+    r_rec = clamp_unit_interval(repaired.get("semantic_recoverability"))
+    if repaired.get("reader_accepts_as_solution") is True:
+        return True, "reader_accepts_as_solution", {
+            "repaired_tlc": r_tlc, "repaired_recoverability": r_rec,
+        }
+    if incumbent is not None and "target_language_confidence" in incumbent:
+        i_tlc = clamp_unit_interval(incumbent.get("target_language_confidence"))
+        i_rec = clamp_unit_interval(incumbent.get("semantic_recoverability"))
+        d_tlc, d_rec = r_tlc - i_tlc, r_rec - i_rec
+        detail = {
+            "repaired_tlc": r_tlc, "repaired_recoverability": r_rec,
+            "incumbent_tlc": i_tlc, "incumbent_recoverability": i_rec,
+            "delta_tlc": round(d_tlc, 6), "delta_recoverability": round(d_rec, 6),
+        }
+        accepted = (
+            d_tlc >= 0.0 and d_rec >= 0.0
+            and (d_tlc + d_rec) >= ARBITRATION_MARGIN
+        )
+        return accepted, ("margin_improvement" if accepted else None), detail
+    detail = {"repaired_tlc": r_tlc, "repaired_recoverability": r_rec,
+              "incumbent": None}
+    accepted = (
+        r_tlc >= ARBITRATION_FLOOR_TLC
+        and r_rec >= ARBITRATION_FLOOR_RECOVERABILITY
+    )
+    return accepted, ("absolute_floor" if accepted else None), detail
 
 
 def _clamp_coherence(value: Any) -> int:
@@ -633,6 +694,231 @@ class InvestigationHost:
         return result
 
 
+    def _run_verify_episode(
+        self, *, candidate_text: str, goal: str, turn: int
+    ) -> tuple[Any, float]:
+        """Run one independent verify episode over ``candidate_text`` and do the
+        standard bookkeeping (tool calls, episode budget, episode_complete emit).
+        Returns (EpisodeResult, spend_usd). EpisodeSpec construction errors
+        propagate (callers wrap)."""
+        spec = EpisodeSpec(
+            kind="verify", goal=goal,
+            inputs={"candidate_text": candidate_text, "language": self.language},
+        )
+        ep_provider = self._provider_for_model((self._episode_models or {}).get("verify"))
+        result = run_episode(
+            spec, self.state, provider=ep_provider, language=self.language,
+            word_set=self._word_set, word_list=self._word_list, pattern_dict=self._pattern_dict,
+            launching_turn=turn,
+            on_event=self._episode_event_forwarder(turn),
+            max_cost_usd=self.max_cost_usd, outer_cost_usd=self.committed_cost(),
+        )
+        self.episode_tool_calls.extend(result.tool_calls)
+        self.episode_budget.extend(
+            BudgetEntry.from_dict(b) for b in result.budget_entries
+        )
+        spend_usd = round(
+            sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
+        )
+        self._emit("episode_complete", {
+            "episode_id": result.episode_id, "kind": result.kind,
+            "status": result.status, "calls": result.tool_call_count,
+            "spend_usd": spend_usd,
+            "digest": _episode_result_digest(
+                result.kind, result.status, result.failure_reason, result.result
+            ),
+        }, outer_iteration=turn)
+        return result, spend_usd
+
+
+    def _attestation_record_from_result(
+        self, *, branch: str, content_hash: str, episode_result: dict[str, Any],
+        episode_id: str, turn: int,
+    ) -> AttestationRecord:
+        """Pure field mapping from a verify episode result (same clamps the
+        dispatcher always applied: _clamp_coherence, clamp_unit_interval,
+        normalize_damage_scope, normalize_repairability, strict is-True on
+        reader_accepts_as_solution). Writes nothing."""
+        return AttestationRecord(
+            branch=branch,
+            content_hash=content_hash,
+            renderer_id=DECODED_TEXT_RENDERER_ID,
+            episode_id=episode_id,
+            coherence=_clamp_coherence(episode_result.get("coherence")),
+            reader_accepts=bool(episode_result.get("reader_accepts")),
+            gloss=str(episode_result.get("gloss") or ""),
+            anomalies=[str(a) for a in (episode_result.get("anomalies") or [])],
+            created_turn=turn,
+            target_language_confidence=clamp_unit_interval(
+                episode_result.get("target_language_confidence")
+            ),
+            semantic_recoverability=clamp_unit_interval(
+                episode_result.get("semantic_recoverability")
+            ),
+            damage_scope=normalize_damage_scope(
+                episode_result.get("damage_scope")
+            ),
+            repairability=normalize_repairability(
+                episode_result.get("repairability")
+            ),
+            reader_accepts_as_solution=(
+                episode_result.get("reader_accepts_as_solution") is True
+            ),
+            uncertainty_note=str(episode_result.get("uncertainty_note") or ""),
+        )
+
+
+    def _write_attestation(
+        self, record: AttestationRecord, *, turn: int, seed_agenda: bool = True
+    ) -> dict[str, Any]:
+        """Append the record to state.verify_attestations and (optionally) run
+        the Slice-6 agenda-seeding rule (non-positive + repairability ==
+        'local_repair' mints open repair-agenda items bound to the record's
+        branch/content_hash). Returns record.to_dict()."""
+        record_dict = record.to_dict()
+        self.state.verify_attestations.append(record_dict)
+        # Slice 6: the agenda seeds from the verifier's REPAIRABILITY verdict,
+        # not from coherence. Only a non-positive attestation whose reader says
+        # targeted local fixes are worthwhile mints open repair items;
+        # broaden/none verdicts route elsewhere (context workflow) and must not
+        # queue local repair work.
+        if seed_agenda and (
+            not attestation_is_positive(record_dict)
+            and record.repairability == "local_repair"
+        ):
+            for anomaly in record.anomalies:
+                if any(
+                    item.get("status", "open") == "open"
+                    and item.get("source") == "verify_attestation"
+                    and item.get("content_hash") == record.content_hash
+                    and item.get("anomaly") == anomaly
+                    for item in self.state.repair_agenda
+                ):
+                    continue
+                numeric_ids = []
+                for existing_item in self.state.repair_agenda:
+                    try:
+                        numeric_ids.append(int(existing_item.get("id") or 0))
+                    except (TypeError, ValueError):
+                        continue
+                self.state.repair_agenda.append({
+                    "id": max(numeric_ids, default=0) + 1,
+                    "kind": "verify_anomaly",
+                    "source": "verify_attestation",
+                    "branch": record.branch,
+                    "content_hash": record.content_hash,
+                    "anomaly": anomaly,
+                    "status": "open",
+                    "created_turn": turn,
+                    "episode_id": record.episode_id,
+                    "damage_scope": record.damage_scope,
+                    "repairability": record.repairability,
+                })
+        return record.to_dict()
+
+
+    def _verify_available(self) -> bool:
+        """A verify episode can actually be served: a provider exists, or a
+        scripted 'episode:verify' builder is registered (tests)."""
+        from investigation.sessions import has_session_builder
+        return self._model_provider is not None or has_session_builder("episode:verify")
+
+
+    def _arbitrate_repair(
+        self, *, trigger_check: str, winner_snapshot: dict[str, Any],
+        expected_hash: str, source_hash: str, turn: int, transaction_id: str,
+    ) -> tuple[dict[str, Any], AttestationRecord | None]:
+        """Run verifier arbitration for one mechanically-rejected repair.
+
+        Returns (outcome, repaired_record). ``outcome`` is the acceptance
+        sub-record's ``arbitration`` value; ``repaired_record`` is the
+        AttestationRecord for the repaired content (None unless the verify ran
+        and parsed). NEVER writes state — the caller writes the attestation
+        only after a successful install (invariant: attestations name real,
+        installed content)."""
+        base: dict[str, Any] = {
+            "requested": True, "engaged": True,
+            "policy_id": ARBITRATION_POLICY_ID,
+            "trigger_check": trigger_check,
+            "constants": {
+                "margin": ARBITRATION_MARGIN,
+                "floor_target_language_confidence": ARBITRATION_FLOOR_TLC,
+                "floor_semantic_recoverability": ARBITRATION_FLOOR_RECOVERABILITY,
+            },
+        }
+        if not self._verify_available():
+            outcome = {**base, "status": "unavailable",
+                       "reason": "no_verification_provider"}
+            self._emit("repair_arbitration", {
+                "transaction_id": transaction_id, **outcome,
+            }, outer_iteration=turn)
+            return outcome, None
+        if self.cost_ceiling_reached():
+            outcome = {**base, "status": "unavailable",
+                       "reason": "cost_ceiling_reached"}
+            self._emit("repair_arbitration", {
+                "transaction_id": transaction_id, **outcome,
+            }, outer_iteration=turn)
+            return outcome, None
+        candidate_text = self._snapshot_candidate_text(winner_snapshot)
+        repaired_hash = _candidate_content_hash(candidate_text)
+        if repaired_hash != expected_hash:
+            # Same renderer produced both digests; a mismatch means corruption.
+            outcome = {**base, "status": "error",
+                       "reason": "arbitration_render_mismatch",
+                       "repaired_content_hash": repaired_hash,
+                       "expected_content_hash": expected_hash}
+            self._emit("repair_arbitration", {
+                "transaction_id": transaction_id, **outcome,
+            }, outer_iteration=turn)
+            return outcome, None
+        try:
+            result, spend_usd = self._run_verify_episode(
+                candidate_text=candidate_text, goal="", turn=turn
+            )
+        except Exception as exc:  # noqa: BLE001 - structured, never crashes the tx
+            outcome = {**base, "status": "error",
+                       "reason": f"invalid verify episode: {exc}"}
+            self._emit("repair_arbitration", {
+                "transaction_id": transaction_id, **outcome,
+            }, outer_iteration=turn)
+            return outcome, None
+        base["episode_id"] = result.episode_id
+        base["spend_usd"] = spend_usd
+        base["repaired_content_hash"] = repaired_hash
+        if result.status != "ok" or not isinstance(result.result, dict):
+            outcome = {**base, "status": "error",
+                       "reason": str(result.failure_reason or "episode_failed")}
+            self._emit("repair_arbitration", {
+                "transaction_id": transaction_id, **outcome,
+            }, outer_iteration=turn)
+            return outcome, None
+        record = self._attestation_record_from_result(
+            branch="", content_hash=repaired_hash,
+            episode_result=result.result, episode_id=result.episode_id, turn=turn,
+        )
+        incumbent = latest_attestation_for_hash(
+            self.state.verify_attestations, source_hash
+        )
+        accepted, rule, detail = _arbitration_verdict(record.to_dict(), incumbent)
+        outcome = {
+            **base,
+            "status": "accepted" if accepted else "rejected",
+            "rule": rule,
+            "detail": detail,
+            "repaired_attestation": record.to_dict(),
+            "incumbent_attestation": dict(incumbent) if incumbent else None,
+        }
+        self._emit("repair_arbitration", {
+            "transaction_id": transaction_id, "status": outcome["status"],
+            "rule": rule, "trigger_check": trigger_check,
+            "repaired_content_hash": repaired_hash,
+            "incumbent_present": incumbent is not None,
+            "episode_id": result.episode_id, "spend_usd": spend_usd,
+        }, outer_iteration=turn)
+        return outcome, record
+
+
     def _dispatch_verify_run(self, args: dict[str, Any], turn: int) -> str:
         # F2: verify is a special episode kind. Render the candidate for the
         # named branch AT DISPATCH TIME with the pinned renderer (the exact
@@ -664,35 +950,11 @@ class InvestigationHost:
         candidate = _decoded_text_for_panel(self.workspace, branch)
         content_hash = _candidate_content_hash(candidate)
         try:
-            spec = EpisodeSpec(
-                kind="verify", goal=str(args.get("goal") or ""),
-                inputs={"candidate_text": candidate, "language": self.language},
+            result, spend_usd = self._run_verify_episode(
+                candidate_text=candidate, goal=str(args.get("goal") or ""), turn=turn
             )
         except Exception as exc:  # noqa: BLE001 - bad spec -> structured error
             return json.dumps({"error": f"invalid verify episode: {exc}"})
-        ep_provider = self._provider_for_model((self._episode_models or {}).get("verify"))
-        result = run_episode(
-            spec, self.state, provider=ep_provider, language=self.language,
-            word_set=self._word_set, word_list=self._word_list, pattern_dict=self._pattern_dict,
-            launching_turn=turn,
-            on_event=self._episode_event_forwarder(turn),
-            max_cost_usd=self.max_cost_usd, outer_cost_usd=self.committed_cost(),
-        )
-        self.episode_tool_calls.extend(result.tool_calls)
-        self.episode_budget.extend(
-            BudgetEntry.from_dict(b) for b in result.budget_entries
-        )
-        spend_usd = round(
-            sum(b.get("cost_usd", 0.0) for b in result.budget_entries), 6
-        )
-        self._emit("episode_complete", {
-            "episode_id": result.episode_id, "kind": result.kind,
-            "status": result.status, "calls": result.tool_call_count,
-            "spend_usd": spend_usd,
-            "digest": _episode_result_digest(
-                result.kind, result.status, result.failure_reason, result.result
-            ),
-        }, outer_iteration=turn)
         payload = {
             "episode_id": result.episode_id,
             "kind": result.kind,
@@ -707,72 +969,12 @@ class InvestigationHost:
         # AttestationRecord with the pre-computed hash (A1 — workers never write
         # state), mirroring the reading-compile precedent above.
         if result.status == "ok" and isinstance(result.result, dict):
-            record = AttestationRecord(
-                branch=branch,
-                content_hash=content_hash,
-                renderer_id=DECODED_TEXT_RENDERER_ID,
-                episode_id=result.episode_id,
-                coherence=_clamp_coherence(result.result.get("coherence")),
-                reader_accepts=bool(result.result.get("reader_accepts")),
-                gloss=str(result.result.get("gloss") or ""),
-                anomalies=[str(a) for a in (result.result.get("anomalies") or [])],
-                created_turn=turn,
-                target_language_confidence=clamp_unit_interval(
-                    result.result.get("target_language_confidence")
-                ),
-                semantic_recoverability=clamp_unit_interval(
-                    result.result.get("semantic_recoverability")
-                ),
-                damage_scope=normalize_damage_scope(
-                    result.result.get("damage_scope")
-                ),
-                repairability=normalize_repairability(
-                    result.result.get("repairability")
-                ),
-                reader_accepts_as_solution=(
-                    result.result.get("reader_accepts_as_solution") is True
-                ),
-                uncertainty_note=str(result.result.get("uncertainty_note") or ""),
+            record = self._attestation_record_from_result(
+                branch=branch, content_hash=content_hash,
+                episode_result=result.result, episode_id=result.episode_id,
+                turn=turn,
             )
-            record_dict = record.to_dict()
-            self.state.verify_attestations.append(record_dict)
-            # Slice 6: the agenda seeds from the verifier's REPAIRABILITY
-            # verdict, not from coherence. Only a non-positive attestation
-            # whose reader says targeted local fixes are worthwhile mints
-            # open repair items; broaden/none verdicts route elsewhere
-            # (context workflow) and must not queue local repair work.
-            if (
-                not attestation_is_positive(record_dict)
-                and record.repairability == "local_repair"
-            ):
-                for anomaly in record.anomalies:
-                    if any(
-                        item.get("status", "open") == "open"
-                        and item.get("source") == "verify_attestation"
-                        and item.get("content_hash") == content_hash
-                        and item.get("anomaly") == anomaly
-                        for item in self.state.repair_agenda
-                    ):
-                        continue
-                    numeric_ids = []
-                    for existing_item in self.state.repair_agenda:
-                        try:
-                            numeric_ids.append(int(existing_item.get("id") or 0))
-                        except (TypeError, ValueError):
-                            continue
-                    self.state.repair_agenda.append({
-                        "id": max(numeric_ids, default=0) + 1,
-                        "kind": "verify_anomaly",
-                        "source": "verify_attestation",
-                        "branch": branch,
-                        "content_hash": content_hash,
-                        "anomaly": anomaly,
-                        "status": "open",
-                        "created_turn": turn,
-                        "episode_id": result.episode_id,
-                        "damage_scope": record.damage_scope,
-                        "repairability": record.repairability,
-                    })
+            self._write_attestation(record, turn=turn, seed_agenda=True)
             payload["attestation"] = {
                 "branch": branch,
                 "coherence": record.coherence,
@@ -1131,7 +1333,7 @@ class InvestigationHost:
         }, ensure_ascii=False)
 
 
-    def _snapshot_content_hash(self, snapshot: dict[str, Any]) -> str:
+    def _snapshot_candidate_text(self, snapshot: dict[str, Any]) -> str:
         """Render one isolated episode snapshot with the canonical renderer."""
         from investigation.state import _restore_branch_into
 
@@ -1141,7 +1343,12 @@ class InvestigationHost:
         )
         snap = copy.deepcopy(snapshot)
         _restore_branch_into(scratch, snap)
-        return _branch_hash(scratch, str(snap["name"]))
+        return _decoded_text_for_panel(scratch, str(snap["name"]))
+
+    def _snapshot_content_hash(self, snapshot: dict[str, Any]) -> str:
+        # _branch_hash(ws, b) == _candidate_content_hash(_decoded_text_for_panel(ws, b)),
+        # so this is byte-identical to the pre-split renderer.
+        return _candidate_content_hash(self._snapshot_candidate_text(snapshot))
 
 
     def _settle_repair_outcome(self, *, record: dict[str, Any], entry_args: tuple[str, str, str], changed_hashes: list[str], turn: int) -> dict[str, Any]:
@@ -1354,11 +1561,21 @@ class InvestigationHost:
         self, *, tu: dict[str, Any], turn: int, branch: str, source_hash: str,
         att_key: str, pair: str, base_record: dict[str, Any],
         episode_payload: dict[str, Any], as_name: str,
+        verifier_arbitration: bool = False,
     ) -> str:
         """Validate the repair worker's forks against the eight acceptance
         checks and install the accepted winner (Part 8.1 extraction; verbatim
         code motion of the post-episode dispatcher body with three parameter
-        substitutions)."""
+        substitutions).
+
+        Opt-in verifier arbitration (default false): when only the two SCORING
+        checks (6 collateral_within_limits, 8 scalar_non_decrease) would reject,
+        one fresh server-side independent verify episode arbitrates the repaired
+        fork and it installs only if the independent reader judges it strictly
+        better (spec docs/specs/verifier_arbitrated_repair_spec.md). Evidence
+        checks 1-5 and the no-op probe are never arbitrable. Default false =
+        today's behavior byte-for-byte (no `arbitration` key in the acceptance
+        sub-record, `policy` unchanged)."""
         episode_id = str(episode_payload.get("episode_id") or "")
         ledger_entry = next(
             (
@@ -1395,10 +1612,16 @@ class InvestigationHost:
         after: dict[str, Any] | None = None
         score_deltas: dict[str, Any] | None = None
         adjudicated_flag: bool | None = None if len(changed) <= 1 else False
+        arbitration: dict[str, Any] | None = None
+        arbitration_record: AttestationRecord | None = None
 
         def _acceptance() -> dict[str, Any]:
-            return {
-                "policy": "default_deny_v1",
+            payload = {
+                "policy": (
+                    "default_deny_v1+verifier_arbitration_v1"
+                    if arbitration is not None and arbitration.get("engaged")
+                    else "default_deny_v1"
+                ),
                 "checks": acceptance_checks,
                 "supported_forks": sorted(evidence["supported_forks"]),
                 "edit_evidence_count": len(evidence["edit_evidence"]),
@@ -1407,6 +1630,12 @@ class InvestigationHost:
                 "scores_after": after,
                 "score_deltas": score_deltas,
             }
+            if verifier_arbitration:
+                payload["arbitration"] = (
+                    arbitration if arbitration is not None
+                    else {"requested": True, "engaged": False}
+                )
+            return payload
 
         def _fail(reason: str) -> str:
             record = {
@@ -1516,14 +1745,23 @@ class InvestigationHost:
         adj_summary = _winner_adjudication_summary(episode_calls, winner) or {}
         damaged = adj_summary.get("damaged_occurrences")
         improved = adj_summary.get("improved_occurrences")
+        collateral_entry: dict[str, Any] | None = None
+        collateral_failed = False
         if isinstance(damaged, (int, float)) and isinstance(improved, (int, float)):
             collateral_ok = damaged <= improved
-            acceptance_checks.append({
+            collateral_entry = {
                 "check": "collateral_within_limits", "passed": collateral_ok,
                 "damaged_occurrences": damaged, "improved_occurrences": improved,
-            })
+            }
+            acceptance_checks.append(collateral_entry)
             if not collateral_ok:
-                return _fail("materially_non_improving")
+                if not verifier_arbitration:
+                    return _fail("materially_non_improving")
+                # Arbitration requested: fall through so the probe runs, checks 7/8
+                # are appended, scores_after/score_deltas are recorded (fixing the
+                # null-deltas observability gap the motivating artifact shows), and
+                # the arbitration verdict decides the outcome after check 8.
+                collateral_failed = True
 
         # Checks 7 + 8 — one probe restore serves both.
         winner_snapshot = next(
@@ -1559,17 +1797,35 @@ class InvestigationHost:
         )
         # Default deny: any measured scalar decrease rejects. REPAIR_ACCEPTANCE_POLICY
         # is the M5.4 hook; no allow-policy branch is implemented yet, so the guard
-        # asserts the invariant rather than carrying a dead alternative.
+        # asserts the invariant rather than carrying a dead alternative. Verifier
+        # arbitration below is NOT that policy object: it is an independent-reader
+        # evidence source (docs/specs/verifier_arbitrated_repair_spec.md), and it
+        # only ever OVERRULES a reject, never replaces the default.
         assert REPAIR_ACCEPTANCE_POLICY is None
         scalar_ok = not decreased
-        acceptance_checks.append({
+        scalar_entry = {
             "check": "scalar_non_decrease", "passed": scalar_ok,
             "deltas": dict(score_deltas),
-        })
-        if not scalar_ok:
-            return _fail("materially_non_improving")
-
-        acceptance = _acceptance()
+        }
+        acceptance_checks.append(scalar_entry)
+        if collateral_failed or not scalar_ok:
+            if not verifier_arbitration:
+                return _fail("materially_non_improving")
+            trigger = (
+                "collateral_within_limits" if collateral_failed
+                else "scalar_non_decrease"
+            )
+            arbitration, arbitration_record = self._arbitrate_repair(
+                trigger_check=trigger, winner_snapshot=winner_snapshot,
+                expected_hash=changed[winner], source_hash=source_hash,
+                turn=turn, transaction_id=base_record["transaction_id"],
+            )
+            if arbitration.get("status") != "accepted":
+                return _fail("materially_non_improving")
+            if collateral_entry is not None and not collateral_entry["passed"]:
+                collateral_entry["overruled_by_arbitration"] = True
+            if not scalar_ok:
+                scalar_entry["overruled_by_arbitration"] = True
 
         install_payload = json.loads(self._dispatch_episode_install({
             "id": f"{tu.get('id')}:install",
@@ -1582,10 +1838,12 @@ class InvestigationHost:
         }, turn))
         installed = str(install_payload.get("installed") or "")
         if install_payload.get("status") not in {"ok", "deduplicated"} or not installed:
+            if arbitration is not None and arbitration.get("status") == "accepted":
+                arbitration["attestation_recorded"] = False
             record = {
                 **base_record, "status": "failed", "reason": "install_failed",
                 "install": install_payload,
-                "acceptance": acceptance,
+                "acceptance": _acceptance(),
             }
             payload = self._settle_repair_outcome(
                 record=record, entry_args=(source_hash, att_key, pair),
@@ -1595,6 +1853,29 @@ class InvestigationHost:
                 name="repair_transaction", tu=tu, turn=turn, payload=payload
             )
         result_hash = _branch_hash(self.workspace, installed)
+        # Verifier-arbitration accept path: write the arbitration attestation now
+        # that real installed content exists (invariant: attestations name real,
+        # installed content). When accepted via rule 1 (reader_accepts_as_solution)
+        # the installed branch immediately satisfies DECL-1 — identical in trust
+        # terms to running request_independent_verification right after install.
+        # When accepted via rules 2/3 with a non-positive verdict and
+        # repairability == "local_repair", _write_attestation seeds repair-agenda
+        # items for the INSTALLED branch (the reader's residual anomalies are real).
+        if (
+            arbitration is not None
+            and arbitration.get("status") == "accepted"
+            and arbitration_record is not None
+        ):
+            if result_hash == arbitration_record.content_hash:
+                arbitration_record.branch = installed
+                self._write_attestation(arbitration_record, turn=turn, seed_agenda=True)
+                arbitration["attestation_recorded"] = True
+                arbitration["repaired_attestation"] = arbitration_record.to_dict()
+            else:
+                # Defensive only: install restored the SAME snapshot the arbitration
+                # rendered, and dedup only merges content-identical branches, so a
+                # mismatch means corruption. Do not write a mislabeled attestation.
+                arbitration["attestation_recorded"] = False
         self.workspace.get_branch(installed).metadata["repair_transaction"] = {
             "transaction_id": base_record["transaction_id"],
             "source_branch": branch,
@@ -1613,7 +1894,7 @@ class InvestigationHost:
             "reverification_required": True,
             "edits": [str(item) for item in result.get("edits") or []],
             "collateral": dict(result.get("collateral") or {}),
-            "acceptance": acceptance,
+            "acceptance": _acceptance(),
         }
         payload = self._settle_repair_outcome(
             record=record, entry_args=(source_hash, att_key, pair),
@@ -1695,6 +1976,7 @@ class InvestigationHost:
             att_key=pre["att_key"], pair=pre["pair"], base_record=base_record,
             episode_payload=episode_payload,
             as_name=str(args.get("as_name") or f"repair_tx_{turn}_{branch}"),
+            verifier_arbitration=bool(args.get("verifier_arbitration")),
         )
 
 

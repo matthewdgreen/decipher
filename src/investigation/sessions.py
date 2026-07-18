@@ -419,6 +419,12 @@ def register_session_builder(role: str, builder: Any) -> None:
     _SESSION_BUILDERS[role] = builder
 
 
+def has_session_builder(role: str) -> bool:
+    """True when an explicit builder is registered for this role (tests
+    register scripted fakes; 'lead' is always present)."""
+    return role in _SESSION_BUILDERS
+
+
 def session_factory(
     role_or_kind: str, provider: AgentModelProvider, system: str = ""
 ) -> ModelSession:

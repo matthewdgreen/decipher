@@ -58,6 +58,8 @@ rather than developing Decipher. After an investigation exists,
 `investigation_status` is the authoritative briefing; do not treat onboarding
 prose as live investigation state.
 
+Repair doctrine: Distributed damage that is a set of individually-simple key errors is still batch-repairable via `repair_hypotheses_test` → `repair_transaction`; do not treat `distributed` automatically as broaden-only.
+
 ---
 
 ## Key Files

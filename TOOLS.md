@@ -1698,7 +1698,7 @@ live in `src/mcp_server/tools.py`; methodology and recovery in
 | `reading_record` | mutate | Record your hash-bound reading of a branch. |
 | `comparison_record` | mutate | Record your ranking (best_partial vs accepts split). |
 | `repair_hypotheses_test` | mutate | Compile word hypotheses into scratch forks. |
-| `repair_transaction` | mutate | Host-validated install of one compiled winner. |
+| `repair_transaction` | mutate | Host-validated install of one compiled winner (opt-in `verifier_arbitration` lets an independent reader overrule a collateral/scalar reject). |
 | `request_independent_verification` | mutate | Run a fresh independent reader (gates declaration). |
 | `act_set_model_variant` | mutate | Select the language-model variant. |
 | `meta_declare_solution` | mutate | Declare solved (hard-gated on verification). |

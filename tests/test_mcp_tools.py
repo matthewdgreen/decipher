@@ -407,3 +407,143 @@ def test_check_repair_preconditions_no_reading_returns_blocked(tmp_path):
     pre = runtime.host.check_repair_preconditions(branch="main", reading_id_arg="", turn=1)
     assert "blocked" in pre
     assert pre["blocked"]["reason"] == "fresh_reading_required"
+
+
+# --------------------------------------------- verifier-arbitrated repair (MCP)
+# Spec: docs/specs/verifier_arbitrated_repair_spec.md §5.7-5.8, T10-T11.
+# Evidence: docs/evidence/c56de7e6c600_repair_guard_false_reject.json (case 1).
+#
+# Fixture: a lowercase-symbol substitution keyed correct EXCEPT the `w` symbol,
+# which maps to `I`. Word 2 of "THE MISSING TRAWLER RESTED IN THE COVE" then
+# decodes TRAILER (in the common list); the true word TRAWLER is NOT — exactly
+# the c56de7e6c600 straddle where the mechanical occurrence counter false-rejects
+# an objectively-correct correction. `w` occurs only in that word.
+_TRAWLER_PLAINTEXT = "THE MISSING TRAWLER RESTED IN THE COVE"
+
+
+def _mcp_verdict(tlc, rec, *, accepts_as_solution=False):
+    return {
+        "coherence": 7, "reader_accepts": False,
+        "reader_accepts_as_solution": accepts_as_solution,
+        "target_language_confidence": tlc, "semantic_recoverability": rec,
+        "damage_scope": "local", "repairability": "local_repair",
+        "uncertainty_note": "", "gloss": "reads as clear English",
+        "anomalies": [], "confidence": "high",
+    }
+
+
+def _apply_wrong_symbol(runtime, plaintext_upper, wrong_symbol, wrong_target):
+    """White-box: key each cipher symbol to its correct uppercase EXCEPT
+    ``wrong_symbol`` -> ``wrong_target``."""
+    ws = runtime.workspace
+    alpha = ws.cipher_text.alphabet
+    pt = ws.plaintext_alphabet
+    for sym in alpha.symbols:
+        target = wrong_target if sym == wrong_symbol else sym.upper()
+        ws.set_mapping("main", alpha.id_for(sym), pt.id_for(target))
+
+
+def _trawler_ready(server, plaintext=_TRAWLER_PLAINTEXT, wrong_symbol="w",
+                   wrong_target="I", word="TRAWLER", word_index=2):
+    """Start an investigation on the damaged basin, record the intended reading,
+    compile the correcting hypothesis, and return (iid, rev, rt, comp)."""
+    b = start(server, ciphertext=plaintext.lower())
+    iid, rev = b["investigation_id"], b["revision"]
+    rt = server._runtimes[iid]
+    _apply_wrong_symbol(rt, plaintext, wrong_symbol, wrong_target)
+    rec = call(server, "reading_record", investigation_id=iid, expected_revision=rev,
+               branch="main", reading_text=plaintext, overall_confidence=0.8)
+    rev = rec["revision"]
+    comp = call(server, "repair_hypotheses_test", investigation_id=iid,
+                expected_revision=rev, branch="main",
+                hypotheses=[{"word": word, "word_index": word_index}])
+    assert comp["status"] == "ok" and comp["changed_finalists"], comp
+    return iid, comp["revision"], rt, comp
+
+
+def _scoring_reject_fired(tx):
+    """A collateral/scalar scoring check actually rejected (self-validation)."""
+    return any(
+        c["check"] in {"collateral_within_limits", "scalar_non_decrease"}
+        and not c["passed"]
+        for c in tx["acceptance"]["checks"]
+    )
+
+
+def test_t10_mcp_arbitration_installs_case1_replica(tmp_path):
+    sessions_mod.register_session_builder(
+        "episode:verify", make_verify_builder(_mcp_verdict(0.97, 0.88)))
+    try:
+        server = make_server(tmp_path, verify="dummy")
+        iid, rev, rt, comp = _trawler_ready(server)
+        winner = comp["changed_finalists"][0]["branch"]
+        tx = call(server, "repair_transaction", investigation_id=iid,
+                  expected_revision=rev, branch="main", compile_id=comp["compile_id"],
+                  winner=winner, verifier_arbitration=True)
+        # Self-validating: the mechanical trigger actually fired.
+        assert _scoring_reject_fired(tx), tx["acceptance"]["checks"]
+        assert tx["status"] == "installed"
+        arb = tx["acceptance"]["arbitration"]
+        assert arb["status"] == "accepted"
+        assert tx["acceptance"]["policy"] == "default_deny_v1+verifier_arbitration_v1"
+        # The installed branch's attestation history contains the arbitration att.
+        show = call(server, "candidate_show", investigation_id=iid,
+                    branch=tx["installed_branch"])
+        assert any(
+            a.get("target_language_confidence") == 0.97
+            and a.get("episode_id") == arb["episode_id"]
+            for a in show["attestation_history"]
+        ), show["attestation_history"]
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+
+
+def test_t10a_mcp_arbitration_keyless_unavailable(tmp_path):
+    # verify="none" + no registered episode:verify builder -> keyless.
+    server = make_server(tmp_path, verify="none")
+    iid, rev, rt, comp = _trawler_ready(server)
+    winner = comp["changed_finalists"][0]["branch"]
+    tx = call(server, "repair_transaction", investigation_id=iid,
+              expected_revision=rev, branch="main", compile_id=comp["compile_id"],
+              winner=winner, verifier_arbitration=True)
+    assert _scoring_reject_fired(tx), tx["acceptance"]["checks"]
+    assert tx["status"] == "failed"
+    assert tx["reason"] == "materially_non_improving"
+    arb = tx["acceptance"]["arbitration"]
+    assert arb["status"] == "unavailable"
+    assert arb["reason"] == "no_verification_provider"
+
+
+def test_t10b_mcp_flag_absent_todays_shape(tmp_path):
+    server = make_server(tmp_path, verify="dummy")
+    iid, rev, rt, comp = _trawler_ready(server)
+    winner = comp["changed_finalists"][0]["branch"]
+    tx = call(server, "repair_transaction", investigation_id=iid,
+              expected_revision=rev, branch="main", compile_id=comp["compile_id"],
+              winner=winner)  # flag absent
+    assert tx["status"] == "failed"
+    assert tx["reason"] == "materially_non_improving"
+    assert "arbitration" not in tx["acceptance"]  # today's shape
+    assert tx["acceptance"]["policy"] == "default_deny_v1"
+
+
+def test_t10c_mcp_arbitration_rejecting_verdict_fails(tmp_path):
+    sessions_mod.register_session_builder(
+        "episode:verify", make_verify_builder(_mcp_verdict(0.4, 0.3)))
+    try:
+        server = make_server(tmp_path, verify="dummy")
+        iid, rev, rt, comp = _trawler_ready(server)
+        winner = comp["changed_finalists"][0]["branch"]
+        tx = call(server, "repair_transaction", investigation_id=iid,
+                  expected_revision=rev, branch="main", compile_id=comp["compile_id"],
+                  winner=winner, verifier_arbitration=True)
+        assert _scoring_reject_fired(tx), tx["acceptance"]["checks"]
+        assert tx["status"] == "failed"
+        assert tx["acceptance"]["arbitration"]["status"] == "rejected"
+    finally:
+        sessions_mod._SESSION_BUILDERS.pop("episode:verify", None)
+
+# T11 lives at host level in tests/test_repair_arbitration.py (the acceptance
+# pipeline operates on whole-fork content; the collateral counter is n-gram-
+# local, so a deterministic host-level synthesis of "damaged 3 / improved 0" is
+# the robust way to prove a scattered-fix fork installs through arbitration).

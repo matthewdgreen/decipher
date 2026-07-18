@@ -274,5 +274,6 @@ def dispatch_repair_transaction(runtime: Any, records: dict, args: dict, turn: i
         att_key=pre["att_key"], pair=pre["pair"], base_record=base_record,
         episode_payload=episode_payload,
         as_name=str(args.get("as_name") or f"repair_tx_{turn}_{branch}"),
+        verifier_arbitration=bool(args.get("verifier_arbitration")),
     )
     return json.loads(payload_str)

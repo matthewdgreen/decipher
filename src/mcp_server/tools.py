@@ -360,7 +360,11 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "multiple finalists, collateral limits, no-op probe, default-deny on "
             "any scalar decrease), and installs the winner under a fresh name "
             "requiring reverification. This is NOT the v3 API-billed internal "
-            "repair episode."
+            "repair episode. Optional verifier_arbitration=true: when only the "
+            "collateral/scalar scoring checks would reject, one fresh server-side "
+            "independent reader arbitrates the repaired fork and it installs only "
+            "if judged strictly better; keyless servers return a typed unavailable "
+            "fallback to the mechanical reject."
         ),
         "input_schema": {
             "type": "object",
@@ -378,6 +382,18 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
                     ),
                 },
                 "as_name": {"type": "string"},
+                "verifier_arbitration": {
+                    "type": "boolean",
+                    "description": (
+                        "Opt-in (default false): if only the collateral/scalar scoring "
+                        "checks would reject, run one fresh server-side independent verify "
+                        "on the repaired fork; it installs only if the independent reader "
+                        "judges it strictly better than the incumbent (or accepts it as a "
+                        "solution). Evidence-binding checks are never arbitrable. Paid; "
+                        "unavailable without a verify provider (typed fallback to the "
+                        "mechanical reject)."
+                    ),
+                },
             },
             "required": [
                 "investigation_id", "expected_revision", "branch",
