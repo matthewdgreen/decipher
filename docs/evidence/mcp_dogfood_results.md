@@ -175,6 +175,48 @@ contestable; the epistemic scaffolding is the moat." Caveat: the two live arms
 ran DIFFERENT ciphers (naive=round3 homophonic, MCP=round4 composite), so this
 is not a same-cipher head-to-head; a clean A/B would run both arms on both.
 
+### Round 6 — Quagmire III, no boundaries — `bbd8eabb899b` (Codex) — 2026-07-18
+Designed as a surface discriminator: 566 letters, keyed tableau (random
+7-letter keyword), 8-letter cycleword, fresh original prose; sealed answer at
+`~/.config/decipher/dogfood_answers/round6_q3nb_answer.json` (durable, not
+session-scoped). Same class as the established agent-critical case
+`synth_en_97q3nb_s50` (546 letters, solved 100% by gpt-5.4/Sonnet/tencent via
+`search_quagmire3_keyword_alphabet`). Pre-verified $0-solvable: the Rust
+shotgun at agent budget (hillclimbs=5000) recovers it 100% in all top-5
+finalists, ~109 s. Pre-registered prediction: honest-fail with correct family
+OR escape hatch — not a through-the-server solve.
+
+- **Verdict: SOLVED 100% EXACT — but OUTSIDE the MCP surface (predicted
+  outcome 2, escape hatch).** Graded vs sealed answer: 566/566 chars; the
+  recovered key state (`WJGNHTSR` / keyed alphabet) is an equivalent that
+  reproduces the ciphertext byte-for-byte. Route: IC ~random → periodic IC +
+  Kasiski → period 8 → MCP `vigenere` experiment failed (expected) → escaped
+  to repo-native `search_quagmire3_shotgun_fast`, 4 independent restarts
+  converged.
+- **SURFACE GAP 1 (experiment router misroute, silent):** `experiment_submit`
+  ACCEPTED `cipher_system: "quagmire3"` as a free-form hint but routed it to
+  the generic periodic solver, which failed — no error, no "unsupported
+  family" signal, no route to the Rust quagmire engine that solves it.
+- **SURFACE GAP 2 (no install path for an out-of-band solution):** the exact
+  plaintext could not be installed onto an MCP branch, so the branch-bound
+  verify→declare gate was STRUCTURALLY unreachable. The registry now durably
+  records `status=unsolved` for a cipher that was solved exactly — honest at
+  the rationale level, wrong at the record level.
+- **WF-7 first live test: COMPLIED.** Unlike round 5's silent stop, the
+  session closed with an explicit `meta_declare_unsolved` (turn 11) and a
+  candid rationale ("closed as technically undeclarable — not
+  cryptanalytically unsolved"). The doctrine worked; what it exposed is that
+  WF-7 assumes the gate is REACHABLE.
+- **Moat read (repeats round 4's control, now same-cipher):** with repo
+  access, raw solving power is fully contestable — the client reached the
+  repo's own best engine when the wrapper didn't expose it. The epistemic
+  pipeline was bypassed structurally, not behaviorally.
+- **FIX (one change closes both gaps):** add a `quagmire3`/periodic-keyed
+  experiment kind routed to the Rust shotgun engine, installable via
+  `experiment_collect` — then the solve happens inside the surface, the
+  finalist installs onto a branch, and the verify→declare gate applies. This
+  cipher is the ready-made acceptance test.
+
 ### Borg real-manuscript pages (Latin) + a verifier-calibration finding
 Benchmark-recorded char accuracy per Borg Track-B page (no plaintext examined):
 - borg_0109v: consistently solved (median ~0.85, max 0.968).
