@@ -72,9 +72,16 @@ never called).
 | Case | v3-gpt5.5 | codex-mcp | Prediction (pre-registered) | Status |
 |---|---|---|---|---|
 | Borg 0077v (medium contam.) | 77.8/35.2 honest-unsolved, 2 neg attestations, $2.36 (`640e959623f4`) | 74.5/19.0 best branch, silent stop turn 11, 0 attestations (`f58515b7263f`) | — (ran pre-registration) | **DONE (round 5)** |
-| Round-6 Quagmire III nb | **pending (~$2)** | 100% exact via escape hatch; honest declare-unsolved; gate unreachable (`bbd8eabb899b`) | v3 solves in-surface via quagmire tool | Codex done |
-| Z340 (behavioral probe) | **pending (~$2, CLI ready: `artifacts/z340_c0f2cb982acf.txt`)** | failed (`c0f2cb982acf`) | v3 also fails (composite gap); watch memorization | Codex done |
-| Round-4 composite sub+transposition | **pending (~$2)** | honest fail, correct gap diagnosis (`14f780f21699`) | v3 honest-fails identically ($0 self-test predicts it) | Codex done |
+| Round-6 Quagmire III nb | **38.9%/0 honest fail** at the preflight basin, 1 neg attestation, 15 episodes + 10 experiments, $3.30 (`5029af2de3db`) | 100% exact via escape hatch; honest declare-unsolved; gate unreachable (`bbd8eabb899b`) | v3 solves in-surface via quagmire tool — **FALSIFIED (finding F4)** | **DONE 2026-07-18** |
+| Z340 (behavioral probe) | 40.3%/0 honest fail, 2 neg attestations (basin_wide, coh 1), $3.15 (`407e29ec7c70`) | 38.2%/0, stopped turn 6, 0 attestations (pre-WF-7 run) (`c0f2cb982acf`) | v3 also fails (composite gap); watch memorization — **CONFIRMED; no memorization jump on either arm** | **DONE 2026-07-18** |
+| Round-4 composite sub+transposition | 8.7% honest fail, 1 neg attestation (basin_wide, coh 0), tried route work, $3.64 (`1d6d78083226`) | honest fail, correct gap diagnosis (`14f780f21699`) | v3 honest-fails identically — **CONFIRMED** (gap is shared tooling, not harness) | **DONE 2026-07-18** |
+
+**Tier-A read (n=1/cell except 0109v):** neither harness dominates. v3 wins
+0077v narrowly; Codex+repo wins round-6 outright (escape hatch); the two gap
+probes fail symmetrically. The Tier-B 0109v cell (codex-mcp 95.9 char vs v3's
+91.0 basin, via verifier-routed broaden) is the strongest MCP-arm outcome win
+so far. Process discipline flipped with WF-7: both post-doctrine Codex runs
+closed with verdicts; both pre-doctrine runs did not.
 
 ## Tier B — recorded v3/v2 data, Codex arm pending (subscription-only cost)
 
@@ -115,6 +122,17 @@ $0-verified = the named in-repo engine solves the exact ciphertext locally.
   ladder's "all pass" therefore overstates blind coverage of classical
   transposition forms. Backlog: add keyed-columnar orders + ciphers/-package
   conventions to the candidate plan, or reconcile the two implementations.
+- **F4 — v3 never sequences the Quagmire search (round-6 v3 run,
+  `5029af2de3db`)**: episodes called `search_periodic_polyalphabetic` 6×
+  (correct family, fails on the keyed tableau) but never
+  `search_quagmire3_keyword_alphabet` — a tool IN their own toolset that
+  solves this exact cipher at 1.0. Experiments cycled 5 family hints; no
+  quagmire route exists there. The v2 loop's structured prior ("plain
+  Vigenère failure → run the Quagmire keyword search before rejecting the
+  family") never migrated to v3's lean brief, so BOTH the v3 surface and the
+  MCP surface share the same hole. The two in-flight tasks (quagmire
+  experiment kind; quagmire_keyed sequencing signpost) fix both arms at
+  once; re-run this cell afterward as the acceptance test.
 - **F3 — Bifid presents as confident mono** (0.81, `peaked_monogram_shape` +
   `letters_substituted`): INV-0 has no fractionation discriminator that
   fires here. Tier-C5 turns this into a live discipline probe.
