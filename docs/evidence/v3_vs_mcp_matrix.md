@@ -85,12 +85,19 @@ closed with verdicts; both pre-doctrine runs did not.
 
 ## Tier B — recorded v3/v2 data, Codex arm pending (subscription-only cost)
 
-| Case | Recorded v3 (n) | Recorded v2 (n) | Prediction for codex-mcp |
+| Case | Recorded v3 (n) | Recorded v2 (n) | codex-mcp result (2026-07-18, n=1 each) |
 |---|---|---|---|
-| borg_0109v (preflight-ON equiv.) | 91.0/66.7 ×3 fallback_declared | 95.7–96.8 char ×3 solved | matches v3 char via experiment; risk of round-5-style stop-without-verdict |
+| borg_0109v (preflight-ON equiv.) | 91.0/66.7 ×3 fallback_declared | 95.7–96.8 char ×3 solved | **95.9/55.9** (`3d4adc42b5f9`) — verifier-routed mono→homophonic broaden escaped the 91.0 basin all v3 rows sat in; word below v3; WF-7 close. Prediction half-wrong in the good direction |
 | borg_0109v preflight-OFF | 91.0/66.7 ×1 unsolved $1.43 | 96.8/82.3 ×1 solved | n/a over MCP (experiments ARE preflight-equivalent) — treat ON as comparator |
-| borg_0045v | 83.6/0.0 ×2 + 34.1 ×1 | 80.5–85.2/≤32 ×3 unsolved | basin-dependent; honest unsolved expected |
-| copiale_p017 (German; v3's clearest win) | 75.4/0.0 ×1 | 54.6/0.0 ×1 | UNTESTED language for MCP arms; verifier German handling unknown |
+| borg_0045v | 83.6/0.0 ×2 + 34.1 ×1 | 80.5–85.2/≤32 ×3 unsolved | **83.5/23.3** (`326b796e0331`) — char ties v3's best; word beats every v3 row; honest unsolved |
+| copiale_p017 (German; v3's clearest win) | 75.4/0.0 ×1 | 54.6/0.0 ×1 | **73.9/0.0** (`ed95982c2a8a`) — found the same null-mask route; effective tie. v3's p017 edge = reaching the route, and any client that finds experiment_submit inherits it |
+
+**Tier-B read (n=1 codex cells):** char parity across the board; word mixed
+(codex better on 0045v, worse on 0109v); all three codex runs WF-7-compliant
+with verify episodes. Replication priority: 0109v ×2 more (is the basin
+escape reliable or lucky? our own n≥3 Borg rule applies). A dangling second
+0109v investigation (`46a5f9ae1306`, active, no terminal) exists from a
+restarted session — not graded.
 | ~~synth_en_200honb_s6 (control)~~ | 99.9 ×1 | 100 ×1 | **DROPPED 2026-07-18**: the testgen cache regenerated since M6 (F5 detector fired 2026-07-14), so today's cipher ≠ the one the recorded rows measured; also flagged non-discriminative (zenith preflight ~100%) |
 
 ## Tier C — fresh contamination-free pack (`docs/evidence/tier_c_pack/`)
