@@ -83,7 +83,13 @@ exists yet.
 Decipher's primary mode is its native automated solver stack: fast,
 reproducible, and usable with only local computation. An experimental agentic
 solver (requires an API key) layers an LLM on top for branching hypothesis
-exploration and manual solving steps.
+exploration and manual solving steps. The same investigation surface is also
+exposed as an **MCP server** (`decipher mcp-serve`), so any MCP-capable AI
+agent — Claude Code, Codex, and others — can drive the full toolkit
+interactively: statistical diagnosis, hypothesis branches, background solver
+experiments, key repair, and independent verification, with the epistemic
+gates (no declaration without a fresh independent positive verification)
+enforced server-side. See [docs/mcp_onboarding.md](docs/mcp_onboarding.md).
 
 Decipher borrows solving algorithms (with attribution and license compliance)
 from the Zenith solving tool. For licensing reasons we do not redistribute
