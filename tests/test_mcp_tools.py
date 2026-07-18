@@ -182,6 +182,22 @@ def test_experiment_submit_invalid_and_valid(tmp_path):
     assert dup.get("deduplicated") is True
 
 
+def test_experiment_submit_surface_advertises_quagmire3_shotgun():
+    """The MCP definition table exposes experiment_submit naming quagmire3_shotgun,
+    and the mutate envelope preserves the anyOf config while adding the envelope
+    keys."""
+    from mcp_server.tools import MCP_TOOL_DEFINITIONS
+
+    submit = next(d for d in MCP_TOOL_DEFINITIONS if d["name"] == "experiment_submit")
+    assert "quagmire3_shotgun" in submit["description"]
+    props = submit["input_schema"]["properties"]
+    # Envelope keys added by _mutate_envelope.
+    assert "investigation_id" in props and "expected_revision" in props
+    # The anyOf config union survived the envelope wrap.
+    titles = {b.get("title") for b in props["config"]["anyOf"]}
+    assert titles == {"automated_solver config", "quagmire3_shotgun config"}
+
+
 # ---------------------------------------------------------- verify + gates
 def test_keyless_verify_and_declare_blocked(tmp_path):
     server = make_server(tmp_path)

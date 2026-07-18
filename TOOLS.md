@@ -1642,15 +1642,21 @@ The v3 lead can queue long-running automated-solver compute that runs in the
 BACKGROUND while it keeps working, then adjudicate the results later.
 
 ### `experiment_submit`
-Queue a long-running automated-solver experiment on a branch. Type
-`automated_solver` runs the no-LLM solver stack (homophonic anneal, transform
-screens, null-mask bake-offs).
+Queue a long-running experiment on a branch. Two types:
+- `automated_solver` — the no-LLM solver stack (homophonic anneal, transform
+  screens, null-mask bake-offs).
+- `quagmire3_shotgun` — the Rust Quagmire III / keyed-tableau shotgun search
+  (the engine behind `search_quagmire3_keyword_alphabet`). Use when period
+  evidence (Kasiski / periodic IC) suggests a keyed tableau. Results install as
+  mode-specific decoded branches (no substitution key). The Rust kernel is
+  required: an unavailable/failed kernel fails the experiment loudly with
+  `scripts/build_rust_fast.sh` guidance (there is no Python-screen fallback).
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
-| `type` | string | **required** — e.g. `automated_solver` |
+| `type` | string | **required** — `automated_solver` or `quagmire3_shotgun` |
 | `branch` | string | branch to run on |
-| `config` | object | TYPED per-type schema (M5.3 Slice 5): for `automated_solver`, supported keys `cipher_system`, `homophonic_budget`/`homophonic_refinement`/`homophonic_solver`, `transform_search`(+profile/max), `model_variant` — each with enums/defaults advertised. **Do NOT set `language`** (host-derived). Unknown/unsupported keys are rejected before dispatch; a validation error returns a valid `corrected_example`. |
+| `config` | object | TYPED per-type schema (`anyOf` of the two contracts). `automated_solver`: `cipher_system`, `homophonic_budget`/`homophonic_refinement`/`homophonic_solver`, `transform_search`(+profile/max), `model_variant`. `quagmire3_shotgun`: `keyword_lengths` (default `[7]`, clamp 2–20, max 8), `cycleword_lengths` (default `[8]`, clamp 2–20, max 8), `hillclimbs` (default `5000`, clamp 1–50000), `restarts` (default `250`, clamp 1–5000), `model_variant` (accepted for uniformity; does not affect the quadgram engine). **Do NOT set `language`** (host-derived). Unknown/unsupported keys are rejected before dispatch; a validation error returns a valid `corrected_example`. An `automated_solver` config whose `cipher_system` names the Quagmire family is redirected to `quagmire3_shotgun`. |
 | `note` | string | optional label |
 | `resubmit` | string | optional prior experiment id to re-run |
 
@@ -1659,13 +1665,16 @@ screens, null-mask bake-offs).
 ### `experiment_collect`
 Adjudicate queued experiments. With no id: poll the queue and return one status
 line per outstanding experiment plus summaries of any that just completed. With
-`experiment_id`: return the result packet and mark it collected.
+`experiment_id`: return the result packet and mark it collected. A completed
+`quagmire3_shotgun` packet additionally carries a ranked `candidates` list
+(`rank`, `score`, `selection_score`, `preview`) so a lead can choose a finalist.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
 | `experiment_id` | string | specific experiment to collect; omit to poll all |
 | `install` | boolean | install the result as a new branch |
 | `as_name` | string | branch name when `install=true` |
+| `candidate_rank` | integer | 1-based finalist to install for ranked-result experiments (`quagmire3_shotgun`); default 1 = best. Supplying it for a non-ranked type is a structured error. |
 
 
 ---

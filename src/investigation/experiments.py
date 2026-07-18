@@ -138,10 +138,53 @@ _AUTOMATED_SOLVER_FIELD_DOCS: dict[str, str] = {
     ),
 }
 
+# v1 ``quagmire3_shotgun`` config schema. Same local validator dialect; bounds
+# are enforced by CLAMPING in the runner (the dialect has no min/max), not here.
+# ``language`` is host-derived and deliberately NOT a property.
+_QUAGMIRE3_SHOTGUN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "keyword_lengths": {"type": "array", "items": {"type": "integer"}},
+        "cycleword_lengths": {"type": "array", "items": {"type": "integer"}},
+        "hillclimbs": {"type": "integer"},
+        "restarts": {"type": "integer"},
+        "model_variant": {"type": ["string", "null"]},
+    },
+}
+
+# Concise, model-facing per-field help for ``quagmire3_shotgun``.
+_QUAGMIRE3_SHOTGUN_FIELD_DOCS: dict[str, str] = {
+    "keyword_lengths": (
+        "Candidate tableau-keyword lengths to sweep (default [7]). When the "
+        "keyword length is unknown, sweep a small range, e.g. [5,6,7,8]. Entries "
+        "clamped to 2-20, max 8 entries."
+    ),
+    "cycleword_lengths": (
+        "Candidate cycleword lengths = periods (default [8]). Take this from "
+        "period evidence (periodic IC / Kasiski) rather than sweeping blindly. "
+        "Entries clamped to 2-20, max 8 entries."
+    ),
+    "hillclimbs": (
+        "Hillclimb steps per restart (default 5000, the budget that solves the "
+        "reference Quagmire III cases; clamped to 1-50000)."
+    ),
+    "restarts": (
+        "Independent shotgun restarts per (keyword_length, cycleword_length) "
+        "pair (default 250; clamped to 1-5000). nominal proposals = "
+        "len(keyword_lengths)*len(cycleword_lengths)*restarts*hillclimbs."
+    ),
+    "model_variant": (
+        "Language-model variant slug; accepted for queue uniformity; does not "
+        "affect the quadgram engine."
+    ),
+}
+
 # Per-type field-doc registry (parallel to EXPERIMENT_TYPES). A type without an
 # entry simply exposes its raw schema with no per-field prose.
 _FIELD_DOCS: dict[str, dict[str, str]] = {
     "automated_solver": _AUTOMATED_SOLVER_FIELD_DOCS,
+    "quagmire3_shotgun": _QUAGMIRE3_SHOTGUN_FIELD_DOCS,
 }
 
 _AUTOMATED_SOLVER_DEFAULTS: dict[str, Any] = {
@@ -152,6 +195,16 @@ _AUTOMATED_SOLVER_DEFAULTS: dict[str, Any] = {
     "transform_search_profile": "broad",
     "transform_search_max_generated_candidates": None,
     "cipher_system": "",
+    "model_variant": None,
+}
+
+# Winning agent-budget values from round 6 (recovers the reference Quagmire III
+# cases 100% in ~109 s).
+_QUAGMIRE3_SHOTGUN_DEFAULTS: dict[str, Any] = {
+    "keyword_lengths": [7],
+    "cycleword_lengths": [8],
+    "hillclimbs": 5000,
+    "restarts": 250,
     "model_variant": None,
 }
 
@@ -228,7 +281,125 @@ def _automated_solver_runner(
     }
 
 
-# type -> {config_schema, config_defaults, runner, description}
+def _clamp_length_list(raw: Any, *, default: list[int]) -> list[int]:
+    """Keep integer entries with 2 <= n <= 20, truncate to 8; an emptied list
+    falls back to ``default`` (matching the v2 tool's clamp style). A non-integer
+    entry is a schema type error at submit, not a clamp — so this coerces only."""
+    values: list[int] = []
+    for item in raw or []:
+        n = int(item)
+        if 2 <= n <= 20:
+            values.append(n)
+    values = values[:8]
+    return values if values else list(default)
+
+
+def _quagmire3_candidate_record(candidate: dict[str, Any], rank: int) -> dict[str, Any]:
+    """Copy only the fields the v2 installer reads (tools_v2.py:7231-7259),
+    defensively; drop bulky engine internals to keep the record/state small."""
+    metadata = dict(candidate.get("metadata") or {})
+    slim_meta = {
+        "alphabet_keyword": metadata.get("alphabet_keyword"),
+        "cycleword": metadata.get("cycleword"),
+        "cycleword_shifts": metadata.get("cycleword_shifts"),
+        "plaintext_alphabet": metadata.get("plaintext_alphabet"),
+        "ciphertext_alphabet": metadata.get("ciphertext_alphabet"),
+        "quagmire_type": metadata.get("quagmire_type"),
+        "start_type": metadata.get("start_type"),
+    }
+    return {
+        "rank": rank,
+        "score": candidate.get("score"),
+        "selection_score": candidate.get("selection_score"),
+        "period": candidate.get("period"),
+        "plaintext": candidate.get("plaintext", ""),
+        "preview": candidate.get("preview"),
+        "key": candidate.get("key"),
+        "shifts": candidate.get("shifts"),
+        "metadata": slim_meta,
+    }
+
+
+def _quagmire3_shotgun_runner(
+    cipher: Any, snapshot: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any]:
+    """Runner for the ``quagmire3_shotgun`` experiment type (Part 1).
+
+    PURE over its inputs: reconstructs a throwaway one-branch workspace, derives
+    the effective cipher, and calls the Rust keyed-tableau shotgun engine. Bounds
+    are enforced by CLAMPING here (the local schema dialect has no min/max). No
+    Python-screen fallback: the Python screen is not an equivalent path, so an
+    unavailable/failed kernel fails LOUDLY (the round-6 silent-misroute lesson).
+    """
+    ws = Workspace(cipher_text=cipher)
+    snap = copy.deepcopy(snapshot)
+    _restore_branch_into(ws, snap)
+    branch_name = str(snap["name"])
+    effective = ws.effective_cipher_text(branch_name)
+
+    hillclimbs = max(1, min(int(config.get("hillclimbs", 5000)), 50_000))
+    restarts = max(1, min(int(config.get("restarts", 250)), 5_000))
+    keyword_lengths = _clamp_length_list(config.get("keyword_lengths"), default=[7])
+    cycleword_lengths = _clamp_length_list(config.get("cycleword_lengths"), default=[8])
+
+    start = time.time()
+    try:
+        from analysis.polyalphabetic_fast import search_quagmire3_shotgun_fast
+
+        result = search_quagmire3_shotgun_fast(
+            effective,
+            language=str(config.get("language") or "en"),
+            keyword_lengths=keyword_lengths,
+            cycleword_lengths=cycleword_lengths,
+            hillclimbs=hillclimbs,
+            restarts=restarts,
+            seed=1,
+            top_n=5,
+            threads=0,  # inner threading governed by the engine/env (v2 default)
+        )
+    except Exception as exc:  # noqa: BLE001 - packed into a `failed` record
+        raise RuntimeError(
+            f"Rust quagmire3 shotgun engine unavailable or failed: "
+            f"{type(exc).__name__}: {exc}. Build it with "
+            f"`scripts/build_rust_fast.sh` and verify with `decipher doctor`."
+        ) from exc
+    elapsed = round(time.time() - start, 3)
+
+    raw_candidates = list(result.get("top_candidates") or [])[:5]
+    top_candidates = [
+        _quagmire3_candidate_record(cand, idx)
+        for idx, cand in enumerate(raw_candidates, 1)
+    ]
+    nominal = len(keyword_lengths) * len(cycleword_lengths) * restarts * hillclimbs
+    status = result.get("status") or "completed"
+    best_score = top_candidates[0].get("score") if top_candidates else None
+    best_plaintext = top_candidates[0].get("plaintext") if top_candidates else ""
+    step = {
+        "name": "search_quagmire3_shotgun",
+        "status": status,
+        "engine": "rust_shotgun",
+        "keyword_lengths": keyword_lengths,
+        "cycleword_lengths": cycleword_lengths,
+        "hillclimbs": hillclimbs,
+        "restarts": restarts,
+        "nominal_proposals": nominal,
+        "candidates": len(top_candidates),
+        "best_score": best_score,
+    }
+    return {
+        "status": status,
+        "solver": "quagmire3_shotgun_rust",
+        "error_message": result.get("error"),  # None on success
+        "elapsed_seconds": elapsed,
+        "key": {},  # no substitution key for this family
+        "final_decryption": best_plaintext or "",
+        "top_candidates": top_candidates,
+        "steps": [step],
+        "nominal_proposals": nominal,
+    }
+
+
+# type -> {config_schema, config_defaults, runner, description, installer?}
 EXPERIMENT_TYPES: dict[str, dict[str, Any]] = {
     "automated_solver": {
         "config_schema": _AUTOMATED_SOLVER_SCHEMA,
@@ -238,6 +409,19 @@ EXPERIMENT_TYPES: dict[str, dict[str, Any]] = {
             "Run the automated no-LLM solver stack (the same one the parity "
             "harness uses) on a branch in the background: homophonic anneal, "
             "transform screens, and null-mask bakeoffs via its options."
+        ),
+    },
+    "quagmire3_shotgun": {
+        "config_schema": _QUAGMIRE3_SHOTGUN_SCHEMA,
+        "config_defaults": dict(_QUAGMIRE3_SHOTGUN_DEFAULTS),
+        "runner": _quagmire3_shotgun_runner,
+        "installer": None,  # bound to _install_quagmire3_branch below (defined later)
+        "description": (
+            "Blake-style Quagmire III / keyed-tableau shotgun search on the Rust "
+            "engine (the same one behind search_quagmire3_keyword_alphabet). Use "
+            "for periodic ciphers where a keyed tableau is suspected (period known "
+            "from Kasiski/periodic IC, flat-ish frequency within phases). Results "
+            "install as mode-specific decoded branches (no substitution key)."
         ),
     },
 }
@@ -284,6 +468,19 @@ def validate_experiment_config(exp_type: str, config: dict[str, Any]) -> list[st
                 f"unknown config key {key!r}; allowed: {sorted(allowed)}"
             )
     errors.extend(validate_against_schema(config, schema, path="config"))
+    # Misroute guard: the Quagmire/keyed-tableau family is ACCEPTED but unsolvable
+    # by the automated stack (it would silently route to the generic periodic
+    # screen). Redirect to the dedicated type. Scope: only this token family — the
+    # one accepted-but-unsolvable hint class; other free-form hints keep routing.
+    if exp_type == "automated_solver":
+        cs = str(config.get("cipher_system") or "").lower()
+        if "quag" in cs:
+            errors.append(
+                f"cipher_system {config.get('cipher_system')!r} names the "
+                "Quagmire/keyed-tableau family, which the automated_solver stack "
+                "cannot solve (it would silently misroute to the generic periodic "
+                "screen). Submit type='quagmire3_shotgun' instead."
+            )
     return errors
 
 
@@ -365,6 +562,11 @@ def corrected_config_example(
         if sub is None or not validate_against_schema(value, sub):
             example[key] = value  # supported key with an already-valid value
         # else: invalid enum/type value dropped -> the type default applies
+    # A ``cipher_system`` naming the Quagmire family passes the string schema but
+    # fails the misroute guard; drop it so the example stays genuinely valid AND
+    # useful (the guard would otherwise collapse the whole example to {}).
+    if "quag" in str(example.get("cipher_system") or "").lower():
+        example.pop("cipher_system", None)
     if _looks_homophonic(user_config):
         example.setdefault("cipher_system", "homophonic_substitution")
         example.setdefault("homophonic_solver", "zenith_native")
@@ -830,7 +1032,10 @@ EXPERIMENT_SUBMIT_TOOL = {
         "with experiment_collect (collect/install the result rather than "
         "submitting duplicate jobs). Type `automated_solver` runs the no-LLM "
         "solver stack (homophonic anneal, transform screens via transform_search, "
-        "null-mask bakeoffs via homophonic_refinement=null_masks). `config` is "
+        "null-mask bakeoffs via homophonic_refinement=null_masks). Type "
+        "`quagmire3_shotgun` runs the Rust keyed-tableau/Quagmire III shotgun "
+        "search (use when period evidence suggests a keyed tableau; results "
+        "install as decoded branches via experiment_collect). `config` is "
         "typed per experiment type (see its schema); its keys are the ONLY "
         "supported controls. Do NOT set `language` — it is host-derived from the "
         "run. Select homophonic behavior via the homophonic_* fields, not "
@@ -847,8 +1052,9 @@ EXPERIMENT_SUBMIT_TOOL = {
                 "type": "string",
                 "description": (
                     "Experiment type. Supported: 'automated_solver' (the no-LLM "
-                    "solver stack). Its `config` is validated against the schema "
-                    "below."
+                    "solver stack) and 'quagmire3_shotgun' (Rust Quagmire III "
+                    "keyed-tableau search). Each type's `config` is validated "
+                    "against its own schema."
                 ),
             },
             "branch": {
@@ -857,7 +1063,21 @@ EXPERIMENT_SUBMIT_TOOL = {
                     "Branch to run the experiment on (required unless `resubmit`)."
                 ),
             },
-            "config": model_facing_config_schema("automated_solver"),
+            "config": {
+                "anyOf": [
+                    {
+                        "title": "automated_solver config",
+                        **model_facing_config_schema("automated_solver"),
+                    },
+                    {
+                        "title": "quagmire3_shotgun config",
+                        **model_facing_config_schema("quagmire3_shotgun"),
+                    },
+                ],
+                "description": (
+                    "Per-type config; see the branch matching your `type`."
+                ),
+            },
             "note": {"type": "string"},
             "resubmit": {
                 "type": "string",
@@ -879,8 +1099,9 @@ EXPERIMENT_COLLECT_TOOL = {
         "just completed. With `experiment_id`: return the result packet (solver, "
         "decoded preview, route/primary step) and mark it collected; pass "
         "`install=true` (completed runs only) to adopt the solved branch under a "
-        "fresh name (`as_name` optional). A null-mask bakeoff exposes a finalist "
-        "review session in the packet."
+        "fresh name (`as_name` optional), optionally choosing which ranked "
+        "finalist via `candidate_rank` (quagmire3_shotgun). A null-mask bakeoff "
+        "exposes a finalist review session in the packet."
     ),
     "input_schema": {
         "type": "object",
@@ -888,6 +1109,13 @@ EXPERIMENT_COLLECT_TOOL = {
             "experiment_id": {"type": "string"},
             "install": {"type": "boolean"},
             "as_name": {"type": "string"},
+            "candidate_rank": {
+                "type": "integer",
+                "description": (
+                    "1-based finalist to install for ranked-result experiments "
+                    "(quagmire3_shotgun). Default 1 = best."
+                ),
+            },
         },
     },
 }
@@ -1156,10 +1384,13 @@ def _install_experiment_branch(
     record: dict[str, Any],
     as_name: str | None,
     turn: int,
+    candidate_rank: int = 1,
 ) -> str:
     """Deep-copy the stored snapshot, restore under a fresh name, set the result
     key, created_iteration = turn; mirror null-mask metadata. Source branch never
-    mutated (unlike the v2 in-place tool)."""
+    mutated (unlike the v2 in-place tool). ``candidate_rank`` is accepted for
+    installer-seam uniformity and ignored (this type has no ranked finalists —
+    dispatch rejects a supplied candidate_rank for it before calling here)."""
     snap = copy.deepcopy(record.get("snapshot") or {})
     result = record.get("result") or {}
     key = {int(k): int(v) for k, v in (result.get("key") or {}).items()}
@@ -1176,6 +1407,111 @@ def _install_experiment_branch(
     workspace.set_full_key(name, key)
     _mirror_null_mask_metadata(workspace, name, result)
     return name
+
+
+def _install_quagmire3_branch(
+    workspace: Workspace,
+    record: dict[str, Any],
+    as_name: str | None,
+    turn: int,
+    candidate_rank: int = 1,
+) -> str | dict[str, Any]:
+    """Install a quagmire3 shotgun finalist as a mode-specific decoded branch,
+    mirroring the v2 tool block (tools_v2.py:7229-7298) through the experiment-
+    snapshot path (the source branch is never mutated). Does NOT set_full_key:
+    the inherited snapshot key is left as-is, and ``_decoded_text_for_panel``
+    prefers ``metadata['decoded_text']`` — which is what attestation/verify/
+    declare hash, making the gate reachable. Returns the installed branch name,
+    or a structured ``{"error": ...}`` dict."""
+    result = record.get("result") or {}
+    candidates = result.get("top_candidates") or []
+    if not candidates:
+        return {"error": "experiment produced no quagmire3 candidates to install"}
+    if candidate_rank < 1 or candidate_rank > len(candidates):
+        return {
+            "error": (
+                f"candidate_rank {candidate_rank} out of range; valid "
+                f"1..{len(candidates)}"
+            )
+        }
+    candidate = candidates[candidate_rank - 1]
+    if not str(candidate.get("plaintext") or "").strip():
+        # An empty decoded_text would make _decoded_text_for_panel fall back to
+        # the inherited snapshot key — a stale decode presented as the quagmire
+        # branch text.
+        return {
+            "error": (
+                f"selected candidate (rank {candidate_rank}) has no plaintext; "
+                "it cannot be installed as a decoded branch"
+            )
+        }
+    metadata = dict(candidate.get("metadata") or {})
+    alphabet_keyword = str(metadata.get("alphabet_keyword") or "unknown")
+    cycleword = str(metadata.get("cycleword") or candidate.get("key") or "unknown")
+
+    target = str(as_name) if as_name else f"exp_{str(record['experiment_id'])[:6]}_{record.get('branch')}"
+    name = target
+    suffix = 2
+    while workspace.has_branch(name):
+        name = f"{target}_{suffix}"
+        suffix += 1
+    install_snap = dict(copy.deepcopy(record.get("snapshot") or {}))
+    install_snap["name"] = name
+    install_snap["created_iteration"] = turn
+    _restore_branch_into(workspace, install_snap)
+
+    step = (result.get("steps") or [{}])[0]
+    branch = workspace.get_branch(name)
+    # A null-mask block inherited from the source snapshot would shadow
+    # decoded_text in _metadata_decoded_text (mask+key render wins), so the
+    # verify/declare hash would bind the OLD null-mask decode, not this result.
+    branch.metadata.pop("null_mask_finalist", None)
+    branch.metadata.pop("null_mask_selected", None)
+    branch.metadata.update({
+        "cipher_mode": "quagmire3",
+        "mode_status": "active",
+        "mode_confidence": "medium",
+        "mode_evidence": (
+            f"Installed by experiment_collect from quagmire3_shotgun experiment "
+            f"{record['experiment_id']} (alphabet keyword {alphabet_keyword!r}, "
+            f"cycleword {cycleword!r}, rank {candidate_rank})."
+        ),
+        "mode_counter_evidence": (
+            "Bounded shotgun search can overfit; verify readability before "
+            "declaring."
+        ),
+        "key_type": "QuagmireKey",
+        "quagmire_type": metadata.get("quagmire_type", "quag3"),
+        "alphabet_keyword": alphabet_keyword,
+        "cycleword": cycleword,
+        "cycleword_shifts": metadata.get("cycleword_shifts", candidate.get("shifts")),
+        "plaintext_alphabet": metadata.get("plaintext_alphabet"),
+        "ciphertext_alphabet": metadata.get("ciphertext_alphabet"),
+        "quagmire_score": candidate.get("score"),
+        "quagmire_selection_score": candidate.get("selection_score"),
+        "decoded_text": candidate.get("plaintext", ""),
+        "decoded_text_source": "experiment_collect:quagmire3_shotgun",
+        "search_metadata": {
+            "solver": "quagmire3_shotgun_rust",
+            "engine": "rust_shotgun",
+            "experiment_id": record["experiment_id"],
+            "candidate_rank": candidate_rank,
+            "hillclimbs": step.get("hillclimbs"),
+            "restarts": step.get("restarts"),
+            "keyword_lengths": step.get("keyword_lengths"),
+            "cycleword_lengths": step.get("cycleword_lengths"),
+            "nominal_proposals": result.get("nominal_proposals"),
+        },
+    })
+    workspace.tag(name, "hypothesis")
+    workspace.tag(name, "mode:quagmire3")
+    workspace.tag(name, "mode:keyed_tableau_polyalphabetic")
+    return name
+
+
+# Bind the ranked-finalist installer now that it is defined (declared in the
+# registry above with a None placeholder to avoid a forward reference).
+EXPERIMENT_TYPES["quagmire3_shotgun"]["installer"] = _install_quagmire3_branch
 
 
 def _finalist_source_branch(
@@ -1280,11 +1616,42 @@ def dispatch_experiment_collect(
         }
 
     # Completed.
+    candidate_rank_arg = args.get("candidate_rank")
+    candidate_rank = max(1, int(candidate_rank_arg or 1))
+    # candidate_rank is only meaningful for ranked-finalist types; supplying it
+    # for any other type is a usage error (not silently ignored).
+    if candidate_rank_arg is not None and record.get("type") != "quagmire3_shotgun":
+        return {
+            "experiment_id": record["experiment_id"],
+            "type": record.get("type"),
+            "status": status,
+            "error": (
+                "candidate_rank is only supported for experiment types with "
+                "ranked finalists (quagmire3_shotgun)"
+            ),
+        }
+
     installed_name: str | None = None
     if install:
-        installed_name = _install_experiment_branch(
-            workspace, record, args.get("as_name"), turn
+        installer = (
+            EXPERIMENT_TYPES.get(record["type"], {}).get("installer")
+            or _install_experiment_branch
         )
+        installed = installer(
+            workspace, record, args.get("as_name"), turn,
+            candidate_rank=candidate_rank,
+        )
+        if isinstance(installed, dict) and "error" in installed:
+            # A structured installer error (no candidates / rank out of range):
+            # adjudicate once (mark collected) and surface it, no branch created.
+            record["collected"] = True
+            return {
+                "experiment_id": record["experiment_id"],
+                "type": record.get("type"),
+                "status": status,
+                "error": installed["error"],
+            }
+        installed_name = installed
         record["installed_as"] = installed_name
         source_card = state.hypothesis_board.get(str(record.get("branch") or ""))
         if source_card is not None:
@@ -1318,6 +1685,20 @@ def dispatch_experiment_collect(
     }
     if installed_name is not None:
         packet["installed_as"] = installed_name
+    # Ranked-finalist summary (generic: any result carrying top_candidates) so a
+    # lead can pick a candidate_rank without a second tool call. Previews only —
+    # decoded_preview already carries the best candidate's full-ish text.
+    top_candidates = result.get("top_candidates")
+    if top_candidates:
+        packet["candidates"] = [
+            {
+                "rank": c.get("rank", idx),
+                "score": c.get("score"),
+                "selection_score": c.get("selection_score"),
+                "preview": c.get("preview"),
+            }
+            for idx, c in enumerate(top_candidates, 1)
+        ]
     if session_id is not None:
         # F7: surface the session so the lead can find it — id + capped initial
         # review + the v2 suggested-next-tools triplet.

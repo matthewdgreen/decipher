@@ -146,7 +146,12 @@ def test_submit_config_error_is_structured_not_raised():
 def test_model_facing_config_schema_shape():
     """The provider-visible `config` schema exposes the real keys/enums/defaults,
     folds in the universal `model_variant`, and is host-language-firewalled."""
-    schema = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
+    config_schema = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
+    # `config` is an anyOf union of the two per-type schemas (each titled).
+    auto_branch = next(
+        b for b in config_schema["anyOf"] if b.get("title") == "automated_solver config"
+    )
+    schema = {k: v for k, v in auto_branch.items() if k != "title"}
     # Same object the builder returns for automated_solver.
     assert schema == model_facing_config_schema("automated_solver")
     assert schema["type"] == "object"
@@ -1133,3 +1138,306 @@ def test_collect_no_id_lists_and_summarizes():
     assert out["queue"] and any(sub["experiment_id"] in line for line in out["queue"])
     assert out["newly_completed"] and out["newly_completed"][0]["status"] == "completed"
     assert "slots" in out
+
+
+# ---------------------------------------------------------------------------
+# quagmire3_shotgun experiment type (spec: experiment_quagmire3_shotgun_spec.md)
+# ---------------------------------------------------------------------------
+import analysis.polyalphabetic_fast as _pf
+
+
+def _q3_candidates():
+    """Two engine-shaped candidates; each carries the fields the installer reads
+    plus a bulky internal that the runner MUST drop."""
+    return [
+        {
+            "score": -3.1, "selection_score": 0.9, "period": 8,
+            "plaintext": "THE QUICK BROWN FOX", "preview": "THE QUICK BROWN FOX",
+            "key": "CYCLEA", "shifts": [0, 1, 2],
+            "metadata": {
+                "alphabet_keyword": "SECRET", "cycleword": "CYCLEA",
+                "cycleword_shifts": [0, 1, 2], "plaintext_alphabet": "ABCDE",
+                "ciphertext_alphabet": "XYZWV", "quagmire_type": "quag3",
+                "start_type": "keyword", "bulky_internal": "DROP ME",
+            },
+        },
+        {
+            "score": -5.0, "selection_score": 0.5, "period": 8,
+            "plaintext": "SECOND CANDIDATE TEXT", "preview": "SECOND CANDIDATE TEXT",
+            "key": "CYCLEB", "shifts": [1, 2, 3],
+            "metadata": {
+                "alphabet_keyword": "OTHER", "cycleword": "CYCLEB",
+                "quagmire_type": "quag3", "start_type": "random",
+            },
+        },
+    ]
+
+
+def _fake_q3_engine(*, captured=None, candidates=None, status="completed", error=None):
+    cands = _q3_candidates() if candidates is None else candidates
+
+    def engine(cipher_text, *, language="en", keyword_lengths=None,
+               cycleword_lengths=None, hillclimbs=500, restarts=1000, seed=1,
+               top_n=10, threads=0, **extra):
+        if captured is not None:
+            captured.update({
+                "language": language, "keyword_lengths": keyword_lengths,
+                "cycleword_lengths": cycleword_lengths, "hillclimbs": hillclimbs,
+                "restarts": restarts, "seed": seed, "top_n": top_n,
+                "threads": threads,
+            })
+        out = {"status": status, "top_candidates": [dict(c) for c in cands]}
+        if error is not None:
+            out["error"] = error
+        return out
+
+    return engine
+
+
+def _patch_q3_engine(monkeypatch, engine):
+    monkeypatch.setattr(_pf, "search_quagmire3_shotgun_fast", engine)
+
+
+def test_q3_registry_and_schema_surface():
+    assert "quagmire3_shotgun" in EXPERIMENT_TYPES
+    schema = model_facing_config_schema("quagmire3_shotgun")
+    props = schema["properties"]
+    assert set(props) == {
+        "keyword_lengths", "cycleword_lengths", "hillclimbs", "restarts",
+        "model_variant",
+    }
+    assert props["hillclimbs"]["default"] == 5000
+    assert props["restarts"]["default"] == 250
+    assert props["keyword_lengths"]["default"] == [7]
+    assert props["cycleword_lengths"]["default"] == [8]
+    assert all(props[k].get("description") for k in props)
+    # Submit-tool config is the anyOf union carrying both titles.
+    cfg = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
+    titles = {b.get("title") for b in cfg["anyOf"]}
+    assert titles == {"automated_solver config", "quagmire3_shotgun config"}
+    q3_branch = next(b for b in cfg["anyOf"] if b["title"] == "quagmire3_shotgun config")
+    assert {k: v for k, v in q3_branch.items() if k != "title"} == schema
+
+
+def test_q3_misroute_guard_redirects_to_shotgun():
+    for hint in ("quagmire3", "Quagmire III"):
+        errors = validate_experiment_config("automated_solver", {"cipher_system": hint})
+        assert errors and any("quagmire3_shotgun" in e for e in errors)
+    # The corrected example is genuinely valid and drops the quag hint.
+    fixed = corrected_config_example("automated_solver", {"cipher_system": "quagmire3"})
+    assert validate_experiment_config("automated_solver", fixed) == []
+    assert "cipher_system" not in fixed
+    # A non-quag hint still validates.
+    assert validate_experiment_config("automated_solver", {"cipher_system": "vigenere"}) == []
+
+
+def test_q3_runner_shape_and_purity(monkeypatch):
+    from investigation.state import _serialize_branch
+    _patch_q3_engine(monkeypatch, _fake_q3_engine())
+    _ct, state = _make_state()
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    pristine = copy.deepcopy(snapshot)
+    config = apply_config_defaults("quagmire3_shotgun", {})
+    config["model_variant"] = None
+    config["language"] = "en"
+    result = exp._quagmire3_shotgun_runner(state.cipher, snapshot, config)
+    assert snapshot == pristine  # input snapshot byte-identical
+    assert result["key"] == {}
+    assert result["solver"] == "quagmire3_shotgun_rust"
+    assert result["final_decryption"] == "THE QUICK BROWN FOX"
+    assert result["nominal_proposals"] == 1 * 1 * 250 * 5000
+    step = result["steps"][0]
+    assert step["name"] == "search_quagmire3_shotgun"
+    assert step["engine"] == "rust_shotgun"
+    assert step["candidates"] == 2
+    # Bulky engine internals dropped from the stored candidate metadata.
+    assert "bulky_internal" not in result["top_candidates"][0]["metadata"]
+
+
+def test_q3_runner_clamps_config(monkeypatch):
+    captured: dict = {}
+    _patch_q3_engine(monkeypatch, _fake_q3_engine(captured=captured))
+    _ct, state = _make_state()
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    config = {
+        "hillclimbs": 10 ** 9, "restarts": 0,
+        "keyword_lengths": [1, 25, 7], "cycleword_lengths": [],
+        "language": "en",
+    }
+    exp._quagmire3_shotgun_runner(state.cipher, snapshot, config)
+    assert captured["hillclimbs"] == 50_000
+    assert captured["restarts"] == 1
+    assert captured["keyword_lengths"] == [7]   # out-of-range filtered
+    assert captured["cycleword_lengths"] == [8]  # emptied -> default
+    assert captured["threads"] == 0
+
+
+def test_q3_end_to_end_install(monkeypatch):
+    from agent.loop_shared import _decoded_text_for_panel
+    _patch_q3_engine(monkeypatch, _fake_q3_engine())
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    assert sub.get("experiment_id")
+    packet = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True}, 2)
+    name = packet["installed_as"]
+    branch = state.workspace.get_branch(name)
+    assert branch.metadata["cipher_mode"] == "quagmire3"
+    assert branch.metadata["decoded_text"] == "THE QUICK BROWN FOX"
+    assert {"hypothesis", "mode:quagmire3", "mode:keyed_tableau_polyalphabetic"} <= set(branch.tags)
+    # Ranked candidates summarized in the packet (previews, not full plaintext).
+    assert [c["rank"] for c in packet["candidates"]] == [1, 2]
+    # Gate-reachability: the panel text equals the installed candidate plaintext.
+    assert _decoded_text_for_panel(state.workspace, name) == "THE QUICK BROWN FOX"
+
+
+def test_q3_install_strips_inherited_null_mask_shadow(monkeypatch):
+    """A null-mask block inherited from the source snapshot must not shadow the
+    quagmire decoded_text in _metadata_decoded_text (review finding 1)."""
+    from agent.loop_shared import _decoded_text_for_panel
+    _patch_q3_engine(monkeypatch, _fake_q3_engine())
+    _ct, state = _make_state()
+    src = state.workspace.get_branch("main")
+    src.metadata["null_mask_selected"] = {"mask": ["Z"], "selection_score": 0.5}
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    packet = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True}, 2)
+    name = packet["installed_as"]
+    branch = state.workspace.get_branch(name)
+    assert "null_mask_selected" not in branch.metadata
+    assert "null_mask_finalist" not in branch.metadata
+    assert _decoded_text_for_panel(state.workspace, name) == "THE QUICK BROWN FOX"
+    # Source branch untouched.
+    assert "null_mask_selected" in src.metadata
+
+
+def test_q3_install_rejects_empty_plaintext_candidate(monkeypatch):
+    """An empty-plaintext candidate must error instead of installing a branch
+    whose panel text falls back to the stale inherited key (review finding 2)."""
+    cands = _q3_candidates()
+    cands[0]["plaintext"] = ""
+    _patch_q3_engine(monkeypatch, _fake_q3_engine(candidates=cands))
+    _ct, state = _make_state()
+    before = set(state.workspace.branch_names())
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    out = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True}, 2)
+    assert "no plaintext" in out["error"]
+    assert set(state.workspace.branch_names()) == before
+    # Rank 2 (non-empty plaintext) still installs from the same record.
+    out2 = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True,
+         "candidate_rank": 2}, 3)
+    branch = state.workspace.get_branch(out2["installed_as"])
+    assert branch.metadata["decoded_text"] == "SECOND CANDIDATE TEXT"
+
+
+def test_q3_candidate_rank_selection_and_errors(monkeypatch):
+    _patch_q3_engine(monkeypatch, _fake_q3_engine())
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    eid = sub["experiment_id"]
+    # rank 2 installs candidate 2.
+    p2 = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": eid, "install": True, "candidate_rank": 2}, 2)
+    assert state.workspace.get_branch(p2["installed_as"]).metadata["decoded_text"] == "SECOND CANDIDATE TEXT"
+    # rank 99 -> structured error naming the valid range.
+    bad = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": eid, "install": True, "candidate_rank": 99}, 3)
+    assert "out of range" in bad["error"]
+
+
+def test_q3_candidate_rank_on_automated_solver_is_error():
+    _ct, state = _make_state()
+    entry = EXPERIMENT_TYPES["automated_solver"]
+    orig = entry["runner"]
+    entry["runner"] = lambda cipher, snapshot, config: {
+        "status": "completed", "solver": "fake", "error_message": None,
+        "elapsed_seconds": 0.0, "key": {}, "final_decryption": "X", "steps": [],
+    }
+    try:
+        q = ExperimentQueue(synchronous=True)
+        sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                         {"type": "automated_solver", "branch": "main",
+                                          "config": {}}, 1)
+        out = dispatch_experiment_collect(
+            q, state, state.workspace, _fake_executor(),
+            {"experiment_id": sub["experiment_id"], "candidate_rank": 2}, 2)
+    finally:
+        entry["runner"] = orig
+    assert "candidate_rank is only supported" in out["error"]
+
+
+def test_q3_engine_unavailable_fails_loudly_and_resubmits(monkeypatch):
+    def boom(*a, **k):
+        raise ImportError("fast kernel not built")
+
+    _patch_q3_engine(monkeypatch, boom)
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    rec = q._find(state, sub["experiment_id"])
+    assert rec["status"] == "failed"
+    assert "build_rust_fast.sh" in (rec["error"] or "")
+    # Resubmit creates a fresh record from the stored snapshot.
+    again = dispatch_experiment_submit(
+        q, state, state.workspace, _fake_executor(),
+        {"type": "quagmire3_shotgun", "resubmit": sub["experiment_id"]}, 2)
+    assert again["experiment_id"] != sub["experiment_id"]
+    assert rec["superseded_by"] == again["experiment_id"]
+
+
+def test_q3_no_candidates_install_errors_no_branch(monkeypatch):
+    _patch_q3_engine(monkeypatch, _fake_q3_engine(candidates=[]))
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    before = set(state.workspace.branch_names())
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 1)
+    out = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True}, 2)
+    assert "no quagmire3 candidates" in out["error"]
+    assert set(state.workspace.branch_names()) == before  # no branch created
+
+
+def test_q3_dedup_config_aware(monkeypatch):
+    _patch_q3_engine(monkeypatch, _fake_q3_engine())
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    first = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                       {"type": "quagmire3_shotgun", "branch": "main",
+                                        "config": {}}, 1)
+    dup = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                     {"type": "quagmire3_shotgun", "branch": "main",
+                                      "config": {}}, 2)
+    assert dup.get("deduplicated") is True
+    assert dup["experiment_id"] == first["experiment_id"]
+    # A different hillclimbs budget is a distinct experiment.
+    other = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                       {"type": "quagmire3_shotgun", "branch": "main",
+                                        "config": {"hillclimbs": 1234}}, 3)
+    assert other["experiment_id"] != first["experiment_id"]
+    assert not other.get("deduplicated")
