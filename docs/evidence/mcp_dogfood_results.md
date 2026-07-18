@@ -174,3 +174,23 @@ cDecryptor is almost a perfect illustration of "the pile of tools is
 contestable; the epistemic scaffolding is the moat." Caveat: the two live arms
 ran DIFFERENT ciphers (naive=round3 homophonic, MCP=round4 composite), so this
 is not a same-cipher head-to-head; a clean A/B would run both arms on both.
+
+### Borg real-manuscript pages (Latin) + a verifier-calibration finding
+Benchmark-recorded char accuracy per Borg Track-B page (no plaintext examined):
+- borg_0109v: consistently solved (median ~0.85, max 0.968).
+- borg_0171v: hard-but-consistent (~0.91 automated anneal, 0.924 Sonnet).
+- borg_0077v: known-HARD (median 0.098; flagged "no automated solver yet
+  acceptable"; one 0.841 Sonnet). borg_0045v/0140v: inconsistent.
+
+**NEW: verifier/scalar UNDER-scoring of correct historical Latin** — from Codex
+investigation `c96916091a0f` (borg_0171v). SAFETY-GATE NOTE: the Borg Latin
+plaintext misfires an Anthropic safety gate; do NOT examine decoded text/gloss.
+Scalars only: user reports the reconstruction was NEARLY PERFECT, yet the verify
+attestation was reader_accepts_as_solution=False, target_language_confidence=0.82,
+semantic_recoverability=0.62, damage_scope=distributed, coherence=4; branch
+dict_rate/quad None/low. → Both the diplomatic verifier and the scalar quality
+metrics under-credit correct-but-heavily-abbreviated 17th-c. manuscript Latin
+(same class as 0077v). Likely: (a) benchmark char-scoring is vs a bracketed
+editorial transcription a cipher solve can't reproduce; (b) the verifier is
+tuned to fluent modern language. BACKLOG: Latin-aware readability calibration —
+currently blocks closing real Borg pages through the verify→declare gate.
