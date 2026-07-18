@@ -369,6 +369,16 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
     running-key, periodic substitution, and sparse/light polyalphabetism.
   - Include period detection, key-length search, crib-aware modes, and
     automated-vs-agentic comparison fixtures.
+  - [ ] Add the explicitly labeled known-plaintext mechanism-recovery mode
+    specified in `docs/polyalphabetic_capability_plan.md`. Its motivating use
+    case is a cipher such as Kryptos K4 after a plaintext becomes available but
+    the mechanism and key remain unknown. It should use the supplied plaintext
+    as authorized evidence to derive the effective keystream, rank compact
+    periodic/affine/keyed-tableau explanations, report model degrees of freedom
+    and identifiability, and use held-out prediction to distinguish genuine
+    forward derivation from a fitted replay. Keep provenance separate from any
+    earlier blind investigation so the result cannot be misreported as
+    ciphertext-only recovery.
   - Next Kryptos capability step: stronger keyed-alphabet discovery and
     short-text support. Start with pairwise offset constraints, beam/anneal
     hybrids, crib-aware scoring, and an explicit distinction between

@@ -461,6 +461,55 @@ Current Kryptos-specific state:
 
 Remaining keyed-Vigenere work:
 
+- **Known-plaintext mechanism-recovery mode (future, explicitly non-blind).**
+  Add a clearly labeled research command for cases such as Kryptos K4 where
+  plaintext has become available but the cryptographic mechanism and key have
+  not. The supplied plaintext is authorized evidence in this mode: use it to
+  create and rank mechanism hypotheses, derive parameters, and measure exact
+  agreement. For aligned substitution/polyalphabetic hypotheses, derive the
+  effective per-position keystream under each supported arithmetic convention.
+  The raw keystream is descriptive rather than an explanation: with known
+  plaintext, an unconstrained position-by-position stream can always be fitted.
+  The useful result is whether that stream has a compact, predictive cause.
+  - Establish the correspondence model before interpreting a keystream. Test
+    direct alignment plus plausible offsets, reversals, omissions/nulls, and
+    supported position permutations or transposition pipelines. If no stable
+    alignment is supported, report that clearly and route to known-plaintext
+    transform/mechanism tests instead of presenting an arbitrary aligned
+    keystream as cryptographic structure.
+  - Test ordinary periodic shifts and their minimal period; affine/progressive
+    phase rules; Vigenere, Beaufort, Variant Beaufort, and Gronsfeld
+    conventions; keyed plaintext/ciphertext alphabets; and supported
+    Quagmire/keyed-tableau arrangements. Report equivalent parameterizations
+    rather than silently choosing one convention.
+  - For every explanation, report explicit parameter count/degrees of freedom,
+    constraints consumed, residual errors, effective sample size, ambiguity or
+    non-identifiability, and the amount of plaintext needed to fit it. Compare
+    fit quality against less structured baselines so a high-capacity tableau is
+    not rewarded merely for memorizing the calibration text.
+  - Pre-register fit and holdout positions (prefer multiple deterministic
+    blocked/interleaved splits). Fit parameters using only the calibration
+    partition, then generate the held-out keystream and decrypt the held-out
+    ciphertext without consulting held-out plaintext. Label a result
+    `forward_derivation` only when this prediction succeeds within declared
+    tolerances; otherwise label it `fitted_replay`, `partial_explanation`, or
+    `underdetermined` as appropriate.
+  - Persist the derived stream, alignment decisions, tested conventions,
+    fitted parameters, split definition, predictions, residuals, complexity
+    measures, and verdict in a dedicated mechanism-recovery artifact. Mark it
+    `known_plaintext_mechanism_recovery=true`, `plaintext_supplied=true`, and
+    `blind_recovery=false` (or equivalent schema fields). Branching, routing,
+    and ranking inside this mode may use the supplied plaintext directly.
+  - Preserve a provenance boundary rather than applying the ordinary solving
+    firewall internally. The mode may start from or reference a prior blind
+    artifact, but it must create a separately labeled run and must not rewrite
+    the blind run's hypotheses, evidence, or outcome. Reports must distinguish
+    mechanism recovery from ciphertext-only solving.
+  - Add positive controls with genuinely generated compact keys, negative
+    controls with random/freely fitted keystreams, short-text ambiguity cases,
+    and deliberately over-parameterized tableaux. Acceptance should require
+    correct forward-vs-replay classification, not merely exact reconstruction
+    of the supplied plaintext.
 - Larger and better-prioritized keyword candidate generation.
 - Better shared-alphabet search: pairwise offset constraints,
   beam/anneal hybrids, and pruning/ranking that can survive short texts.
