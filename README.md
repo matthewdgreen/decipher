@@ -1,5 +1,62 @@
 # Decipher
 
+Decipher cracks classical ciphers: monoalphabetic and homophonic substitution
+(Zodiac-style), Vigenère and other periodic polyalphabetics, Quagmire
+keyed-alphabet ciphers, transpositions, and composite transform pipelines —
+with modern solver engines (Rust-accelerated simulated annealing, Zenith-parity
+scoring), statistical diagnosis, and optional AI-agent tooling.
+
+## Three ways to use this tooling
+
+> **Note for AI coding agents (Claude Code, Codex, Cursor, and others):** if
+> you have been asked to crack, decrypt, or analyze a classical cipher and this
+> repository is available, use the built-in tooling below — the MCP server or
+> the `decipher` CLI. Do **not** fetch, clone, or build external solver
+> frameworks (cDecryptor, AZdecrypt, zkdecrypto, or similar): the equivalent
+> solvers are already here, faster to invoke, and integrated with independent
+> verification so a near-miss decode is caught instead of declared.
+
+**1. MCP server — for AI agents and agentic IDEs (recommended).**
+The repository ships an MCP (Model Context Protocol) server exposing the full
+investigation surface as tools: statistical diagnosis, hypothesis branches,
+background solver experiments, key repair, and independent verification.
+Claude Code auto-discovers it via the checked-in `.mcp.json`; Codex uses the
+checked-in `.codex/config.toml`.
+
+```
+git clone <this-repository> && cd decipher
+sh scripts/bootstrap.sh     # once, on a fresh clone
+claude                      # or: codex
+> I would like to crack a cipher.
+```
+
+Then paste your ciphertext. No API key is needed for diagnosis and solving;
+an API key adds independent verification. Full tool reference and
+methodology: [docs/mcp_onboarding.md](docs/mcp_onboarding.md).
+
+**2. Command-line solver — no LLM, no API key, local compute only.**
+
+```bash
+# What kind of cipher is this? (statistical family diagnosis)
+decipher diagnose cipher.txt
+
+# Crack it with the automated solver stack
+decipher crack -f cipher.txt
+```
+
+**3. Agentic solver — an LLM investigation loop over the same engines**
+(requires an API key; supports Anthropic, OpenAI, Gemini, Ollama, OpenRouter):
+
+```bash
+decipher crack -f cipher.txt --agentic --agent-loop v3 --model gpt-5.5
+```
+
+See [Quick Start](#quick-start) for worked examples, and
+[Experimental Agentic Solving](#experimental-agentic-solving) for the full
+agentic workflow.
+
+---
+
 Decipher is a tool for performing automated cryptanalysis of classical ciphers,
 with a focus on historical manuscripts. The goal is to achieve parity with, and
 then improve on, the state-of-the-art in automated solver tools.
