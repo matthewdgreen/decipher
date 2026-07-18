@@ -11,11 +11,12 @@ or repo access?** Created 2026-07-18.
 |---|---|---|---|---|
 | `v3-gpt5.5` | gpt-5.5 (OpenAI API) | v3 investigation lead loop | episode/operator tools + experiment queue | API $ |
 | `codex-mcp` | Codex (ChatGPT sub) | 23-tool MCP surface | MCP tools; repo access = escape hatch (recorded) | flat-rate |
-| `claude-code-mcp` *(optional third arm, pending decision)* | Claude Code (Max sub) | same 23-tool MCP surface | same | flat-rate |
+| `claude-code-mcp` *(confirmed 2026-07-18; runs deferred — Codex-only for now)* | Claude Code (Max sub) | same 23-tool MCP surface | same | flat-rate |
 
 The third arm is the cell that separates "the MCP surface is limiting" from
 "Codex's model/style differs" — without it those stay confounded. It is the
-missing Phase-D leg.
+missing Phase-D leg. The same brief files under
+`docs/evidence/codex_run_briefs/` serve both MCP arms verbatim.
 
 ## Two scoring axes (every cell gets both)
 
@@ -42,7 +43,13 @@ never called).
   ciphertext pasted with NO family/language hints. Escape-hatch use is
   allowed but must be recorded (`--escape-hatch` at grading).
 - Language identification is part of the task (C4): neither arm is told the
-  language.
+  language. EXCEPTION — Tier A v3 completions use `--language en` to match
+  the conditions their historical Codex counterparts actually ran under;
+  Tier B briefs state the language because the v3 benchmark arms received
+  it from the loader. Symmetry per cell, not one global rule.
+- **MCP-arm run briefs** live at `docs/evidence/codex_run_briefs/` — one
+  self-contained file per instance (ciphertext + permitted context +
+  WF-7 instructions). Paste/point a fresh session at one file per run.
 - **Replication**: n≥2 on discriminating cells; n≥3 on Borg pages (word acc
   swings ±20 pts run-to-run — never compare single Borg runs).
 - **Pre-registration**: every cell has a prediction written BEFORE its arms
@@ -77,7 +84,7 @@ never called).
 | borg_0109v preflight-OFF | 91.0/66.7 ×1 unsolved $1.43 | 96.8/82.3 ×1 solved | n/a over MCP (experiments ARE preflight-equivalent) — treat ON as comparator |
 | borg_0045v | 83.6/0.0 ×2 + 34.1 ×1 | 80.5–85.2/≤32 ×3 unsolved | basin-dependent; honest unsolved expected |
 | copiale_p017 (German; v3's clearest win) | 75.4/0.0 ×1 | 54.6/0.0 ×1 | UNTESTED language for MCP arms; verifier German handling unknown |
-| synth_en_200honb_s6 (control) | 99.9 ×1 | 100 ×1 | solves iff it finds the experiment route; control for tool-discovery |
+| ~~synth_en_200honb_s6 (control)~~ | 99.9 ×1 | 100 ×1 | **DROPPED 2026-07-18**: the testgen cache regenerated since M6 (F5 detector fired 2026-07-14), so today's cipher ≠ the one the recorded rows measured; also flagged non-discriminative (zenith preflight ~100%) |
 
 ## Tier C — fresh contamination-free pack (`docs/evidence/tier_c_pack/`)
 
