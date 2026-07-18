@@ -87,7 +87,7 @@ investigation registry (`~/.config/decipher/investigations/<id>/`).
    in DIAGNOSIS (round 4) and the CLOSE (verify/gate/repair), not the raw crack.
 
 ## In-flight fix (from this evidence)
-`docs/specs/verifier_arbitrated_repair_spec.md` (being authored): when the
+`docs/specs/verifier_arbitrated_repair_spec.md` — **LANDED 6330af6** (opt-in verifier_arbitration flag): when the
 mechanical repair checks would reject, an OPT-IN path runs a fresh SERVER-SIDE
 independent verify on the repaired fork (hash-bound); if the independent reader
 prefers it, the repair installs. Preserves every invariant (reader independent,
