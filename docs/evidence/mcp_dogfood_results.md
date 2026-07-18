@@ -182,6 +182,42 @@ Benchmark-recorded char accuracy per Borg Track-B page (no plaintext examined):
 - borg_0077v: known-HARD (median 0.098; flagged "no automated solver yet
   acceptable"; one 0.841 Sonnet). borg_0045v/0140v: inconsistent.
 
+### Round 5 — Borg 0077v HEAD-TO-HEAD: v3 agent vs Codex-over-MCP (2026-07-18)
+First same-cipher two-arm comparison on a real manuscript page (the known-HARD
+Borg page, historical median 0.098 char). Comparability verified: the MCP
+investigation `f58515b7263f` holds the byte-identical 333-token symbol sequence
+as the benchmark canonical 0077v transcription. Codex arm scored offline
+against ground truth (registry state → branch keys → `score_decryption`;
+scalars only). **n=1 per arm — directional, not a verdict** (Borg word accuracy
+historically swings ±20 pts run-to-run).
+
+| | v3 agent (gpt-5.5, `artifacts/borg_single_B_borg_0077v/640e959623f4.json`) | Codex-over-MCP (`f58515b7263f`) |
+|---|---|---|
+| char / word | **77.8% / 35.2%** | 74.5% / 19.0% (best branch `latin_candidate`, 30/32 key) |
+| termination | honest `unsolved` at 25-iter cap | stopped at turn 11, **no declaration of any kind** |
+| verifier | 2 verify episodes (both negative: basin_wide, coherence 1, recov 0.03–0.05) | **ZERO** verify attestations, $0 verify spend |
+| repair | episodes + 9 experiments; selected branch = `null_mask_homophonic_1` | 0 repair transactions, empty agenda |
+| cost | $2.36 API, ~10 min | subscription tokens only |
+
+Findings:
+1. **v3 outperformed on both metrics; the margin is at the word level**
+   (+16.2 pts word vs +3.3 char). v3's edge came from the experiment queue —
+   its selected branch is automated-solver output (`null_mask_homophonic_1`),
+   where Codex hand-built keys and stopped. Both arms far above the 0.098
+   historical median for this page; neither near solved.
+2. **NEW BEHAVIORAL GAP (client-side discipline): Codex never approached the
+   gate.** It ended holding TWO contradictory full keys — `latin_candidate`
+   (74.5%) and `latin_crosscheck` (32/32 mappings but only 37.8%/4.8%) — with
+   no attestation, no repair attempt, and no declare/unsolved verdict. Without
+   calling the verifier it had no independent signal for which key was good.
+   The server enforces the gate AT declaration; nothing nudges a client that
+   simply never declares. (Contrast: v3's loop structurally forces the verify
+   step.) Mitigation is doctrine + a possible `investigation_status` nag when
+   a near-full key exists with zero attestations.
+3. Verifier looks correctly harsh here (unlike the 0171v under-scoring case):
+   v3's 77.8%-char branch really is ~1/3 right at word level, and both its
+   attestations were negative at coherence 1.
+
 **NEW: verifier/scalar UNDER-scoring of correct historical Latin** — from Codex
 investigation `c96916091a0f` (borg_0171v). SAFETY-GATE NOTE: the Borg Latin
 plaintext misfires an Anthropic safety gate; do NOT examine decoded text/gloss.

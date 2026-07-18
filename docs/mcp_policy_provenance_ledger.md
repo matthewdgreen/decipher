@@ -148,6 +148,7 @@ MCP v1, each carrying its policy id in `next_steps`/status output.
 | WF-4 | Verifier-to-route thresholds: `TARGET_LANGUAGE_CONFIDENCE_HIGH=0.7`, `SEMANTIC_RECOVERABILITY_HIGH=0.5`; `_attestation_route` maps (tlc, recoverability, damage_scope) → repair / compare_or_search / broaden; residual cell (recognizable + local + low recoverability) conservatively routes AWAY from repair/declare; legacy records route broaden (`context.py` lines 55-140) | Slice 6 (`a0ba63c`), completing the master routing table; §11 seed "agents polished basin-wide gibberish or abandoned useful local damage". Thresholds are host constants, "tunable only with paid-smoke or equivalent targeted evidence" (code comment) | POL | Clients polish unfixable text or abandon repairable candidates — a spend/quality risk, not an integrity risk (DECL-1 still gates) | **Advisory** route with policy id; record client choice and outcome (§11) |
 | WF-5 | Workflow hints: `mid_budget_verify`, `late_turn_attestation` (≤`LATE_VERIFY_TURNS`=4), `positive_attestation_declare` (after `POST_ATTEST_PATIENCE`=2), `negative_verify_repair`, `late_branch_adjudication`; deduplicated by content-bound hint keys; emitted as artifact events (M6 F7) (`context.py::workflow_hint_candidates`) | M5.1 Slices C/E (`55404f5`): leads that first attempt declaration on the final turn are blocked with zero turns left; late compare exists so fallback can use a fresh winner | POL (already advisory in v3) | Late-turn blocked-declare failure mode returns unprompted | **Advisory** (carried over as-is) + telemetry |
 | WF-6 | Scalar-selected workflow focus: `_best_branch_for_auto_declare` (dict_rate/quad scalar) selects THE branch the workflow menu, decode window, and hints center on (`context.py` throughout; `agent/loop_shared.py`) | §11 seed: "needed a deterministic branch when agents failed to choose". Inherited from the v2 auto-declare fallback into M1+. **UNKNOWN-PROVENANCE (artifact)**: no single motivating artifact/test is recorded for the focus-selection behavior itself, only for the fallback declare it descends from | POL | Nothing breaks; candidate attention becomes client-owned. Proposal §2.4/§3.5: the scalar silently defining "the" candidate is itself an identified failure contributor (Borg null-mask ranking discarded) | **Diverge**: diverse candidate portfolio; scalar is one labeled signal (§3.5 `candidate_list`, §11). Slice-7 branch roles (`_compute_branch_roles`) already de-conflate the labels |
+| WF-7 | End-of-session verdict doctrine: never end a session holding an unverified candidate key — verify the leading branch (`request_independent_verification`), then close with `meta_declare_solution` or `meta_declare_unsolved` (doctrine line, `docs/mcp_onboarding.md` §2; no server mechanism yet) | Round-5 dogfood head-to-head (Borg 0077v, investigation `f58515b7263f`, 2026-07-18): Codex stopped at turn 11 holding TWO contradictory full keys (74.5% vs 37.8% char when scored post-hoc), zero attestations, no declaration — the DECL gates were never approached, so no gate could fire | POL | Sessions end unmeasurable and unadjudicated; the verify→declare discipline is silently skipped by stopping early rather than by declaring wrongly | **Advisory** doctrine only. Candidate future mechanism: an `investigation_status` nag when a near-full key (≥90% of symbols mapped) exists with zero fresh attestations |
 
 Change-evidence for WF-1/2/4/6 re-hardening: §6 policy-intervention telemetry
 showing clients ignoring advisories AND a measured accuracy/spend regression
@@ -227,7 +228,7 @@ retuning: paid-smoke or equivalent targeted evidence (already pinned in code).
 
 ## Summary counts
 
-Total enumerated controls: **66 rows** (GT 3, DECL 8, REP 7, SAT/DUP 8, WF 6,
+Total enumerated controls: **67 rows** (GT 3, DECL 8, REP 7, SAT/DUP 8, WF 7,
 BUD 7, EPI 7, EXP 4, RES 5, CMP 4, CTX 5, POL 2).
 
 Counting each row once by its PRIMARY classification (straddles carry their
@@ -237,14 +238,14 @@ secondary class in-row — DECL-6, REP-3, REP-4, EPI-2, SAT-3, REP-5, WF-2):
 |---|---:|---|
 | Invariant (INV) | 22 | GT-1, GT-2, GT-3, DECL-1, DECL-2, DECL-5, DECL-6, DECL-8, REP-1, REP-3, REP-4, BUD-1, BUD-2, BUD-3, BUD-7, EPI-1, EPI-2, EPI-6, RES-4, RES-5, CMP-3, CTX-1 |
 | Evidence mechanism (EVID) | 31 | DECL-3, DECL-4, DECL-7, REP-2, REP-5, REP-6, SAT-1, SAT-2, SAT-3, SAT-4, DUP-1, DUP-2, DUP-3, DUP-4, BUD-6, EPI-3, EPI-4, EPI-5, EPI-7, EXP-1, EXP-2, EXP-3, EXP-4, RES-1, RES-2, CMP-1, CMP-4, CTX-2, CTX-3, CTX-4, CTX-5 |
-| Investigative policy (POL) | 13 | REP-7, WF-1, WF-2, WF-3, WF-4, WF-5, WF-6, BUD-4, BUD-5, RES-3, CMP-2, POL-1, POL-2 |
+| Investigative policy (POL) | 14 | REP-7, WF-1, WF-2, WF-3, WF-4, WF-5, WF-6, WF-7, BUD-4, BUD-5, RES-3, CMP-2, POL-1, POL-2 |
 
 MCP v1 form totals:
 
 - **Hard / active: 51** — every INV row, every EVID row except the four
   telemetry-class ones below, plus BUD-4 and BUD-5 (hard caps whose CHANGE
   path, not enforcement, is policy-shaped).
-- **Advisory: 7** — REP-7, WF-1, WF-2, WF-4, WF-5, POL-1, POL-2.
+- **Advisory: 8** — REP-7, WF-1, WF-2, WF-4, WF-5, WF-7, POL-1, POL-2.
 - **Pre-registered contract divergences: 2** — WF-6 (scalar focus → diverse
   candidate portfolio), CMP-2 (`winner` → `best_partial` +
   `accepts_as_solution` split).
@@ -256,6 +257,9 @@ This matches §3.3's named divergence set exactly: everything softened in v1
 is on the pre-registered list (scalar-selected workflow focus, phase/action
 restrictions, verifier-to-route thresholds, `next_steps`/menus, family
 sequencing, the compare-winner contract split); nothing else changes form.
+(WF-7 is a post-Phase-0 ADDITION, 2026-07-18 — new advisory doctrine from
+round-5 dogfood evidence, not a softening of any pre-existing v3 control, so
+it does not enlarge the divergence set.)
 
 ## UNKNOWN-PROVENANCE register
 

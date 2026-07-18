@@ -85,6 +85,14 @@ your instrument bench and evidence store.
   reader judge your branch. Declaration (`meta_declare_solution`) is hard-gated
   on a positive fresh verification of the exact current content. Honest
   surrender (`meta_declare_unsolved`) is always available and never blocked.
+- **Never stop without a verdict (WF-7).** Do not end a session holding an
+  unverified candidate key. Before you stop — even stopping short of a solve —
+  run `request_independent_verification` on your leading branch (the
+  attestation is the record of how good it was, and your only independent
+  signal for choosing between rival keys), then close with an explicit
+  `meta_declare_solution` or `meta_declare_unsolved`. A session that ends with
+  full keys, zero attestations, and no declaration leaves the investigation
+  unmeasurable and unfinished.
 - The host guidance block in the brief is advisory (policy ids shown); you may
   deviate with reason, except lines marked ENFORCED.
 
