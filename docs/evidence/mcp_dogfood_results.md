@@ -132,3 +132,45 @@ SAME gap and fail worse — NOT a useful next test until the composite
 detection/routing is fixed. Better next rungs that avoid this gap: Vigenère
 (polyalphabetic, different attack) or non-English (Latin/German, historical
 manuscript direction).
+
+### Round 4 — LIVE ARMS (MCP-Codex vs naive-Codex control)
+
+**MCP-Codex on the composite (round 4) — `14f780f21699`: HONEST FAIL, validates the gap.**
+A real Codex session WITH the full MCP surface + repo access tried: family
+diagnosis, direct bijective substitution annealing, affine/Caesar, and a broad
+**364-candidate transform search** with solver confirmation — and could not peel
+the transposition. It explicitly diagnosed the homophonic MISROUTE ("negative
+evidence for the route, not the diagnosis") — the same routing bug I found in
+the $0 self-test — and then **recorded it honestly as UNRESOLVED rather than
+inventing a reading**. So: (a) a live LLM agent confirms the composite defeats
+the stack at detection/routing (my isolation conclusion holds under a real
+agent, not just automation), and (b) the epistemic discipline WORKED — faced
+with a cipher the stack genuinely can't do, it declared honestly-unsolved
+instead of hallucinating a plaintext. That refusal is the single clearest
+"tooling matters" signal in the experiment.
+
+**Naive-Codex control on the homophonic (round 3, 327/50) — FULL SOLVE, via an
+external tool.** With a shell + web and NO MCP, Codex frequency-profiled it,
+recognized homophonic, computed the unicity distance (~77 vs 327 → solvable),
+then **cloned `github.com/freichmann/cDecryptor`** (a C++ homophonic SA solver),
+wrote prep scripts, fixed a compile error, and recovered the EXACT plaintext
+100%. Humbling for the "our solver is the moat" thesis: a frontier model with a
+coding environment will FETCH OR BUILD the solver it needs. BUT two caveats:
+(1) ~a dozen build/debug steps vs one `experiment_submit` (effort/latency), and
+(2) **no independent verifier** — it declared "Cracked" with zero external
+check. It was right here, but the BRESS/TRAWLER near-misses (rounds 2-3, which
+our verifier CAUGHT and refused to over-declare) are exactly where a naive
+"trust the solver output" declares a wrong reading undetected.
+
+**Refined tooling-value conclusion (the honest §6 read):** the durable moat is
+NOT raw solving power (contestable — they clone cDecryptor). It is (a)
+effort/latency, (b) EPISTEMIC DISCIPLINE — the independent verifier + gate that
+convert "the solver emitted X" into "an independent reader accepts X," catching
+near-misses and refusing to over-declare (round-4 honest-unsolved + round-2/3
+near-miss catches are the evidence), and (c) reproducible provenance for scored
+eval. This matches the earlier harness retrospective: the tooling is the
+measurement instrument + discipline, less the raw solver. The naive arm cloning
+cDecryptor is almost a perfect illustration of "the pile of tools is
+contestable; the epistemic scaffolding is the moat." Caveat: the two live arms
+ran DIFFERENT ciphers (naive=round3 homophonic, MCP=round4 composite), so this
+is not a same-cipher head-to-head; a clean A/B would run both arms on both.
