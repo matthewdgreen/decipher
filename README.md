@@ -63,10 +63,22 @@ then improve on, the state-of-the-art in automated solver tools.
 
 Currently supported cipher families:
 
-- **Monoalphabetic substitution** — simple, homophonic (e.g. Zodiac 408/Copiale)
+- **Monoalphabetic substitution** — simple (incl. Caesar), homophonic
+  (e.g. Zodiac 408/Copiale)
+- **Periodic polyalphabetic** — Vigenère, Beaufort, Variant Beaufort, Gronsfeld
+- **Quagmire keyed-alphabet ciphers** — Quagmire I–IV known-parameter replay,
+  plus blind Quagmire III keyword recovery via the Rust shotgun engine
+  (Kryptos K1/K2 class)
+- **Pure transposition** — columnar, route/rail/spiral reads, grille-style
+  masks, TransMatrix (Kryptos K3 class)
 - **Transposition + homophonic** — known-pipeline replay and open-ended
   transform search (e.g. Zodiac 340 family)
-- **Periodic polyalphabetic** — Vigenère, Beaufort, Variant Beaufort, Gronsfeld
+
+Beyond these solver routes, `decipher diagnose` identifies further families
+statistically (Playfair, polygraphic, fractionation+transposition,
+nomenclator/codebook, and numeric/book ciphers such as the Beale papers) so an
+investigation starts from the right hypothesis even where no dedicated solver
+exists yet.
 
 Decipher's primary mode is its native automated solver stack: fast,
 reproducible, and usable with only local computation. An experimental agentic
@@ -661,6 +673,13 @@ For supplied-tableau key recovery and keyword-tableau enumeration, set:
 - `DECIPHER_KEYED_VIGENERE_MODE=alphabet_anneal` — experimental shared-tableau
   mutation with phase re-optimization. Treat as a research diagnostic rather
   than a robust blind Kryptos solver.
+- `DECIPHER_KEYED_VIGENERE_MODE=quagmire_search` — bounded blind Quagmire III
+  keyword-alphabet search. With `DECIPHER_QUAGMIRE_ENGINE=rust_shotgun` this
+  uses the compiled Blake-style restart/hillclimb kernel
+  (`DECIPHER_QUAGMIRE_HILLCLIMBS`, `DECIPHER_QUAGMIRE_THREADS` tune budget),
+  which recovers ordinary-keyword Quagmire III ciphers of a few hundred
+  letters blind — no candidate keywords supplied. The same engine backs the
+  agent tool `search_quagmire3_keyword_alphabet`.
 
 ### Transposition + homophonic
 
