@@ -365,9 +365,25 @@ one-JSON-object stdout contract; human usage text may go to stderr.
   `--allow-external` opt-in, explicit provider selection) + declarations
   through the gates.
 - **I-6**: parity test hardening, onboarding §"CLI mode" (the operator recipe:
-  no restart ever needed on this surface), README three-ways update (the CLI
-  row gains "or the structured investigation CLI"), AGENTS.md/CLAUDE.md
-  doctrine lines, ledger note.
+  no restart ever needed on this surface), AGENTS.md/CLAUDE.md doctrine lines,
+  ledger note. (The README lands in the I-7 capstone, not here.)
+- **I-7 — CAPSTONE (required; do NOT skip after the mechanical milestones):**
+  1. **Holistic Fable review of the ENTIRE landed CLI surface**, beyond the
+     per-milestone reviews — one adversarial pass over the whole
+     `investigation` verb family + service layer + manifest as a coherent
+     system: cross-milestone seams (does I-2's lease-per-command compose with
+     I-3/I-4's experiment lifecycle?), the full exit-code/JSON contract end to
+     end, the privacy guard across every external path, and the parity test's
+     actual coverage. Served-model grep per CLAUDE.md.
+  2. **COMPLETE README rewrite/audit** — not just the three-ways CLI row. Read
+     the whole README against the current shipped reality and correct
+     everything that has drifted this program cycle: the three interfaces
+     (automated CLI, MCP, structured investigation CLI) with the CLI's
+     no-restart property; the supported-families list (composite
+     substitution+transposition now solved+auto-routed; F2/keyed-columnar
+     closed; Quagmire; harmonic-period diagnosis); the experiment types; the
+     AI-agent discoverability note; setup/keyless behavior. Goal: a fresh
+     clone's README is accurate top to bottom, not incrementally patched.
 
 ## 9. Acceptance
 
