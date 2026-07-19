@@ -36,8 +36,15 @@ tool surface itself.)
    `request_independent_verification` on your leading branch, then close
    with `meta_declare_solution` or `meta_declare_unsolved`.
 4. Do not read files under `docs/evidence/` or `artifacts/` during the run.
-5. When finished, report: the investigation id, your terminal verdict, and
-   a one-paragraph account of your route.
+5. When finished, your final chat message MUST include, in this order:
+   - the investigation id and terminal verdict;
+   - the FULL current decode of your leading branch (use `decode_show` and
+     paste its decoded text — even if partial or damaged; the reader should
+     never have to open the registry to see the text);
+   - that branch's scalar signals (from `candidate_list`) and the final
+     attestation scalars (accepts / language confidence / coherence /
+     damage scope);
+   - a one-paragraph account of your route.
 
 ## Ciphertext
 

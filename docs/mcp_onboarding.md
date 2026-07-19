@@ -116,6 +116,12 @@ your instrument bench and evidence store.
   `meta_declare_solution` or `meta_declare_unsolved`. A session that ends with
   full keys, zero attestations, and no declaration leaves the investigation
   unmeasurable and unfinished.
+- **Show the text.** When you report a verdict to the human — solved, partial,
+  or unsolved — include the actual decode of your leading branch in the chat
+  (paste `decode_show` output), together with its signals and the final
+  attestation scalars. A verdict without the text forces the reader into the
+  registry to see what you produced; the decode IS the deliverable, damaged
+  or not.
 - The host guidance block in the brief is advisory (policy ids shown); you may
   deviate with reason, except lines marked ENFORCED.
 
