@@ -228,11 +228,25 @@ New solver path `composite_substitution_transposition`:
    `dict_rate(S)` is near zero (the "high letter accuracy, no words" signature),
    proceed to peel; else return the substitution result as-is (it was not a
    composite).
-3. Screen transpositions over S using the EXISTING pure-transposition screen
-   (`analysis/pure_transposition.screen_pure_transposition`) — reuse it wholesale;
-   do not reimplement. The screen returns finalists ranked by language score.
-4. Return the best (substitution-key, transposition-pipeline) pair with the
-   combined decode. Artifact records BOTH layers.
+3. Screen transpositions over S. **CORRECTION (2026-07-19, from review #2 +
+   finding F2):** the round-4 acceptance cipher is KEYWORD-COLUMNAR (keyword
+   MASONRY), and `screen_pure_transposition` is the GEOMETRIC screen (matrix-
+   rotate/route/rail/mask/TransMatrix) — finding F2 proved it fails blind on
+   classic keyed columnar (~0.10 char). So reusing it wholesale would NOT solve
+   round-4. Instead:
+   - The geometric screen is still consulted (cheap, catches route/rail
+     composites).
+   - The keyword-columnar layer is peeled by a NEW shared module
+     `analysis/columnar_search.py` (per the coordination decision, §7a /
+     polygraphic §1a): a keyword/column-permutation search with PLUGGABLE
+     scoring. THIS program supplies the LANGUAGE-score plugin (S is A-Z
+     letters after substitution, so language scoring is valid here). Building
+     this module in Slice C.1 is REQUIRED for round-4 AND closes matrix
+     finding F2 (keyed-columnar blind coverage) for the transposition side.
+     The polygraphic program's PF-6 later adds a fractionation-stream-score
+     plugin to the SAME module (coordinate data has no language structure).
+4. Return the best (substitution-key, transposition-key) pair with the combined
+   decode. Artifact records BOTH layers.
 
 Ordering note: substitution-then-transposition-encryption means DEcryption is
 transposition-peel THEN substitution-invert. But peeling transposition on
@@ -316,6 +330,29 @@ parameter is a review red flag. This is a hard gate per AGENTS.md.
   expected (homophonic substitution layer is out of scope).
 
 ---
+
+## 7a. Cross-program coordination (RESOLVED 2026-07-19)
+
+This program shares surfaces with two same-week specs; binding decisions live
+in `polygraphic_fractionation_solver_spec.md` §1a. Reciprocal summary:
+- **Land order: this program lands FIRST.** It owns the `order_layout` panel
+  change (`residual_order_after_substitution`) and the
+  `substitution_transposition` family + `disc_sub_transp_composite`. The
+  polygraphic program lands after and edits `families.py`/`panels.py`
+  sequentially (no conflict).
+- **solver_status**: use the live enum; this family is `agent_assists`.
+- **pure_transposition reuse is legitimate HERE** (the peel yields A-Z letters
+  the screen ranks by language model) and is NOT shared with the polygraphic
+  ADFGX/ADFGVX peel (which yields non-language coordinate data). Distinct.
+- **Experiment type** `composite_substitution_transposition` follows the
+  `quagmire3_shotgun` contract. Mechanism correction (review #2 N1): a new
+  `EXPERIMENT_TYPES` value is NOT an operation-manifest entry —
+  `experiment_submit` is a SINGLE operation whose `type` arg is a string. The
+  new type reaches both the MCP surface and `decipher investigation`
+  automatically because both skins dispatch through the shared service layer
+  that reads `EXPERIMENT_TYPES` (post CLI I-0); parity coverage is of the
+  `experiment_submit` operation, not of each type. Misroute-guard convention
+  is the shared one (distinct type names, same pattern).
 
 ## 8. Slice order & orchestration
 

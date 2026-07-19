@@ -39,8 +39,151 @@ This is a no-LLM solver program first. Investigator and MCP exposure follows
 only after local solvers and solver-backed discriminators have measured
 behavior on fresh generated cases.
 
+<!-- FABLE REVIEW [MAJOR] Cross-program coordination — RESOLVED in §1a below
+(land order, solver_status decision, id namespaces, pure_transposition reuse,
+experiment-type convention, and the operation-manifest consequence from the
+investigation-CLI program). -->
+
+## 1a. Cross-program coordination — SEE §1.1 (canonical)
+
+The canonical binding coordination block is **§1.1** below. An earlier hand-
+edit added a duplicate here; it is merged into §1.1 (which resolves the
+review #2 N2 divergence). §1.1's decisions govern; two corrections from
+review #2 are folded there: (N1) experiment types reach both surfaces via the
+shared SERVICE-LAYER dispatch over `EXPERIMENT_TYPES`, NOT via the operation
+manifest (`experiment_submit` is one operation with a string `type` arg;
+`test_interface_parity` covers that operation, not each type); (N2) the
+keyword-columnar search is ONE shared module `analysis/columnar_search.py`
+with pluggable scoring — built by the composite program (Slice C.1, closing
+matrix finding F2) and EXTENDED by this program's PF-6 with a
+fractionation-stream scoring plugin. Neither program duplicates the search.
+
+<!-- FABLE R2: OK on (a),(b),(c). Verified against code:
+  (a) FamilySpec.solver_status enum is exactly {solves_automated, agent_assists,
+      diagnoses_only, planned, unsupported} (families.py:59); composite uses
+      agent_assists (composite spec §2.2). Match confirmed.
+  (b) fractionation_transposition is an existing primary (families.py:247);
+      disc_transp_fractionation is the existing `planned` discriminator
+      (families.py:152-159); substitution_transposition/disc_sub_transp_composite
+      are composite-owned (composite §2.2). No id collision.
+  (c) pure_transposition.screen_pure_transposition IS geometric + language-scored
+      with no keyword-columnar enumerator (verified: only matrix_rotate/transmatrix/
+      rail/route/mask/block candidates); ADFGX/ADFGVX peel = keyed columnar over a
+      2-symbol coord stream (fractionation.py: columnar_encrypt(frac, trans)).
+      Distinct attacks confirmed. BUT see the §1.1(3) reconciliation finding —
+      "writes its own columnar search" here vs "built ONCE as a shared module
+      analysis/columnar_search.py closing F2" in §1.1 is an unresolved divergence. -->
+<!-- FABLE R2: [MINOR] (d) mechanism mis-stated. An experiment TYPE is NOT an
+operation-manifest entry. Verified: MCP_TOOL_DEFINITIONS (mcp_server/tools.py:75)
+is the flat tool list; `experiment_submit` is ONE tool (tools.py:259) whose `type`
+arg is a bare string, not even an enum. A new EXPERIMENT_TYPES value is dispatched
+by the SHARED service layer that reads EXPERIMENT_TYPES — it reaches both surfaces
+post-I-0 automatically, NOT by "registering in the manifest," and it is NOT gated
+by test_interface_parity.py (which checks operation↔verb parity + top-level schema
+props; the CLI passes `config` as one `--config JSON` blob, so per-type config
+fields are not individual argparse args either). FIX: reword (d) and PF-7 to:
+"reaches both surfaces because both skins dispatch through the shared service layer
+over EXPERIMENT_TYPES (post-I-0); no manifest entry, and parity coverage is of the
+`experiment_submit` operation, not of the type." Same wording error is echoed in
+composite §7a and CLI §10 — consistent across the three, but consistently loose. -->
+<!-- FABLE R2: [MODERATE] §1a and §1.1 are TWO near-identically-titled binding
+coordination blocks ("RESOLVED 2026-07-19" vs "BINDING decisions — Fable
+2026-07-19"). The R2 §1a rewrite did not state its relationship to §1.1, and the
+two DIVERGE on columnar-search ownership: §1a(c) + PF-6 say "this program writes
+its own columnar search"; §1.1(3) says it is "built ONCE as a shared module
+(analysis/columnar_search.py) ... also closes matrix finding F2 ... Neither program
+duplicates the other's search." FIX: make §1a explicitly supersede/merge §1.1, and
+pick one columnar-search story — recommended: keep §1.1's shared pluggable-scoring
+module (PF supplies the fractionation-stream scorer, transposition side supplies
+the language scorer), and change PF-6's "writes its own" to "adds the
+fractionation-stream scoring plugin to the shared analysis/columnar_search.py." As
+written, a PF-6 coder builds a PF-private search and never learns to close F2,
+which §1.1 forbids. -->
+
+
+### 1.1 Cross-program coordination (BINDING decisions — Fable, 2026-07-19)
+
+Resolves the [MAJOR] coordination finding above. Three concurrent programs
+touch the same surfaces: THIS program, the composite
+(`composite_substitution_transposition_spec.md`), and the investigation CLI
+(`investigation_cli_spec.md`). The following decisions bind all three; each
+spec's implementers treat them as constraints, and deviations go back to the
+spec authors, not into code.
+
+1. **Land order.** Composite Slice A (families/panels registry churn) lands
+   first (already in implementation). This program's registry changes (finer
+   family ids, detectors — see PF-7 finding) rebase on it. CLI milestone I-0
+   (transport-neutral SERVICE LAYER) lands before this program's PF-7 surface
+   work. **Mechanism (review #2 N1):** a new experiment type is an
+   `EXPERIMENT_TYPES` value, NOT an operation-manifest entry —
+   `experiment_submit` is a single operation whose `type` is a string arg.
+   Both skins (MCP server, `decipher investigation`) dispatch it through the
+   shared service layer that reads `EXPERIMENT_TYPES`, so a new type reaches
+   both surfaces automatically post-I-0. `test_interface_parity` covers the
+   `experiment_submit` OPERATION, not each type. PF-7 adds `EXPERIMENT_TYPES`
+   entries (not manifest entries) and does not hand-wire the MCP tool list.
+2. **Experiment-type convention.** All new types follow the
+   `quagmire3_shotgun` pattern (`9f4ed28`): bounded budget knobs, host-derived
+   `language` (GT-3), unknown-key rejection with a family-consistent
+   `corrected_example`, results installable via `experiment_collect` so the
+   verify→declare gate is reachable. **Misroute-guard convention**: an
+   `automated_solver` submit whose `cipher_system` names an
+   accepted-but-unsolvable family gets a structured validation error
+   redirecting to the dedicated type (the `quag` precedent). PF families
+   adopt this as each dedicated type lands (e.g. `playfair`, `bifid`,
+   `adfgvx` hints redirect).
+3. **Transposition search ownership.** `analysis/pure_transposition` stays
+   GEOMETRIC-only (matrix-rotate/route/rail/mask/TransMatrix). Keyword-columnar
+   search is a SEPARATE shared module `analysis/columnar_search.py` — over
+   arbitrary token streams with PLUGGABLE scoring. Built ONCE by the composite
+   program (its Slice C.1 needs it: the round-4 acceptance cipher is keyword
+   columnar, which the geometric screen cannot do — this is matrix finding F2,
+   and building the module closes it). The composite supplies the LANGUAGE
+   scorer plugin (its peeled stream is A-Z letters); PF-6 (ADFGX/ADFGVX)
+   EXTENDS the same module with a FRACTIONATION-STREAM scorer plugin (its
+   peeled stream is 2-symbol coordinate data with no language structure).
+   Neither program duplicates the other's search; the composite's peel does
+   NOT "reuse pure_transposition as-is" (that was the pre-review error).
+4. **`solver_status` vocabulary.** Existing enum ONLY
+   (`solves_automated | agent_assists | diagnoses_only | planned |
+   unsupported`) — option (b) of the §12 finding; the three research statuses
+   become a separate `rollout_status` report field (§12, as revised). The
+   composite family uses `agent_assists`; PF families map: probe →
+   `diagnoses_only` (until measured recovery) or `agent_assists`,
+   experimental solver → `agent_assists`, strong-gate pass →
+   `solves_automated`.
+5. **Namespaces.** Composite claims family id `substitution_transposition` +
+   `disc_sub_transp_composite`. This program claims: the existing `playfair`
+   id (status flips only), subtypes under `polygraphic_substitution`
+   (`hill_2x2`, `two_square`, `four_square`), subtypes under
+   `fractionation_transposition` (`bifid`, `trifid`, `adfgx`, `adfgvx`),
+   discriminator prefix `disc_polygraphic_*` / `disc_fractionation_*`.
+
+<!-- FABLE REVIEW [MINOR] detector atoms — RESOLVED as explicit scope:
+verified against cipher_id.py the ONLY polygraphic fingerprint suspicion today
+is `playfair`; `polygraphic_substitution` and `fractionation_transposition`
+FamilySpecs have EMPTY detectors=(), so they rank with no fingerprint-prior
+atoms. §3.2's "distinguish broad polygraphic vs fractionation evidence" needs
+new DETECTOR ATOMS wired into panels/cipher_id, not just discriminators. Scoped
+as the PF-7 registry-granularity sub-slice (subtype ids + their detector atoms
+land together). -->
+<!-- FABLE R2: OK — verified cipher_id.py emits NO polygraphic/fractionation
+suspicion (only the `playfair` block, cipher_id.py:747-768) and both primaries
+carry detectors=() (families.py:249,267). Note for the coder: _validate_registry
+does NOT validate detector strings at all, so a detector atom name is inert until
+panels.py/cipher_id.py actually EMIT it — the sub-slice must wire the emitter, not
+just name the string in the FamilySpec. -->
+
+
 ## 2. Current Baseline
 
+<!-- FABLE: verified every baseline claim below against the repo — all accurate.
+playfair.py has PlayfairCipher/TwoSquareCipher/FourSquareCipher; numeric.py has
+Hill2x2Cipher (2x2 only); fractionation.py has Bifid/Trifid/ADFGX/ADFGVX modeled
+as fractionation-then-columnar; family_registry.py has generators for all eight;
+cipher_id.py emits a `playfair` suspicion (Playfair-only — see §3.2 note);
+families.py has the coarse diagnosis-only entries. No path/name corrections
+needed in this section. -->
 Already present and treated as the rule-level source of truth:
 
 - `src/ciphers/playfair.py`: Playfair, Two-Square, Four-Square primitives.
@@ -178,6 +321,23 @@ ADFGXKey(grid: SquareKey25 | SquareKey36, column_order: tuple[int, ...],
 Validation must reject duplicate/missing cells, non-invertible Hill matrices,
 invalid periods, and malformed column orders before decryption.
 
+<!-- FABLE REVIEW: [MINOR] Grounding vs the existing primitives (verified in
+src/ciphers/{playfair,numeric,fractionation}.py). The cipher layer has NO key
+dataclasses today — keys are bare tuples/strings on FamilyCipher subclasses:
+Playfair = a single 25-char keyed-square string (I/J merge BAKED IN via a J-less
+alphabet + clean_ij; there is no `ij_merged` flag, and ADFGVX/Trifid do NOT
+merge); Two-Square/Four-Square = a `(k1, k2)` keyword tuple; Hill2x2 = an
+`(a,b,c,d)` int tuple; Bifid = 25-char string with `period` a CONSTRUCTOR arg
+(not part of the key); Trifid = 27-symbol cube string, period also a ctor arg;
+ADFGX/ADFGVX = a `(square_keyword, transposition_keyword)` tuple. Introducing
+these typed solver-layer models is fine, but the spec must state that each model
+serializes to/from the primitive's existing tuple/string convention so
+`describe_key`/replay stays bit-exact against the round-trip tests in
+tests/test_cipher_families.py. In particular `FractionationKey(period=...)` here
+moves period INTO the key, diverging from the primitive where period is a ctor
+arg — reconcile so a serialized key replays without a side-channel period. -->
+
+
 ### 6.2 Candidate/result contract
 
 Every solver returns the same outer record:
@@ -208,6 +368,35 @@ FamilySearchResult(
 Candidates are ordered by ground-truth-free score. Keep at least a configurable
 top K plus structurally diverse finalists; do not retain only global best.
 
+**Contract boundary (resolved).** `FamilySearchResult`/`FamilyCandidate` is the
+SOLVER-INTERNAL shape only. It is NOT a new persistence/install format. When
+surfaced through the host (PF-7), the runner maps it onto the existing
+EXPERIMENT_TYPES flat result dict — `(cipher, branch_snapshot, config) → {status,
+solver, error_message, elapsed_seconds, key, final_decryption, steps,
+optionally top_candidates}` — and install happens via `experiment_collect` onto
+a branch whose metadata carries `decoded_text` for the grader, with the richer
+typed key stored in the branch `metadata` slim-record exactly like the quagmire
+install. No new install path.
+
+<!-- FABLE REVIEW [MAJOR] parallel result/install contract — RESOLVED: internal
+shape maps onto the flat EXPERIMENT_TYPES result + experiment_collect install;
+typed key in branch metadata, not a new persistence format. -->
+<!-- FABLE R2: OK — verified the runner contract is the flat dict
+`{status, solver, error_message, elapsed_seconds, key, final_decryption, steps,
+[top_candidates]}` (experiments.py:271-281, 389-399) and install writes
+`decoded_text`/`decoded_text_source` onto branch metadata via the installer
+(experiments.py:1361,1492-1493), with the slim typed record in metadata exactly
+like _quagmire3_candidate_record. Mapping is faithful; no new install path. One
+concrete note: the flat result `key` field is coerced to `{str: int}`
+(experiments.py:278) — a cipher-token→plaintext-token dict. The family-native
+typed keys here (SquareKey25, MatrixKey2x2, ADFGXKey) do NOT fit that shape, so
+they MUST ride in `top_candidates[*].metadata` / branch metadata (as the spec
+says), and `key` stays `{}` for these families (mirror quagmire3, which returns
+`key: {}` at experiments.py:394). Make that explicit so a coder doesn't try to
+serialize a matrix into the int-map `key`. -->
+
+
+
 ### 6.3 Scoring
 
 The initial scorer should reuse Decipher's strongest applicable continuous
@@ -224,6 +413,28 @@ Before tuning search, run an oracle-ranking test: score true-key plaintext,
 near-key mutations, random-key candidates, and wrong-family candidates. If the
 true basin is not reliably preferred when present, fix scoring before adding
 more search breadth.
+
+<!-- FABLE REVIEW: [MINOR] The "strongest applicable continuous language score"
+in this repo is the zenith_native 5-gram English binary model (models/ngram5_*.
+bin via analysis.model_registry). Two concrete risks the oracle test MUST cover,
+or it will pass on the wrong target: (1) The scorer is trained on NATURAL text.
+The candidates this program optimizes are FAMILY-PREPARED text carrying X-fillers
+(Playfair doubled-letter splits + odd-length padding) and I/J merges. A 5-gram
+model penalizes those artifacts, so score the *prepared* target the solver
+actually produces (per §5.3), not clean source — otherwise the true key can rank
+BELOW a filler-free near-miss. (2) Trifid/ADFGVX inner streams (pre-square)
+are coordinate/label symbols with no language structure; the language score is
+meaningless there (see PF-6). Review Question 1 already names this; make the
+prepared-text + non-language-stream cases MANDATORY rows in the PF-0 oracle
+packet, not optional. -->
+
+<!-- FABLE REVIEW: [MINOR] Firewall on the oracle-ranking harness: it consumes
+the TRUE key/plaintext, so state plainly (as the composite spec does for its
+sealed answers) that this is a TEST/CALIBRATION path only, never reachable from a
+runtime solve or selection. Keep it in tests/ or a scripts/ calibration tool with
+`ground_truth` confined to the assertion, mirroring AGENTS.md GT-1 and
+tests/test_ground_truth_firewall.py. -->
+
 
 ### 6.4 Search mutations
 
@@ -248,6 +459,15 @@ visible.
 - Parallelize independent restarts through the global worker configuration.
 - Record effective threads, restarts, iterations, candidate count, and model.
 - Never create nested process pools from an already parallel outer suite.
+
+<!-- FABLE REVIEW: [NIT] This exact hazard is already solved for the experiment
+queue by the W/S/I arbiter (`compute_arbiter` / `ExperimentQueue` in
+src/investigation/experiments.py), which caps inner parallelism (I) so
+S x I <= W across background solver slots. When these solvers run under
+experiment_submit (PF-7), inherit that arbiter rather than adding independent
+worker-governance; reference DECIPHER_PARALLEL_WORKERS / DECIPHER_EXPERIMENT_SLOTS
+so the two mechanisms don't fight. -->
+
 
 ## 7. Milestones
 
@@ -274,9 +494,19 @@ Gate:
 
 Algorithm:
 
+<!-- FABLE: verified 157,248 = |GL(2,Z_26)| = |GL(2,Z_2)|*|GL(2,Z_13)| = 6*26208.
+numeric.py::Hill2x2Cipher.key_space_size returns exactly this. Count is correct. -->
 - Enumerate all 157,248 invertible matrices in `GL(2, Z_26)`.
 - Decrypt and score each matrix.
 - Retain top K candidates and equivalent/near-equivalent keys.
+<!-- FABLE REVIEW: [QUESTION] "equivalent/near-equivalent keys" — unlike Playfair
+(which has a large symmetry class per solution), a Hill 2x2 decryption matrix is
+essentially unique; there is no big equivalence class to preserve. Clarify what
+this means here (adjacent-basin near-misses for the diversity guarantee? true
+matrix symmetries, of which there are essentially none mod 26?). If it's just
+"keep structurally diverse runners-up", say that; if you believe there are real
+equivalent Hill keys, name the symmetry. This wording may confuse the coder. -->
+
 - Start in Python if fast enough; otherwise use a small Rust exhaustive kernel
   with a Python reference on reduced key sets.
 
@@ -329,6 +559,15 @@ Algorithm:
 - Search two squares with alternating coordinate descent plus occasional joint
   mutations/restarts.
 - Preserve square-swap and other equivalent-key symmetries in diagnostics.
+<!-- FABLE REVIEW: [MINOR] Keyspace clarification, verified against
+playfair.py::FourSquareCipher: Four-Square's two PLAINTEXT squares are the fixed
+standard square (PLAIN_SQUARE), NOT searched — only the two mixed CIPHER squares
+are the key `(k1, k2)`. So `SquarePairKey25` is the right model for BOTH families,
+but state that for Four-Square the search space is the two mixed squares only.
+Also: Two-Square is self-reciprocal (decrypt == encrypt in the primitive), Four-
+Square is not; the square-swap symmetry you want to preserve differs between the
+two, so treat them as separate symmetry sets in diagnostics rather than one. -->
+
 
 Gate:
 
@@ -375,13 +614,50 @@ Gate:
 - `solves_automated` status requires the common >= 0.90 median support gate.
 - Bifid/Trifid confusion and insufficient-length abstention are measured.
 
-### PF-6: ADFGX and ADFGVX composition
+### PF-6a: ADFGX (5×5) and PF-6b: ADFGVX (6×6 + digits)
 
-Architecture:
+SPLIT into two milestones per the review — 5×5 is materially more tractable
+than 6×6-with-digits, and a single gate over both was optimistic.
 
-- Represent each as `fractionation -> columnar transposition`.
-- Reuse the accepted transposition solver rather than writing an opaque
-  monolithic attack.
+Architecture (`fractionation → keyword-columnar transposition`), corrected:
+
+- These are NOT solvable by reusing `pure_transposition.screen_pure_transposition`.
+  That screen enumerates GEOMETRIC transforms (matrix-rotate/route/rail/mask/
+  TransMatrix) and scores by LANGUAGE model on A-Z text. ADFGX/ADFGVX
+  transposition is KEYWORD-COLUMNAR (`fractionation.py` → `ciphers.transposition.
+  columnar_*`), and the peeled intermediate is a 2-symbol coordinate stream over
+  {A,D,F,G,(V,)X} with NO language structure until the square is also inverted.
+  Reuse gives the finalist-MENU skeleton and the Rust batch-scorer harness only.
+- This program EXTENDS the shared `analysis/columnar_search.py` module (built by
+  the composite program's Slice C.1, §1.1 item 3) with a fractionation-stream
+  scoring PLUGIN — it does not build a private search. Concretely it adds the
+  keyword-columnar (column-permutation) inversion driven by that plugin,
+  driven by a FRACTIONATION-STREAM statistic — column-coincidence / digram
+  regularity on the coordinate stream — NOT a language score. The two layers are
+  coupled: score candidate column orders by fractionation-stream statistics,
+  then jointly optimize the square; alternate and retain diverse joint finalists.
+  Language scoring re-enters ONLY after both layers are inverted (final A-Z text).
+
+<!-- FABLE REVIEW [MAJOR] PF-6 reuse/scoring/frontier — RESOLVED: split 6a/6b,
+named the fractionation-stream statistic as the driver (not language score),
+own keyword-columnar search acknowledged as new work, depth mode + honest gates
+below. -->
+<!-- FABLE R2: OK on the reuse/scoring/frontier CORE — verified fractionation.py
+peels a keyed columnar over a 2-symbol coordinate stream (columnar_encrypt/decrypt,
+lines 210/216), the screen has no keyword-columnar enumerator, and the depth-mode /
+honest-gate split (calibration modes as primary deliverable; ADFGVX single-message
+blind → probe maturity) is sound. BUT this PF-6 rewrite says "this program WRITES
+a keyword-columnar inversion search" and lists only "finalist-MENU skeleton + Rust
+batch-scorer harness" as reuse — it does NOT mention §1.1(3)'s decision that this
+search is "built ONCE as a shared module (analysis/columnar_search.py) [that] also
+closes matrix finding F2 ... Neither program duplicates the other's search." A
+coder implementing PF-6 from this text builds a PF-private search and never closes
+F2. FIX (tie to the §1a/§1.1 reconciliation above): state whether PF-6 (a) adds a
+fractionation-stream scoring plugin to a shared columnar_search.py that also serves
+the F2 transposition side, or (b) is genuinely PF-private and §1.1(3) is withdrawn.
+Do not leave both live. -->
+
+
 - Support staged diagnostic modes for engineering only:
   - known column order, recover square;
   - known square, recover column order;
@@ -398,16 +674,24 @@ Blind algorithm:
 - For ADFGVX, preserve digits and use a compatible alphanumeric language
   profile rather than silently dropping them.
 
-Gate:
+Depth mode (per review): a supported multi-message DEPTH path (same key,
+aligned columns — the historical Painvin setting) is a first-class deliverable
+and the realistic route to reliable recovery. Single-message ciphertext-only
+blind recovery (unknown square AND unknown column order) is genuinely near the
+classical frontier and is marked frontier/experimental, NOT a headline gate.
 
-- Component calibration modes recover their unknown component on fresh cases.
-- Blind `full` mode is tested on at least 20 cases per family across column
-  counts and incomplete-grid shapes.
-- Experimental support requires median >= 0.75 and top-5 capture >= 0.85;
-  automated-solved status requires median >= 0.90.
+Gate (honest, per family):
+- PRIMARY deliverable: the two calibration modes (known column order → recover
+  square; known square → recover column order) recover their unknown component
+  on fresh cases. This is what clears the milestone.
+- DEPTH mode (multi-message, same key) is a supported blind path; gate it on
+  recovery given ≥K aligned messages (K a measured knob).
+- SINGLE-MESSAGE blind `full` is tested (≥20 fresh cases per family) but its
+  bar is `agent_assists`/probe maturity, not `solves_automated`: ADFGX may
+  reach experimental recovery; ADFGVX single-message blind may land only at
+  probe_available and that is an acceptable, honestly-labeled outcome.
 - Artifacts show both layer keys and replay the complete forward/decrypt
-  pipeline.
-- Single-layer controls are not falsely reported as composed solutions.
+  pipeline; single-layer controls are never reported as composed solutions.
 
 ### PF-7: Automated routing and investigator/MCP probes
 
@@ -419,10 +703,53 @@ Deliverables:
 - Explicit-family automated routes for accepted solvers.
 - A bounded broad-family probe that can compare candidate families without
   reading benchmark labels.
-- Update registry solver statuses from measured evidence, family by family.
-- Add experiment schemas and concise result packets through the shared
-  investigation host/MCP surface. Do not expose raw mutation controls as a
-  giant agent tool menu.
+- **Registry granularity FIRST (resolved).** Per-family status is impossible
+  today: only `playfair` has its own INV id; Hill/Two-Square/Four-Square roll
+  into `polygraphic_substitution`, and Bifid/Trifid/ADFGX/ADFGVX into
+  `fractionation_transposition`. Before any family-by-family status change, this
+  program introduces finer ids as SUBTYPES under those two primaries (mirroring
+  the `numeric_*` subtype pattern), each with a detector atom, so a solver can
+  flip one family without over-claiming its siblings. All new ids/subtypes must
+  satisfy `_validate_registry()` (every primary ≥1 discriminator, symmetric
+  confusables, derived-consistent discriminators) or import fails — treat this
+  as an early PF-7 sub-slice, not an afterthought.
+- **Experiment schemas follow the EXPERIMENT_TYPES contract EXACTLY (resolved,
+  provenance invariant EXP-1).** Each new type in
+  `src/investigation/experiments.py` = `{config_schema, config_defaults, runner,
+  description, installer?}` + per-field docs, with the two-layer unknown-key
+  rejection (provider `additionalProperties:false` + the
+  `validate_experiment_config` whitelist; `language` host-derived per GT-3), a
+  guaranteed-valid `corrected_example` on error, and a MISROUTE GUARD redirect
+  (like `quag → quagmire3_shotgun`). Install via `experiment_collect` through
+  the verify→declare gate. Per §1a: register in the OPERATION MANIFEST (post
+  CLI I-0) so the type reaches both surfaces; coordinate the misroute-guard
+  convention with the composite program (same pattern, distinct type names).
+  Do not expose raw mutation controls as a giant agent tool menu.
+
+<!-- FABLE REVIEW [MAJOR] PF-7 registry granularity + [MAJOR] experiment-type
+pattern — both RESOLVED above (subtype-first registry work; EXPERIMENT_TYPES /
+EXP-1 contract named explicitly; manifest + misroute coordination per §1a). -->
+<!-- FABLE R2: OK on registry-granularity and the EXPERIMENT_TYPES/EXP-1 contract,
+with two precisions verified against code:
+  (1) subtype-first is IMPLEMENTABLE and renders for free — diagnosis.py reads
+      solver_status from FAMILY_REGISTRY[fam] and folds SUBTYPE_IDS under parent
+      generically (diagnosis.py:301,305-315). Precision on "_validate_registry":
+      the "every primary ≥1 discriminator" invariant applies to PRIMARIES, not
+      subtypes — subtypes MAY have discriminators=() (numeric_skip_nth_word does,
+      families.py:343-350). The real constraint on a new subtype is the
+      derived-consistency check (families.py:414-420): if the subtype lists a
+      discriminator, a DiscriminatorSpec whose splits name that subtype id must
+      exist, else import fails. The two parents already satisfy the ≥1 rule.
+  (2) experiment-schema shape matches (config_schema/config_defaults/runner/
+      description/[installer], additionalProperties:false in the model-facing
+      schema + the validate_experiment_config whitelist, host-derived language,
+      corrected_example, misroute guard) — all verified in experiments.py.
+      HOWEVER the "register in the OPERATION MANIFEST ... so the type reaches
+      both surfaces ... must pass tests/test_interface_parity.py" clause is the
+      category error flagged at §1a(d): an experiment TYPE is not a manifest
+      operation and is not parity-gated. Apply the §1a(d) FIX wording here. -->
+
+
 - Coverage-debt reporting when evidence supports a family whose solver was not
   run or remains unsupported.
 - Comparison records that separate `best_partial` from `accepts_as_solution`.
@@ -476,6 +803,18 @@ For each family vary:
 Final acceptance cases must use a wholly withheld seed set not consulted
 during implementation tuning. Keep tuning, regression, and final-acceptance
 seed manifests distinct in reports.
+
+<!-- FABLE REVIEW: [MINOR] This design is consistent with the contamination
+policy in docs/evidence/v3_vs_mcp_matrix.md ("None (fresh original prose) ->
+capability aggregates; High (famous, in training data) -> behavioral probes
+ONLY"). Good. Two concretions to add: (1) all eight families already have fresh
+generators in src/testgen/family_registry.py — say the withheld acceptance seeds
+are drawn from those, so "fresh synthetic" is mechanized, not hand-built. (2)
+Follow the established SEALED-ANSWER convention: sealed answers live OUTSIDE the
+repo (e.g. ~/.config/decipher/dogfood_answers/), never committed, so the
+acceptance harness can't leak into runtime. §11 already says "no famous historical
+cipher is sufficient acceptance evidence" — cross-reference that here. -->
+
 
 ### 8.2 Confusion controls
 
@@ -557,17 +896,57 @@ external-tool examples are compatibility checks after synthetic acceptance.
 
 ## 12. Rollout and Status Semantics
 
-Use three statuses independently for each family:
+<!-- FABLE REVIEW [MAJOR] status-vocabulary mismatch — RESOLVED via §1a(a):
+mapped onto the live enum, maturity ladder moved to the eval artifact, and a
+_validate_registry enum check proposed below. Original review text retained for
+audit trail: -->
+<!-- ORIGINAL: FamilySpec.solver_status takes one of {solves_automated,
+agent_assists, diagnoses_only, planned, unsupported}; the section invented
+probe_available/experimental_solver. Options were (a) extend the enum or (b) map
+onto it + separate report field. Chose (b) per §1a(a) — the composite spec uses
+agent_assists, so (b) is the lower-friction coordinated choice, and we deliberately do not
+extend the shared enum for both programs. -->
 
-- `probe_available`: bounded inversion can provide evidence but recovery is
-  not yet reliable.
-- `experimental_solver`: measured recovery clears the milestone's lower gate.
-- `solves_automated`: fresh held-out evaluation clears the common strong gate
-  and runtime is operationally acceptable.
+Per coordination decision §1a(a), the registry `solver_status` uses ONLY the
+live enum `{solves_automated, agent_assists, diagnoses_only, planned,
+unsupported}`. A family's registry status progresses:
 
-Documentation and registry status change only after the corresponding report
-exists. A family may have a strong generator and detector while remaining
-unsupported for solving.
+- `diagnoses_only` → the starting point (detector/probe may exist, no reliable
+  recovery);
+- `agent_assists` → a solver exists and a fresh-evaluation report shows it
+  recovers with agent/experiment help (the maturity a bounded probe or a
+  narrow solver reaches);
+- `solves_automated` → fresh held-out evaluation clears the common strong gate
+  AND runtime is operationally acceptable.
+
+The richer research distinction — `probe_available` (bounded inversion gives
+evidence, recovery unreliable), `experimental_solver` (measured recovery clears
+the milestone's LOWER gate), `solves_automated` (clears the STRONG gate) — is a
+per-milestone MATURITY signal recorded in the eval/calibration ARTIFACT
+(§8 report schema), never in `FamilySpec.solver_status`. Registry status
+changes only after the corresponding report exists. A family may ship a strong
+generator and detector while remaining `diagnoses_only`.
+
+<!-- FABLE REVIEW [MAJOR] status-vocabulary mismatch — RESOLVED: mapped onto the
+live enum per §1a(a); the three-way maturity ladder now lives in the eval
+artifact, not solver_status. -->
+
+Note (no _validate check today): `solver_status` strings are unvalidated in
+`families.py` — a typo would pass silently. This program SHOULD add a
+one-line enum check to `_validate_registry()` when it first touches the
+registry (cheap insurance now that three programs write statuses).
+
+<!-- FABLE R2: OK — verified the live enum is exactly {solves_automated,
+agent_assists, diagnoses_only, planned, unsupported} (families.py:59) and that
+_validate_registry() (families.py:398-440) does NOT check solver_status today, so
+the "no _validate check" note is accurate and the maturity ladder correctly lives
+in the §8 eval artifact, not solver_status. The proposed enum check is sound; when
+adding it, seed the allowed set from ALL five values in the FamilySpec docstring
+(NOT only the values in current use — `planned` is presently used by
+DiscriminatorSpec.status, not any FamilySpec, but must stay legal for families).
+Coordinate landing with the composite program: whichever of the three specs
+touches _validate_registry first adds the check; the others must not re-add it. -->
+
 
 ## 13. Review Questions Before Implementation
 
@@ -580,10 +959,28 @@ unsupported for solving.
    cases?
 5. Can the existing transposition solver expose a reusable finalist API for
    ADFGX/ADFGVX without duplicating search?
+<!-- FABLE REVIEW: [QUESTION -> partially answered] Yes for the finalist MENU
+skeleton (analysis/pure_transposition.py: screen_pure_transposition returns a
+ranked top_candidates dict; generate_pure_transposition_candidates +
+PureTranspositionSearchConfig give candidate-only generation). NO for the search
+FAMILY you need: its candidates are geometric transforms, it has no keyword-
+columnar enumerator, and it requires A-Z + a language score (see PF-6 [MAJOR]).
+So the honest answer is "reuse the finalist plumbing, write the columnar-
+inversion search and its non-language scoring yourself." -->
+
 6. Which solver stage becomes CPU-bound first, and what evidence justifies a
    Rust port?
 7. Should Hill remain a separate matrix family in investigator reports rather
    than being grouped under square-based polygraphics?
+<!-- FABLE REVIEW: [QUESTION -> this is really a BLOCKER for PF-7, not an open
+musing]. Today Hill has NO family id — it rolls up under `polygraphic_substitution`
+(see PF-7 [MAJOR]). Whatever the answer, the registry cannot express a Hill-
+specific solver_status until a Hill id/subtype exists. Resolve this before PF-7
+so "family by family" status updates are possible. My recommendation: give Hill
+its own primary (its key model, attack, and keyspace are unrelated to the 5x5
+square families), and split `fractionation_transposition` into per-family subtypes
+too. -->
+
 8. What calibrated margin permits exact-family confidence versus only broad
    `polygraphic` or `fractionation` suspicion?
 

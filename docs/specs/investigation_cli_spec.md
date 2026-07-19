@@ -152,6 +152,16 @@ construction, not by convention.**
   the JSON body returned by the service layer via the CLI equals the body the
   MCP server returns for the same call sequence (transport-independence
   proof). Extending one surface without the other fails CI.
+- **Scope clarification (experiment types are NOT operations).** The parity
+  contract is at the OPERATION level (the ~23 verbs). New solver
+  `EXPERIMENT_TYPES` values are NOT new operations — `experiment_submit` is a
+  single operation whose `type` is a string arg (and the CLI passes the whole
+  config as one `--config JSON` blob). A new experiment type therefore reaches
+  BOTH surfaces automatically because both dispatch `experiment_submit` through
+  the shared service layer that reads `EXPERIMENT_TYPES`; it is NOT gated by
+  the manifest or per-type parity assertions. So the composite/polygraphic
+  programs add `EXPERIMENT_TYPES` entries (dual-surface for free post-I-0), not
+  manifest entries.
 - **Doctrine line** (add in this program, small docs commit): AGENTS.md and
   CLAUDE.md each get one sentence under their MCP/architecture sections:
   "The MCP tool list is the operation manifest for BOTH the MCP server and
