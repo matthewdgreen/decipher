@@ -1,10 +1,17 @@
 """Tests for analysis tools."""
 import sys
 import os
+import random
+import string
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from analysis import frequency, ic, pattern
+from analysis.transposition_solver import transposition_suspicion
+from benchmark.loader import parse_canonical_transcription
+from ciphers.substitution import SubstitutionCipher
+from ciphers.transposition import ColumnarCipher
+from models.alphabet import Alphabet
 
 
 class TestFrequency:
@@ -121,3 +128,48 @@ class TestDictionary:
         assert score_plaintext("THE CAT SAT ON THE MAT", word_set) == 1.0
         assert score_plaintext("XYZ ABC DEF", word_set) == 0.0
         assert score_plaintext("THE XYZ", word_set) == 0.5
+
+
+# Firewall: composite/substitution streams are built by ENCRYPTING a plaintext
+# literal; ground truth never enters the detection path.
+_ORDER_LAYER_PT = (
+    "THEOLDLIGHTHOUSEKEEPERCLIMBEDTHENARROWSTAIRSEACHEVENINGTOTENDTHELAMP"
+    "WHOSEBEAMSWEPTACROSSTHEDARKWATERWARNINGSHIPSOFTHEJAGGEDROCKSBELOWAND"
+    "HESANGQUIETLYTOHIMSELFASTHEGEARSTURNEDANDTHEGREATLENSREVOLVEDSLOWLY"
+    "THROUGHTHECOLDMISTYNIGHTABOVETHESLEEPINGHARBORTOWN"
+)
+
+
+def _ct(letters):
+    return parse_canonical_transcription(" ".join(letters))
+
+
+def _substitute(letters, seed):
+    alpha = Alphabet(list(string.ascii_uppercase))
+    ids = list(range(26))
+    shuffled = list(ids)
+    random.Random(seed).shuffle(shuffled)
+    tokens = SubstitutionCipher().encrypt(
+        [ord(c) - 65 for c in letters], dict(zip(ids, shuffled)), alpha)
+    return "".join(chr(65 + t) for t in tokens)
+
+
+class TestOrderLayerSuspected:
+    """transposition_suspicion.order_layer_suspected (composite Slice A §2.3)."""
+
+    def test_true_on_composite(self):
+        plain = "".join(c for c in _ORDER_LAYER_PT if "A" <= c <= "Z")
+        composite = ColumnarCipher().encrypt(_substitute(plain, 7), "MASONRY")
+        assert transposition_suspicion(_ct(composite))["order_layer_suspected"] is True
+
+    def test_false_on_plain_substitution(self):
+        # A substitution PRESERVES n-gram structure -> no order layer suspected.
+        plain = "".join(c for c in _ORDER_LAYER_PT if "A" <= c <= "Z")
+        sub = _substitute(plain, 7)
+        assert transposition_suspicion(_ct(sub))["order_layer_suspected"] is False
+
+    def test_false_on_plain_homophonic(self):
+        # Homophonic: >26 symbols, not single A-Z -> early return, never suspected.
+        homophonic = " ".join(f"S{i % 40:03d}" for i in range(220))
+        signal = transposition_suspicion(parse_canonical_transcription(homophonic))
+        assert signal["order_layer_suspected"] is False

@@ -184,10 +184,13 @@ def test_quagmire_keyed_carries_sequencing_hint():
     assert spec.sequencing_hint
     lowered = spec.sequencing_hint.lower()
     assert "keyed" in lowered or "quagmire" in lowered
-    # every other family keeps the empty default
+    # Only quagmire_keyed and substitution_transposition (composite Slice A §2.2)
+    # carry a sequencing_hint; every other family keeps the empty default.
     others = [f.id for f in FAMILY_REGISTRY.values()
-              if f.id != "quagmire_keyed" and f.sequencing_hint]
+              if f.id not in ("quagmire_keyed", "substitution_transposition")
+              and f.sequencing_hint]
     assert others == []
+    assert FAMILY_REGISTRY["substitution_transposition"].sequencing_hint
 
 
 def test_diagnosis_surfaces_hint_on_polyalphabetic_subtype():

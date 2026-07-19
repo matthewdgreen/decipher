@@ -86,6 +86,56 @@ def normalized_ngram_score(text: str, log_probs: dict[str, float], n: int = 4) -
     return total / count
 
 
+def _ngram_ic(letters: str, n: int) -> float:
+    """Index of coincidence over sliding n-grams of a pure-letter string.
+
+    Probability that two randomly drawn (overlapping) n-grams are identical,
+    estimated without replacement. n=1 is the ordinary monogram IC.
+    """
+    grams = [letters[i : i + n] for i in range(len(letters) - n + 1)]
+    total = len(grams)
+    if total < 2:
+        return 0.0
+    counts: Counter[str] = Counter(grams)
+    return sum(v * (v - 1) for v in counts.values()) / (total * (total - 1))
+
+
+def ngram_structure_ratio(letters: str, n: int = 2) -> float:
+    """Substitution-invariant measure of residual language n-gram structure.
+
+    Returns the ratio of the observed n-gram index of coincidence to the value
+    expected if the letters were drawn *independently* from the same monogram
+    distribution (``monogram_IC ** n``). Two properties make this the signal that
+    separates a plain monoalphabetic substitution from a substitution that has
+    been further TRANSPOSED:
+
+    * A monoalphabetic substitution only *relabels* letters, so it leaves this
+      ratio unchanged (an isomorphism of the n-gram frequency profile). Coherent
+      language — and any substituted-but-not-reordered coherent language — has a
+      ratio well above 1.0 (real adjacency structure: TH, THE, ...).
+    * A transposition *shuffles positions*, collapsing adjacency structure toward
+      independence, so the ratio falls toward 1.0 regardless of substitution.
+
+    The ratio is dimensionless, so it is comparable across text lengths and is
+    invariant to which specific letters carry the distribution. A value near 1.0
+    means "no residual n-gram structure" (an order layer / random text); a value
+    comfortably above 1.0 means "language n-gram structure is present". Callers
+    do NOT need a language model — this is a pure count statistic, so unlike the
+    by-letter ``normalized_ngram_score`` it is not fooled by a substitution
+    (which scrambles the by-letter score identically for plain-sub and composite).
+
+    ``letters`` is reduced to uppercase A-Z (spaces/others dropped). Returns 0.0
+    when the text is too short or degenerate (monogram IC of 0).
+    """
+    clean = "".join(ch for ch in letters.upper() if "A" <= ch <= "Z")
+    if len(clean) < n + 1:
+        return 0.0
+    mono_ic = _ngram_ic(clean, 1)
+    if mono_ic <= 0:
+        return 0.0
+    return _ngram_ic(clean, n) / (mono_ic ** n)
+
+
 def ngram_position_logprobs(
     text: str, log_probs: dict[str, float], n: int = 4
 ) -> list[tuple[int, str, float]]:

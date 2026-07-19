@@ -82,7 +82,25 @@ detectable, family-agnostic signal the stack currently ignores.
 
 ---
 
-## 2. Slice A — diagnosis: composite family + residual-order atom
+## 2. Slice A — diagnosis: composite family + residual-order atom — **LANDED**
+
+**IMPLEMENTED 2026-07-19 (commit on main; Fable review LAND, deviations
+empirically verified). Two spec corrections the implementation established:**
+- **Detection statistic is `ngram_structure_ratio` (bigram-IC ÷ monogram-IC²),
+  NOT quadgram-NLL.** The original §2.1/§2.3 quadgram-NLL gate was proven
+  non-separating: a substitution already scrambles English quadgram scores
+  (both plain-mono and composite pin at ~−6.6), so quadgram score is blind to a
+  further transposition. The structure ratio is substitution-INVARIANT by
+  construction (coincidence probabilities are unchanged by relabeling): ~1.95
+  for mono, ~1.02 for composite/transposed. Constants `STRUCTURE_RATIO_ABSENT`,
+  `STRUCTURE_MIN_TOKENS=150`.
+- **Detection floor: composites under ~150 letters are undetectable** (the
+  structure ratio is noisy on short text). Round-4 (287) is well clear; a
+  historical composite <150 letters would be missed — carry this into the
+  Slice B/C router + a future limitations note.
+
+*(Original §2.1 text below is retained for the design rationale; the qnll gate
+it describes was replaced per the above.)*
 
 ### 2.1 New `order_layout` atom (`src/analysis/panels.py:356`)
 

@@ -11,7 +11,9 @@ from investigation import families as F
 
 def test_registry_imports_and_validates():
     # _validate_registry() runs at import; reaching here means it passed.
-    assert len(F.PRIMARY_IDS) == 12
+    # 13 primaries: 12 base + substitution_transposition (composite Slice A).
+    assert len(F.PRIMARY_IDS) == 13
+    assert "substitution_transposition" in F.PRIMARY_IDS
     assert len(F.SUBTYPE_IDS) == 4
     assert len(F.MODIFIER_IDS) == 1
 
@@ -34,10 +36,12 @@ def test_discriminator_splits_reference_real_families():
 
 
 def test_suspicion_unknown_maps_to_nothing():
-    # The six real keys map; "unknown" is absent (dropped, emits no prior atom).
+    # The real keys map; "unknown" is absent (dropped, emits no prior atom).
+    # 7 keys: 6 base + substitution_transposition (composite Slice A mapping key).
     assert "unknown" not in F.SUSPICION_TO_FAMILY
     assert F.SUSPICION_TO_FAMILY["polyalphabetic_vigenere"] == "polyalphabetic_periodic"
-    assert len(F.SUSPICION_TO_FAMILY) == 6
+    assert F.SUSPICION_TO_FAMILY["substitution_transposition"] == "substitution_transposition"
+    assert len(F.SUSPICION_TO_FAMILY) == 7
 
 
 def test_poly_discriminator_order_preserved():
@@ -52,6 +56,9 @@ def test_available_discriminators_present():
         assert F.DISCRIMINATOR_REGISTRY[did].status == "available"
 
 
-def test_substitution_primaries_are_eight():
-    assert len(F.SUBSTITUTION_PRIMARIES) == 8
+def test_substitution_primaries_are_nine():
+    # 9: 8 base + substitution_transposition (composite Slice A; it bears a
+    # substitution layer, so numeric atoms weaken it too).
+    assert len(F.SUBSTITUTION_PRIMARIES) == 9
+    assert "substitution_transposition" in F.SUBSTITUTION_PRIMARIES
     assert "numeric_book_cipher" not in F.SUBSTITUTION_PRIMARIES

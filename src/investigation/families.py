@@ -148,6 +148,15 @@ _DISCRIMINATORS: tuple[DiscriminatorSpec, ...] = (
         None,
         "available",
     ),
+    DiscriminatorSpec(
+        "disc_sub_transp_composite",
+        "plain substitution vs substitution+transposition (letter accuracy high, "
+        "word structure absent)",
+        ("monoalphabetic_substitution", "substitution_transposition"),
+        ("order_layout",),
+        "observe_transform_suspicion",       # existing tool; extended in 2.3
+        "available",
+    ),
     # --- planned covers (registry invariant only) ---
     DiscriminatorSpec(
         "disc_transp_fractionation",
@@ -200,8 +209,10 @@ _FAMILIES: tuple[FamilySpec, ...] = (
         "solves_automated",
         ("fingerprint_prior:monoalphabetic_substitution", "ic_near_language_reference",
          "peaked_monogram_shape", "letters_substituted"),
-        ("disc_mono_transp", "disc_mono_homophonic", "disc_sub_periodic"),
-        ("transposition", "homophonic_substitution", "polyalphabetic_periodic"),
+        ("disc_mono_transp", "disc_mono_homophonic", "disc_sub_periodic",
+         "disc_sub_transp_composite"),
+        ("transposition", "homophonic_substitution", "polyalphabetic_periodic",
+         "substitution_transposition"),
         "Single fixed cipher-alphabet; peaked frequencies, language-reference IC.",
         40,
     ),
@@ -230,9 +241,26 @@ _FAMILIES: tuple[FamilySpec, ...] = (
         ("fingerprint_prior:transposition", "ic_near_language_reference",
          "peaked_monogram_shape", "letters_unsubstituted"),
         ("disc_mono_transp", "disc_transp_fractionation"),
-        ("monoalphabetic_substitution",),
+        ("monoalphabetic_substitution", "substitution_transposition"),
         "Letters unchanged but reordered; language frequencies, broken n-grams.",
         40,
+    ),
+    FamilySpec(
+        "substitution_transposition", "Substitution + transposition", None, "primary",
+        "agent_assists",
+        ("fingerprint_prior:substitution_transposition",
+         "residual_order_after_substitution", "peaked_monogram_shape"),
+        ("disc_sub_transp_composite",),
+        ("monoalphabetic_substitution", "transposition"),   # confusable_with
+        "Substitution then transposition: peaked/displaced frequencies (substitution) "
+        "with absent n-gram structure (order layer). High letter accuracy but no "
+        "word structure when solved as plain substitution.",
+        38,
+        sequencing_hint=(
+            "A plain-substitution solve with strong frequency/quadgram fit but zero "
+            "dictionary words implies an unpeeled order layer — screen transpositions "
+            "over the DECODED stream (peel-and-solve) before rejecting."
+        ),
     ),
     FamilySpec(
         "transposition_homophonic", "Transposition + homophonic", None, "primary",
@@ -366,12 +394,15 @@ PRIMARY_IDS: tuple[str, ...] = tuple(f.id for f in _FAMILIES if f.role == "prima
 SUBTYPE_IDS: tuple[str, ...] = tuple(f.id for f in _FAMILIES if f.role == "subtype")
 MODIFIER_IDS: tuple[str, ...] = tuple(f.id for f in _FAMILIES if f.role == "modifier")
 
-# The eight substitution primaries both numeric atoms weaken (finding 1).
+# The nine substitution-bearing primaries both numeric atoms weaken (finding 1;
+# substitution_transposition added in composite Slice A — it carries a substitution
+# layer, so a numeric stream is equally inconsistent with it).
 SUBSTITUTION_PRIMARIES: tuple[str, ...] = (
     "monoalphabetic_substitution",
     "homophonic_substitution",
     "polyalphabetic_periodic",
     "transposition",
+    "substitution_transposition",
     "transposition_homophonic",
     "fractionation_transposition",
     "playfair",
@@ -386,6 +417,7 @@ SUSPICION_TO_FAMILY: dict[str, str] = {
     "homophonic_substitution": "homophonic_substitution",
     "polyalphabetic_vigenere": "polyalphabetic_periodic",
     "transposition": "transposition",
+    "substitution_transposition": "substitution_transposition",
     "transposition_homophonic": "transposition_homophonic",
     "playfair": "playfair",
 }

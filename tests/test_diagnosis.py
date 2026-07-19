@@ -19,8 +19,14 @@ sys.path.insert(0, os.path.join(_REPO, "scripts", "research"))
 if not os.path.isdir(os.path.join(_REPO, "corpus_data", "en")):
     pytest.skip("corpus_data/en not available", allow_module_level=True)
 
+import random  # noqa: E402
+import string  # noqa: E402
+
 import calibrate_inv0_scoring as C  # noqa: E402
+from ciphers.substitution import SubstitutionCipher  # noqa: E402
+from ciphers.transposition import ColumnarCipher  # noqa: E402
 from investigation.diagnosis import diagnose  # noqa: E402
+from models.alphabet import Alphabet  # noqa: E402
 
 
 def _dense(values):
@@ -127,3 +133,44 @@ def test_determinism_repeat_run():
     b = _run(FIXTURES["A_mono"]).to_dict()
     assert a["ranked"] == b["ranked"]
     assert a["view_hash"] == b["view_hash"]
+
+
+# --- composite substitution+transposition anti-anchoring (Slice A §2.2 / §6) ---
+
+# Firewall: the round-4-style composite is CONSTRUCTED here by encrypting a
+# plaintext literal (a monoalphabetic substitution THEN a columnar transposition,
+# fixed seed, no word boundaries). The sealed answer file is never read; ground
+# truth appears only in the OUTPUT assertions below.
+_ROUND4_STYLE_PT = (
+    "THEOLDLIGHTHOUSEKEEPERCLIMBEDTHENARROWSTAIRSEACHEVENINGTOTENDTHELAMP"
+    "WHOSEBEAMSWEPTACROSSTHEDARKWATERWARNINGSHIPSOFTHEJAGGEDROCKSBELOWAND"
+    "HESANGQUIETLYTOHIMSELFASTHEGEARSTURNEDANDTHEGREATLENSREVOLVEDSLOWLY"
+    "THROUGHTHECOLDMISTYNIGHTABOVETHESLEEPINGHARBORTOWN"
+)
+
+
+def _build_composite(seed=7, key="MASONRY"):
+    plain = "".join(c for c in _ROUND4_STYLE_PT if "A" <= c <= "Z")
+    alpha = Alphabet(list(string.ascii_uppercase))
+    ids = list(range(26))
+    shuffled = list(ids)
+    random.Random(seed).shuffle(shuffled)
+    sub_tokens = SubstitutionCipher().encrypt(
+        [ord(c) - 65 for c in plain], dict(zip(ids, shuffled)), alpha)
+    sub = "".join(chr(65 + t) for t in sub_tokens)
+    return ColumnarCipher().encrypt(sub, key)   # substitute THEN transpose
+
+
+def test_composite_not_confidently_misdiagnosed_as_plain_mono():
+    composite = _build_composite()
+    report = diagnose([ord(c) - 65 for c in composite], alphabet_size=26,
+                      alphabet_class="letters", language="en",
+                      letter_rendering=composite)
+    top2 = [fd.family for fd in report.ranked[:2]]
+    # The composite must surface as a ranked top-2 family (the exact failure the
+    # INV sweep documented: it was silently lost under a confident plain-mono).
+    assert "substitution_transposition" in top2, top2
+    # ...and the verdict must NOT be a confident plain-mono anchoring.
+    assert not (report.verdict == "confident"
+                and report.ranked[0].family == "monoalphabetic_substitution"), (
+        report.verdict, report.ranked[0].family)

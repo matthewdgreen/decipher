@@ -209,6 +209,12 @@ def az_string_from_cipher_text(cipher_text: Any) -> str | None:
     return "".join(letters)
 
 
+# Substitution-invariant order-layer thresholds (composite Slice A §2.3).
+_ORDER_LAYER_SHAPE_COS = 0.90     # sorted-magnitude cosine vs language -> language-like SHAPE
+_ORDER_LAYER_STRUCTURE_ABSENT = 1.35  # bigram-structure ratio below -> n-gram structure scrambled
+_ORDER_LAYER_MIN_TOKENS = 150     # structure ratio is unreliable below this
+
+
 def transposition_suspicion(
     cipher_text: Any,
     language: str = "en",
@@ -223,7 +229,18 @@ def transposition_suspicion(
     letters, so the same-shaped distribution lands on the wrong letters (low
     cosine). Homophonic ciphers have >26 symbols and never reach here.
 
-    Returns ``{"suspicious": bool, "score": float (cosine), "reasons": [...]}``.
+    Also returns ``order_layer_suspected`` (composite Slice A §2.3): a
+    substitution-INVARIANT signal for a residual order/transposition layer. The
+    by-letter cosine above catches an UNsubstituted transposition; this second
+    signal fires when the monogram SHAPE is language-like by sorted magnitude
+    (regardless of WHICH letters — so a substitution does not hide it) BUT the
+    n-gram adjacency structure is scrambled (``ngram.ngram_structure_ratio`` near
+    1.0). A plain substitution keeps its adjacency structure (ratio high), so this
+    stays False for it; a substitution-then-transposition trips it. This is what
+    the ``disc_sub_transp_composite`` discriminator (and, later, the router)
+    consume.
+
+    Returns ``{"suspicious", "score", "order_layer_suspected", "reasons"}``.
     """
 
     reasons: list[str] = []
@@ -232,6 +249,7 @@ def transposition_suspicion(
         return {
             "suspicious": False,
             "score": 0.0,
+            "order_layer_suspected": False,
             "reasons": ["ciphertext is not single A-Z symbols"],
         }
     n = len(text)
@@ -239,6 +257,7 @@ def transposition_suspicion(
         return {
             "suspicious": False,
             "score": 0.0,
+            "order_layer_suspected": False,
             "reasons": [f"too few letters ({n} < {min_tokens})"],
         }
     counts = Counter(text)
@@ -251,7 +270,29 @@ def transposition_suspicion(
         f"monogram cosine vs {language} = {cos:.3f} "
         f"({'>=' if suspicious else '<'} {threshold:.2f})"
     )
-    return {"suspicious": suspicious, "score": round(cos, 4), "reasons": reasons}
+
+    # --- substitution-invariant order-layer signal (§2.3) ---
+    shape_cos = _cosine(sorted(observed, reverse=True), sorted(reference, reverse=True))
+    structure_ratio = ngram.ngram_structure_ratio(text, 2)
+    order_layer_suspected = (
+        n >= _ORDER_LAYER_MIN_TOKENS
+        and shape_cos >= _ORDER_LAYER_SHAPE_COS
+        and 0.0 < structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT
+    )
+    reasons.append(
+        f"language-like monogram SHAPE (sorted cosine {shape_cos:.3f}) with "
+        f"n-gram structure ratio {structure_ratio:.3f} "
+        f"({'<' if structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT else '>='} "
+        f"{_ORDER_LAYER_STRUCTURE_ABSENT:.2f}) -> order layer "
+        f"{'suspected' if order_layer_suspected else 'not suspected'}"
+    )
+
+    return {
+        "suspicious": suspicious,
+        "score": round(cos, 4),
+        "order_layer_suspected": order_layer_suspected,
+        "reasons": reasons,
+    }
 
 
 # ---------------------------------------------------------------------------

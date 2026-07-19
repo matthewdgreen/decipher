@@ -7,6 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
+import string
+
 from analysis import panels
 from analysis.cipher_id import _chi2_vs_uniform, compute_cipher_fingerprint
 from analysis.panels import (
@@ -18,6 +20,37 @@ from analysis.panels import (
     panel_shape,
     run_battery,
 )
+from ciphers.substitution import SubstitutionCipher
+from ciphers.transposition import ColumnarCipher
+from models.alphabet import Alphabet
+
+
+# Firewall: the composite is built in-test by ENCRYPTING a plaintext literal
+# (never by reading a sealed answer). Ground truth touches only OUTPUT assertions.
+_COMPOSITE_PT = (
+    "THEOLDLIGHTHOUSEKEEPERCLIMBEDTHENARROWSTAIRSEACHEVENINGTOTENDTHELAMP"
+    "WHOSEBEAMSWEPTACROSSTHEDARKWATERWARNINGSHIPSOFTHEJAGGEDROCKSBELOWAND"
+    "HESANGQUIETLYTOHIMSELFASTHEGEARSTURNEDANDTHEGREATLENSREVOLVEDSLOWLY"
+    "THROUGHTHECOLDMISTYNIGHTABOVETHESLEEPINGHARBORTOWN"
+)
+
+
+def _substitute(letters, seed):
+    """Monoalphabetic substitution via src/ciphers/substitution.py (fixed seed)."""
+    alpha = Alphabet(list(string.ascii_uppercase))
+    ids = list(range(26))
+    shuffled = list(ids)
+    random.Random(seed).shuffle(shuffled)
+    key = dict(zip(ids, shuffled))
+    tokens = SubstitutionCipher().encrypt([ord(c) - 65 for c in letters], key, alpha)
+    return "".join(chr(65 + t) for t in tokens)
+
+
+def _order_layout_atoms(rendering):
+    res = panel_order_layout([ord(c) - 65 for c in rendering], alphabet_size=26,
+                             alphabet_class="letters", language="en",
+                             letter_rendering=rendering)
+    return res, {a["observation"]: a for a in res.atoms}
 
 
 def _letters_stream(seed=0, n=300):
@@ -95,3 +128,43 @@ def test_large_symbol_inventory_suppressed_for_numeric():
     res = panel_shape(list(range(60)) * 3, alphabet_size=60, alphabet_class="numeric",
                       language="en")
     assert not any(a["observation"] == "large_symbol_inventory" for a in res.atoms)
+
+
+# --- composite substitution+transposition residual atom (Slice A §2.1) ---
+
+def test_residual_atom_fires_on_composite_not_on_plain_layers():
+    plain = "".join(c for c in _COMPOSITE_PT if "A" <= c <= "Z")
+    sub = _substitute(plain, seed=7)
+    composite = ColumnarCipher().encrypt(sub, "MASONRY")      # substitute THEN transpose
+    transp = ColumnarCipher().encrypt(plain, "MASONRY")       # plain transposition (unsubstituted)
+
+    _, comp_atoms = _order_layout_atoms(composite)
+    _, sub_atoms = _order_layout_atoms(sub)
+    _, transp_atoms = _order_layout_atoms(transp)
+
+    # Fires on the composite (substituted + order layer)...
+    assert "residual_order_after_substitution" in comp_atoms
+    atom = comp_atoms["residual_order_after_substitution"]
+    assert atom["supports"] == ["substitution_transposition"]
+    # ...NOT on a plain substitution (good/preserved n-gram structure)...
+    assert "residual_order_after_substitution" not in sub_atoms
+    # ...NOT on a plain unsubstituted transposition (language-by-letter monograms).
+    assert "residual_order_after_substitution" not in transp_atoms
+
+
+def test_letters_substituted_drops_transposition_weaken_exactly_when_residual_cofires():
+    plain = "".join(c for c in _COMPOSITE_PT if "A" <= c <= "Z")
+    sub = _substitute(plain, seed=7)
+    composite = ColumnarCipher().encrypt(sub, "MASONRY")
+
+    _, comp_atoms = _order_layout_atoms(composite)
+    _, sub_atoms = _order_layout_atoms(sub)
+
+    # Both trip letters_substituted (displaced monograms); only the composite has
+    # a residual order layer, so only there does letters_substituted DROP its
+    # transposition-weaken.
+    assert "letters_substituted" in comp_atoms and "letters_substituted" in sub_atoms
+    assert "residual_order_after_substitution" in comp_atoms
+    assert "residual_order_after_substitution" not in sub_atoms
+    assert comp_atoms["letters_substituted"]["weakens"] == []
+    assert sub_atoms["letters_substituted"]["weakens"] == ["transposition"]

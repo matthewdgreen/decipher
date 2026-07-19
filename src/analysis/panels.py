@@ -48,6 +48,24 @@ MONO_CHI2_LOW = 300.0      # monogram chi2 vs language below -> letters unchange
 MONO_CHI2_HIGH = 500.0     # above -> letters substituted
 QUAD_NLL_SCRAMBLED = -6.0  # quadgram mean-loglik below -> not coherent plaintext
 NUMERIC_UNIQUE_RATE = 0.40  # unique/token > this + numeric -> substitution inconsistency
+# Substitution-INVARIANT residual-order gate (composite substitution+transposition).
+# NEW constant (composite Slice A). The by-english quadgram score (QUAD_NLL_SCRAMBLED)
+# CANNOT separate a plain monoalphabetic substitution from a substitution that was
+# further transposed: a random substitution scrambles the by-letter quadgram score
+# identically for both (empirically ~-6.6 for each). What DOES separate them is the
+# substitution-invariant n-gram *structure* ratio (ngram.ngram_structure_ratio):
+# a substitution PRESERVES adjacency structure (ratio well above 1.0), a transposition
+# DESTROYS it (ratio toward 1.0). residual_order_after_substitution fires only when the
+# structure ratio is below this threshold (order layer present). Calibrated from
+# corpus renderings: coherent/plain-mono English bigram-structure ratio >= ~1.46,
+# columnar-transposed (incl. composite) <= ~1.15 mean; 1.35 sits safely between and
+# below the plain-mono floor so residual never fires on an unsubstituted-order mono.
+STRUCTURE_RATIO_ABSENT = 1.35
+# The bigram-structure ratio is noisy on short text (too few repeats to estimate
+# adjacency structure): a 45-100 char plain mono can dip below the threshold. The
+# residual/composite signal therefore requires enough letters. At >=150 the
+# plain-mono ratio stays comfortably above STRUCTURE_RATIO_ABSENT in calibration.
+STRUCTURE_MIN_TOKENS = 150
 
 _MIN_TOKENS_PERIODICITY = 40
 _PERIODIC_N_SHUFFLES = 1000
@@ -187,9 +205,22 @@ def panel_frequency(tokens, *, alphabet_size, alphabet_class, language,
         peaked = (flat_chi > PEAK_FLAT_MIN) and (unique <= PEAK_UNIQUE_MAX)
         flat = flat_chi < FLAT_FLAT_MAX
         if peaked:
+            # A peaked, small-alphabet frequency profile is preserved by BOTH a
+            # substitution and a transposition, so it also bears on the composite
+            # substitution_transposition family (composite Slice A: the family
+            # declares peaked_monogram_shape among its detectors). It still weakens
+            # homophonic. The residual_order_after_substitution atom is what makes
+            # the composite SPECIFIC; this is one shared corroborating signal.
+            # Gate the composite credit on STRUCTURE_MIN_TOKENS: the composite
+            # hypothesis rests on the (order-panel) structure statistic, which is
+            # unreliable below that length, so short peaked mono/transposition
+            # fixtures must NOT surface the composite as a competitor.
+            peaked_supports = ["monoalphabetic_substitution", "transposition"]
+            if n >= STRUCTURE_MIN_TOKENS:
+                peaked_supports.append("substitution_transposition")
             atoms.append(_atom(
                 "peaked_monogram_shape", "frequency", 0.30,
-                ["monoalphabetic_substitution", "transposition"],
+                peaked_supports,
                 ["homophonic_substitution"],
                 measurement={"flatness": flat_chi, "unique": unique},
                 interpretation="Per-token chi-square flatness >0.28 with <=28 symbols (peaked).",
@@ -384,6 +415,17 @@ def panel_order_layout(tokens, *, alphabet_size, alphabet_class, language,
     flat_chi = _chi2_vs_uniform(counts, len(tokens)) / len(tokens) if tokens else 0.0
     peaked = (flat_chi > PEAK_FLAT_MIN) and (len(counts) <= PEAK_UNIQUE_MAX)
 
+    # Substitution-invariant residual-order structure (composite Slice A). A plain
+    # monoalphabetic substitution preserves adjacency structure (ratio >> 1); a
+    # further transposition destroys it (ratio -> 1). See STRUCTURE_RATIO_ABSENT.
+    structure_ratio = ngram.ngram_structure_ratio(rendering, 2)
+    residual = (
+        len(rendering) >= STRUCTURE_MIN_TOKENS
+        and mchi > MONO_CHI2_HIGH
+        and peaked
+        and structure_ratio < STRUCTURE_RATIO_ABSENT
+    )
+
     atoms: list[dict[str, Any]] = []
     if mchi < MONO_CHI2_LOW and qnll < QUAD_NLL_SCRAMBLED:
         atoms.append(_atom(
@@ -395,17 +437,40 @@ def panel_order_layout(tokens, *, alphabet_size, alphabet_class, language,
                            "(letters reordered, not substituted).",
         ))
     if mchi > MONO_CHI2_HIGH and peaked:
+        # When a residual order layer is detected, the composite explanation
+        # (substitution THEN transposition) is live, so letters_substituted must
+        # NOT push transposition down: drop its transposition-weaken.
+        include_transposition_weaken = not residual
         atoms.append(_atom(
             "letters_substituted", "order_layout", 0.35,
             ["monoalphabetic_substitution", "homophonic_substitution"],
-            ["transposition"],
+            ["transposition"] if include_transposition_weaken else [],
             measurement={"monogram_chi2": mchi, "quadgram_nll": qnll},
             interpretation="Monogram frequencies displaced from the language "
                            "reference (letters substituted).",
         ))
+    if residual:
+        # Supports the composite family, and WEAKENS plain monoalphabetic
+        # substitution (a detected residual order layer means the cipher is not a
+        # PLAIN mono). It deliberately does NOT weaken `transposition` (a composite
+        # IS partly a transposition). The mono-weaken is what lets the diagnosis
+        # escape the "confident plain-mono" anchoring the composite program targets;
+        # it only fires on true composites (gated on displaced monograms + absent
+        # structure + >=150 letters), so a plain mono is never demoted.
+        atoms.append(_atom(
+            "residual_order_after_substitution", "order_layout", 0.35,
+            ["substitution_transposition"], ["monoalphabetic_substitution"],
+            measurement={"monogram_chi2": mchi, "quadgram_nll": qnll,
+                         "structure_ratio": structure_ratio},
+            interpretation="Letters substituted (displaced monograms) but n-gram "
+                           "structure absent (adjacency destroyed) — consistent with "
+                           "a further order/transposition layer over a substitution.",
+        ))
     return PanelResult(
         "order_layout", "ok",
-        measurements={"monogram_chi2": mchi, "quadgram_nll": qnll, "peaked": peaked},
+        measurements={"monogram_chi2": mchi, "quadgram_nll": qnll, "peaked": peaked,
+                      "structure_ratio": structure_ratio,
+                      "residual_order_after_substitution": residual},
         atoms=atoms,
         reliability="high",
     )
