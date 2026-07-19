@@ -39,6 +39,12 @@ _MIN_TOKENS_FOR_PERIODIC = 40   # minimum tokens to attempt periodic IC
 _MIN_TOKENS_FOR_KASISKI = 30    # minimum tokens for Kasiski
 _STANDARD_ALPHA_SIZE = 26       # standard monoalphabetic plaintext alphabet
 
+# --- Harmonic period-folding constants (see docs/specs/inv0_harmonic_period_spec.md) ---
+_HARMONIC_MIN_RELIABLE_COLS = 25   # tokens/column for full reliability weight
+_HARMONIC_FOLD_FRAC = 0.6          # own elevation must be >= this * family-max to be a valid fundamental
+_HARMONIC_SIGNIF_MARGIN = 0.010    # argmax elevation over null below this -> keep naive argmax
+_HARMONIC_KASISKI_BONUS = 0.25     # max multiplicative boost from full Kasiski corroboration
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -117,6 +123,108 @@ class CipherFingerprint:
 # Main entry points
 # ---------------------------------------------------------------------------
 
+def estimate_fundamental_period(
+    periodic_ic: dict[int, float],
+    token_count: int,
+    *,
+    max_period: int = 26,
+    null_ic: float | None = None,
+    kasiski_factors: dict[int, int] | None = None,
+) -> tuple[int | None, dict[str, Any]]:
+    """Pick the fundamental key period from a per-period mean-IC table.
+
+    Naive argmax of the mean-IC table is fooled by the *harmonic ladder*: when
+    the true period is ``p``, every multiple ``2p, 3p, ...`` also folds each
+    column onto a single key position and stays elevated, and the sparsest
+    multiple can carry the single highest (but least reliable) IC. Divisors of
+    ``p`` instead mix distinct key positions per column, so their own IC is NOT
+    elevated — that asymmetry is what lets us recover ``p``.
+
+    For each candidate ``p`` we aggregate the reliability-weighted IC elevation
+    (above ``null_ic``) across its harmonic family ``p, 2p, 3p, ...``. A
+    *validity gate* requires ``p`` to itself carry signal (its own elevation is a
+    substantial fraction of its family maximum), which rejects sub-harmonics
+    whose families are only elevated because they *contain* the true period.
+    Among valid candidates the max harmonic score wins (tie-break: smaller
+    period) — and because a smaller divisor's family is a superset, that is the
+    smallest true fundamental. Kasiski GCD support, when supplied, is folded in
+    as a corroboration multiplier.
+
+    Returns ``(fundamental_period, detail)``. ``fundamental_period`` is ``None``
+    only for an empty table. When there is no significant periodicity the naive
+    argmax is returned unchanged (``detail["folded"] is False``), so
+    monoalphabetic and other non-periodic inputs keep their prior behavior. The
+    input ``periodic_ic`` table is never mutated.
+    """
+    if not periodic_ic:
+        return None, {"reason": "no_periodic_table", "folded": False}
+
+    periods = sorted(periodic_ic)
+    # argmax with a smaller-period tie-break
+    argmax = max(periods, key=lambda k: (periodic_ic[k], -k))
+
+    if null_ic is None:
+        vals = sorted(periodic_ic.values())
+        m = len(vals)
+        null_ic = vals[m // 2] if m % 2 else 0.5 * (vals[m // 2 - 1] + vals[m // 2])
+
+    elev = {k: periodic_ic[k] - null_ic for k in periods}
+
+    base_detail: dict[str, Any] = {
+        "naive_best_period": argmax,
+        "null_ic": null_ic,
+        "elevated_periods": [k for k in periods if elev[k] > _HARMONIC_SIGNIF_MARGIN],
+    }
+
+    if elev[argmax] <= _HARMONIC_SIGNIF_MARGIN:
+        return argmax, {**base_detail, "folded": False,
+                        "reason": "no_significant_periodicity"}
+
+    def _cols(k: int) -> int:
+        return token_count // k if k else 0
+
+    def _rel(k: int) -> float:
+        c = _cols(k)
+        return min(1.0, c / _HARMONIC_MIN_RELIABLE_COLS) if c else 0.0
+
+    def _family(p: int) -> list[int]:
+        return [h * p for h in range(1, max_period // p + 1) if h * p in periodic_ic]
+
+    kas_max = max(kasiski_factors.values(), default=0) if kasiski_factors else 0
+
+    score: dict[int, float] = {}
+    valid: dict[int, bool] = {}
+    for p in periods:
+        fam = _family(p)
+        fam_elev = [max(0.0, elev[m]) for m in fam]
+        fam_max = max(fam_elev, default=0.0)
+        s = sum(max(0.0, elev[m]) * _rel(m) for m in fam)
+        if kas_max > 0:
+            s *= 1.0 + _HARMONIC_KASISKI_BONUS * (kasiski_factors.get(p, 0) / kas_max)
+        score[p] = s
+        valid[p] = elev[p] > 0 and (fam_max <= 0 or elev[p] >= _HARMONIC_FOLD_FRAC * fam_max)
+
+    candidates = [p for p in periods if valid[p] and score[p] > 0]
+    if not candidates:
+        return argmax, {**base_detail, "folded": False,
+                        "reason": "no_valid_harmonic_family"}
+
+    fundamental = max(candidates, key=lambda p: (score[p], -p))
+    kas_corroborates = bool(
+        kas_max > 0
+        and kasiski_factors.get(fundamental, 0) > 0
+        and kasiski_factors.get(fundamental, 0) >= 0.5 * kas_max
+    )
+    return fundamental, {
+        **base_detail,
+        "folded": fundamental != argmax,
+        "reason": "harmonic_fold" if fundamental != argmax else "argmax_is_fundamental",
+        "harmonic_family": _family(fundamental),
+        "harmonic_score": round(score[fundamental], 6),
+        "kasiski_corroborates": kas_corroborates,
+    }
+
+
 def compute_cipher_fingerprint(
     tokens: list[int],
     alphabet_size: int,
@@ -178,17 +286,22 @@ def compute_cipher_fingerprint(
             if valid_ics:
                 periodic_ic_dict[k] = sum(valid_ics) / len(valid_ics)
 
-    best_period: int | None = None
-    best_period_ic: float | None = None
-    if periodic_ic_dict:
-        best_period = max(periodic_ic_dict, key=lambda k: periodic_ic_dict[k])
-        best_period_ic = periodic_ic_dict[best_period]
-
-    # --- Kasiski ---
+    # --- Kasiski (computed before period selection so its GCDs corroborate) ---
     kasiski_gcds: dict[int, int] = {}
     kasiski_best: int | None = None
     if n >= _MIN_TOKENS_FOR_KASISKI:
         kasiski_gcds, kasiski_best = _kasiski_analysis(tokens, max_period=max_period)
+
+    # --- Fundamental period (harmonic folding, not naive argmax) ---
+    best_period: int | None = None
+    best_period_ic: float | None = None
+    period_detail: dict[str, Any] = {}
+    if periodic_ic_dict:
+        best_period, period_detail = estimate_fundamental_period(
+            periodic_ic_dict, n, max_period=max_period, kasiski_factors=kasiski_gcds,
+        )
+        if best_period is not None:
+            best_period_ic = periodic_ic_dict[best_period]
 
     # --- Doubled-digraph rate ---
     if n >= 2:
@@ -231,6 +344,7 @@ def compute_cipher_fingerprint(
         doubled_digraph_rate=doubled_digraph_rate,
         suspicion_scores=suspicion_scores,
         word_group_count=word_group_count,
+        period_detail=period_detail,
     )
 
     return CipherFingerprint(
@@ -583,8 +697,26 @@ def _compute_suspicion_scores(
             vig += 0.35  # strong recovery
         elif recovery > 0.005:
             vig += 0.15
-    # Kasiski corroboration
-    if kasiski_best is not None and best_period is not None and kasiski_best == best_period:
+    # Kasiski corroboration: full credit when Kasiski agrees with the reported
+    # period. Also give full credit for a harmonic relationship (one divides the
+    # other) — but ONLY when periodic recovery is already established, since
+    # Kasiski's raw best is often a sub-harmonic of the true fundamental. The
+    # recovery guard prevents small periods (which trivially divide) from
+    # over-crediting a non-periodic monoalphabetic cipher.
+    _strong_periodic = (
+        periodic_ic_reliable
+        and best_period_ic is not None
+        and (best_period_ic - ic) > 0.010
+        and best_period_ic >= lang_ic_ref - 0.015
+    )
+    _harmonic_related = (
+        kasiski_best is not None
+        and best_period is not None
+        and (best_period % kasiski_best == 0 or kasiski_best % best_period == 0)
+    )
+    if kasiski_best is not None and best_period is not None and (
+        kasiski_best == best_period or (_harmonic_related and _strong_periodic)
+    ):
         vig += 0.20
     elif kasiski_best is not None:
         vig += 0.05
@@ -655,6 +787,7 @@ def _format_natural_language_summary(
     doubled_digraph_rate: float,
     suspicion_scores: dict[str, float],
     word_group_count: int,
+    period_detail: dict[str, Any] | None = None,
 ) -> str:
     parts: list[str] = []
 
@@ -692,9 +825,28 @@ def _format_natural_language_summary(
 
     # Periodic / Kasiski
     _MIN_COLS_FOR_PERIODIC_SUMMARY = 25
+    period_detail = period_detail or {}
     if best_period is not None and best_period_ic is not None:
         col_size = token_count // best_period
         recovery = best_period_ic - ic
+        # Harmonic ladder: when the reported period was folded down from a
+        # sparser multiple, name the fundamental and its elevated multiples so
+        # the sparser (unreliable) higher multiple is not mistaken for the key.
+        if period_detail.get("folded"):
+            family = [m for m in period_detail.get("harmonic_family", []) if m != best_period]
+            naive = period_detail.get("naive_best_period")
+            # Only narrate the ladder when it is actually one: the naive peak
+            # must be a multiple of the fundamental and other multiples exist
+            # (review finding: a coprime argmax or singleton family would
+            # otherwise print a misdescription / empty list).
+            if family and naive and best_period and naive % best_period == 0:
+                fam_str = ", ".join(str(m) for m in family)
+                ladder = (
+                    f"Period {best_period} is the fundamental key period: its multiples "
+                    f"({fam_str}) are also elevated (a harmonic ladder), so the sparser "
+                    f"higher multiple (naive peak {naive}) is not the true period."
+                )
+                parts.append(ladder)
         if col_size < _MIN_COLS_FOR_PERIODIC_SUMMARY:
             parts.append(
                 f"Periodic IC found a peak at period {best_period} "
@@ -718,6 +870,13 @@ def _format_natural_language_summary(
                 parts.append(
                     f"Kasiski analysis corroborates period {kasiski_best} "
                     f"({top_count} repeated-trigram spacing(s) divisible by this value)."
+                )
+            elif best_period % kasiski_best == 0 or kasiski_best % best_period == 0:
+                fund_count = kasiski_gcds.get(best_period, 0)
+                parts.append(
+                    f"Kasiski's raw best period ({kasiski_best}) is a harmonic of the "
+                    f"fundamental {best_period} ({fund_count} spacing(s) divisible by "
+                    f"{best_period}); the two agree up to the harmonic ladder."
                 )
             else:
                 parts.append(

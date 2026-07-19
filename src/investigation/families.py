@@ -62,6 +62,10 @@ class FamilySpec:
     confusable_with: tuple[str, ...]  # symmetric confusable set
     notes: str
     min_tokens_diagnose: int
+    # Optional client-facing sequencing hint (display-only; never a score input).
+    # The panels cannot statically tell keyed from standard tableaux, so this is
+    # a routing suggestion, not evidence. Default empty for every family.
+    sequencing_hint: str = ""
 
 
 @dataclass(frozen=True)
@@ -311,6 +315,11 @@ _FAMILIES: tuple[FamilySpec, ...] = (
         (),
         "Periodic polyalphabetic over a keyed alphabet (Quagmire I-IV, Kryptos).",
         60,
+        sequencing_hint=(
+            "If a standard-tableau Vigenere-family search fails at the indicated "
+            "period, test a keyed-tableau/Quagmire search next before rejecting "
+            "the polyalphabetic family."
+        ),
     ),
     FamilySpec(
         "numeric_word_position", "Numeric — word position", "numeric_book_cipher", "subtype",

@@ -73,6 +73,7 @@ class FamilyDiagnosis:
     pending_discriminators: list[str] = field(default_factory=list)
     solver_status: str = ""
     coverage_status: str = "untested"   # ledger is INV-1
+    sequencing_hint: str = ""           # display-only routing hint (never a score input)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +86,7 @@ class FamilyDiagnosis:
             "pending_discriminators": self.pending_discriminators,
             "solver_status": self.solver_status,
             "coverage_status": self.coverage_status,
+            "sequencing_hint": self.sequencing_hint,
         }
 
 
@@ -297,6 +299,7 @@ def diagnose(
             counterevidence=list(counter[fam]),
             pending_discriminators=_pending_discriminators(fam, panel_status),
             solver_status=FAMILY_REGISTRY[fam].solver_status,
+            sequencing_hint=FAMILY_REGISTRY[fam].sequencing_hint,
         )
 
     subtype_by_parent: dict[str, list[FamilyDiagnosis]] = {}
@@ -412,6 +415,15 @@ def format_diagnosis(report: DiagnosisReport) -> str:
             if sub.score > 0:
                 sev = ", ".join(sub.evidence) if sub.evidence else "(none)"
                 lines.append(f"      subtype {sub.family:22s} {sub.score:.2f} [{sub.confidence}] ({sev})")
+                if sub.sequencing_hint:
+                    lines.append(f"        hint: {sub.sequencing_hint}")
+            elif sub.sequencing_hint and fd.confidence in ("strong", "moderate"):
+                # Sequencing hints are the point of zero-scored subtypes the
+                # panels cannot statically distinguish (keyed vs standard
+                # tableau): surface them whenever the PARENT family is live,
+                # or the human CLI never sees the routing advice (review
+                # finding 2; JSON/MCP clients always carried it).
+                lines.append(f"      subtype {sub.family}: {sub.sequencing_hint}")
     if report.modifiers:
         mods = ", ".join(f"{m.family}={m.score:.2f}" for m in report.modifiers)
         lines.append(f"  modifiers: {mods}")

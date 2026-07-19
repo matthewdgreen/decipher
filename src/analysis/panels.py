@@ -19,7 +19,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from analysis import ngram
-from analysis.cipher_id import _chi2_vs_uniform, _normalized_entropy, kasiski_report
+from analysis.cipher_id import (
+    _chi2_vs_uniform,
+    _normalized_entropy,
+    estimate_fundamental_period,
+    kasiski_report,
+)
 from analysis.frequency import LANGUAGE_LETTER_FREQS
 from analysis.ic import index_of_coincidence
 from analysis.language_guesser import LANGUAGE_IC_REFERENCES
@@ -113,22 +118,33 @@ def _english_monogram_prob(language: str) -> dict[str, float] | None:
     return {L: ref[L] / total for L in ref}
 
 
-def _best_period_ic(tokens: list[int], max_period: int = 26) -> float:
-    """Max over periods k>=2 of the mean IC of every-k-th-token streams.
+def _periodic_ic_table(tokens: list[int], max_period: int = 26) -> dict[int, float]:
+    """Per-period mean IC of every-k-th-token streams, k>=2.
 
     Mirrors the periodic-IC block of ``cipher_id.compute_cipher_fingerprint``;
-    ``index_of_coincidence`` ignores the alphabet-size argument, so the value is
-    identical to ``fingerprint.best_period_ic``.
+    ``index_of_coincidence`` ignores the alphabet-size argument, so the values
+    are identical to ``fingerprint.periodic_ic``.
     """
     n = len(tokens)
     uniq = len(set(tokens))
-    best = 0.0
+    table: dict[int, float] = {}
     for k in range(2, min(max_period + 1, n // 4 + 2)):
         streams = [tokens[i::k] for i in range(k)]
         ics = [index_of_coincidence(s, max(uniq, 26)) for s in streams if len(s) >= 6]
         if ics:
-            best = max(best, sum(ics) / len(ics))
-    return best
+            table[k] = sum(ics) / len(ics)
+    return table
+
+
+def _best_period_ic(tokens: list[int], max_period: int = 26) -> float:
+    """Max over periods k>=2 of the mean IC of every-k-th-token streams.
+
+    This is the significance statistic for "is there ANY periodic structure"
+    (the shuffle-null tests it); it is independent of which integer period the
+    harmonic folder ultimately reports.
+    """
+    table = _periodic_ic_table(tokens, max_period=max_period)
+    return max(table.values(), default=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -284,9 +300,19 @@ def panel_periodicity(tokens, *, alphabet_size, alphabet_class, language,
         return PanelResult("periodicity", "not_computable", reason="too_few_tokens")
     toklist = list(tokens)
     ic = index_of_coincidence(toklist, max(alphabet_size, len(set(toklist))))
-    bpi = _best_period_ic(toklist, max_period=max_period)
+    table = _periodic_ic_table(toklist, max_period=max_period)
+    bpi = max(table.values(), default=0.0)
     lang_ic = _lang_ic_ref(language)
     recovery = bpi - ic
+
+    # Fundamental period via harmonic folding (raw table left untouched). Kasiski
+    # factor counts reconcile the folded estimate; harmonic folding never
+    # changes the significance statistic ``bpi`` or the atom-firing conditions.
+    kas = kasiski_report(toklist, max_period=max_period)
+    kas_factors = {int(k): v for k, v in kas.get("factor_counts", {}).items()}
+    fundamental, fund_detail = estimate_fundamental_period(
+        table, n, max_period=max_period, kasiski_factors=kas_factors or None,
+    )
 
     atoms: list[dict[str, Any]] = []
     reliability = "low"
@@ -305,7 +331,8 @@ def panel_periodicity(tokens, *, alphabet_size, alphabet_class, language,
                 ["polyalphabetic_periodic"],
                 ["monoalphabetic_substitution", "transposition"],
                 reliability="high",
-                measurement={"best_period_ic": bpi, "ic": ic, "recovery": recovery},
+                measurement={"best_period_ic": bpi, "ic": ic, "recovery": recovery,
+                             "fundamental_period": fundamental},
                 baseline=baseline,
                 interpretation="Best-period IC recovers toward the language reference; "
                                "shuffle-null rejects at p<=0.05.",
@@ -316,6 +343,10 @@ def panel_periodicity(tokens, *, alphabet_size, alphabet_class, language,
             "ic": ic, "best_period_ic": bpi, "recovery": recovery,
             "structural_recovery": structural_ok,
             "shuffle_p": baseline["p_value"] if baseline else None,
+            "periodic_ic_table": {str(k): v for k, v in table.items()},
+            "fundamental_period": fundamental,
+            "naive_best_period": fund_detail.get("naive_best_period"),
+            "fundamental_detail": fund_detail,
         },
         atoms=atoms,
         reliability=reliability,
