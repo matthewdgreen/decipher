@@ -202,6 +202,72 @@ def test_experiment_submit_surface_advertises_quagmire3_shotgun():
     }
 
 
+# ------------------------------------------------------------- manifest fold
+# I-0 pin: the MCP tools/list projection must stay byte-identical after the
+# service-layer extraction, and the operation manifest must be the single
+# source of truth (TOOL_CLASSES folded in, no parallel drift).
+_EXPECTED_TOOL_ORDER = [
+    "investigation_start", "investigation_list", "investigation_status",
+    "observe_overview", "observe_diagnosis", "decode_show",
+    "hypothesis_branch_create", "hypothesis_branch_update",
+    "hypothesis_branch_reject", "hypothesis_next_steps",
+    "candidate_list", "candidate_show", "experiment_submit",
+    "experiment_collect", "reading_record", "comparison_record",
+    "repair_hypotheses_test", "repair_transaction",
+    "request_independent_verification", "branch_adjudicate",
+    "act_set_model_variant", "meta_declare_solution", "meta_declare_unsolved",
+]
+_EXPECTED_CLI_VERBS = {
+    "investigation_start": "start", "investigation_list": "list",
+    "investigation_status": "status", "observe_overview": "overview",
+    "observe_diagnosis": "diagnose", "decode_show": "decode",
+    "hypothesis_branch_create": "branch-create",
+    "hypothesis_branch_update": "branch-update",
+    "hypothesis_branch_reject": "branch-reject",
+    "hypothesis_next_steps": "next-steps", "candidate_list": "candidates",
+    "candidate_show": "candidate", "experiment_submit": "experiment-submit",
+    "experiment_collect": "experiment-collect", "reading_record": "reading-record",
+    "comparison_record": "comparison-record", "repair_hypotheses_test": "repair-test",
+    "repair_transaction": "repair-transaction",
+    "request_independent_verification": "verify",
+    "branch_adjudicate": "adjudicate", "act_set_model_variant": "set-model-variant",
+    "meta_declare_solution": "declare-solution",
+    "meta_declare_unsolved": "declare-unsolved",
+}
+
+
+def test_manifest_projection_and_fold_are_pinned():
+    from investigation_service import manifest
+    from mcp_server import tools
+
+    # tools/list projection: exact order, exact key set, exact count.
+    rendered = tools.render_tool_list()
+    assert [t["name"] for t in rendered] == _EXPECTED_TOOL_ORDER
+    for t in rendered:
+        assert set(t) == {"name", "description", "inputSchema"}
+    # Idempotent + stable across the tools shim and the manifest projection.
+    assert rendered == manifest.render_tool_list()
+    assert rendered == tools.render_tool_list()
+
+    # TOOL_CLASSES is DERIVED from the manifest (fold, not a parallel map).
+    assert tools.TOOL_CLASSES == {op.name: op.operation_class for op in manifest.OPERATIONS}
+    assert set(tools.TOOL_NAMES) == set(_EXPECTED_TOOL_ORDER)
+
+    # Friendly CLI verbs are explicit public metadata on each OperationSpec.
+    assert {op.name: op.cli_verb for op in manifest.OPERATIONS} == _EXPECTED_CLI_VERBS
+
+    # External-effect metadata: only verify is unconditional, only repair is
+    # conditional, everything else is never.
+    effects = {op.name: op.external_effect for op in manifest.OPERATIONS}
+    assert effects["request_independent_verification"] == manifest.ExternalEffect.UNCONDITIONAL
+    assert effects["repair_transaction"] == manifest.ExternalEffect.CONDITIONAL
+    assert all(
+        e == manifest.ExternalEffect.NEVER
+        for n, e in effects.items()
+        if n not in {"request_independent_verification", "repair_transaction"}
+    )
+
+
 # ---------------------------------------------------------- verify + gates
 def test_keyless_verify_and_declare_blocked(tmp_path):
     server = make_server(tmp_path)
