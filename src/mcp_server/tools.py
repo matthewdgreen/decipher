@@ -113,7 +113,10 @@ MCP_TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "name": "investigation_list",
         "description": (
             "List stored investigations (newest updated first): id, label, "
-            "status, language, size, and whether a terminal record exists."
+            "status, language, size, and whether a terminal record exists. "
+            "Also reports server_code (git_head/dirty/started_at of the code "
+            "THIS server process runs) — compare git_head to `git rev-parse "
+            "--short HEAD` after a pull; on mismatch, restart the session."
         ),
         "input_schema": {
             "type": "object",

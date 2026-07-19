@@ -153,3 +153,15 @@ def test_stdout_purity(client):
 def test_eof_exits_clean(client):
     _init(client)
     assert client.close() == 0
+
+
+def test_investigation_list_reports_server_code(client):
+    _init(client)
+    r = client.request({"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                        "params": {"name": "investigation_list", "arguments": {}}})
+    body = json.loads(r["result"]["content"][0]["text"])
+    sc = body["server_code"]
+    assert set(sc) >= {"git_head", "dirty", "started_at"}
+    # dev/CI checkouts are git repos; the value is the live process's code rev
+    assert sc["git_head"], "expected a short git head in a git checkout"
+    assert isinstance(sc["dirty"], bool)

@@ -34,11 +34,26 @@ client re-launches the now-healthy server.
 (override with `--registry-dir` or `$DECIPHER_MCP_REGISTRY`). Each directory is
 self-contained and auditable; the server never garbage-collects.
 
+**Picking up new code (sync & freshness, from inside a session):** when this
+clone may be behind (e.g. a fix landed elsewhere), run — or ask the agent to
+run — these two shell commands, then verify, then restart once if needed:
+
+    git pull --ff-only
+    sh scripts/bootstrap.sh    # fingerprint short-circuits when nothing changed
+
+Verification: call `investigation_list` and compare its `server_code.git_head`
+against `git rev-parse --short HEAD`. Match → the running server already has
+the new code (it launched after the pull); carry on. Mismatch → the server
+process predates the pull: restart the client session (the ONE step that
+cannot be done from inside it) and re-check. This turns "did the changes
+take?" into a one-call assertion instead of a guess.
+
 **Recovery table:**
 
 | Symptom | Fix |
 |---|---|
 | Launcher reports `missing_venv` / `bootstrap_required` | `sh scripts/bootstrap.sh`, then reconnect. |
+| Server behavior predates a landed fix | Sync & freshness recipe above (`git pull` → bootstrap → `investigation_list` `server_code` check → restart session iff mismatch). |
 | Project not trusted (Codex) | Trust the project, then reload so `.codex/config.toml` is read. |
 | No API key | Everything works except independent verification; see §4 and the keyless walkthrough in the spec (Part 7.3). |
 | Stale build (deps/kernels changed) | `sh scripts/bootstrap.sh` (the fingerprint short-circuits when nothing changed). |

@@ -58,6 +58,42 @@ _HANDLE_TOOL_MAP = {
 }
 _MAX_CIPHERTEXT = 200_000
 
+_SERVER_CODE_INFO: dict | None = None
+
+
+def _server_code_info() -> dict:
+    """Git revision of the code this server process is actually running.
+
+    Computed once per process (the answer cannot change without a restart —
+    that is the point). Lets a client verify, from inside a session, that a
+    freshly pulled fix is live: compare ``git_head`` against
+    ``git rev-parse --short HEAD`` in the working clone; a mismatch or a
+    stale ``started_at`` means the server predates the pull and the session
+    must be restarted. Degrades to nulls outside a git checkout.
+    """
+    global _SERVER_CODE_INFO
+    if _SERVER_CODE_INFO is None:
+        import subprocess
+        repo_root = Path(__file__).resolve().parents[2]
+        head = dirty = None
+        try:
+            head = subprocess.run(
+                ["git", "rev-parse", "--short", "HEAD"], cwd=repo_root,
+                capture_output=True, text=True, timeout=5,
+            ).stdout.strip() or None
+            dirty = bool(subprocess.run(
+                ["git", "status", "--porcelain", "--untracked-files=no"],
+                cwd=repo_root, capture_output=True, text=True, timeout=5,
+            ).stdout.strip())
+        except Exception:  # noqa: BLE001 - non-git installs are fine
+            pass
+        _SERVER_CODE_INFO = {
+            "git_head": head,
+            "dirty": dirty,
+            "started_at": time.time(),
+        }
+    return _SERVER_CODE_INFO
+
 
 class DecipherMCPServer:
     """The handler the protocol loop dispatches into."""
@@ -357,7 +393,7 @@ class DecipherMCPServer:
             stub = {k: v for k, v in meta.items() if k != "terminal"}
             stub["has_terminal"] = meta.get("terminal") is not None
             stubs.append(stub)
-        return {"investigations": stubs}
+        return {"investigations": stubs, "server_code": _server_code_info()}
 
     # ------------------------------------------------------------------- reads
     def _status_body(self, runtime: InvestigationRuntime, revision: int) -> dict:
