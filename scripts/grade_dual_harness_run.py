@@ -91,6 +91,25 @@ def grade_investigation(inv_id: str, answer: dict | None, case_id: str) -> dict:
     for br in state.get("workspace", {}).get("branches", []):
         key = {int(k): v for k, v in (br.get("key") or {}).items()}
         row = {"branch": br.get("name"), "n_key": len(key)}
+        # Transform/Quagmire installs carry the decode in metadata, not a
+        # token-key dict — grade metadata decoded_text when no key exists.
+        meta_decode = (br.get("metadata") or {}).get("decoded_text")
+        if not key and meta_decode and answer is not None:
+            truth_letters, truth_spaced = _truth_from_answer(answer)
+            if truth_spaced:
+                acc, wa = _score_both(meta_decode, truth_spaced, case_id)
+            else:
+                acc = _char_acc(_letters(meta_decode), truth_letters)
+                wa = None
+            row["char_accuracy"] = round(acc, 4) if acc is not None else None
+            row["word_accuracy"] = round(wa, 4) if wa is not None else None
+            row["source"] = "metadata_decoded_text"
+            if acc is not None and (best["char_accuracy"] is None or acc > best["char_accuracy"]):
+                best = {"branch": br.get("name"), "char_accuracy": round(acc, 4),
+                        "word_accuracy": row.get("word_accuracy"),
+                        "source": "metadata_decoded_text"}
+            branches.append(row)
+            continue
         if key and answer is not None:
             truth_letters, truth_spaced = _truth_from_answer(answer)
             order = br.get("token_order") or list(range(len(tokens)))
