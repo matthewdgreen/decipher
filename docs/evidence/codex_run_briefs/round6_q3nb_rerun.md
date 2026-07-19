@@ -20,6 +20,12 @@ tool surface itself.)
 
 ## Instructions
 
+0. FRESHNESS CHECK: this run requires a server current as of 2026-07-18.
+   Confirm the `experiment_submit` tool schema advertises experiment type
+   `quagmire3_shotgun`. If it does not, your MCP server process is stale —
+   first `git pull` in the clone the Codex session runs in, then restart
+   the Codex app/session (a long-lived window also keeps an old stdio
+   server alive) and check again before proceeding.
 1. If the `decipher` MCP server is not connected, run `sh scripts/bootstrap.sh`,
    reconnect, and retry.
 2. Call `investigation_start` with the ciphertext below inline (language

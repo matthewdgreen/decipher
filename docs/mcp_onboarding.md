@@ -68,7 +68,15 @@ your instrument bench and evidence store.
 - **Long solver work is an experiment.** `experiment_submit` runs the no-LLM
   solver stack in the background; collect and, if good, install with
   `experiment_collect`. Never resubmit an identical config — duplicates are
-  suppressed.
+  suppressed. Experiment types: `automated_solver` (family-routed general
+  stack — substitution, homophonic, plain periodic, transform screens) and
+  `quagmire3_shotgun` (dedicated Rust keyword-alphabet search for
+  Quagmire/keyed-tableau ciphers; use it when plain Vigenère-family search
+  fails on a strongly periodic cipher — `automated_solver` cannot solve that
+  family and will reject `cipher_system` hints naming it). If
+  `experiment_submit` does not advertise `quagmire3_shotgun`, your server
+  predates it — `git pull` this clone and restart the client session so a
+  current server launches.
 - **Read, then repair, then reverify.** When a candidate partly reads: record
   your reading (`reading_record`), compile concrete word hypotheses
   (`repair_hypotheses_test`), then ask the host to validate and install one
