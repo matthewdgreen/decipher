@@ -198,17 +198,29 @@ choice in the impl notes.
 
 ## 3. Slice B — router: route on diagnosis, not boundaries
 
-### 3.1 `_select_solver_path` (`src/automated/runner.py:2802`)
+**STATE AFTER C.1 (read before implementing):** Slice C.1 already added the
+EXPLICIT cipher_system-NAME dispatch for `composite_substitution_transposition`
+in `_select_solver_path` (placed BEFORE `is_pure_transposition`, guarded to
+require both "substitution" and "transposition" tokens so real pure-transposition
+names are unaffected; `test_columnar_name_still_pure_transposition` +
+`test_unlabelled_composite_does_not_auto_route_here` pin this). Slice B adds the
+CONTENT-heuristic auto-route as a SEPARATE branch — do not disturb the name
+dispatch. Also note C.1 confirmed `alphabet_size > 26 → applicable=False` in the
+peel (homophonic composites honest-fail safely), so the router's alphabet guard
+below is corroborated by the solver.
+
+### 3.1 `_select_solver_path` (`src/automated/runner.py`)
 
 The boundary heuristics (`word_groups <= 1 and alphabet_size > 20 → homophonic`)
 are the F1/F2 hijack. Change the precedence so a **content signal** can override
 the boundary default:
 
-1. Explicit `cipher_system` name routing stays first (unchanged).
+1. Explicit `cipher_system` name routing stays first (already includes the
+   composite name dispatch from C.1).
 2. Before the `word_groups <= 1` homophonic default, consult
    `transposition_suspicion`: if `order_layer_suspected` is True on an
-   A-Z-sized alphabet, route to a new `composite_substitution_transposition`
-   route (Slice C solver) instead of homophonic. Guard on `alphabet_size <=
+   A-Z-sized alphabet, route to the `composite_substitution_transposition`
+   route (the C.1 solver) instead of homophonic. Guard on `alphabet_size <=
    pt_alpha.size` — a genuinely dense homophonic inventory (>26) still routes
    homophonic (the composite peel targets monoalphabetic substitution).
 3. The `alphabet_size > pt_alpha.size → homophonic` rule stays for truly
@@ -236,7 +248,29 @@ unchanged.
 The capability. After a substitution solve produces a high-letter-quality,
 word-empty stream, screen transpositions over the DECODED stream.
 
-### 4.1 Automated route (`src/automated/runner.py`)
+### 4.1 Automated route (`src/automated/runner.py`) — **LANDED**
+
+**IMPLEMENTED 2026-07-19 (Fable review LAND; round-4 solves 100% end-to-end).
+The peel ORDER below is corrected — the original "solve substitution first" was
+a cryptanalytic error:**
+- **Peel the TRANSPOSITION first, then substitute.** You cannot solve the
+  substitution on the raw composite stream: under the correct key K, decoding
+  gives `sub⁻¹(transpose(sub(P))) = transpose(P)` (substitution commutes with
+  the positional permutation), which is scrambled non-language text — so the
+  true key is not even a local optimum of a quadgram anneal, and solving-first
+  returns a near-random key (score ≈ −15). Detection and the columnar peel both
+  rank by the substitution-INVARIANT `ngram_structure_ratio` (coincidence is
+  relabeling-invariant, so it works on still-substituted text); ONLY after the
+  order layer is peeled is the substitution solved on the de-transposed stream.
+  This is exactly the isolation-test order.
+- Implemented as `_run_composite_substitution_transposition` +
+  `_detect_residual_order` / `_peel_order_layer` / `_solve_substitution_with_rescue`
+  in `runner.py`; the shared `analysis/columnar_search.py` (below) does the peel
+  with the structure-ratio scorer. Reachable via an explicit cipher_system-name
+  dispatch in `_select_solver_path` (the CONTENT-heuristic auto-route is Slice B).
+
+*(Original step list retained below for rationale; the ordering is superseded by
+the above.)*
 
 New solver path `composite_substitution_transposition`:
 1. Run the plain bijective substitution anneal (existing

@@ -828,6 +828,13 @@ def _run_automated_impl(
                 solver_hints=solver_hints,
             )
             steps.append(step)
+        elif routing["route"] == "composite_substitution_transposition":
+            solver, key, decryption, step = _run_composite_substitution_transposition(
+                cipher_text,
+                language,
+                cipher_id=cipher_id,
+            )
+            steps.append(step)
         else:
             solver, key, decryption, step = _run_substitution(cipher_text, language)
             steps.append(step)
@@ -2820,6 +2827,25 @@ def _select_solver_path(
             and not any(token in cipher_name for token in ("homophonic", "zodiac", "z340", "zodiac340"))
         )
     )
+    # Explicit substitution+transposition composite name → the peel-and-solve
+    # route (Slice C.1). This is the EXPLICIT-name entry only: the content-signal
+    # auto-selection that sends an *unlabelled* no-boundary composite here (via
+    # transposition_suspicion / order_layer_suspected) is Slice B and is NOT wired
+    # in this slice. Checked before is_pure_transposition so a name carrying both
+    # "substitution" and "transposition" is not captured as a pure transposition.
+    is_composite_sub_transp = (
+        "substitution_transposition" in cipher_name
+        or "sub_transp" in cipher_name
+        or ("composite" in cipher_name and "transposition" in cipher_name)
+        or ("substitution" in cipher_name and "transposition" in cipher_name)
+    )
+    if is_composite_sub_transp:
+        return {
+            "route": "composite_substitution_transposition",
+            "solver": "composite_substitution_transposition_peel",
+            "reason": f"cipher_system={cipher_system or 'unknown'}",
+        }
+
     if any(token in cipher_name for token in ("vigenere", "vigenère", "beaufort", "gronsfeld", "polyalphabetic", "quagmire", "quag")):
         return {
             "route": "periodic_polyalphabetic",
@@ -7178,6 +7204,315 @@ def _run_substitution_continuous(
     session.set_full_key(final_key)
     decryption = session.apply_key()
     return "native_substitution_continuous_anneal", final_key, decryption, step
+
+
+# ---------------------------------------------------------------------------
+# Composite substitution + transposition peel-and-solve (spec §4.1, Slice C.1)
+# ---------------------------------------------------------------------------
+
+def _az_letters(cipher_text: CipherText) -> str:
+    """Uppercase A-Z ciphertext symbols in token order (drops non-A-Z symbols)."""
+    out: list[str] = []
+    for token in cipher_text.tokens:
+        sym = cipher_text.alphabet.symbol_for(token).upper()
+        if len(sym) == 1 and "A" <= sym <= "Z":
+            out.append(sym)
+    return "".join(out)
+
+
+def _detect_residual_order(
+    cipher_text: CipherText, language: str
+) -> dict[str, Any]:
+    """Substitution-INVARIANT residual-order detector (reuses the Slice A signal).
+
+    The composite gate is ``ngram.ngram_structure_ratio`` — NOT a by-letter
+    language score. A monoalphabetic substitution only relabels letters so this
+    ratio is unchanged by it; a transposition collapses it toward 1.0. So a low
+    ratio on the RAW cipher means "an order (transposition) layer is present over
+    a substitution" without needing to solve the substitution first (which is
+    impossible on transposed text — the frequency/quadgram attack has no adjacency
+    structure to lock onto). Thresholds come from the Slice A panel constants.
+    """
+    from analysis.panels import STRUCTURE_RATIO_ABSENT, STRUCTURE_MIN_TOKENS
+
+    pt_alpha = _plaintext_alphabet(language)
+    letters = _az_letters(cipher_text)
+    # Applicable only to an A-Z-sized monoalphabetic inventory. A dense (>26)
+    # homophonic alphabet is out of scope for this peel (it targets monoalphabetic
+    # substitution), and text with non-A-Z symbols is not the composite class.
+    applicable = (
+        cipher_text.alphabet.size <= pt_alpha.size
+        and len(letters) == len(cipher_text.tokens)
+        and len(letters) >= STRUCTURE_MIN_TOKENS
+    )
+    ratio = ngram.ngram_structure_ratio(letters, 2) if letters else 0.0
+    is_composite = bool(applicable and ratio < STRUCTURE_RATIO_ABSENT)
+    if not applicable:
+        reason = (
+            "alphabet exceeds plaintext size or too few A-Z letters — "
+            "peel not applicable"
+        )
+    elif is_composite:
+        reason = "structure ratio below threshold — residual order layer present"
+    else:
+        reason = "structure ratio above threshold — no residual order layer"
+    return {
+        "is_composite": is_composite,
+        "applicable": applicable,
+        "structure_ratio": round(ratio, 4),
+        "structure_ratio_absent_threshold": STRUCTURE_RATIO_ABSENT,
+        "min_tokens": STRUCTURE_MIN_TOKENS,
+        "letter_count": len(letters),
+        "reason": reason,
+    }
+
+
+def _solve_substitution_with_rescue(
+    cipher_text: CipherText, language: str, cipher_id: str
+) -> tuple[str, dict[int, int], str, list[dict[str, Any]]]:
+    """Full substitution solve incl. the best-basin rescue restarts.
+
+    Mirrors the substitution branch in ``_run_automated_impl`` (bare
+    ``_run_substitution`` alone is unreliable for exact recovery on no-boundary
+    English; the rescue restarts close that gap).
+    """
+    solver, key, decryption, step = _run_substitution(cipher_text, language)
+    steps = [step]
+    rescue = _maybe_rescue_substitution_run(
+        cipher_text=cipher_text,
+        language=language,
+        cipher_id=cipher_id,
+        initial_solver=solver,
+        initial_key=key,
+        initial_decryption=decryption,
+        initial_step=step,
+    )
+    if rescue is not None:
+        steps.append(rescue["step"])
+        if rescue["selected_attempt_index"] is not None:
+            solver = rescue["solver"]
+            key = rescue["key"]
+            decryption = rescue["decryption"]
+    return solver, key, decryption, steps
+
+
+def _peel_order_layer(
+    letters: str, language: str
+) -> dict[str, Any] | None:
+    """Screen keyed-columnar + geometric un-transpositions of ``letters``.
+
+    Ranks candidates by the substitution-INVARIANT structure ratio (the correct
+    un-transposition restores adjacency even though the letters are still
+    substituted). Returns the best finalist as a dict, or ``None`` if nothing beat
+    the identity. Firewall: ciphertext-only; the scorer is a shipped statistic.
+    """
+    from analysis.columnar_search import (
+        ColumnarSearchConfig,
+        make_structure_ratio_scorer,
+        search_keyed_columnar,
+    )
+
+    scorer = make_structure_ratio_scorer(2)
+    identity_score = scorer(letters)
+    best: dict[str, Any] | None = None
+
+    # --- keyword-columnar peel (the F2 gap the geometric screen cannot cover) ---
+    # Widths up to 8 are exhaustive (guaranteed recovery — the round-4 class);
+    # wider widths use a lighter hill-climb budget to keep the peel fast (the
+    # exhaustive-width recall is unaffected).
+    columnar = search_keyed_columnar(
+        letters,
+        scorer,
+        config=ColumnarSearchConfig(
+            min_width=2, max_width=12, restarts=24, max_no_improve=200, top_n=5
+        ),
+    )
+    for finalist in columnar:
+        if finalist.score <= identity_score:
+            continue
+        if best is None or finalist.score > best["structure_ratio"]:
+            best = {
+                "kind": "columnar",
+                "structure_ratio": finalist.score,
+                "column_count": finalist.column_count,
+                "column_order": list(finalist.column_order),
+                "keyword": finalist.keyword,
+                "method": finalist.method,
+                "decoded_stream": finalist.decoded_stream,
+            }
+
+    # --- geometric screen (cheap; catches route/rail composites) ---
+    # Consulted per spec §4.1: it will not win on keyed columnar (that is the
+    # F2 gap the columnar search above closes), but it covers route/rail order
+    # layers. Re-ranked here by the SAME substitution-invariant metric so a
+    # geometric transform can only win if it genuinely restores adjacency.
+    try:
+        from analysis.pure_transposition import screen_pure_transposition
+
+        screen = screen_pure_transposition(
+            CipherText(
+                raw=letters,
+                alphabet=Alphabet.standard_english(),
+                source="composite_peel",
+                separator=None,
+            ),
+            language=language,
+            profile="small",
+            top_n=10,
+        )
+        for row in screen.get("top_candidates") or []:
+            plaintext = str(row.get("plaintext") or "")
+            if not plaintext:
+                continue
+            ratio = make_structure_ratio_scorer(2)(plaintext)
+            if ratio <= identity_score:
+                continue
+            if best is None or ratio > best["structure_ratio"]:
+                best = {
+                    "kind": "geometric",
+                    "structure_ratio": ratio,
+                    "family": row.get("family"),
+                    "pipeline": row.get("pipeline"),
+                    "method": "pure_transposition_screen",
+                    "decoded_stream": plaintext,
+                }
+    except Exception as exc:  # noqa: BLE001 — never let the screen break the peel
+        if best is not None:
+            best["geometric_screen_error"] = str(exc)
+
+    return best
+
+
+def _run_composite_substitution_transposition(
+    cipher_text: CipherText,
+    language: str,
+    cipher_id: str = "cli",
+) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+    """Peel-and-solve for a monoalphabetic substitution THEN transposition.
+
+    Pipeline (spec §4.1, empirically corrected 2026-07-19):
+
+    1. Detect a residual order layer with the substitution-invariant structure
+       ratio (no substitution solve needed — see below). If the cipher is NOT a
+       composite, solve the plain bijective substitution on the raw cipher and
+       return that as-is.
+    2. Otherwise PEEL the order layer over the RAW cipher letters, ranking un-
+       transpositions by the substitution-invariant structure ratio, then solve
+       the substitution on the recovered (still-substituted) monoalphabetic stream.
+
+    Ordering note: substitution-then-transposition ENcryption means DEcryption is
+    transposition-peel then substitution-invert. Two facts make the peel-first
+    order both correct and necessary here. (a) Substitution is position-independent
+    and commutes with the transposition, so un-transposing the raw cipher yields a
+    clean monoalphabetic cipher ``subst(P)`` that a normal frequency/quadgram
+    substitution attack solves. (b) The reverse order — solving substitution on the
+    raw (transposed) cipher first — is *impossible*: transposed text has no
+    adjacency structure for a quadgram attack to lock onto, so the anneal returns a
+    near-random key and no reordering of that stream is language-scorable
+    (empirically verified). The peel is therefore ranked by the substitution-
+    INVARIANT structure ratio (via the pluggable ``columnar_search`` scorer), NOT a
+    by-letter language model, which is blind to a substituted transposition.
+    Firewall: ciphertext-only; no ground truth enters detection, peel, or solve.
+    """
+    started = time.time()
+    letters = _az_letters(cipher_text)
+    word_set = _composite_word_set(language)
+
+    # Detection is substitution-INVARIANT (structure ratio), so it needs no
+    # substitution solve. That matters: solving the substitution on the raw
+    # (transposed) cipher is not just useless but harmful — it cannot converge on
+    # transposed text, and running it perturbs the shared solver RNG before the
+    # real solve on the peeled stream. So the baseline substitution solve runs
+    # ONLY on the non-composite branch (where it is the answer).
+    residual = _detect_residual_order(cipher_text, language)
+
+    def _return_substitution(outcome: str) -> tuple[str, dict[int, int], str, dict[str, Any]]:
+        base_solver, base_key, base_decryption, base_steps = _solve_substitution_with_rescue(
+            cipher_text, language, cipher_id
+        )
+        base_dict_rate = (
+            dictionary.score_plaintext(base_decryption, word_set)
+            if base_decryption and word_set
+            else 0.0
+        )
+        step = {
+            "name": "composite_substitution_transposition",
+            "solver": "composite_substitution_transposition_peel",
+            "outcome": outcome,
+            "residual_order": residual,
+            "substitution": {
+                "solver": base_solver,
+                "key": {str(k): int(v) for k, v in base_key.items()},
+                "dict_rate": round(base_dict_rate, 4),
+                "steps": base_steps,
+            },
+            "elapsed_seconds": round(time.time() - started, 3),
+        }
+        return base_solver, base_key, base_decryption, step
+
+    if not residual["is_composite"]:
+        return _return_substitution("no_residual_order_returned_substitution")
+
+    # --- Composite: peel the order layer, then solve substitution on the stream ---
+    peel = _peel_order_layer(letters, language)
+    if peel is None:
+        # No un-transposition beat the identity — fall back to a substitution solve.
+        return _return_substitution("peel_found_no_order_layer_returned_substitution")
+
+    peeled_stream = peel["decoded_stream"]
+    peeled_cipher = CipherText(
+        raw=peeled_stream,
+        alphabet=Alphabet.standard_english(),
+        source="composite_peel",
+        separator=None,
+    )
+    sub_solver, sub_key, decryption, sub_steps = _solve_substitution_with_rescue(
+        peeled_cipher, language, cipher_id
+    )
+    final_dict_rate = (
+        dictionary.score_plaintext(decryption, word_set)
+        if decryption and word_set
+        else 0.0
+    )
+
+    # Record BOTH layers (spec §4.1 step 4): substitution key + transposition key.
+    transposition_record = {
+        "kind": peel.get("kind"),
+        "method": peel.get("method"),
+        "structure_ratio": round(float(peel.get("structure_ratio", 0.0)), 4),
+    }
+    if peel.get("kind") == "columnar":
+        transposition_record.update({
+            "column_count": peel.get("column_count"),
+            "column_order": peel.get("column_order"),
+            "keyword": peel.get("keyword"),
+        })
+    else:
+        transposition_record.update({
+            "family": peel.get("family"),
+            "pipeline": peel.get("pipeline"),
+        })
+
+    step = {
+        "name": "composite_substitution_transposition",
+        "solver": "composite_substitution_transposition_peel",
+        "outcome": "peeled_and_solved",
+        "residual_order": residual,
+        "transposition": transposition_record,
+        "substitution": {
+            "solver": sub_solver,
+            "key": {str(k): int(v) for k, v in sub_key.items()},
+            "dict_rate": round(final_dict_rate, 4),
+            "steps": sub_steps,
+        },
+        "elapsed_seconds": round(time.time() - started, 3),
+    }
+    return "composite_substitution_transposition_peel", sub_key, decryption, step
+
+
+def _composite_word_set(language: str) -> set[str]:
+    path = dictionary.get_dictionary_path(language)
+    return dictionary.load_word_set(path) if path else set()
 
 
 def _frequency_key(
