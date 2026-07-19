@@ -16,6 +16,7 @@ import os
 import random
 import threading
 import time
+import warnings
 import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
@@ -7611,13 +7612,72 @@ def _word_list(language: str) -> list[str]:
 def _homophonic_model(
     language: str,
     word_list: list[str],
-) -> tuple[homophonic.ContinuousNGramModel, str]:
+) -> tuple[Any, str]:
+    """Resolve a continuous n-gram scorer for the substitution/homophonic anneal.
+
+    Tiers, strongest first:
+      1. The local Zenith CSV model (proprietary, not redistributed) when present
+         — highest quality for those who have it.
+      2. The BUNDLED, redistributable binary n-gram model
+         (``models/ngram5_<lang>.bin`` via the model registry, respecting env
+         pins/variants) — ships in the repo so a FRESH CLONE solves without the
+         Zenith model. Previously this tier was missing, so any clone lacking
+         the Zenith CSV silently dropped to the weak word-list model (tier 3),
+         which fails composite/substitution solves (fresh-clone regression).
+      3. The word-list fallback — a WEAK last resort; warns loudly.
+    """
+    # Tier 1: local Zenith CSV (English only; the CSV is an English release).
     candidate = _default_homophonic_model_path() if language == "en" else None
     if candidate and candidate.exists():
         return (
             homophonic.load_zenith_csv_model(candidate, order=5, max_ngrams=3_000_000),
             "Using local Zenith continuous n-gram model.",
         )
+    # Tier 2: bundled binary n-gram model (any language the registry resolves).
+    try:
+        bin_path = model_registry.resolve_language_model(language)
+        if bin_path is not None and Path(bin_path).exists():
+            from analysis.zenith_solver import load_zenith_binary_model
+
+            zmodel = load_zenith_binary_model(bin_path)
+            # The anneal scores UPPERCASE A-Z grams, but the bundled binary
+            # models use a lowercase alphabet — case-fold at lookup so grams
+            # actually hit. Assert the assumption so a future model over a
+            # different alphabet fails LOUDLY instead of silently flooring every
+            # gram (the subtle bug this fix originally hit).
+            if zmodel.alphabet != zmodel.alphabet.lower():
+                raise ValueError(
+                    f"binary model {Path(bin_path).name} has a non-lowercase "
+                    f"alphabet {zmodel.alphabet!r}; the uppercase->lowercase "
+                    "case-fold in _homophonic_model would misscore it"
+                )
+            _z_lookup = zmodel.lookup
+            return (
+                homophonic.BinaryBackedNGramModel(
+                    order=zmodel.order,
+                    lookup=lambda gram, _lk=_z_lookup: _lk(gram.lower()),
+                    floor=zmodel.unknown_log_prob,
+                    vocab_size=len(zmodel.log_probs),
+                    source=f"bundled:{Path(bin_path).name}",
+                ),
+                f"Using bundled binary n-gram model ({Path(bin_path).name}).",
+            )
+    except Exception as exc:  # noqa: BLE001 — never let model loading break solving
+        warnings.warn(
+            f"bundled binary n-gram model unavailable ({exc}); "
+            "falling back to the weak word-list model",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+    # Tier 3: weak word-list fallback (last resort — flag it loudly).
+    warnings.warn(
+        "No continuous n-gram model found (neither the local Zenith CSV nor a "
+        "bundled models/ngram5_*.bin) — using the WEAK word-list fallback; "
+        "substitution/homophonic solves may fail. Ensure the bundled model is "
+        "present (a fresh clone ships it).",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     return (
         homophonic.build_continuous_ngram_model(word_list, order=5),
         "Using language word-list fallback continuous model.",

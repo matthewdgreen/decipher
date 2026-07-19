@@ -350,3 +350,43 @@ class TestFirewall:
 
         params = set(inspect.signature(columnar_search.search_keyed_columnar).parameters)
         assert "ground_truth" not in params
+
+
+# --- Fresh-clone model-resolution regression (dogfood round-4 failure) ---------
+# Root cause: on a clone WITHOUT the proprietary Zenith CSV, _homophonic_model
+# silently dropped to the weak word-list model instead of the BUNDLED
+# models/ngram5_en.bin — so hard composites (round-4) produced gibberish. The fix
+# adds the bundled binary as a tier, with a case-folding adapter (the binary's
+# alphabet is lowercase; the anneal scores uppercase grams).
+
+def test_fresh_clone_uses_bundled_binary_not_word_list(monkeypatch):
+    """With the Zenith CSV absent, _homophonic_model MUST pick the bundled binary
+    model, not the weak word-list fallback."""
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_MODEL", "/nonexistent/zenith-model.csv")
+    from analysis.homophonic import BinaryBackedNGramModel
+
+    model, note = runner._homophonic_model("en", runner._word_list("en"))
+    assert isinstance(model, BinaryBackedNGramModel), f"got {type(model).__name__}: {note}"
+    assert "bundled binary" in note
+
+
+def test_binary_adapter_case_folds_and_scores_english(monkeypatch):
+    """The adapter must case-fold: the bundled model is lowercase, the anneal
+    feeds uppercase. Without the fold every gram floors (real == garbage)."""
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_MODEL", "/nonexistent/z.csv")
+    model, _ = runner._homophonic_model("en", runner._word_list("en"))
+    assert model.score("THERE") > model.score("QXZJK")  # real 5-gram beats noise
+    # the window scorer reads model.log_probs.get(...) directly — same value
+    assert model.log_probs.get("THERE", model.floor) == model.score("THERE")
+
+
+def test_composite_solves_on_bundled_binary_alone(monkeypatch):
+    """End-to-end fresh-clone acceptance: the composite route solves with ONLY the
+    bundled binary model (Zenith CSV disabled)."""
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_MODEL", "/nonexistent/zenith-model.csv")
+    ciphertext, _substituted, _mapping = _make_round4_class_cipher()
+    ct = _az_cipher_text(ciphertext)
+    _solver, _key, decoded, _step = _run_composite_substitution_transposition(
+        ct, language="en", cipher_id="fresh_clone"
+    )
+    assert _char_accuracy(decoded, PLAINTEXT) >= 0.99, _char_accuracy(decoded, PLAINTEXT)

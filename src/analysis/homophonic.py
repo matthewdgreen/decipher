@@ -44,6 +44,67 @@ class ContinuousNGramModel:
         return total
 
 
+class _BinaryLookupProxy:
+    """dict-like shim so ``model.log_probs.get(gram, floor)`` works on the binary
+    model. The binary lookup already floors unknown grams internally, so the
+    caller's ``default`` is unused (equivalent to the ContinuousNGramModel dict's
+    floor-on-miss). ``len()`` returns the model's total gram count (callers use
+    ``len(model.log_probs)`` as a diagnostic n-gram count, e.g. tools_v2)."""
+
+    __slots__ = ("_lookup", "_size")
+
+    def __init__(self, lookup: Callable[[str], float], size: int) -> None:
+        self._lookup = lookup
+        self._size = size
+
+    def get(self, gram: str, default: float | None = None) -> float:
+        return self._lookup(gram)
+
+    def __len__(self) -> int:
+        return self._size
+
+
+@dataclass(frozen=True)
+class BinaryBackedNGramModel:
+    """A `ContinuousNGramModel`-compatible scorer backed by a binary n-gram
+    model's per-gram lookup (e.g. the bundled ``models/ngram5_*.bin`` loaded via
+    ``zenith_solver.load_zenith_binary_model``).
+
+    Quacks like `ContinuousNGramModel` for the anneal: exposes ``order``,
+    ``score(text)``, ``floor``, and a ``log_probs`` proxy with ``.get(gram,
+    default)`` and ``len()``. Semantics match — a sum of ``order``-gram log-probs
+    with the binary model's own floor for unknown grams — but sourced from the
+    efficient array lookup instead of a dict. Defined here (not in
+    ``zenith_solver``) to avoid a circular import: the caller passes
+    ``ZenithModel.lookup``.
+
+    NOTE the caller must pass a ``lookup`` whose casing matches the anneal's
+    grams. The bundled models use a lowercase alphabet while the anneal scores
+    UPPERCASE A-Z, so the caller supplies a case-folding wrapper — see
+    ``runner._homophonic_model``. A mismatch silently floors every gram.
+    """
+
+    order: int
+    lookup: Callable[[str], float]
+    floor: float = 0.0
+    source: str = "binary"
+    vocab_size: int = 0
+    log_probs: _BinaryLookupProxy = field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "log_probs", _BinaryLookupProxy(self.lookup, self.vocab_size)
+        )
+
+    def score(self, text: str) -> float:
+        if len(text) < self.order:
+            return float("-inf")
+        lk = self.lookup
+        return sum(
+            lk(text[i : i + self.order]) for i in range(len(text) - self.order + 1)
+        )
+
+
 @dataclass
 class HomophonicCandidate:
     plaintext: str
