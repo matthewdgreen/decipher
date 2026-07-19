@@ -2923,6 +2923,63 @@ def _select_solver_path(
                     else "monogram distribution matches language by letter"
                 ),
             }
+    # --- composite substitution+transposition CONTENT auto-route (Slice B) ---
+    # A substitution relabels letters, so the by-letter monogram cosine (the
+    # ``suspicious`` signal consumed by the pure-transposition block above) goes
+    # blind on a *substituted* transposition. ``order_layer_suspected`` is the
+    # substitution-INVARIANT residual-order signal (language-like monogram SHAPE
+    # by sorted magnitude + scrambled n-gram adjacency; Slice A §2.3). When it
+    # fires on an A-Z-sized alphabet, an UNLABELLED no-boundary composite that
+    # would otherwise be hijacked to the homophonic annealer below is routed to
+    # the C.1 peel instead. This is a CONTENT branch, separate from the explicit
+    # cipher_system-name dispatch at the top of the function.
+    #
+    # Guarded to A-Z-sized alphabets (``alphabet_size <= pt_alpha.size``): a
+    # genuinely dense (>26-symbol) homophonic inventory still routes homophonic
+    # (the peel targets monoalphabetic substitution, and C.1 confirmed the peel
+    # honest-fails safely on >26-symbol input). A text with no
+    # ``order_layer_suspected`` signal is untouched.
+    #
+    # Interaction with pure transposition (the subtle guard): a pure
+    # (UNsubstituted) transposition ALSO trips ``order_layer_suspected`` (scrambled
+    # adjacency + language-like SHAPE). For NO-BOUNDARY presentation it does NOT
+    # reach here: its letters are unrelabeled, so its by-letter monogram cosine is
+    # high and the pure-transposition block ABOVE claims it first via
+    # ``content_suspicious`` -> route "transposition". (A word-GROUPED pure
+    # transposition has word_groups>1, skips that block's word_groups<=1 gate, and
+    # DOES route here — benign: the peel detects the order layer and the
+    # substitution anneal recovers a ~identity key, solving it; strictly better
+    # than the pre-Slice-B substitution default it used to hit.) A plain
+    # monoalphabetic substitution keeps its n-gram adjacency structure, so
+    # ``order_layer_suspected`` stays False and it falls through to the substitution
+    # default. Detection is ciphertext-derived only, never ground truth (firewall §5).
+    if alphabet_size <= pt_alpha.size:
+        order_layer_suspected = False
+        try:
+            from analysis.transposition_solver import transposition_suspicion
+
+            order_layer_suspected = bool(
+                transposition_suspicion(cipher_text, language)["order_layer_suspected"]
+            )
+        except Exception:  # noqa: BLE001 — never let detection break routing
+            order_layer_suspected = False
+        if order_layer_suspected:
+            return {
+                "route": "composite_substitution_transposition",
+                "solver": "composite_substitution_transposition_peel",
+                "reason": (
+                    "residual order layer suspected on A-Z alphabet "
+                    "(language-like monogram shape, scrambled n-gram structure)"
+                ),
+            }
+    # F1 (no-boundary Vigenere) secondary, per spec §3.1: a no-boundary Vigenere
+    # can still be hijacked to the homophonic default below. The router exposes no
+    # cheap/clean periodic-IC signal at this point in the path, so — per the
+    # spec's explicit guidance ("if that's not cheap/clean, leave F1's periodic
+    # half to the existing name/periodic path and note it") — the periodic half is
+    # left to the cipher_system name dispatch (the vigenere/beaufort/quagmire
+    # branch above) and the diagnosis-driven agent path. The MUST-fix composite
+    # content route is handled above; the Vigenere half is a documented secondary.
     if word_groups <= 1 and alphabet_size > 20:
         return {
             "route": "homophonic",

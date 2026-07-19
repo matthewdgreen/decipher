@@ -199,12 +199,15 @@ class TestRouterExplicitName:
         )
         assert routing["route"] == "pure_transposition"
 
-    def test_unlabelled_composite_does_not_auto_route_here(self):
-        # The content-signal auto-selection that would send an UNLABELLED composite
-        # here is Slice B and is intentionally NOT wired in this slice.
+    def test_unlabelled_composite_auto_routes_via_content(self):
+        # Slice B FLIP: the content-signal auto-selection now sends an UNLABELLED
+        # composite here (order_layer_suspected on an A-Z alphabet). This was
+        # asserted NOT to happen in C.1; Slice B wires the content route.
         ciphertext, _s, _m = _make_round4_class_cipher()
         routing = _select_solver_path(_az_cipher_text(ciphertext), "en", cipher_system="")
-        assert routing["route"] != "composite_substitution_transposition"
+        assert routing["route"] == "composite_substitution_transposition"
+        # Routed on ciphertext-derived content, not a cipher_system name.
+        assert "residual order layer suspected" in routing["reason"]
 
     def test_homophonic_name_unchanged(self):
         ciphertext, _s, _m = _make_round4_class_cipher()
@@ -212,6 +215,121 @@ class TestRouterExplicitName:
             _az_cipher_text(ciphertext), "en", cipher_system="homophonic",
         )
         assert routing["route"] == "homophonic"
+
+
+class TestRouterContentAutoRoute:
+    """Slice B (§3.1/§3.2): the CONTENT auto-route + regression guards.
+
+    This router is load-bearing — every existing family must be unchanged. The
+    composite auto-route keys ONLY on ciphertext-derived signals
+    (``transposition_suspicion``/``order_layer_suspected`` + alphabet size);
+    ground truth never enters routing (firewall §5).
+    """
+
+    def _spaced_cipher_text(self, raw: str, group: int = 5) -> CipherText:
+        # Word boundaries every ``group`` letters -> word_groups > 1.
+        spaced = " ".join(raw[i:i + group] for i in range(0, len(raw), group))
+        return CipherText(
+            raw=spaced,
+            alphabet=Alphabet.standard_english(),
+            source="test",
+            separator=" ",
+        )
+
+    def test_unlabelled_composite_routes_composite_via_content(self):
+        # The MUST-fix: an unlabelled no-boundary composite auto-routes to the
+        # C.1 peel via content instead of being hijacked to homophonic.
+        ciphertext, _s, _m = _make_round4_class_cipher()
+        routing = _select_solver_path(_az_cipher_text(ciphertext), "en", cipher_system="")
+        assert routing["route"] == "composite_substitution_transposition"
+        assert routing["solver"] == "composite_substitution_transposition_peel"
+
+    def test_plain_substitution_still_routes_substitution(self):
+        # REGRESSION GUARD: a plain monoalphabetic substitution has GOOD n-gram
+        # structure (order_layer_suspected=False) and, with word boundaries, must
+        # STILL route to the substitution path — the composite content branch and
+        # the no-boundary homophonic default are both skipped.
+        mapping = _random_monoalphabetic(SUBST_SEED)
+        substituted = _substitute(PLAINTEXT, mapping)
+        routing = _select_solver_path(
+            self._spaced_cipher_text(substituted), "en", cipher_system="",
+        )
+        assert routing["route"] == "substitution"
+
+    def test_plain_homophonic_still_routes_homophonic(self):
+        # REGRESSION GUARD: a genuinely dense (>26-symbol) homophonic inventory
+        # must STILL route homophonic — the composite peel targets monoalphabetic
+        # substitution, so the ``alphabet_size <= pt_alpha.size`` guard keeps it
+        # out of the composite branch.
+        rng = random.Random(7)
+        tokens = [f"S{rng.randint(1, 45):03d}" for _ in range(220)]
+        raw = " ".join(tokens)
+        alphabet = Alphabet.from_text(raw, multisym=True)
+        assert alphabet.size > 26
+        cipher = CipherText(raw=raw, alphabet=alphabet, source="test", separator=None)
+        routing = _select_solver_path(cipher, "en", cipher_system="")
+        assert routing["route"] == "homophonic"
+
+    def test_unlabelled_pure_transposition_not_composite(self):
+        # REGRESSION GUARD (the subtle one): an UNLABELLED pure transposition
+        # (letters PRESERVED, NOT substituted) ALSO trips order_layer_suspected
+        # (scrambled adjacency + language-like SHAPE). It must NOT hit the
+        # composite route: its by-letter monogram cosine is high, so the
+        # pure-transposition/keyed-column block claims it FIRST via the
+        # ``suspicious`` signal, above the composite content branch.
+        pure = columnar_encrypt(PLAINTEXT, COMPOSITE_KEYWORD)
+        # Precondition: the residual-order signal fires for BOTH pure transposition
+        # and the composite — proving the guard is the by-letter cosine ordering,
+        # not the residual signal.
+        from analysis.transposition_solver import transposition_suspicion
+
+        susp = transposition_suspicion(_az_cipher_text(pure), "en")
+        assert susp["order_layer_suspected"] is True
+        assert susp["suspicious"] is True  # by-letter cosine high (unsubstituted)
+
+        routing = _select_solver_path(_az_cipher_text(pure), "en", cipher_system="")
+        assert routing["route"] != "composite_substitution_transposition"
+        assert routing["route"] == "transposition"
+
+    def test_named_no_boundary_vigenere_routes_periodic(self):
+        # F1 secondary (spec §3.1 point 3): the Vigenere periodic half is left to
+        # the existing cipher_system NAME dispatch (documented, not over-
+        # engineered). A NAMED no-boundary Vigenere routes periodic — the composite
+        # content branch does not disturb it. The UNLABELLED no-boundary Vigenere
+        # content-route is explicitly out of scope for Slice B.
+        ciphertext, _s, _m = _make_round4_class_cipher()
+        routing = _select_solver_path(
+            _az_cipher_text(ciphertext), "en", cipher_system="vigenere",
+        )
+        assert routing["route"] == "periodic_polyalphabetic"
+
+    def test_unlabelled_composite_solves_end_to_end_via_content(self):
+        # ACCEPTANCE: an unlabelled round-4-class composite now routes via content
+        # AND solves end-to-end. ground_truth is OUTPUT-only (firewall §5) — it is
+        # NOT passed as cipher_system, so routing is purely content-driven.
+        ciphertext, _substituted, _mapping = _make_round4_class_cipher()
+        cipher = _az_cipher_text(ciphertext)
+        result = run_automated(
+            cipher_text=cipher,
+            language="en",
+            ground_truth=PLAINTEXT,  # OUTPUT-only firewall assertion
+            cipher_system="",        # UNLABELLED — routing must come from content
+        )
+        assert result.char_accuracy >= 0.95
+
+        route_step = next(
+            s for s in result.steps
+            if isinstance(s, dict) and s.get("name") == "route_automated_solver"
+        )
+        assert route_step["route"] == "composite_substitution_transposition"
+
+        step = next(
+            s for s in result.steps
+            if isinstance(s, dict) and s.get("name") == "composite_substitution_transposition"
+        )
+        assert step["outcome"] == "peeled_and_solved"
+        assert step["transposition"]["column_order"] == list(_rank_order(COMPOSITE_KEYWORD))
+        assert step["substitution"]["key"], "substitution key must be recorded"
 
 
 class TestFirewall:
