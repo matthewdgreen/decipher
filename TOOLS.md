@@ -1642,7 +1642,7 @@ The v3 lead can queue long-running automated-solver compute that runs in the
 BACKGROUND while it keeps working, then adjudicate the results later.
 
 ### `experiment_submit`
-Queue a long-running experiment on a branch. Two types:
+Queue a long-running experiment on a branch. Three types:
 - `automated_solver` — the no-LLM solver stack (homophonic anneal, transform
   screens, null-mask bake-offs).
 - `quagmire3_shotgun` — the Rust Quagmire III / keyed-tableau shotgun search
@@ -1651,12 +1651,20 @@ Queue a long-running experiment on a branch. Two types:
   mode-specific decoded branches (no substitution key). The Rust kernel is
   required: an unavailable/failed kernel fails the experiment loudly with
   `scripts/build_rust_fast.sh` guidance (there is no Python-screen fallback).
+- `composite_substitution_transposition` — the C.1 peel-and-solve route for a
+  monoalphabetic substitution THEN a transposition. Use when a cipher has a
+  STRONG letter fit but NO words as plain substitution — the signature of an
+  unpeeled order layer. It detects the residual order with a substitution-
+  invariant structure ratio, peels the keyed-columnar/geometric transposition
+  over the raw cipher, then solves the substitution on the recovered stream.
+  Results install as decoded branches carrying BOTH layer keys (`substitution_key`
+  + `transposition_key`) in branch metadata.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
-| `type` | string | **required** — `automated_solver` or `quagmire3_shotgun` |
+| `type` | string | **required** — `automated_solver`, `quagmire3_shotgun`, or `composite_substitution_transposition` |
 | `branch` | string | branch to run on |
-| `config` | object | TYPED per-type schema (`anyOf` of the two contracts). `automated_solver`: `cipher_system`, `homophonic_budget`/`homophonic_refinement`/`homophonic_solver`, `transform_search`(+profile/max), `model_variant`. `quagmire3_shotgun`: `keyword_lengths` (default `[7]`, clamp 2–20, max 8), `cycleword_lengths` (default `[8]`, clamp 2–20, max 8), `hillclimbs` (default `5000`, clamp 1–50000), `restarts` (default `250`, clamp 1–5000), `model_variant` (accepted for uniformity; does not affect the quadgram engine). **Do NOT set `language`** (host-derived). Unknown/unsupported keys are rejected before dispatch; a validation error returns a valid `corrected_example`. An `automated_solver` config whose `cipher_system` names the Quagmire family is redirected to `quagmire3_shotgun`. |
+| `config` | object | TYPED per-type schema (`anyOf` of the three contracts). `automated_solver`: `cipher_system`, `homophonic_budget`/`homophonic_refinement`/`homophonic_solver`, `transform_search`(+profile/max), `model_variant`. `quagmire3_shotgun`: `keyword_lengths` (default `[7]`, clamp 2–20, max 8), `cycleword_lengths` (default `[8]`, clamp 2–20, max 8), `hillclimbs` (default `5000`, clamp 1–50000), `restarts` (default `250`, clamp 1–5000), `model_variant` (accepted for uniformity; does not affect the quadgram engine). `composite_substitution_transposition`: `model_variant` only (the peel breadth is fixed and takes no budget knobs today). **Do NOT set `language`** (host-derived). Unknown/unsupported keys are rejected before dispatch; a validation error returns a valid `corrected_example`. An `automated_solver` config whose `cipher_system` names the Quagmire family is redirected to `quagmire3_shotgun`; one naming a substitution+transposition composite is redirected to `composite_substitution_transposition`. |
 | `note` | string | optional label |
 | `resubmit` | string | optional prior experiment id to re-run |
 

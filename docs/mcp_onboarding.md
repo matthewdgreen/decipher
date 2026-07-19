@@ -84,14 +84,18 @@ your instrument bench and evidence store.
   solver stack in the background; collect and, if good, install with
   `experiment_collect`. Never resubmit an identical config — duplicates are
   suppressed. Experiment types: `automated_solver` (family-routed general
-  stack — substitution, homophonic, plain periodic, transform screens) and
+  stack — substitution, homophonic, plain periodic, transform screens),
   `quagmire3_shotgun` (dedicated Rust keyword-alphabet search for
   Quagmire/keyed-tableau ciphers; use it when plain Vigenère-family search
   fails on a strongly periodic cipher — `automated_solver` cannot solve that
-  family and will reject `cipher_system` hints naming it). If
-  `experiment_submit` does not advertise `quagmire3_shotgun`, your server
-  predates it — `git pull` this clone and restart the client session so a
-  current server launches.
+  family and will reject `cipher_system` hints naming it), and
+  `composite_substitution_transposition` (peel-and-solve for a substitution
+  THEN transposition — strong letter fit but no words → try the composite peel;
+  `automated_solver` rejects `cipher_system` hints naming a substitution+
+  transposition composite and redirects here). If `experiment_submit` does not
+  advertise `quagmire3_shotgun` or `composite_substitution_transposition`, your
+  server predates them — `git pull` this clone and restart the client session so
+  a current server launches.
 - **Read, then repair, then reverify.** When a candidate partly reads: record
   your reading (`reading_record`), compile concrete word hypotheses
   (`repair_hypotheses_test`), then ask the host to validate and install one

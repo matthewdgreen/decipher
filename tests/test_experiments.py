@@ -1211,10 +1211,14 @@ def test_q3_registry_and_schema_surface():
     assert props["keyword_lengths"]["default"] == [7]
     assert props["cycleword_lengths"]["default"] == [8]
     assert all(props[k].get("description") for k in props)
-    # Submit-tool config is the anyOf union carrying both titles.
+    # Submit-tool config is the anyOf union carrying all type titles.
     cfg = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
     titles = {b.get("title") for b in cfg["anyOf"]}
-    assert titles == {"automated_solver config", "quagmire3_shotgun config"}
+    assert titles == {
+        "automated_solver config",
+        "quagmire3_shotgun config",
+        "composite_substitution_transposition config",
+    }
     q3_branch = next(b for b in cfg["anyOf"] if b["title"] == "quagmire3_shotgun config")
     assert {k: v for k, v in q3_branch.items() if k != "title"} == schema
 
@@ -1441,3 +1445,215 @@ def test_q3_dedup_config_aware(monkeypatch):
                                         "config": {"hillclimbs": 1234}}, 3)
     assert other["experiment_id"] != first["experiment_id"]
     assert not other.get("deduplicated")
+
+
+# ---------------------------------------------------------------------------
+# composite_substitution_transposition experiment type (Slice C.2)
+# ---------------------------------------------------------------------------
+import automated.runner as _auto_runner
+from ciphers.transposition import _rank_order, columnar_encrypt
+
+# The through-line acceptance fixture: an English plaintext put through a
+# monoalphabetic substitution THEN a keyword columnar transposition (built fresh
+# in-test — the sealed dogfood answer is NEVER read). Mirrors the C.1 fixture.
+_COMPOSITE_PLAINTEXT = (
+    "WHENINTHECOURSEOFHUMANEVENTSITBECOMESNECESSARYFORONEPEOPLETODISSOLVETHE"
+    "POLITICALBANDSWHICHHAVECONNECTEDTHEMWITHANOTHERANDTOASSUMEAMONGTHEPOWERSOF"
+    "THEEARTHTHESEPARATEANDEQUALSTATIONTOWHICHTHELAWSOFNATUREANDOFNATURESGODENTITLE"
+    "THEMADECENTRESPECTTOTHEOPINIONSOFMANKINDREQUIRESTHATTHEYSHOULDDECLARETHECAUSES"
+    "WHICHIMPELTHEMTOTHESEPARATIONWEHOLDTHESETRUTHSTOBESELFEVIDENTTHATALLMENARE"
+    "CREATEDEQUALTHATTHEYAREENDOWEDBYTHEIRCREATORWITHCERTAINUNALIENABLERIGHTS"
+)
+_COMPOSITE_KEYWORD = "MASONRY"  # round-4 keyword (width 7)
+
+
+def _make_round4_composite(seed: int = 1234):
+    """Return (ciphertext, plaintext) for a fresh substitution-THEN-columnar
+    composite. The sealed answer file is never touched — the plaintext returned
+    here is used ONLY in output assertions."""
+    rng = __import__("random").Random(seed)
+    letters = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    perm = letters[:]
+    rng.shuffle(perm)
+    mapping = {p: c for p, c in zip(letters, perm)}
+    substituted = "".join(mapping[ch] for ch in _COMPOSITE_PLAINTEXT)
+    ciphertext = columnar_encrypt(substituted, _COMPOSITE_KEYWORD)
+    return ciphertext, _COMPOSITE_PLAINTEXT
+
+
+def _make_composite_state(seed: int = 1234):
+    ciphertext, plaintext = _make_round4_composite(seed)
+    ct = CipherText(raw=ciphertext, alphabet=Alphabet.standard_english(),
+                    source="test", separator=None)
+    ws = Workspace(cipher_text=ct)
+    state = InvestigationState(workspace=ws, language="en")
+    return state, plaintext
+
+
+def _fake_composite_route(captured=None):
+    """A canned (solver, key, decryption, step) tuple in the exact shape the C.1
+    route returns, so runner-shape/clamp tests stay fast (no real solve)."""
+    step = {
+        "name": "composite_substitution_transposition",
+        "solver": "composite_substitution_transposition_peel",
+        "outcome": "peeled_and_solved",
+        "residual_order": {"is_composite": True, "structure_ratio": 1.02},
+        "transposition": {
+            "kind": "columnar", "method": "exhaustive", "structure_ratio": 3.2,
+            "column_count": 7, "column_order": list(_rank_order(_COMPOSITE_KEYWORD)),
+            "keyword": _COMPOSITE_KEYWORD,
+        },
+        "substitution": {
+            "solver": "native_substitution_continuous_anneal",
+            "key": {"0": 7, "1": 2, "2": 19}, "dict_rate": 0.9, "steps": [],
+        },
+        "elapsed_seconds": 0.01,
+    }
+
+    def route(cipher_text, language="en", cipher_id="cli"):
+        if captured is not None:
+            captured.update({"language": language, "cipher_id": cipher_id})
+        return (
+            "composite_substitution_transposition_peel",
+            {0: 7, 1: 2, 2: 19}, "DECODEDPLAINTEXT", step,
+        )
+
+    return route
+
+
+def test_composite_registry_and_schema_surface():
+    assert "composite_substitution_transposition" in EXPERIMENT_TYPES
+    schema = model_facing_config_schema("composite_substitution_transposition")
+    props = schema["properties"]
+    # DROP fix (review C.2): the fixed C.1 peel takes no budget params, so only
+    # the effective model_variant knob is exposed — no inert budget knobs.
+    assert set(props) == {"model_variant"}
+    # language is host-derived: it must NOT be a supplied key.
+    assert "language" not in props
+    assert schema["additionalProperties"] is False
+    assert all(props[k].get("description") for k in props)
+    # Advertised branch equals the builder output.
+    cfg = EXPERIMENT_SUBMIT_TOOL["input_schema"]["properties"]["config"]
+    branch = next(
+        b for b in cfg["anyOf"]
+        if b.get("title") == "composite_substitution_transposition config"
+    )
+    assert {k: v for k, v in branch.items() if k != "title"} == schema
+
+
+def test_composite_misroute_guard_redirects_and_coexists_with_quag():
+    # A substitution+transposition composite hint on automated_solver redirects.
+    for hint in ("substitution_transposition_composite",
+                 "monoalphabetic substitution then columnar transposition",
+                 "composite transposition"):
+        errors = validate_experiment_config("automated_solver", {"cipher_system": hint})
+        assert errors and any(
+            "composite_substitution_transposition" in e for e in errors
+        ), hint
+    # The corrected example is genuinely valid and drops the composite hint.
+    fixed = corrected_config_example(
+        "automated_solver", {"cipher_system": "substitution_transposition"}
+    )
+    assert validate_experiment_config("automated_solver", fixed) == []
+    assert "cipher_system" not in fixed
+    # The quag guard still redirects to quagmire3 (coordination preserved).
+    q_errors = validate_experiment_config("automated_solver", {"cipher_system": "quagmire3"})
+    assert q_errors and any("quagmire3_shotgun" in e for e in q_errors)
+    # A plain hint still validates.
+    assert validate_experiment_config("automated_solver", {"cipher_system": "vigenere"}) == []
+    # The composite TYPE accepts its own (model_variant-only) config; no false redirect.
+    assert validate_experiment_config(
+        "composite_substitution_transposition", {"model_variant": None}
+    ) == []
+
+
+def test_composite_unknown_key_and_language_rejected():
+    # host-derived language rejected if supplied (GT-3 firewall).
+    lang_errs = validate_experiment_config(
+        "composite_substitution_transposition", {"language": "en"}
+    )
+    assert lang_errs and any("language" in e for e in lang_errs)
+    # unknown budget key rejected before dispatch, with a valid corrected example.
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    out = dispatch_experiment_submit(
+        q, state, state.workspace, _fake_executor(),
+        {"type": "composite_substitution_transposition", "branch": "main",
+         "config": {"bogus_knob": 3}}, 1,
+    )
+    assert out["error"] == "invalid experiment config"
+    assert any("bogus_knob" in e for e in out["config_errors"])
+    assert validate_experiment_config(
+        "composite_substitution_transposition", out["corrected_example"]
+    ) == []
+    assert state.experiment_queue == []  # nothing queued
+
+
+def test_composite_runner_shape_and_purity(monkeypatch):
+    from investigation.state import _serialize_branch
+    monkeypatch.setattr(
+        _auto_runner, "_run_composite_substitution_transposition",
+        _fake_composite_route(),
+    )
+    _ct, state = _make_state()
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    pristine = copy.deepcopy(snapshot)
+    config = apply_config_defaults("composite_substitution_transposition", {})
+    config["model_variant"] = None
+    config["language"] = "en"
+    result = exp._composite_substitution_transposition_runner(
+        state.cipher, snapshot, config
+    )
+    assert snapshot == pristine  # input snapshot byte-identical
+    assert result["key"] == {}  # slim: substitution map rides in metadata
+    assert result["solver"] == "composite_substitution_transposition_peel"
+    assert result["final_decryption"] == "DECODEDPLAINTEXT"
+    assert result["substitution_key"] == {"0": 7, "1": 2, "2": 19}
+    assert result["transposition"]["keyword"] == _COMPOSITE_KEYWORD
+    # DROP fix: no budget block (the fixed peel takes no budget knobs).
+    assert "budget" not in result
+    step = result["steps"][0]
+    assert step["name"] == "composite_substitution_transposition"
+
+
+def test_composite_end_to_end_solve_install_both_layers():
+    """The $0 through-line: a round-4-class composite solves end-to-end THROUGH
+    THE EXPERIMENT SURFACE (submit -> collect -> install) and the installed branch
+    carries decoded_text plus BOTH layer keys. Runs the REAL C.1 peel-and-solve."""
+    from agent.loop_shared import _decoded_text_for_panel
+
+    state, plaintext = _make_composite_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(
+        q, state, state.workspace, _fake_executor(),
+        {"type": "composite_substitution_transposition", "branch": "main",
+         "config": {}}, 1,
+    )
+    assert sub.get("experiment_id")
+    record = q._find(state, sub["experiment_id"])
+    assert record["status"] == "completed", record.get("error")
+    assert record["result"]["outcome"] == "peeled_and_solved"
+
+    packet = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True}, 2,
+    )
+    name = packet["installed_as"]
+    branch = state.workspace.get_branch(name)
+    meta = branch.metadata
+
+    # decoded_text is the correct plaintext (grader path).
+    assert meta["decoded_text"] == plaintext
+    assert meta["cipher_mode"] == "composite_substitution_transposition"
+    # Gate-reachability: the panel text equals the installed decoded text.
+    assert _decoded_text_for_panel(state.workspace, name) == plaintext
+
+    # BOTH layer keys present in branch metadata.
+    assert meta["substitution_key"], "substitution key must ride in metadata"
+    assert len(meta["substitution_key"]) >= 20
+    transposition_key = meta["transposition_key"]
+    assert transposition_key["kind"] == "columnar"
+    assert transposition_key["column_count"] == len(_COMPOSITE_KEYWORD)
+    assert transposition_key["column_order"] == list(_rank_order(_COMPOSITE_KEYWORD))
+    assert _rank_order(transposition_key["keyword"]) == transposition_key["column_order"]
+    assert {"hypothesis", "mode:composite_substitution_transposition"} <= set(branch.tags)

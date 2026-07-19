@@ -828,6 +828,55 @@ def test_experiment_surfaces_never_leak_ground_truth():
     assert_no_ground_truth_leak(haystacks, GROUND_TRUTH)
 
 
+def test_composite_experiment_route_is_ground_truth_free():
+    """Slice C.2: the composite_substitution_transposition experiment route peels
+    and solves on shipped models/statistics only — no ground truth is reachable.
+
+    By-construction independence check (mirrors the automated-path firewall): the
+    C.1 route function takes no ground_truth parameter, the composite runner never
+    passes one, and the experiment config schema rejects a smuggled `ground_truth`
+    (and the host-derived `language`) as an unknown key.
+    """
+    import inspect
+
+    import automated.runner as composite_runner
+    from investigation import experiments as exp
+
+    # (a) The route the experiment runs takes no ground_truth channel.
+    route_params = set(
+        inspect.signature(
+            composite_runner._run_composite_substitution_transposition
+        ).parameters
+    )
+    assert "ground_truth" not in route_params
+    # (b) The experiment runner never passes a ground_truth argument to anything
+    # (the docstring may mention the word; the CODE must not bind it).
+    runner_src = inspect.getsource(
+        exp._composite_substitution_transposition_runner
+    )
+    assert "ground_truth=" not in runner_src
+
+    # (c) A smuggled ground_truth (and the host-derived language) are rejected as
+    # unknown config keys — neither can reach detection, peel, or solve.
+    for smuggled in ({"ground_truth": GROUND_TRUTH}, {"language": "en"}):
+        errors = exp.validate_experiment_config(
+            "composite_substitution_transposition", smuggled
+        )
+        key = next(iter(smuggled))
+        assert errors and any(key in e for e in errors), smuggled
+        # The corrected example never carries the smuggled key.
+        fixed = exp.corrected_config_example(
+            "composite_substitution_transposition", smuggled
+        )
+        assert key not in fixed
+    assert_no_ground_truth_leak(
+        [json.dumps(exp.corrected_config_example(
+            "composite_substitution_transposition",
+            {"ground_truth": GROUND_TRUTH}), default=str)],
+        GROUND_TRUTH,
+    )
+
+
 def test_diagnose_report_does_not_leak_ground_truth():
     """INV-0: format_diagnosis + to_dict for a solved cipher never surface plaintext."""
     from investigation.diagnosis import diagnose, format_diagnosis

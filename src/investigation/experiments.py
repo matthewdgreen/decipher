@@ -153,6 +153,41 @@ _QUAGMIRE3_SHOTGUN_SCHEMA: dict[str, Any] = {
     },
 }
 
+# v1 ``composite_substitution_transposition`` config schema (Slice C.2). Same
+# local validator dialect; the C.1 peel-and-solve route
+# (``automated.runner._run_composite_substitution_transposition``) is the engine.
+# Budget knobs are bounded by CLAMPING in the runner (the dialect has no
+# min/max), mirroring the quagmire3 pattern. ``language`` is host-derived and
+# deliberately NOT a property (an emitted ``language`` key is rejected as an
+# unknown key, exactly like the other types — GT-3 firewall).
+# NOTE (review C.2, DROP fix 2026-07-19): the C.1 peel
+# (`_run_composite_substitution_transposition` / `_peel_order_layer`) hardcodes
+# its `ColumnarSearchConfig` breadth and takes no budget params, so budget knobs
+# would be validated-but-inert AND their field docs would misstate the wiring.
+# Unlike quagmire3 (whose knobs ARE passed to the Rust search), a composite
+# budget knob does nothing today — so none is exposed. Only `model_variant`
+# (host-effective) is accepted. If C.1 grows a config seam later, add the knobs
+# THEN, wired for real.
+_COMPOSITE_SUBSTITUTION_TRANSPOSITION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "model_variant": {"type": ["string", "null"]},
+    },
+}
+
+# Concise, model-facing per-field help for ``composite_substitution_transposition``.
+_COMPOSITE_SUBSTITUTION_TRANSPOSITION_FIELD_DOCS: dict[str, str] = {
+    "model_variant": (
+        "Language-model variant slug (null = host default). Universal across "
+        "experiment types; validated against the run language at submit."
+    ),
+}
+
+_COMPOSITE_SUBSTITUTION_TRANSPOSITION_DEFAULTS: dict[str, Any] = {
+    "model_variant": None,
+}
+
 # Concise, model-facing per-field help for ``quagmire3_shotgun``.
 _QUAGMIRE3_SHOTGUN_FIELD_DOCS: dict[str, str] = {
     "keyword_lengths": (
@@ -185,6 +220,9 @@ _QUAGMIRE3_SHOTGUN_FIELD_DOCS: dict[str, str] = {
 _FIELD_DOCS: dict[str, dict[str, str]] = {
     "automated_solver": _AUTOMATED_SOLVER_FIELD_DOCS,
     "quagmire3_shotgun": _QUAGMIRE3_SHOTGUN_FIELD_DOCS,
+    "composite_substitution_transposition": (
+        _COMPOSITE_SUBSTITUTION_TRANSPOSITION_FIELD_DOCS
+    ),
 }
 
 _AUTOMATED_SOLVER_DEFAULTS: dict[str, Any] = {
@@ -399,6 +437,79 @@ def _quagmire3_shotgun_runner(
     }
 
 
+def _composite_substitution_transposition_runner(
+    cipher: Any, snapshot: dict[str, Any], config: dict[str, Any]
+) -> dict[str, Any]:
+    """Runner for the ``composite_substitution_transposition`` experiment type (C.2).
+
+    PURE over its inputs: reconstructs a throwaway one-branch workspace, derives
+    the effective cipher, sets the registry's thread-local active variant for the
+    duration (F1a per-thread-safe), and runs the landed C.1 peel-and-solve route
+    (``automated.runner._run_composite_substitution_transposition``) with
+    ``ground_truth`` unreachable (that function takes no GT — firewall by
+    construction). The route detects a residual order layer with a
+    substitution-INVARIANT structure ratio, peels the keyed-columnar/geometric
+    transposition over the RAW cipher, then solves the monoalphabetic substitution
+    on the recovered stream — ranking on shipped models/statistics, never GT.
+
+    The landed C.1 peel breadth is fixed (its exhaustive widths already cover the
+    round-4 class) and takes no budget params, so no budget knob is exposed
+    (review C.2 DROP fix — an inert knob with false field docs is worse than
+    none). ``model_variant`` is the one effective knob (thread-local).
+
+    Both layer keys ride in the result: the substitution map in
+    ``substitution_key`` and the transposition (columnar keyword / column order,
+    or the geometric pipeline) in ``transposition``. The flat ``key`` field stays
+    ``{}`` — the substitution map is transposed-order-specific and rides in branch
+    metadata at install, mirroring the quagmire3 slim-record.
+    """
+    from automated import runner as automated_runner  # lazy
+
+    ws = Workspace(cipher_text=cipher)
+    snap = copy.deepcopy(snapshot)
+    _restore_branch_into(ws, snap)
+    branch_name = str(snap["name"])
+    effective = ws.effective_cipher_text(branch_name)
+
+    variant = config.get("model_variant")
+    prev_variant = automated_runner.set_active_model_variant(variant)
+    started = time.time()
+    try:
+        solver, _sub_key, decryption, step = (
+            automated_runner._run_composite_substitution_transposition(
+                effective,
+                language=str(config.get("language") or "en"),
+                cipher_id="experiment",
+            )
+        )
+    finally:
+        automated_runner.set_active_model_variant(prev_variant)
+    elapsed = round(time.time() - started, 3)
+
+    step = step if isinstance(step, dict) else {}
+    substitution = step.get("substitution") or {}
+    # C.1 already stringifies its substitution key as {str: int}; normalize again
+    # defensively so the record is JSON/serialization-safe.
+    substitution_key = {
+        str(k): int(v) for k, v in (substitution.get("key") or {}).items()
+    }
+    transposition = step.get("transposition")  # None on the non-composite branch
+    outcome = step.get("outcome")
+    status = "completed" if decryption else "error"
+    return {
+        "status": status,
+        "solver": solver,
+        "error_message": None,
+        "elapsed_seconds": elapsed,
+        "key": {},  # slim: substitution map rides in metadata (transposed-order-specific)
+        "final_decryption": decryption or "",
+        "outcome": outcome,
+        "substitution_key": substitution_key,
+        "transposition": transposition,
+        "steps": [step] if step else [],
+    }
+
+
 # type -> {config_schema, config_defaults, runner, description, installer?}
 EXPERIMENT_TYPES: dict[str, dict[str, Any]] = {
     "automated_solver": {
@@ -422,6 +533,22 @@ EXPERIMENT_TYPES: dict[str, dict[str, Any]] = {
             "for periodic ciphers where a keyed tableau is suspected (period known "
             "from Kasiski/periodic IC, flat-ish frequency within phases). Results "
             "install as mode-specific decoded branches (no substitution key)."
+        ),
+    },
+    "composite_substitution_transposition": {
+        "config_schema": _COMPOSITE_SUBSTITUTION_TRANSPOSITION_SCHEMA,
+        "config_defaults": dict(_COMPOSITE_SUBSTITUTION_TRANSPOSITION_DEFAULTS),
+        "runner": _composite_substitution_transposition_runner,
+        "installer": None,  # bound to _install_composite_..._branch below (defined later)
+        "description": (
+            "Peel-and-solve for a monoalphabetic substitution THEN a transposition "
+            "(the C.1 composite route). Use when a cipher has a STRONG letter fit "
+            "but NO words when solved as plain substitution — the signature of an "
+            "unpeeled order layer. It detects the residual order with a "
+            "substitution-invariant structure ratio, peels the keyed-columnar/"
+            "geometric transposition over the raw cipher, then solves the "
+            "substitution on the recovered stream. Results install as decoded "
+            "branches carrying BOTH layer keys (substitution map + columnar key)."
         ),
     },
 }
@@ -468,10 +595,11 @@ def validate_experiment_config(exp_type: str, config: dict[str, Any]) -> list[st
                 f"unknown config key {key!r}; allowed: {sorted(allowed)}"
             )
     errors.extend(validate_against_schema(config, schema, path="config"))
-    # Misroute guard: the Quagmire/keyed-tableau family is ACCEPTED but unsolvable
-    # by the automated stack (it would silently route to the generic periodic
-    # screen). Redirect to the dedicated type. Scope: only this token family — the
-    # one accepted-but-unsolvable hint class; other free-form hints keep routing.
+    # Misroute guard: some family hints are ACCEPTED by the string schema but
+    # belong to a DEDICATED experiment type. Redirect them. Scope: only these
+    # token families; other free-form hints keep routing. The Quagmire redirect is
+    # checked FIRST and is mutually exclusive with the composite one (a "quag" hint
+    # never also trips the composite branch).
     if exp_type == "automated_solver":
         cs = str(config.get("cipher_system") or "").lower()
         if "quag" in cs:
@@ -481,7 +609,28 @@ def validate_experiment_config(exp_type: str, config: dict[str, Any]) -> list[st
                 "cannot solve (it would silently misroute to the generic periodic "
                 "screen). Submit type='quagmire3_shotgun' instead."
             )
+        elif _names_sub_transposition_composite(cs):
+            errors.append(
+                f"cipher_system {config.get('cipher_system')!r} names a "
+                "substitution+transposition composite, which the automated_solver "
+                "stack does not peel as a composite. Submit "
+                "type='composite_substitution_transposition' instead (it detects "
+                "the residual order layer, peels the transposition, then solves the "
+                "substitution on the recovered stream)."
+            )
     return errors
+
+
+def _names_sub_transposition_composite(cipher_system: str) -> bool:
+    """True when a (lowercased) ``cipher_system`` hint names a substitution+
+    transposition composite: ``substitution`` + ``transposition`` together, or
+    ``composite`` + ``transposition``. Used by the misroute guard and the
+    corrected-example builder so both agree on the redirect boundary."""
+    cs = str(cipher_system or "").lower()
+    return (
+        ("substitution" in cs and "transposition" in cs)
+        or ("composite" in cs and "transposition" in cs)
+    )
 
 
 def _field_docs(exp_type: str) -> dict[str, str]:
@@ -562,10 +711,12 @@ def corrected_config_example(
         if sub is None or not validate_against_schema(value, sub):
             example[key] = value  # supported key with an already-valid value
         # else: invalid enum/type value dropped -> the type default applies
-    # A ``cipher_system`` naming the Quagmire family passes the string schema but
-    # fails the misroute guard; drop it so the example stays genuinely valid AND
-    # useful (the guard would otherwise collapse the whole example to {}).
-    if "quag" in str(example.get("cipher_system") or "").lower():
+    # A ``cipher_system`` naming a dedicated-type family (Quagmire, or a
+    # substitution+transposition composite) passes the string schema but fails the
+    # misroute guard; drop it so the example stays genuinely valid AND useful (the
+    # guard would otherwise collapse the whole example to {}).
+    cs_lower = str(example.get("cipher_system") or "").lower()
+    if "quag" in cs_lower or _names_sub_transposition_composite(cs_lower):
         example.pop("cipher_system", None)
     if _looks_homophonic(user_config):
         example.setdefault("cipher_system", "homophonic_substitution")
@@ -1035,7 +1186,12 @@ EXPERIMENT_SUBMIT_TOOL = {
         "null-mask bakeoffs via homophonic_refinement=null_masks). Type "
         "`quagmire3_shotgun` runs the Rust keyed-tableau/Quagmire III shotgun "
         "search (use when period evidence suggests a keyed tableau; results "
-        "install as decoded branches via experiment_collect). `config` is "
+        "install as decoded branches via experiment_collect). Type "
+        "`composite_substitution_transposition` runs the C.1 peel-and-solve route "
+        "for a substitution-THEN-transposition composite (use when a cipher has a "
+        "strong letter fit but no words as plain substitution — the signature of "
+        "an unpeeled order layer; results install carrying both layer keys). "
+        "`config` is "
         "typed per experiment type (see its schema); its keys are the ONLY "
         "supported controls. Do NOT set `language` — it is host-derived from the "
         "run. Select homophonic behavior via the homophonic_* fields, not "
@@ -1052,9 +1208,11 @@ EXPERIMENT_SUBMIT_TOOL = {
                 "type": "string",
                 "description": (
                     "Experiment type. Supported: 'automated_solver' (the no-LLM "
-                    "solver stack) and 'quagmire3_shotgun' (Rust Quagmire III "
-                    "keyed-tableau search). Each type's `config` is validated "
-                    "against its own schema."
+                    "solver stack), 'quagmire3_shotgun' (Rust Quagmire III "
+                    "keyed-tableau search), and "
+                    "'composite_substitution_transposition' (the C.1 "
+                    "substitution-then-transposition peel-and-solve route). Each "
+                    "type's `config` is validated against its own schema."
                 ),
             },
             "branch": {
@@ -1072,6 +1230,12 @@ EXPERIMENT_SUBMIT_TOOL = {
                     {
                         "title": "quagmire3_shotgun config",
                         **model_facing_config_schema("quagmire3_shotgun"),
+                    },
+                    {
+                        "title": "composite_substitution_transposition config",
+                        **model_facing_config_schema(
+                            "composite_substitution_transposition"
+                        ),
                     },
                 ],
                 "description": (
@@ -1512,6 +1676,107 @@ def _install_quagmire3_branch(
 # Bind the ranked-finalist installer now that it is defined (declared in the
 # registry above with a None placeholder to avoid a forward reference).
 EXPERIMENT_TYPES["quagmire3_shotgun"]["installer"] = _install_quagmire3_branch
+
+
+def _install_composite_substitution_transposition_branch(
+    workspace: Workspace,
+    record: dict[str, Any],
+    as_name: str | None,
+    turn: int,
+    candidate_rank: int = 1,
+) -> str | dict[str, Any]:
+    """Install a composite peel-and-solve result as a decoded branch (Slice C.2).
+
+    Mirrors ``_install_quagmire3_branch`` through the experiment-snapshot path (the
+    source branch is never mutated). Does NOT ``set_full_key``: the substitution
+    key was solved on the PEELED (un-transposed) stream, so applying it to the
+    branch's raw (transposed-order) tokens would misdecode — the grader reads
+    ``metadata['decoded_text']`` instead, which ``_decoded_text_for_panel``
+    prefers, making the verify/declare gate reachable. BOTH layer keys ride in
+    metadata (``substitution_key`` + ``transposition_key``). ``candidate_rank`` is
+    accepted for installer-seam uniformity and ignored (this type has no ranked
+    finalists — dispatch rejects a supplied candidate_rank for it before calling
+    here). Returns the installed branch name, or a structured ``{"error": ...}``."""
+    result = record.get("result") or {}
+    decoded = str(result.get("final_decryption") or "").strip()
+    if not decoded:
+        # An empty decoded_text would make _decoded_text_for_panel fall back to the
+        # inherited snapshot key — a stale decode presented as the composite branch.
+        return {
+            "error": (
+                "composite experiment produced no decoded text; it cannot be "
+                "installed as a decoded branch"
+            )
+        }
+    substitution_key = dict(result.get("substitution_key") or {})
+    transposition = dict(result.get("transposition") or {})
+
+    target = str(as_name) if as_name else f"exp_{str(record['experiment_id'])[:6]}_{record.get('branch')}"
+    name = target
+    suffix = 2
+    while workspace.has_branch(name):
+        name = f"{target}_{suffix}"
+        suffix += 1
+    install_snap = dict(copy.deepcopy(record.get("snapshot") or {}))
+    install_snap["name"] = name
+    install_snap["created_iteration"] = turn
+    _restore_branch_into(workspace, install_snap)
+
+    branch = workspace.get_branch(name)
+    # A null-mask block inherited from the source snapshot would shadow decoded_text
+    # in _metadata_decoded_text (mask+key render wins), so the verify/declare hash
+    # would bind the OLD null-mask decode, not this result.
+    branch.metadata.pop("null_mask_finalist", None)
+    branch.metadata.pop("null_mask_selected", None)
+    columnar_keyword = transposition.get("keyword")
+    # Both layer keys, family-consistent, ride in branch metadata.
+    transposition_key = {
+        "kind": transposition.get("kind"),
+        "method": transposition.get("method"),
+        "structure_ratio": transposition.get("structure_ratio"),
+        "keyword": columnar_keyword,
+        "column_count": transposition.get("column_count"),
+        "column_order": transposition.get("column_order"),
+        "family": transposition.get("family"),
+        "pipeline": transposition.get("pipeline"),
+    }
+    branch.metadata.update({
+        "cipher_mode": "composite_substitution_transposition",
+        "mode_status": "active",
+        "mode_confidence": "medium",
+        "mode_evidence": (
+            f"Installed by experiment_collect from a composite_substitution_"
+            f"transposition experiment {record['experiment_id']} (outcome "
+            f"{result.get('outcome')!r}, transposition kind "
+            f"{transposition.get('kind')!r}, keyword {columnar_keyword!r})."
+        ),
+        "mode_counter_evidence": (
+            "Bounded peel + substitution anneal can overfit; verify readability "
+            "before declaring."
+        ),
+        "key_type": "CompositeSubstitutionTranspositionKey",
+        # BOTH layers (spec §4.1 step 4): substitution map + transposition key.
+        "substitution_key": substitution_key,
+        "transposition_key": transposition_key,
+        "decoded_text": decoded,
+        "decoded_text_source": "experiment_collect:composite_substitution_transposition",
+        "search_metadata": {
+            "solver": result.get("solver"),
+            "outcome": result.get("outcome"),
+            "experiment_id": record["experiment_id"],
+            "budget": result.get("budget"),
+        },
+    })
+    workspace.tag(name, "hypothesis")
+    workspace.tag(name, "mode:composite_substitution_transposition")
+    return name
+
+
+# Bind the composite installer now that it is defined (declared with a None
+# placeholder in the registry above to avoid a forward reference).
+EXPERIMENT_TYPES["composite_substitution_transposition"][
+    "installer"
+] = _install_composite_substitution_transposition_branch
 
 
 def _finalist_source_branch(

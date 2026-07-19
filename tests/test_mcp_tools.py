@@ -195,7 +195,11 @@ def test_experiment_submit_surface_advertises_quagmire3_shotgun():
     assert "investigation_id" in props and "expected_revision" in props
     # The anyOf config union survived the envelope wrap.
     titles = {b.get("title") for b in props["config"]["anyOf"]}
-    assert titles == {"automated_solver config", "quagmire3_shotgun config"}
+    assert titles == {
+        "automated_solver config",
+        "quagmire3_shotgun config",
+        "composite_substitution_transposition config",
+    }
 
 
 # ---------------------------------------------------------- verify + gates
