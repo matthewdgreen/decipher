@@ -12786,7 +12786,7 @@ class WorkspaceToolExecutor:
         model_path: str | None,
         order: int,
         max_ngrams: int,
-    ) -> tuple[homophonic.ContinuousNGramModel, str]:
+    ) -> tuple[Any, str]:
         requested = (model_path or "").strip()
         if requested.lower() in {"word_list", "wordlist", "none", "fallback"}:
             return (
@@ -12810,6 +12810,36 @@ class WorkspaceToolExecutor:
                     homophonic.build_continuous_ngram_model(self.word_list, order=order),
                     f"Could not load corpus model ({exc}); using word-list fallback.",
                 )
+
+        # Bundled binary n-gram model tier (fresh-clone default) — mirrors the
+        # automated runner fix so the AGENT homophonic path also uses the shipped
+        # model instead of the weak word-list on a fresh clone. Only for the
+        # DEFAULT path (no explicit model requested) and when the requested order
+        # matches the binary model's order (the .bin models are 5-gram).
+        if not requested:
+            try:
+                from analysis import model_registry
+                from analysis.zenith_solver import load_zenith_binary_model
+
+                bin_path = model_registry.resolve_language_model(self.language)
+                if bin_path is not None and Path(bin_path).exists():
+                    zmodel = load_zenith_binary_model(bin_path)
+                    if zmodel.order == order and (
+                        zmodel.alphabet == zmodel.alphabet.lower()
+                    ):
+                        _z_lookup = zmodel.lookup
+                        return (
+                            homophonic.BinaryBackedNGramModel(
+                                order=zmodel.order,
+                                lookup=lambda gram, _lk=_z_lookup: _lk(gram.lower()),
+                                floor=zmodel.unknown_log_prob,
+                                vocab_size=len(zmodel.log_probs),
+                                source=f"bundled:{Path(bin_path).name}",
+                            ),
+                            f"Using bundled binary n-gram model ({Path(bin_path).name}).",
+                        )
+            except Exception:  # noqa: BLE001 — never let model loading break the tool
+                pass
 
         return (
             homophonic.build_continuous_ngram_model(self.word_list, order=order),

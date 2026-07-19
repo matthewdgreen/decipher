@@ -974,3 +974,29 @@ def test_load_zenith_csv_model_reads_requested_order(tmp_path):
     assert model.log_probs == {"ABC": -1.6, "BCA": -2.1}
     assert round(model.floor, 6) == round(math.log(1 / 15), 6)
     assert "zenith_csv" in model.source
+
+
+def test_agent_homophonic_model_uses_bundled_binary_on_fresh_clone(monkeypatch):
+    """Regression (review finding #2): the AGENT path
+    WorkspaceToolExecutor._homophonic_model must also use the bundled binary
+    model on a fresh clone (no Zenith CSV), not the weak word-list — mirroring
+    the automated-runner fix. Pins the tools_v2 port."""
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(__file__), "..", "src"))
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_MODEL", "/nonexistent/zenith.csv")
+    from agent.tools_v2 import WorkspaceToolExecutor
+    from analysis.homophonic import BinaryBackedNGramModel
+    from models.alphabet import Alphabet
+    from models.cipher_text import CipherText
+    from workspace import Workspace
+
+    ct = CipherText(raw="ABCDE", alphabet=Alphabet.standard_english(), separator=None)
+    ex = WorkspaceToolExecutor(Workspace(ct), "en", set(), [], {})
+    model, note = ex._homophonic_model(None, 5, 3_000_000)
+    assert isinstance(model, BinaryBackedNGramModel), f"got {type(model).__name__}: {note}"
+    assert "bundled binary" in note
+    # __len__ landmine (finding #3): len(model.log_probs) must not raise
+    assert len(model.log_probs) > 0
+    # case-fold (real English beats noise, not floored)
+    assert model.score("THERE") > model.score("QXZJK")
