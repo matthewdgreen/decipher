@@ -129,7 +129,7 @@ $0-verified = the named in-repo engine solves the exact ciphertext locally.
   ladder's "all pass" therefore overstates blind coverage of classical
   transposition forms. Backlog: add keyed-columnar orders + ciphers/-package
   conventions to the candidate plan, or reconcile the two implementations.
-- **F4 — CLOSED 2026-07-19 (both arms).** Post-fix round-6 acceptance:
+- **F4 — CLOSED 2026-07-19 (both arms).** CONFIRMED AGAIN 2b3390539458 (Codex, in-surface, 1.0): first live run AFTER the harmonic-fold landing — diagnosis reported fundamental period 8 (not the naive 24), then quagmire3_shotgun → verified declare. Both fix halves (actuator + signpost/fold) now proven together in one live MCP session, 6 turns, $0.015. Post-fix round-6 acceptance:
   v3 re-run solved 1.0 through the gate (`9f547bfcf55a`: quagmire3_solution
   branch, positive attestation coherence 10, explicit declaration, $1.87 vs
   38.9% pre-fix); Codex re-run solved 1.0 IN-SURFACE under a no-escape-hatch
