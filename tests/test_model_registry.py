@@ -2,7 +2,7 @@
 
 Covers Part 4 of the model-variant-registry spec:
   * Registry: scan / labels / missing-sidecar tolerance; resolution precedence
-    (env > variant > default) with the back-compat default pin.
+    (env > variant > default) with named English and German defaults.
   * Runner: ``model_variant`` threading, the ``"auto"`` source mapping, and the
     default-None resolution staying byte-identical.
   * Tools: observe -> set -> search resolves the selected variant path; an
@@ -190,7 +190,7 @@ def test_non_english_missing_default_returns_none(tmp_path):
 # Back-compat pin: default resolution byte-identical against the real models.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("lang", ["en", "la", "fr", "it"])
+@pytest.mark.parametrize("lang", ["la", "fr", "it"])
 def test_default_resolution_pins_base_model(lang, monkeypatch):
     """Every language WITHOUT a _DEFAULT_VARIANTS entry still resolves the bare
     ngram5_<lang>.bin (byte-identical to before the DTA flip). `de` is covered
@@ -199,6 +199,14 @@ def test_default_resolution_pins_base_model(lang, monkeypatch):
     resolved = mr.resolve_language_model(lang, models_dir=REAL_MODELS_DIR)
     assert resolved is not None
     assert resolved.name == f"ngram5_{lang}.bin"
+
+
+def test_default_resolution_pins_en_to_upstream_zenith(monkeypatch):
+    """English defaults to the packaged unchanged Zenith 2026.2 model."""
+    monkeypatch.delenv("DECIPHER_NGRAM_MODEL_EN", raising=False)
+    resolved = mr.resolve_language_model("en", models_dir=REAL_MODELS_DIR)
+    assert resolved is not None
+    assert resolved.name == "ngram5_en_zenith.bin"
 
 
 def test_default_resolution_pins_de_to_dta(monkeypatch):

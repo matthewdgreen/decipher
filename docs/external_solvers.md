@@ -35,17 +35,16 @@ the best plaintext to a sidecar file.
   `external_baselines/zenith_only.json` (update that file if you install a
   different version).
 
-- **Zenith binary model** (optional) — the proprietary `zenith-model.array.bin`
-  is read by Decipher's own `zenith_native` solver, not by the external Zenith
-  wrapper. If you have it, place it alongside the jar:
+- **Zenith binary model** — Decipher bundles the unchanged Zenith 2026.2 model
+  at:
 
   ```
-  other_tools/zenith-2026.2/zenith-model.array.bin
+  models/ngram5_en_zenith.bin
   ```
 
-  Then pass it via `DECIPHER_NGRAM_MODEL_EN` (see
-  [Build Language Models](language_models.md)) to compare Decipher's
-  `zenith_native` against the same n-gram model that Zenith itself uses.
+  It is the default English model for `zenith_native`; no environment override
+  is required. See [model provenance](zenith_model_provenance.md) and
+  [Build Language Models](language_models.md).
 
 ### Quick smoke test
 
@@ -133,14 +132,14 @@ PYTHONPATH=src .venv/bin/python scripts/run_automated_parity_matrix.py \
   --artifact-dir artifacts/external_parity
 ```
 
-### Decipher with the proprietary Zenith model
+### Decipher with the upstream Zenith model
 
 To compare Decipher's `zenith_native` solver using the same n-gram model that
 Zenith itself ships:
 
 ```bash
 DECIPHER_PARALLEL_WORKERS=8 \
-DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
+DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_zenith.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --suite-file frontier/automated_solver_frontier.jsonl \

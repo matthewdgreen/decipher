@@ -1,0 +1,31 @@
+{
+  "language": "en",
+  "order": 5,
+  "format": "zenith_binary_v1",
+  "output_file": "ngram5_en_zenith.bin",
+  "variant": "zenith_upstream",
+  "display_label": "English (Zenith upstream 2026.2)",
+  "sha256": "0fc92b96a6018347e936eff9417b3b54a8e144b016ea921c7769f1be0f24fe63",
+  "array_length": 11881376,
+  "unknown_log_prob": -20.144190602932802,
+  "upstream": {
+    "project": "Zenith",
+    "repository": "https://github.com/beldenge/Zenith",
+    "release": "2026.2",
+    "release_commit": "2609112011de18c67bf61d980ba998fdc68d198f",
+    "license": "GPL-3.0",
+    "source_artifact": "zenith-model.array.bin"
+  },
+  "sources": [
+    "British National Corpus XML Edition",
+    "Leipzig Corpora Collection English 2005",
+    "Manually Annotated Sub-Corpus (MASC)",
+    "Blog Authorship Corpus"
+  ],
+  "corpus_stats": {
+    "fivegram_observations": 560416358,
+    "distinct_seen_5grams": 2642405
+  },
+  "redistribution_status": "redistributed_under_upstream_gplv3",
+  "provenance_document": "docs/zenith_model_provenance.md"
+}

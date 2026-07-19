@@ -422,7 +422,7 @@ Known Z340 replay fixture:
 
 ```bash
 DECIPHER_PARALLEL_WORKERS=8 \
-DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
+DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_zenith.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --suite-file frontier/zodiac340_known_replay.jsonl \
@@ -439,7 +439,7 @@ Zenith transform pipeline before homophonic solving.
 Large synthetic packet for broad transform stress testing:
 
 ```bash
-DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
+DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_zenith.bin \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --suite-file frontier/transform_stress_overnight.jsonl \
   --solvers decipher \

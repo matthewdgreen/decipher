@@ -8,7 +8,7 @@ Current suite:
 Current comparison columns:
 - `decipher-parity`: Decipher automated solver using `zenith_native` with the bundled parity model
 - `zenith-external`: external Zenith through the harness
-- `decipher-zenith-binary`: Decipher automated solver using `zenith_native` with the proprietary Zenith binary model
+- `decipher-zenith-binary`: Decipher automated solver using `zenith_native` with the upstream Zenith binary model
 
 Status:
 - `decipher-parity`: recorded
@@ -36,11 +36,11 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --solvers external
 ```
 
-Decipher with proprietary Zenith binary:
+Decipher with upstream Zenith binary:
 
 ```bash
 DECIPHER_PARALLEL_WORKERS=8 \
-DECIPHER_NGRAM_MODEL_EN=other_tools/zenith-2026.2/zenith-model.array.bin \
+DECIPHER_NGRAM_MODEL_EN=models/ngram5_en_zenith.bin \
 DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native \
 PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
   --suite-file frontier/automated_solver_frontier.jsonl \
@@ -83,7 +83,7 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 
 - `shared_hard` is doing what we wanted: both Decipher and Zenith are strong,
   but neither is in a boring all-green regime.
-- The proprietary Zenith binary helps Decipher materially on Zodiac and a bit
+- The upstream Zenith binary helps Decipher materially on Zodiac and a bit
   on a few historical cases, but it does not close the multilingual
   simple-substitution gaps.
 - Decipher is much stronger on the French and Italian simple-substitution
@@ -133,7 +133,7 @@ Headline read:
 ### External Zenith minus Decipher Zenith Binary
 
 Positive values mean external Zenith is better than Decipher running
-`zenith_native` on the proprietary Zenith model.
+`zenith_native` on the upstream Zenith model.
 
 | Test ID | Char delta | Time delta |
 |---|---:|---:|

@@ -16,7 +16,7 @@ Resolution precedence (``resolve_language_model``):
   (c) default -- an optional per-language default variant from
       ``_DEFAULT_VARIANTS`` (resolved via the same registry scan as (b); a miss
       falls through, never raises), then ``models/ngram5_<lang>.bin`` exactly as
-      before, including the English-only proprietary Zenith fallbacks.
+      before, including the English-only legacy Zenith locations.
 
 The registry never crashes on a missing or malformed sidecar: such a model is
 still listed with ``variant=None`` and a filename-derived label.
@@ -66,12 +66,17 @@ class ModelVariantError(ValueError):
 # same registry scan used for an explicit variant) instead of the bare
 # ``ngram5_<lang>.bin`` filename. A miss (the variant's model is absent) falls
 # through to the filename fallback so a default resolution never raises. Any
-# language absent from this table keeps today's byte-identical behavior.
+# language absent from this table keeps the bare-filename behavior.
 #
+# ``en`` -> ``zenith_upstream`` (the unchanged Zenith 2026.2 model bundled at
+# ``ngram5_en_zenith.bin``): this is the strongest measured English model.
 # ``de`` -> ``historical_1600_1899`` (the DTA Kernkorpus model,
 # ``ngram5_de_dta.bin``): it beats the old Gutenberg ``literary_19c`` model on
 # every measured German workload (see docs/specs/dta_default_switch_spec.md).
-_DEFAULT_VARIANTS: dict[str, str] = {"de": "historical_1600_1899"}
+_DEFAULT_VARIANTS: dict[str, str] = {
+    "de": "historical_1600_1899",
+    "en": "zenith_upstream",
+}
 
 
 def _repo_root() -> Path:
@@ -167,8 +172,9 @@ def resolve_language_model(
 ) -> Path | None:
     """Resolve the binary model path for ``language`` under the precedence above.
 
-    With no env override and ``variant=None`` this is byte-identical to the
-    historical ``_zenith_native_model_path`` for every language.
+    With no env override and ``variant=None``, languages with a named default
+    use that registry variant; other languages retain the historical bare-file
+    behavior.
     """
     lang_key = (language or "en").strip().lower()
 

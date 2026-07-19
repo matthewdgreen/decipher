@@ -91,10 +91,9 @@ experiments, key repair, and independent verification, with the epistemic
 gates (no declaration without a fresh independent positive verification)
 enforced server-side. See [docs/mcp_onboarding.md](docs/mcp_onboarding.md).
 
-Decipher borrows solving algorithms (with attribution and license compliance)
-from the Zenith solving tool. For licensing reasons we do not redistribute
-Zenith's ngram models, and instead provide our own (as well as tooling to
-generate additional models).
+Decipher borrows solving algorithms and the default English 5-gram model from
+the GPLv3 Zenith project, with attribution and recorded provenance. It also
+ships Decipher-built alternatives and tooling to generate additional models.
 
 ## Setup
 
@@ -126,10 +125,12 @@ To activate the venv in your current shell after setup:
 source .venv/bin/activate
 ```
 
-A bundled English 5-gram model ships at `models/ngram5_en.bin`, so a fresh
-clone can run automated solves immediately. No API key is required for the
-default automated workflows. See [Build Language Models](#build-language-models)
-to add or replace models.
+The upstream Zenith English 5-gram model ships at
+`models/ngram5_en_zenith.bin` and is the default English model, so a fresh clone
+can run automated solves immediately. Decipher-built alternatives remain in
+`models/`. No API key is required for the default automated workflows. See
+[Build Language Models](#build-language-models) to select, add, or replace
+models.
 
 If you prefer to set up by hand instead of running the script:
 
@@ -769,8 +770,9 @@ profiling or CI runs where reproducible output is more important than speed.
 ## Build Language Models
 
 Decipher can build Zenith-compatible binary n-gram models from public-domain
-and licensed corpora (Project Gutenberg, OANC, MASC, BNC). The bundled English
-model at `models/ngram5_en.bin` is enough for most use cases.
+and licensed corpora (Project Gutenberg, OANC, MASC, BNC). English defaults to
+the bundled upstream Zenith model at `models/ngram5_en_zenith.bin`; the
+Decipher-built Gutenberg model remains available at `models/ngram5_en.bin`.
 
 To build a fresh English model from Gutenberg + OANC + MASC:
 
@@ -884,21 +886,9 @@ native homophonic search. Decipher was therefore relicensed under GPLv3 so
 this derived solver can be redistributed with explicit attribution and license
 compatibility.
 
-The original Zenith English binary model is not redistributed here. Decipher
-includes tooling to build replacement language models from open and licensed
-corpora.
-
-Current provenance understanding:
-
-- The `zenith_native` solver code path is redistributable under GPLv3 with
-  attribution.
-- The Zenith English binary model is still treated as **legally unresolved**
-  for redistribution in Decipher.
-- Earlier concern that **BNC** alone blocked redistribution turned out to be
-  too pessimistic; BNC-derived products appear to be allowed.
-- The main remaining uncertainty is the **Blog Authorship Corpus**, which
-  Zenith documents as part of its training mix and which appears to be limited
-  to **non-commercial research use**.
-
-So for now, Decipher does **not** bundle the original Zenith model and instead
-ships Decipher-built replacement models.
+Decipher also redistributes Zenith's unchanged 2026.2 English model under the
+upstream project's GPLv3 distribution, with exact version, checksum, corpus
+sources, and the known Blog Authorship Corpus caveat documented in
+[`docs/zenith_model_provenance.md`](docs/zenith_model_provenance.md). The raw
+training corpora are not included. Decipher-built models remain available for
+fully independent or licensing-sensitive deployments.

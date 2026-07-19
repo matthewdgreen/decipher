@@ -58,7 +58,7 @@ Calibration notes from 2026-04-26:
 - With Decipher's redistributable `models/ngram5_en_parity.bin`, Z340 known
   replay currently reaches 52.9% char accuracy in full budget.
 - With the external Zenith binary model
-  `other_tools/zenith-2026.2/zenith-model.array.bin`, the same known replay
+  `models/ngram5_en_zenith.bin`, the same known replay
   reaches 96.2% char accuracy in full budget.
 - Z340 hidden-transform calibration, 2026-04-26:
   `zodiac340_transform_search_rank` supplies the original Z340 order with no

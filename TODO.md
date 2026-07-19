@@ -1160,17 +1160,27 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
 - [x] Run no-LLM automated preflight before LLM iteration 1 by default, with a branch and prompt summary.
 - [x] Upgrade English simple-substitution automated solving with bijective continuous n-gram annealing.
 - [x] Add a chunkable automated-only parity matrix runner for seed, length, family, benchmark split, and external-tool comparisons.
-- [ ] Add model provenance and acquisition docs for continuous n-gram models.
-  - Current high-quality continuous model support relies on a local Zenith English `zenith-model.csv` under `other_tools/`, which is git-ignored and not redistributed with Decipher.
-  - Document that the Zenith model is optional but strongly recommended for English homophonic parity, and that fallback word-list models are weaker.
-  - Record expected model path(s), version/source, order, row count, checksum, and artifact metadata.
-  - Update the Zenith-model redistribution note: BNC no longer appears to be the blocking issue, but Zenith's documented use of the Blog Authorship Corpus still leaves redistribution legally unresolved for Decipher.
-  - Resolve redistribution status before bundling any Zenith model files: confirm whether `zenith-model.csv`/`.array.bin` are covered by Zenith GPLv3 and whether the Blog Authorship Corpus training component permits redistributing a derived commercial/open-source model.
-  - Decide whether Decipher should bundle models, download them, or require users to provide them locally.
-- [ ] Add a model registry/config layer for continuous n-gram models.
-  - Support named models such as `en_zenith_5gram`.
-  - Track language, order, source, license/provenance, path, checksum, row count, and redistribution status.
-  - Ensure run artifacts record exactly which model was used.
+- [x] Add model provenance and acquisition docs for continuous n-gram models.
+  - The unchanged Zenith 2026.2 English binary is bundled as
+    `models/ngram5_en_zenith.bin`, with exact source, version, format, corpus
+    list, checksum, and the Blog Authorship Corpus caveat recorded in
+    `docs/zenith_model_provenance.md` and its metadata sidecar.
+  - The project decision is to redistribute the upstream GPLv3 artifact for
+    Decipher's non-commercial research use and reassess promptly if a rights
+    holder or upstream maintainer raises a concern.
+- [x] Add a model registry/config layer for continuous n-gram models.
+  - Named variants, precedence (`env > explicit variant > named default > bare
+    file`), provenance metadata, and run-artifact selection are implemented.
+  - English now defaults to `zenith_upstream`; German defaults to
+    `historical_1600_1899`.
+- [ ] Bring a Decipher-built English model to parity with the Zenith 2026.2
+  model so licensing-sensitive deployments do not trade away solver quality.
+  - Expand and rebalance the training corpus while preserving reproducible
+    manifests and per-source licensing metadata.
+  - Compare candidate models on `frontier/english_model_comparison.jsonl` with
+    fixed solver settings, multiple seeds, and paired runtime/accuracy reports.
+  - Analyze n-gram coverage and probability differences on residual failures,
+    not only aggregate model size.
 - [ ] Add or train language-specific continuous models for Latin, German, French, and Italian.
   - Identify corpus sources and licenses for each language.
   - Normalize corpora consistently with benchmark plaintext rules.

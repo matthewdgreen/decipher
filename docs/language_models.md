@@ -1,12 +1,13 @@
 # Build Language Models
 
-Decipher can build Zenith-compatible binary n-gram models from public-domain
-corpora and licensed local sources.
+Decipher bundles Zenith's upstream English model and can also build compatible
+binary n-gram models from public-domain corpora and licensed local sources.
 
 ## Source Summary
 
 | Source | Languages | Tooling path | Notes |
 |--------|-----------|--------------|-------|
+| Zenith 2026.2 pre-trained model | `en` | bundled model | Default English model; see [provenance](zenith_model_provenance.md) |
 | Project Gutenberg | `en`, `de`, `fr`, `it`, `la` | automatic download | Good bootstrap source, but literary-skewed |
 | OANC | `en` | automatic download | Official ANC archive; tooling handles current TLS issue |
 | MASC | `en` | automatic download | Official ANC archive; small but balanced |
@@ -117,6 +118,12 @@ PYTHONPATH=src .venv/bin/python -m tools.corpus run en \
 
 ## Selecting and Overriding Models
 
+English defaults to the named `zenith_upstream` registry variant at
+`models/ngram5_en_zenith.bin`. The unchanged upstream artifact and its corpus
+mix are documented in [Zenith English Model Provenance](zenith_model_provenance.md).
+The Decipher-built `gutenberg`, `parity`, and `mixed` variants remain available
+for comparison and licensing-sensitive deployments.
+
 To force the automated solver to use a specific model:
 
 ```bash
@@ -127,9 +134,10 @@ PYTHONPATH=src .venv/bin/python scripts/run_frontier_suite.py \
 ```
 
 By default, `zenith_native` first honors any explicit environment override such
-as `DECIPHER_NGRAM_MODEL_EN=/path/to/model.bin`. If no override is set, it
-looks for a repo-local bundled model such as `models/ngram5_en.bin`, and only
-after that falls back to English-specific legacy Zenith locations.
+as `DECIPHER_NGRAM_MODEL_EN=/path/to/model.bin`. If no override is set, the
+registry selects `models/ngram5_en_zenith.bin` for English. If that named
+variant is absent, resolution falls back to `models/ngram5_en.bin` and then to
+English-specific legacy Zenith locations.
 
 ## Source Access Notes
 

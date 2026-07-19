@@ -39,11 +39,12 @@ Licensing note:
   controlled by `DECIPHER_NULL_MASK_THREADS` with the usual parallel-worker
   fallbacks). Python still owns candidate generation, validation/ranking, and
   artifacts, so the ground-truth firewall remains at the orchestration layer.
-- The original Zenith English binary model is still not redistributed in this
-  repo. Current understanding is that BNC itself is probably not the blocking
-  issue; the remaining redistribution uncertainty is primarily the Blog
-  Authorship Corpus, which Zenith documents as part of its training mix.
-  Replacing that model with Decipher-built models remains active work.
+- The unchanged Zenith 2026.2 English binary model is redistributed at
+  `models/ngram5_en_zenith.bin` and is the named `zenith_upstream` English
+  default. Exact version, checksum, corpus sources, and the remaining Blog
+  Authorship Corpus caveat are recorded in
+  `docs/zenith_model_provenance.md`. Decipher-built English variants remain
+  available, and improving them toward parity remains active work.
 
 ---
 
@@ -345,7 +346,7 @@ path like `/path/to/cipher_benchmark/benchmark/`.
 - There is now also a small English model evaluation packet in
   `frontier/english_model_eval.jsonl`. Use this when comparing
   `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native` across different English
-  binary models (for example, proprietary Zenith vs Decipher-built Gutenberg
+  binary models (for example, upstream Zenith vs Decipher-built Gutenberg
   models). It is intentionally narrow: two known-good English homophonic
   cases, two short runtime/frontier cases, and Zodiac 408.
 - There is also a broader English model comparison packet in
@@ -481,7 +482,7 @@ Key implementation details:
   `DECIPHER_HOMOPHONIC_SCORE_PROFILE=zenith_native`.
 - No modifications to `homophonic.py`; imports `HomophonicAnnealResult` for compatibility.
 - Requires numpy (already used in `signals.py`); binary model at
-  `other_tools/zenith-2026.2/zenith-model.array.bin` (git-ignored, see provenance note).
+  `models/ngram5_en_zenith.bin` (see `docs/zenith_model_provenance.md`).
 
 ### ✅ **Periodic Polyalphabetic First Slice**
 Implemented `src/analysis/polyalphabetic.py` and routed explicit
@@ -664,10 +665,11 @@ gap vs. Zenith. See the "Zenith-Parity Homophonic Solver" achievement above for 
 root-cause bugs that were fixed.
 
 Remaining open questions in this area:
-- **Bundled redistributable model**: the repo now ships a redistributable English binary
-  model at `models/ngram5_en.bin`, and `zenith_native` should prefer it by default unless
-  `DECIPHER_NGRAM_MODEL_EN` overrides it. This removes the immediate clone-and-run blocker,
-  but the bundled model is still a work in progress and should be improved with broader corpora.
+- **Bundled English models**: the repo ships the unchanged upstream Zenith
+  2026.2 model at `models/ngram5_en_zenith.bin` as the English default, plus
+  Decipher-built alternatives such as `models/ngram5_en.bin`. An explicit
+  `DECIPHER_NGRAM_MODEL_EN` still wins. Continue improving the homegrown models
+  so users can choose an independently built model without giving up accuracy.
 - **Corpus tooling expansion**: `python -m tools.corpus` now supports mixed English-source
   downloads from Gutenberg, OANC, and MASC, with a corpus manifest recording provenance.
   OANC/MASC access works around the current expired TLS certificate on `anc.org`; keep that
@@ -699,9 +701,9 @@ Historical ablation record (kept for reference — superseded by `zenith_native`
   The decisive fix was correcting the acceptance temperature, not just the score.
 
 ### 3. 📚 **Continuous n-gram model provenance**
-High-quality English homophonic solving can still auto-discover Zenith's local English model from `other_tools/`, but treat it as an optional local dependency until provenance is fully resolved. Current understanding: BNC-derived products appear acceptable, Leipzig downloadable corpora appear permissive, and OANC/MASC are open; the main remaining redistribution uncertainty is the Blog Authorship Corpus, which Zenith documents as part of its training mix and which appears to be limited to non-commercial research use. Do not bundle or publish Zenith model files from this repo until that remaining issue is resolved.
+High-quality English homophonic solving defaults to the unchanged Zenith 2026.2 model at `models/ngram5_en_zenith.bin`. Its exact provenance, checksum, corpus sources, GPLv3 redistribution decision, and Blog Authorship Corpus caveat are recorded in `docs/zenith_model_provenance.md`. Keep that document and the model sidecar current if the artifact or policy changes.
 
-Decipher does not currently have comparable continuous corpus n-gram files for Latin, German, French, or Italian. It has word-list fallbacks and dictionaries, but those are weaker than the Zenith-style English model. Future work should add a model registry with language, order, source, checksum, license/provenance, row count, and redistribution status, and should record the selected model in run artifacts.
+The model registry records language, order, source metadata, checksum, and selected variant in artifacts. Decipher also bundles continuous models for Latin, German, French, and Italian, though their quality and corpus coverage vary; model-quality parity remains separate work from packaging and registry support.
 
 Current April 2026 state for non-English bundled models:
 - Latin now has both `models/ngram5_la.bin` (100 Gutenberg books) and
