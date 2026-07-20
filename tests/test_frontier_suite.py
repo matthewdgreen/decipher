@@ -190,8 +190,15 @@ def test_automated_solver_frontier_suite_loads_current_multifamily_frontier():
     cases = load_frontier_suite(suite)
     by_test = {case.test.test_id: case for case in cases}
 
-    assert len(cases) == 21
+    assert len(cases) == 24
     assert "synth_en_80honb_s2" in by_test
+    # 2026-07-20 family rows (3eb6368): composite, width-11 keyed columnar,
+    # blind quagmire3 (the last flips to known_good with label-aware routing).
+    assert "synth_en_287tnb_s41" in by_test
+    assert "synth_en_198ptnb_s43" in by_test
+    assert "synth_en_540q3nb_s42" in by_test
+    assert by_test["synth_en_287tnb_s41"].frontier_class == "known_good"
+    assert by_test["synth_en_198ptnb_s43"].frontier_class == "known_good"
     assert "parity_tool_zenith_zodiac408" in by_test
     assert "synth_en_120vignb_s21" in by_test
     assert "kryptos_k2_keyed_vigenere" in by_test
