@@ -270,7 +270,24 @@ against a partial-key branch → unchanged behavior. If the guard lands in
 - **Finding 6 (fixed):** partial-key negative control added
   (`test_decoded_branch_guard_inherited_key_and_mask_precedence` case c).
 
-## 8. Slicing / landing
+## 8. Post-land acceptance — PASSED (2026-07-19)
+
+Landed as `39b889a`; acceptance run same day through the MCP surface
+(investigation `4a382b3cd40c`, post-restart server on the new code):
+`composite_substitution_transposition` experiment `b19a8a57ec02` solved
+round-4 in 18.2s (peeled 7-column columnar, keyword slot BAFDCEG; dict_rate
+0.93); the collect packet surfaced the P2 candidates summary (rank 1 len 287;
+rank 2 len 283, padding M×4); rank-2 install `composite_trimmed` → positive
+independent attestation (coherence 9, reader_accepts_as_solution=true,
+language confidence 0.99, $0.011) → `meta_declare_solution` **ACCEPTED**,
+terminal status `solved`. Declared text byte-identical to the sealed answer's
+`plaintext_letters` minus the MMMM tail
+(`~/.config/decipher/dogfood_answers/round4_composite_answer.json`). The
+same cipher failed DECL-1 on the padded tail pre-fix (memory
+`composite-repair-padding-todo` B) — the workplan acceptance criterion
+("round-4 declares clean") is met.
+
+## 9. Slicing / landing
 
 One phase, one coder task (P1-P4 are small and share files), one commit:
 "Declaration hardening: decoded-branch installs, composite padding-trim,
