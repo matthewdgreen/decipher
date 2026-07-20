@@ -21,6 +21,7 @@ from analysis.polyalphabetic import (
 )
 from automated.runner import AutomatedBenchmarkRunner
 from automated.runner import run_automated
+from automated.runner import _run_periodic_polyalphabetic
 from benchmark.loader import parse_canonical_transcription
 from frontier.suite import load_frontier_suite, resolve_frontier_case
 from testgen.builder import build_test_case
@@ -462,6 +463,219 @@ def test_automated_runner_quagmire_search_records_scaffold(monkeypatch):
     assert "Sam Blake" in step["attribution"]
 
 
+# --- Label-aware blind-Quagmire routing (quagmire_label_routing spec) ---------
+#
+# These tests drive _run_periodic_polyalphabetic directly with monkeypatched
+# engine stubs (no real shotgun compute). They pin the label-aware default,
+# that explicitly-set env keeps today's behavior, and the non-quag fallthrough.
+
+_QUAG_ROUTING_KNOBS = (
+    "DECIPHER_KEYED_VIGENERE_MODE",
+    "DECIPHER_QUAGMIRE_ENGINE",
+    "DECIPHER_QUAGMIRE_KEYWORD_LENGTHS",
+    "DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS",
+    "DECIPHER_QUAGMIRE_INITIAL_KEYWORDS",
+    "DECIPHER_QUAGMIRE_HILLCLIMBS",
+    "DECIPHER_QUAGMIRE_SEARCH_RESTARTS",
+    "DECIPHER_QUAGMIRE_SEARCH_STEPS",
+    "DECIPHER_POLYALPHABETIC_MAX_PERIOD",
+)
+
+
+def _clear_quag_routing_env(monkeypatch):
+    for name in _QUAG_ROUTING_KNOBS:
+        monkeypatch.delenv(name, raising=False)
+
+
+def _make_shotgun_stub(calls, plaintext="SHOTGUNSTUBPLAINTEXT"):
+    def _stub(cipher_text, **kwargs):
+        calls.append(kwargs)
+        return {
+            "solver": "quagmire3_keyword_alphabet_search",
+            "status": "completed",
+            "best_candidate": {
+                "plaintext": plaintext,
+                "variant": "quag3",
+                "period": 8,
+                "metadata": {"quagmire_type": "quag3", "key_type": "QuagmireKey"},
+            },
+        }
+
+    return _stub
+
+
+def _make_generic_screen_stub(calls, plaintext="GENERICSCREENSTUB"):
+    def _stub(cipher_text, **kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "completed",
+            "best_candidate": {"plaintext": plaintext, "variant": "vigenere", "period": 8},
+        }
+
+    return _stub
+
+
+def test_quag_label_aware_default_enters_search_at_experiment_parity(monkeypatch):
+    _clear_quag_routing_env(monkeypatch)
+    shotgun_calls: list[dict] = []
+    screen_calls: list[dict] = []
+    monkeypatch.setattr(
+        "analysis.polyalphabetic_fast.search_quagmire3_shotgun_fast",
+        _make_shotgun_stub(shotgun_calls),
+    )
+    monkeypatch.setattr(
+        "analysis.polyalphabetic.search_periodic_polyalphabetic",
+        _make_generic_screen_stub(screen_calls),
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="quagmire3", solver_hints=None
+    )
+
+    assert len(shotgun_calls) == 1
+    assert not screen_calls  # generic periodic screen must NOT be reached
+    kwargs = shotgun_calls[0]
+    assert kwargs["keyword_lengths"] == [7]
+    assert kwargs["cycleword_lengths"] == [8]
+    assert kwargs["hillclimbs"] == 5000
+    assert kwargs["restarts"] == 250
+    assert step["routing"] == "label_aware_default"
+    assert plaintext == "SHOTGUNSTUBPLAINTEXT"
+
+
+def test_quag_explicit_replay_suppresses_search(monkeypatch):
+    _clear_quag_routing_env(monkeypatch)
+    monkeypatch.setenv("DECIPHER_KEYED_VIGENERE_MODE", "replay")
+    shotgun_calls: list[dict] = []
+    screen_calls: list[dict] = []
+    monkeypatch.setattr(
+        "analysis.polyalphabetic_fast.search_quagmire3_shotgun_fast",
+        _make_shotgun_stub(shotgun_calls),
+    )
+    monkeypatch.setattr(
+        "analysis.polyalphabetic.search_periodic_polyalphabetic",
+        _make_generic_screen_stub(screen_calls),
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="quagmire3", solver_hints=None
+    )
+
+    assert not shotgun_calls  # explicit replay keeps today's behavior
+    assert len(screen_calls) == 1  # falls through to the generic periodic screen
+    assert step["name"] == "search_periodic_polyalphabetic"
+    assert plaintext == "GENERICSCREENSTUB"
+
+
+def test_quag_env_mode_search_keeps_historical_defaults(monkeypatch):
+    _clear_quag_routing_env(monkeypatch)
+    monkeypatch.setenv("DECIPHER_KEYED_VIGENERE_MODE", "quagmire3_search")
+    shotgun_calls: list[dict] = []
+    monkeypatch.setattr(
+        "analysis.polyalphabetic_fast.search_quagmire3_shotgun_fast",
+        _make_shotgun_stub(shotgun_calls),
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="quagmire3", solver_hints=None
+    )
+
+    assert len(shotgun_calls) == 1
+    kwargs = shotgun_calls[0]
+    assert kwargs["hillclimbs"] == 500
+    assert kwargs["restarts"] == 8
+    assert kwargs["cycleword_lengths"] == list(range(1, 13))  # 1..max_period default
+    assert step["routing"] == "env_mode"
+
+
+def test_quag_non_quag_label_does_not_enter_search(monkeypatch):
+    _clear_quag_routing_env(monkeypatch)
+    shotgun_calls: list[dict] = []
+    screen_calls: list[dict] = []
+    monkeypatch.setattr(
+        "analysis.polyalphabetic_fast.search_quagmire3_shotgun_fast",
+        _make_shotgun_stub(shotgun_calls),
+    )
+    monkeypatch.setattr(
+        "analysis.polyalphabetic.search_periodic_polyalphabetic",
+        _make_generic_screen_stub(screen_calls),
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="vigenere", solver_hints=None
+    )
+
+    assert not shotgun_calls  # non-quag label never enters the quag search branch
+    assert len(screen_calls) == 1
+    assert step["name"] == "search_periodic_polyalphabetic"
+
+
+def test_quag_label_aware_knob_override(monkeypatch):
+    _clear_quag_routing_env(monkeypatch)
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_HILLCLIMBS", "123")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "17")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_KEYWORD_LENGTHS", "6,9")
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS", "5")
+    shotgun_calls: list[dict] = []
+    monkeypatch.setattr(
+        "analysis.polyalphabetic_fast.search_quagmire3_shotgun_fast",
+        _make_shotgun_stub(shotgun_calls),
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="quagmire3", solver_hints=None
+    )
+
+    assert len(shotgun_calls) == 1
+    kwargs = shotgun_calls[0]
+    # Every explicitly-set DECIPHER_QUAGMIRE_* knob wins over its parity default
+    # (review finding #3: pin all four, not just hillclimbs).
+    assert kwargs["hillclimbs"] == 123
+    assert kwargs["restarts"] == 17
+    assert kwargs["keyword_lengths"] == [6, 9]
+    assert kwargs["cycleword_lengths"] == [5]
+    assert step["routing"] == "label_aware_default"
+
+
+def test_quag_label_aware_python_engine_gets_parity_defaults(monkeypatch):
+    """Review finding #2: the Python fallback engine also receives the
+    label-aware parity defaults (cycleword [8], restarts 250; hillclimbs is a
+    rust-only knob)."""
+    _clear_quag_routing_env(monkeypatch)
+    monkeypatch.setenv("DECIPHER_QUAGMIRE_ENGINE", "python")
+    calls: list[dict] = []
+
+    def _stub(cipher_text, **kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "completed",
+            "solver": "quagmire3_keyword_alphabet_search",
+            "best_candidate": {"plaintext": "STUBPLAINTEXT", "metadata": {}},
+            "top_candidates": [{"plaintext": "STUBPLAINTEXT", "metadata": {}}],
+        }
+
+    monkeypatch.setattr(
+        "analysis.polyalphabetic.search_quagmire3_keyword_alphabet", _stub
+    )
+    ct = CipherText(raw="ABCDEFGHIJ", alphabet=Alphabet.from_text("ABCDEFGHIJ"), separator=None)
+
+    solver, key, plaintext, step = _run_periodic_polyalphabetic(
+        ct, language="en", cipher_system="quagmire3", solver_hints=None
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["restarts"] == 250
+    assert calls[0]["cycleword_lengths"] == [8]
+    assert calls[0]["keyword_lengths"] == [7]
+    assert step["routing"] == "label_aware_default"
+    assert plaintext == "STUBPLAINTEXT"
+
+
 def test_automated_runner_can_force_keyed_kryptos_periodic_key_search(monkeypatch):
     ciphertext = (
         "VFPJUDEEHZWETZYVGWHKKQETGFQJNCEGGWHKK?DQMCPFQZDQMMIAGPFXHQRLGTIMVMZJANQLVKQEDAGDVFRPJUNGEUNA"
@@ -824,9 +1038,11 @@ def test_polyalphabetic_frontier_ladder_runs_automated_from_cached_plaintext(tmp
         ("synth_en_120vbfnb_s23", "periodic_polyalphabetic_screen", 1.0),
         ("synth_en_120grnb_s24", "periodic_polyalphabetic_screen", 1.0),
     ]
-    # Quagmire III (K2-like) entries are routed through the periodic screen but
-    # the generic chi² solver does not know about keyed alphabets, so accuracy
-    # is partial.  We only assert correct routing and test ID ordering here.
+    # Quagmire III (K2-like) entries carry a labeled `quagmire3` cipher_system,
+    # so label-aware routing (quagmire_label_routing spec) sends them to the
+    # blind quag search engine at experiment-parity budget rather than the
+    # generic periodic screen (which cannot solve a keyed tableau).  We only
+    # assert correct routing and test ID ordering here, not exact accuracy.
     q3_ids = [r[0] for r in rows[4:]]
     q3_solvers = [r[1] for r in rows[4:]]
     assert q3_ids == [
@@ -834,4 +1050,5 @@ def test_polyalphabetic_frontier_ladder_runs_automated_from_cached_plaintext(tmp
         "synth_en_97q3nb_s51",
         "synth_en_97q3nb_s52",
     ]
-    assert all(s == "periodic_polyalphabetic_screen" for s in q3_solvers), q3_solvers
+    assert all(s != "periodic_polyalphabetic_screen" for s in q3_solvers), q3_solvers
+    assert all("quagmire3" in s for s in q3_solvers), q3_solvers

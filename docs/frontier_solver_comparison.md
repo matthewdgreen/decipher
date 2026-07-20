@@ -172,7 +172,7 @@ recording (all at `55226d7`-era code, zenith_native profile, bundled models):
 |---|---|---|---|
 | `synth_en_287tnb_s41` | substitution + keyed columnar (MASONRY) | known_good | char 1.000, 33.1s — the C.1 peel-and-solve route |
 | `synth_en_198ptnb_s43` | plain keyed columnar, width 11 | known_good | char 0.999, 79.6s — requires the F2 escalation (`7f3f09f`); was the workplan's expected bad_result |
-| `synth_en_540q3nb_s42` | blind Quagmire III (kw7/cw8) | **bad_result** | char 0.29 — labeled quag falls through to the generic periodic screen on the automated surface (env-gated, not label-aware); the capability is known_good on the EXPERIMENT surface (round-6, agentic fs2). Flip to known_good when label-aware routing lands. |
+| `synth_en_540q3nb_s42` | blind Quagmire III (kw7/cw8) | known_good | char 1.0 in ~21s — the earlier bad_result (char 0.29) came from env-gated, non-label-aware routing that let a labeled quag fall through to the generic periodic screen. Fixed by the label-aware quag routing (`quagmire_label_routing` spec): with the env unset and cipher_system naming a quag, the runner now enters the blind quag search branch at experiment-parity budget (kw [7], cw [8], hillclimbs 5000, restarts 250). Tableau keyword stays pinned to length 7 = the default sweep. |
 
 Two generation constraints discovered while validating (recorded in the row
 notes): keyed-columnar rows built via the suite transformer must use an exact

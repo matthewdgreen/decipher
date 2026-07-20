@@ -3214,7 +3214,8 @@ def _run_periodic_polyalphabetic(
 ) -> tuple[str, dict[int, int], str, dict[str, Any]]:
     solver_hints = solver_hints or {}
     known_params = solver_hints.get("known_cipher_parameters") if "known_cipher_parameters" in solver_hints else solver_hints
-    keyed_mode = os.environ.get("DECIPHER_KEYED_VIGENERE_MODE", "replay").strip().lower()
+    env_mode_raw = os.environ.get("DECIPHER_KEYED_VIGENERE_MODE")
+    keyed_mode = (env_mode_raw if env_mode_raw is not None else "replay").strip().lower()
     quagmire_types = {
         "quagmire",
         "quagmirei",
@@ -3292,12 +3293,34 @@ def _run_periodic_polyalphabetic(
         }
         return str(result.get("solver") or "quagmire_known_replay"), {}, str(result.get("plaintext") or ""), step
 
-    if keyed_mode in {"quagmire_search", "quag3_search", "quagmire3_search"}:
+    # Label-aware default: an explicit family label must not silently degrade
+    # to the incapable generic periodic screen. When DECIPHER_KEYED_VIGENERE_MODE
+    # is UNSET and the cipher_system names a Quagmire (and the known-params replay
+    # block above did not apply — reaching here means it did not), enter the blind
+    # quag SEARCH branch at experiment-parity budget. Any EXPLICITLY set env value
+    # keeps today's behavior byte-for-byte (including an explicit "replay").
+    label_aware = env_mode_raw is None and "quag" in (cipher_system or "").lower()
+    if env_mode_raw is not None:
+        effective_mode = keyed_mode
+    else:
+        effective_mode = "quagmire3_search" if label_aware else "replay"
+
+    if effective_mode in {"quagmire_search", "quag3_search", "quagmire3_search"}:
         quagmire_engine = os.environ.get("DECIPHER_QUAGMIRE_ENGINE", "rust_shotgun").strip().lower()
+        # In the label-aware entry, defaults mirror EXPERIMENT_TYPES["quagmire3_shotgun"]
+        # (keyword_lengths [7], cycleword_lengths [8], hillclimbs 5000, restarts 250);
+        # each stays overridable by its DECIPHER_QUAGMIRE_* env knob. The explicit
+        # env-mode path keeps its historical defaults.
         keyword_lengths = _env_int_csv("DECIPHER_QUAGMIRE_KEYWORD_LENGTHS") or [7]
-        cycleword_lengths = _env_int_csv("DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS") or list(
-            range(1, int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "12")) + 1)
+        cycleword_lengths = _env_int_csv("DECIPHER_QUAGMIRE_CYCLEWORD_LENGTHS") or (
+            [8]
+            if label_aware
+            else list(
+                range(1, int(os.environ.get("DECIPHER_POLYALPHABETIC_MAX_PERIOD", "12")) + 1)
+            )
         )
+        default_hillclimbs = "5000" if label_aware else "500"
+        default_restarts = "250" if label_aware else "8"
         initial_keywords = _env_csv("DECIPHER_QUAGMIRE_INITIAL_KEYWORDS")
         if quagmire_engine == "rust_shotgun":
             from analysis.polyalphabetic_fast import search_quagmire3_shotgun_fast
@@ -3307,8 +3330,8 @@ def _run_periodic_polyalphabetic(
                 language=language,
                 keyword_lengths=keyword_lengths,
                 cycleword_lengths=cycleword_lengths,
-                hillclimbs=int(os.environ.get("DECIPHER_QUAGMIRE_HILLCLIMBS", "500")),
-                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "8")),
+                hillclimbs=int(os.environ.get("DECIPHER_QUAGMIRE_HILLCLIMBS", default_hillclimbs)),
+                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", default_restarts)),
                 seed=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_SEED", "1")),
                 top_n=10,
                 slip_probability=float(os.environ.get("DECIPHER_QUAGMIRE_SLIP_PROB", "0.001")),
@@ -3324,7 +3347,7 @@ def _run_periodic_polyalphabetic(
                 cycleword_lengths=cycleword_lengths,
                 initial_keywords=initial_keywords,
                 steps=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_STEPS", "500")),
-                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", "8")),
+                restarts=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_RESTARTS", default_restarts)),
                 seed=int(os.environ.get("DECIPHER_QUAGMIRE_SEARCH_SEED", "1")),
                 screen_top_n=int(os.environ.get("DECIPHER_QUAGMIRE_SCREEN_TOP_N", "128")),
                 word_weight=float(os.environ.get("DECIPHER_QUAGMIRE_WORD_WEIGHT", "0.25")),
@@ -3342,6 +3365,7 @@ def _run_periodic_polyalphabetic(
             "name": "search_quagmire3_keyword_alphabet",
             "solver": result.get("solver") or "quagmire3_keyword_alphabet_search",
             "status": result.get("status"),
+            "routing": "label_aware_default" if label_aware else "env_mode",
             "engine": quagmire_engine,
             "variant": best.get("variant"),
             "quagmire_type": metadata.get("quagmire_type", "quag3"),
