@@ -437,6 +437,34 @@ def _quagmire3_shotgun_runner(
     }
 
 
+def _composite_padding_candidates(decryption: str) -> list[dict[str, Any]]:
+    """Ranked finalists for a composite decryption. Rank 1 is the FULL text
+    (byte-identical to ``final_decryption``); when a trailing run of 4..32
+    identical characters (a columnar padding tail) is detected, rank 2 is the
+    trimmed text. Detection is on the whitespace-stripped text — composite output
+    is boundary-less. A whole-string run (run_len == len) yields only rank 1."""
+    candidates: list[dict[str, Any]] = [
+        {"rank": 1, "plaintext": decryption, "padding": None}
+    ]
+    text = (decryption or "").strip()
+    n = len(text)
+    if n:
+        last = text[-1]
+        run = 0
+        for ch in reversed(text):
+            if ch == last:
+                run += 1
+            else:
+                break
+        if 4 <= run <= 32 and run < n:
+            candidates.append({
+                "rank": 2,
+                "plaintext": text[: n - run],
+                "padding": {"char": last, "length": run},
+            })
+    return candidates
+
+
 def _composite_substitution_transposition_runner(
     cipher: Any, snapshot: dict[str, Any], config: dict[str, Any]
 ) -> dict[str, Any]:
@@ -503,6 +531,10 @@ def _composite_substitution_transposition_runner(
         "elapsed_seconds": elapsed,
         "key": {},  # slim: substitution map rides in metadata (transposed-order-specific)
         "final_decryption": decryption or "",
+        # Zero-risk additional candidate: rank 1 is the full decryption; rank 2
+        # (when present) trims a detected columnar padding tail so a declarable,
+        # language-only branch exists for a padded composite.
+        "top_candidates": _composite_padding_candidates(decryption or ""),
         "outcome": outcome,
         "substitution_key": substitution_key,
         "transposition": transposition,
@@ -1264,7 +1296,8 @@ EXPERIMENT_COLLECT_TOOL = {
         "decoded preview, route/primary step) and mark it collected; pass "
         "`install=true` (completed runs only) to adopt the solved branch under a "
         "fresh name (`as_name` optional), optionally choosing which ranked "
-        "finalist via `candidate_rank` (quagmire3_shotgun). A null-mask bakeoff "
+        "finalist via `candidate_rank` (quagmire3_shotgun, "
+        "composite_substitution_transposition). A null-mask bakeoff "
         "exposes a finalist review session in the packet."
     ),
     "input_schema": {
@@ -1277,7 +1310,8 @@ EXPERIMENT_COLLECT_TOOL = {
                 "type": "integer",
                 "description": (
                     "1-based finalist to install for ranked-result experiments "
-                    "(quagmire3_shotgun). Default 1 = best."
+                    "(quagmire3_shotgun; composite_substitution_transposition, "
+                    "where rank 2 trims a detected padding tail). Default 1 = best."
                 ),
             },
         },
@@ -1550,14 +1584,25 @@ def _install_experiment_branch(
     turn: int,
     candidate_rank: int = 1,
 ) -> str:
-    """Deep-copy the stored snapshot, restore under a fresh name, set the result
-    key, created_iteration = turn; mirror null-mask metadata. Source branch never
-    mutated (unlike the v2 in-place tool). ``candidate_rank`` is accepted for
-    installer-seam uniformity and ignored (this type has no ranked finalists —
-    dispatch rejects a supplied candidate_rank for it before calling here)."""
+    """Deep-copy the stored snapshot, restore under a fresh name, created_iteration
+    = turn. Source branch never mutated (unlike the v2 in-place tool).
+
+    Two install shapes:
+    - a flat substitution ``key`` (or a failed empty-key result) installs the
+      snapshot copy with ``set_full_key`` + null-mask mirroring, byte-identical to
+      the original installer; and
+    - a mode-specific result with an INTENTIONALLY empty flat key but a non-empty
+      ``final_decryption`` (periodic/transposition screens ship their plaintext
+      that way) installs as a decoded branch, mirroring the quagmire3/composite
+      slim-record so the verify/declare gate binds ``metadata['decoded_text']``.
+
+    ``candidate_rank`` is accepted for installer-seam uniformity and ignored (this
+    type has no ranked finalists — dispatch rejects a supplied candidate_rank for
+    it before calling here)."""
     snap = copy.deepcopy(record.get("snapshot") or {})
     result = record.get("result") or {}
     key = {int(k): int(v) for k, v in (result.get("key") or {}).items()}
+    decoded = str(result.get("final_decryption") or "").strip()
     target = str(as_name) if as_name else f"exp_{str(record['experiment_id'])[:6]}_{record.get('branch')}"
     name = target
     suffix = 2
@@ -1568,8 +1613,73 @@ def _install_experiment_branch(
     install_snap["name"] = name
     install_snap["created_iteration"] = turn
     _restore_branch_into(workspace, install_snap)
-    workspace.set_full_key(name, key)
-    _mirror_null_mask_metadata(workspace, name, result)
+
+    if key or not decoded:
+        # Keyed result (byte-identical to the original installer), OR a failed
+        # experiment carrying neither key nor decoded text — install the snapshot
+        # copy with the (possibly empty) key set. A failed experiment stays a
+        # visibly failed install; no invented error path.
+        workspace.set_full_key(name, key)
+        _mirror_null_mask_metadata(workspace, name, result)
+        return name
+
+    # Empty flat key + non-empty final_decryption: a mode-specific decoded branch.
+    # Do NOT set_full_key (leave the inherited snapshot key); _decoded_text_for_panel
+    # prefers metadata['decoded_text'], which is what attestation/verify/declare hash.
+    steps = result.get("steps") or []
+    solver = result.get("solver")
+    winning: dict[str, Any] = {}
+    for step in steps:
+        if isinstance(step, dict) and step.get("solver") == solver:
+            winning = step
+    if not winning:
+        last = steps[-1] if steps else {}
+        winning = last if isinstance(last, dict) else {}
+
+    step_name = str(winning.get("name") or "").lower()
+    step_solver = str(winning.get("solver") or "").lower()
+    key_type = winning.get("key_type")
+    if key_type == "PeriodicShiftKey" or "periodic" in step_name or "vigenere" in step_name:
+        cipher_mode = "periodic_polyalphabetic"
+    elif "transposition" in step_name or "transposition" in step_solver:
+        cipher_mode = "transposition"
+    else:
+        cipher_mode = "experiment_decoded"
+    # The recovered periodic key (fs5's IHBMEP) becomes visible to decode_show /
+    # branch cards through this block.
+    mode_key_state = {
+        k: winning[k] for k in ("variant", "period", "key", "shifts") if k in winning
+    }
+
+    branch = workspace.get_branch(name)
+    # A null-mask block inherited from the source snapshot would shadow decoded_text
+    # in _metadata_decoded_text (mask+key render wins), so the verify/declare hash
+    # would bind the OLD null-mask decode, not this result.
+    branch.metadata.pop("null_mask_finalist", None)
+    branch.metadata.pop("null_mask_selected", None)
+    branch.metadata.update({
+        "cipher_mode": cipher_mode,
+        "mode_status": "active",
+        "mode_confidence": "medium",
+        "mode_evidence": (
+            f"Installed by experiment_collect from automated_solver experiment "
+            f"{record['experiment_id']} (solver {result.get('solver')!r})."
+        ),
+        "mode_counter_evidence": (
+            "Bounded automated search can overfit; verify readability before "
+            "declaring."
+        ),
+        **({"key_type": key_type} if key_type is not None else {}),
+        "mode_key_state": mode_key_state,
+        "decoded_text": decoded,
+        "decoded_text_source": "experiment_collect:automated_solver",
+        "search_metadata": {
+            "solver": result.get("solver"),
+            "experiment_id": record["experiment_id"],
+            "step_name": winning.get("name"),
+        },
+    })
+    workspace.tag(name, "hypothesis")
     return name
 
 
@@ -1693,12 +1803,30 @@ def _install_composite_substitution_transposition_branch(
     branch's raw (transposed-order) tokens would misdecode — the grader reads
     ``metadata['decoded_text']`` instead, which ``_decoded_text_for_panel``
     prefers, making the verify/declare gate reachable. BOTH layer keys ride in
-    metadata (``substitution_key`` + ``transposition_key``). ``candidate_rank`` is
-    accepted for installer-seam uniformity and ignored (this type has no ranked
-    finalists — dispatch rejects a supplied candidate_rank for it before calling
-    here). Returns the installed branch name, or a structured ``{"error": ...}``."""
+    metadata (``substitution_key`` + ``transposition_key``). ``candidate_rank``
+    (default 1 = full text, byte-identical to today) selects a ranked finalist:
+    rank 2 (when the runner detected a padding tail) installs the trimmed text and
+    records the trimmed tail. Records from the OLD runner (no ``top_candidates``)
+    install exactly as before. Returns the installed branch name, or a structured
+    ``{"error": ...}``."""
     result = record.get("result") or {}
-    decoded = str(result.get("final_decryption") or "").strip()
+    candidates = result.get("top_candidates") or []
+    padding_trimmed: dict[str, Any] | None = None
+    if candidates:
+        if candidate_rank < 1 or candidate_rank > len(candidates):
+            return {
+                "error": (
+                    f"candidate_rank {candidate_rank} out of range; valid "
+                    f"1..{len(candidates)}"
+                )
+            }
+        candidate = candidates[candidate_rank - 1]
+        decoded = str(candidate.get("plaintext") or "").strip()
+        padding_trimmed = candidate.get("padding")
+    else:
+        # Old-runner record: today's exact single-candidate behavior.
+        candidate_rank = 1
+        decoded = str(result.get("final_decryption") or "").strip()
     if not decoded:
         # An empty decoded_text would make _decoded_text_for_panel fall back to the
         # inherited snapshot key — a stale decode presented as the composite branch.
@@ -1740,16 +1868,23 @@ def _install_composite_substitution_transposition_branch(
         "family": transposition.get("family"),
         "pipeline": transposition.get("pipeline"),
     }
+    mode_evidence = (
+        f"Installed by experiment_collect from a composite_substitution_"
+        f"transposition experiment {record['experiment_id']} (outcome "
+        f"{result.get('outcome')!r}, transposition kind "
+        f"{transposition.get('kind')!r}, keyword {columnar_keyword!r})."
+    )
+    if padding_trimmed:
+        mode_evidence += (
+            f" Candidate rank {candidate_rank}, padding tail "
+            f"{str(padding_trimmed.get('char'))!r}×{padding_trimmed.get('length')} "
+            "trimmed."
+        )
     branch.metadata.update({
         "cipher_mode": "composite_substitution_transposition",
         "mode_status": "active",
         "mode_confidence": "medium",
-        "mode_evidence": (
-            f"Installed by experiment_collect from a composite_substitution_"
-            f"transposition experiment {record['experiment_id']} (outcome "
-            f"{result.get('outcome')!r}, transposition kind "
-            f"{transposition.get('kind')!r}, keyword {columnar_keyword!r})."
-        ),
+        "mode_evidence": mode_evidence,
         "mode_counter_evidence": (
             "Bounded peel + substitution anneal can overfit; verify readability "
             "before declaring."
@@ -1767,6 +1902,8 @@ def _install_composite_substitution_transposition_branch(
             "budget": result.get("budget"),
         },
     })
+    if padding_trimmed:
+        branch.metadata["padding_trimmed"] = padding_trimmed
     workspace.tag(name, "hypothesis")
     workspace.tag(name, "mode:composite_substitution_transposition")
     return name
@@ -1883,16 +2020,18 @@ def dispatch_experiment_collect(
     # Completed.
     candidate_rank_arg = args.get("candidate_rank")
     candidate_rank = max(1, int(candidate_rank_arg or 1))
-    # candidate_rank is only meaningful for ranked-finalist types; supplying it
-    # for any other type is a usage error (not silently ignored).
-    if candidate_rank_arg is not None and record.get("type") != "quagmire3_shotgun":
+    # candidate_rank is only meaningful for results that actually carry ranked
+    # finalists (top_candidates); supplying it otherwise is a usage error (not
+    # silently ignored). This is capability-based, not a hardcoded type check —
+    # quagmire3_shotgun and composite_substitution_transposition both qualify.
+    if candidate_rank_arg is not None and not result.get("top_candidates"):
         return {
             "experiment_id": record["experiment_id"],
             "type": record.get("type"),
             "status": status,
             "error": (
-                "candidate_rank is only supported for experiment types with "
-                "ranked finalists (quagmire3_shotgun)"
+                "candidate_rank is only supported for experiment results with "
+                "ranked finalists (top_candidates)"
             ),
         }
 
@@ -1961,6 +2100,10 @@ def dispatch_experiment_collect(
                 "score": c.get("score"),
                 "selection_score": c.get("selection_score"),
                 "preview": c.get("preview"),
+                # Composite finalists carry length + a padding note instead of a
+                # score/preview, so a lead can SEE that a trimmed rank-2 exists.
+                "length": len(str(c.get("plaintext") or "")) or None,
+                "padding": c.get("padding"),
             }
             for idx, c in enumerate(top_candidates, 1)
         ]

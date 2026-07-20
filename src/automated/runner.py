@@ -2807,6 +2807,18 @@ def _should_use_homophonic(
     return _select_solver_path(cipher_text, language, cipher_system)["route"] == "homophonic"
 
 
+def _names_fractionation_family(cipher_system: str) -> bool:
+    """True when a ``cipher_system`` hint names a fractionation cipher (bifid,
+    trifid, ADFGVX/ADFGX, Polybius, generic fractionation). These are NOT a
+    substitution+transposition composite, so the content auto-route must not
+    hijack an explicitly-labelled one into the composite peel (fs7)."""
+    cs = str(cipher_system or "").lower()
+    return any(tok in cs for tok in (
+        "bifid", "trifid", "adfgvx", "adfgx", "polybius",
+        "fractionation", "fractionated",
+    ))
+
+
 def _select_solver_path(
     cipher_text: CipherText,
     language: str,
@@ -2954,7 +2966,13 @@ def _select_solver_path(
     # monoalphabetic substitution keeps its n-gram adjacency structure, so
     # ``order_layer_suspected`` stays False and it falls through to the substitution
     # default. Detection is ciphertext-derived only, never ground truth (firewall §5).
-    if alphabet_size <= pt_alpha.size:
+    #
+    # An EXPLICIT fractionation label (bifid/trifid/adfgvx/adfgx/polybius/…) is
+    # excluded: those ciphers trip the residual-order signal but are NOT a
+    # substitution+transposition composite, so the peel honest-fails and confuses
+    # the agent (fs7). With the label present, routing falls through as if the
+    # signal had not fired.
+    if alphabet_size <= pt_alpha.size and not _names_fractionation_family(cipher_system):
         order_layer_suspected = False
         try:
             from analysis.transposition_solver import transposition_suspicion

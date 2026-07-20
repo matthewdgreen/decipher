@@ -108,6 +108,12 @@ your instrument bench and evidence store.
   damage that is a set of individually-simple key errors is still batch-repairable
   via `repair_hypotheses_test` → `repair_transaction`; do not treat `distributed`
   automatically as broaden-only (damage-scope routing is advisory — WF-4).
+  - *Known limitation:* decoded-text branches (quagmire3 / composite / periodic
+    experiment installs) carry their plaintext in metadata with no per-symbol
+    base key, so word repair cannot operate on them — `repair_hypotheses_test`
+    and `repair_transaction` return `decoded_branch_no_base_key`. Re-run the
+    originating experiment with adjusted config, or rebuild the mapping with
+    `act_*` tools, instead of polishing such a branch.
 - **Verify before declaring.** `request_independent_verification` has a fresh
   reader judge your branch. Declaration (`meta_declare_solution`) is hard-gated
   on a positive fresh verification of the exact current content. Honest

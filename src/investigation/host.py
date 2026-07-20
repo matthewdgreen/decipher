@@ -29,6 +29,7 @@ from agent.loop_shared import (
     DECODED_TEXT_RENDERER_ID,
     _candidate_content_hash,
     _decoded_text_for_panel,
+    _metadata_decoded_text,
 )
 from agent.tools_v2 import WorkspaceToolExecutor
 from artifact.schema import ToolCall
@@ -64,6 +65,50 @@ EmitFn = Callable[..., None]
 
 def _branch_hash(workspace: Workspace, branch: str) -> str:
     return _candidate_content_hash(_decoded_text_for_panel(workspace, branch))
+
+
+def _decoded_branch_no_base_key(
+    workspace: Workspace, branch: str
+) -> dict[str, Any] | None:
+    """Structured guard payload when ``branch`` is a slim-record decoded-text
+    install (quagmire3 / composite / P1 automated periodic install): its panel
+    text is served from ``metadata['decoded_text']``, not a per-symbol base key.
+    An inherited snapshot key does NOT exempt the branch — decoded installers
+    keep the source branch's key as-is, and repairing against it would edit a
+    render that verification never binds (review finding #3). The precedence
+    test mirrors ``_metadata_decoded_text`` (loop_shared): a mask+key render
+    wins over ``decoded_text``, so null-mask branches stay repairable. Returns
+    ``None`` for ordinary keyed/partial branches without ``decoded_text``. See
+    P4 of docs/specs/declaration_hardening_spec.md."""
+    branch_obj = workspace.get_branch(branch)
+    metadata = branch_obj.metadata
+    mask_block = metadata.get("null_mask_finalist")
+    if not isinstance(mask_block, dict):
+        mask_block = metadata.get("null_mask_selected")
+    mask_symbols = (
+        {str(symbol) for symbol in (mask_block or {}).get("mask") or []}
+        if isinstance(mask_block, dict)
+        else set()
+    )
+    if branch_obj.key and mask_symbols:
+        return None  # panel is the mask+key render; base-key repair applies
+    if not str(metadata.get("decoded_text") or "").strip():
+        return None  # ordinary keyed/partial branch; repair proceeds
+    cipher_mode = str(metadata.get("cipher_mode") or "decoded_text")
+    return {
+        "status": "error",
+        "reason": "decoded_branch_no_base_key",
+        "detail": (
+            f"Branch '{branch}' is a decoded-text install ({cipher_mode}): its "
+            "verified text comes from metadata decoded_text, not a per-symbol "
+            "base key (any key present is inherited from the source snapshot "
+            "and is not what verification binds). Word repair operates on a "
+            "base key and cannot polish this branch. Re-run the originating "
+            "experiment with adjusted config, or rebuild the mapping with "
+            "act_* tools. Known limitation - see "
+            "docs/specs/declaration_hardening_spec.md P4."
+        ),
+    }
 
 
 def _active_branch(workspace: Workspace, branch: str) -> bool:
@@ -1423,14 +1468,19 @@ class InvestigationHost:
     ) -> dict[str, Any]:
         """Bounded-repair precondition checks (Part 8.1 extraction).
 
-        Returns ``{"blocked": <payload>}`` for any early-return gate (payloads
-        byte-identical to the pre-split dispatcher) or ``{"ok": True, ...}`` with
-        the resolved bindings the caller needs to run and install the repair.
-        Zero behavior change: this is code motion out of
-        ``_dispatch_repair_transaction``.
+        Returns ``{"blocked": <payload>}`` for any early-return gate or
+        ``{"ok": True, ...}`` with the resolved bindings the caller needs to run
+        and install the repair. Originally pure code motion out of
+        ``_dispatch_repair_transaction`` (Part 8.1, payloads byte-identical);
+        the one post-extraction addition is the ``decoded_branch_no_base_key``
+        gate (declaration_hardening_spec P4) — slim-record decoded branches are
+        not repairable.
         """
         if not self.workspace.has_branch(branch):
             return {"blocked": {"status": "failed", "reason": "unknown_branch", "branch": branch}}
+        blocked = _decoded_branch_no_base_key(self.workspace, branch)
+        if blocked is not None:
+            return {"blocked": blocked}
         source_hash = _branch_hash(self.workspace, branch)
         reading_id = reading_id_arg
         reading_data = self.state.readings.get(reading_id) if reading_id else None

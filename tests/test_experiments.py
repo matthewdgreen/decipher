@@ -1657,3 +1657,322 @@ def test_composite_end_to_end_solve_install_both_layers():
     assert transposition_key["column_order"] == list(_rank_order(_COMPOSITE_KEYWORD))
     assert _rank_order(transposition_key["keyword"]) == transposition_key["column_order"]
     assert {"hypothesis", "mode:composite_substitution_transposition"} <= set(branch.tags)
+
+
+# ---------------------------------------------------------------------------
+# P1 — default installer: decoded-branch install for empty-key results
+# (declaration_hardening_spec.md §2)
+# ---------------------------------------------------------------------------
+def _automated_record(state, *, key, final_decryption, steps,
+                      solver="native_periodic_polyalphabetic",
+                      eid="abc123deadbeef"):
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    return {
+        "experiment_id": eid,
+        "branch": "main",
+        "type": "automated_solver",
+        "snapshot": snapshot,
+        "result": {
+            "solver": solver,
+            "key": key,
+            "final_decryption": final_decryption,
+            "steps": steps,
+        },
+    }
+
+
+def test_p1_periodic_empty_key_installs_decoded_branch():
+    from agent.loop_shared import _decoded_text_for_panel
+    _ct, state = _make_state()
+    # Inherited null-mask blocks on the source snapshot must be popped at install
+    # (else they shadow decoded_text in _metadata_decoded_text).
+    src = state.workspace.get_branch("main")
+    src.metadata["null_mask_finalist"] = {"mask": ["Z"], "selection_score": 0.4}
+    src.metadata["null_mask_selected"] = {"mask": ["Q"], "selection_score": 0.3}
+    step = {
+        "name": "periodic_polyalphabetic_screen",
+        "solver": "native_periodic_polyalphabetic",
+        "key_type": "PeriodicShiftKey", "key": "IHBMEP", "period": 6,
+        "variant": "vigenere", "shifts": [8, 7, 1, 12, 4, 15],
+    }
+    record = _automated_record(state, key={}, final_decryption="THERETIRED",
+                               steps=[step])
+    name = exp._install_experiment_branch(state.workspace, record, None, 5)
+    b = state.workspace.get_branch(name)
+    assert _decoded_text_for_panel(state.workspace, name) == "THERETIRED"
+    assert b.metadata["cipher_mode"] == "periodic_polyalphabetic"
+    assert b.metadata["mode_key_state"]["key"] == "IHBMEP"
+    assert b.metadata["mode_key_state"]["period"] == 6
+    assert b.metadata["key_type"] == "PeriodicShiftKey"
+    assert b.metadata["decoded_text_source"] == "experiment_collect:automated_solver"
+    assert b.metadata["search_metadata"]["step_name"] == "periodic_polyalphabetic_screen"
+    assert "null_mask_finalist" not in b.metadata
+    assert "null_mask_selected" not in b.metadata
+    assert "hypothesis" in b.tags
+    # Source branch (its snapshot) untouched.
+    assert "null_mask_finalist" in src.metadata
+
+
+def test_p1_nonempty_key_installs_exactly_as_before():
+    _ct, state = _make_state()
+    key = {int(state.cipher.alphabet.id_for(sym)): 0 for sym in state.cipher.alphabet.symbols}
+    record = _automated_record(state, key={str(k): v for k, v in key.items()},
+                               final_decryption="AAAAAA",
+                               steps=[], solver="native_substitution")
+    name = exp._install_experiment_branch(state.workspace, record, None, 5)
+    b = state.workspace.get_branch(name)
+    # set_full_key effect: the flat key is installed on the branch.
+    assert b.key == key
+    # No decoded-branch metadata was written.
+    assert "decoded_text" not in b.metadata
+    assert "cipher_mode" not in b.metadata
+
+
+def test_p1_empty_key_empty_decryption_behaves_as_today():
+    _ct, state = _make_state()
+    record = _automated_record(state, key={}, final_decryption="", steps=[],
+                               solver="native_substitution")
+    name = exp._install_experiment_branch(state.workspace, record, None, 5)
+    b = state.workspace.get_branch(name)
+    assert b.key == {}  # empty key set (failed experiment stays a failed install)
+    assert "decoded_text" not in b.metadata
+    assert "cipher_mode" not in b.metadata
+
+
+def test_p1_content_hash_binds_final_decryption():
+    from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+    _ct, state = _make_state()
+    step = {"name": "periodic_polyalphabetic_screen",
+            "solver": "native_periodic_polyalphabetic",
+            "key_type": "PeriodicShiftKey", "key": "IHBMEP"}
+    record = _automated_record(state, key={}, final_decryption="THERETIRED",
+                               steps=[step])
+    name = exp._install_experiment_branch(state.workspace, record, None, 5)
+    panel = _decoded_text_for_panel(state.workspace, name)
+    assert _candidate_content_hash(panel) == _candidate_content_hash("THERETIRED")
+
+
+def test_p1_transposition_step_names_transposition_mode():
+    _ct, state = _make_state()
+    step = {"name": "transposition_permutation_search",
+            "solver": "transposition_permutation_search"}
+    record = _automated_record(state, key={}, final_decryption="PLAINTEXTHERE",
+                               steps=[step], solver="transposition_permutation_search")
+    name = exp._install_experiment_branch(state.workspace, record, None, 5)
+    assert state.workspace.get_branch(name).metadata["cipher_mode"] == "transposition"
+
+
+# ---------------------------------------------------------------------------
+# P2 — composite padding-trim as an additional ranked candidate
+# (declaration_hardening_spec.md §3)
+# ---------------------------------------------------------------------------
+def _fake_composite_route_returning(decryption: str):
+    """Canned C.1 route tuple with a caller-chosen decryption (for padding tests)."""
+    def route(cipher_text, language="en", cipher_id="cli"):
+        step = {
+            "name": "composite_substitution_transposition",
+            "solver": "composite_substitution_transposition_peel",
+            "outcome": "peeled_and_solved",
+            "transposition": {"kind": "columnar", "keyword": _COMPOSITE_KEYWORD,
+                              "column_count": 7,
+                              "column_order": list(_rank_order(_COMPOSITE_KEYWORD))},
+            "substitution": {"key": {"0": 7}, "solver": "native_substitution"},
+        }
+        return ("composite_substitution_transposition_peel", {0: 7}, decryption, step)
+    return route
+
+
+def test_p2_runner_emits_two_candidates_on_padding_tail(monkeypatch):
+    monkeypatch.setattr(
+        _auto_runner, "_run_composite_substitution_transposition",
+        _fake_composite_route_returning("HELLOWORLDMMMM"),
+    )
+    _ct, state = _make_state()
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    config = apply_config_defaults("composite_substitution_transposition", {})
+    config["model_variant"] = None
+    config["language"] = "en"
+    result = exp._composite_substitution_transposition_runner(
+        state.cipher, snapshot, config)
+    cands = result["top_candidates"]
+    assert [c["rank"] for c in cands] == [1, 2]
+    assert cands[0]["plaintext"] == "HELLOWORLDMMMM"
+    assert cands[0]["padding"] is None
+    assert cands[1]["plaintext"] == "HELLOWORLD"
+    assert cands[1]["padding"] == {"char": "M", "length": 4}
+    # final_decryption stays the FULL text (backward compatible).
+    assert result["final_decryption"] == "HELLOWORLDMMMM"
+
+
+def test_p2_runner_short_run_and_whole_string_yield_one_candidate(monkeypatch):
+    # A run of 3 is below the 4-char floor.
+    monkeypatch.setattr(
+        _auto_runner, "_run_composite_substitution_transposition",
+        _fake_composite_route_returning("HELLOWORLDMMM"),
+    )
+    _ct, state = _make_state()
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    config = {"model_variant": None, "language": "en"}
+    result = exp._composite_substitution_transposition_runner(
+        state.cipher, snapshot, config)
+    assert len(result["top_candidates"]) == 1
+    # A whole-string run (run_len == len) is not a padding tail.
+    monkeypatch.setattr(
+        _auto_runner, "_run_composite_substitution_transposition",
+        _fake_composite_route_returning("MMMMMMMM"),
+    )
+    result2 = exp._composite_substitution_transposition_runner(
+        state.cipher, snapshot, config)
+    assert len(result2["top_candidates"]) == 1
+
+
+def _composite_record_with_candidates(state, decryption, candidates):
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    return {
+        "experiment_id": "cmp123deadbeef",
+        "branch": "main",
+        "type": "composite_substitution_transposition",
+        "snapshot": snapshot,
+        "result": {
+            "solver": "composite_substitution_transposition_peel",
+            "outcome": "peeled_and_solved",
+            "key": {},
+            "final_decryption": decryption,
+            "top_candidates": candidates,
+            "substitution_key": {"0": 7},
+            "transposition": {"kind": "columnar", "keyword": _COMPOSITE_KEYWORD},
+        },
+    }
+
+
+def _padding_candidates(decryption, trimmed, char, length):
+    return [
+        {"rank": 1, "plaintext": decryption, "padding": None},
+        {"rank": 2, "plaintext": trimmed, "padding": {"char": char, "length": length}},
+    ]
+
+
+def test_p2_installer_rank1_byte_identical_rank2_trims(monkeypatch):
+    _ct, state = _make_state()
+    cands = _padding_candidates("HELLOWORLDMMMM", "HELLOWORLD", "M", 4)
+    record = _composite_record_with_candidates(state, "HELLOWORLDMMMM", cands)
+    installer = EXPERIMENT_TYPES["composite_substitution_transposition"]["installer"]
+    # rank 1 == full text, no padding metadata.
+    n1 = installer(state.workspace, record, "r1", 1, candidate_rank=1)
+    b1 = state.workspace.get_branch(n1)
+    assert b1.metadata["decoded_text"] == "HELLOWORLDMMMM"
+    assert "padding_trimmed" not in b1.metadata
+    # rank 2 == trimmed text + padding metadata + evidence mention.
+    n2 = installer(state.workspace, record, "r2", 2, candidate_rank=2)
+    b2 = state.workspace.get_branch(n2)
+    assert b2.metadata["decoded_text"] == "HELLOWORLD"
+    assert b2.metadata["padding_trimmed"] == {"char": "M", "length": 4}
+    assert "padding tail 'M'×4 trimmed" in b2.metadata["mode_evidence"]
+
+
+def test_p2_installer_rank_out_of_range_errors():
+    _ct, state = _make_state()
+    cands = _padding_candidates("HELLOWORLDMMMM", "HELLOWORLD", "M", 4)
+    record = _composite_record_with_candidates(state, "HELLOWORLDMMMM", cands)
+    installer = EXPERIMENT_TYPES["composite_substitution_transposition"]["installer"]
+    out = installer(state.workspace, record, None, 3, candidate_rank=3)
+    assert isinstance(out, dict) and "out of range" in out["error"]
+
+
+def test_p2_old_shape_record_installs_as_today():
+    """A record with NO top_candidates (old runner) installs from final_decryption
+    exactly as before (dispatch rejection of candidate_rank on such a record is
+    pinned by test_p2_candidate_rank_dispatch_rejects_old_shape_composite)."""
+    _ct, state = _make_state()
+    from investigation.state import _serialize_branch
+    snapshot = copy.deepcopy(_serialize_branch(state.workspace, "main"))
+    record = {
+        "experiment_id": "old123deadbeef", "branch": "main",
+        "type": "composite_substitution_transposition", "snapshot": snapshot,
+        "result": {"solver": "composite_substitution_transposition_peel",
+                   "outcome": "peeled_and_solved", "key": {},
+                   "final_decryption": "HELLOWORLD", "substitution_key": {"0": 7},
+                   "transposition": {"kind": "columnar"}},
+    }
+    installer = EXPERIMENT_TYPES["composite_substitution_transposition"]["installer"]
+    name = installer(state.workspace, record, None, 2)
+    b = state.workspace.get_branch(name)
+    assert b.metadata["decoded_text"] == "HELLOWORLD"
+    assert "padding_trimmed" not in b.metadata
+
+
+def test_p2_candidate_rank_dispatch_rejects_when_no_top_candidates():
+    _ct, state = _make_state()
+    entry = EXPERIMENT_TYPES["automated_solver"]
+    orig = entry["runner"]
+    entry["runner"] = lambda cipher, snapshot, config: {
+        "status": "completed", "solver": "fake", "error_message": None,
+        "elapsed_seconds": 0.0, "key": {}, "final_decryption": "X", "steps": [],
+    }
+    try:
+        q = ExperimentQueue(synchronous=True)
+        sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                         {"type": "automated_solver", "branch": "main",
+                                          "config": {}}, 1)
+        out = dispatch_experiment_collect(
+            q, state, state.workspace, _fake_executor(),
+            {"experiment_id": sub["experiment_id"], "candidate_rank": 2}, 2)
+    finally:
+        entry["runner"] = orig
+    assert "candidate_rank is only supported" in out["error"]
+
+
+def test_p2_candidate_rank_dispatch_rejects_old_shape_composite():
+    """An OLD-shape composite record (pre-upgrade resume state: result carries no
+    top_candidates) must still reject an explicit candidate_rank at dispatch —
+    the capability check is on the record's result, not the type."""
+    _ct, state = _make_state()
+    entry = EXPERIMENT_TYPES["composite_substitution_transposition"]
+    orig = entry["runner"]
+    entry["runner"] = lambda cipher, snapshot, config: {
+        "status": "completed", "solver": "composite_substitution_transposition_peel",
+        "error_message": None, "elapsed_seconds": 0.0, "key": {},
+        "final_decryption": "HELLOWORLD", "outcome": "peeled_and_solved",
+        "substitution_key": {}, "transposition": {"kind": "columnar"}, "steps": [],
+    }
+    try:
+        q = ExperimentQueue(synchronous=True)
+        sub = dispatch_experiment_submit(
+            q, state, state.workspace, _fake_executor(),
+            {"type": "composite_substitution_transposition", "branch": "main",
+             "config": {}}, 1)
+        out = dispatch_experiment_collect(
+            q, state, state.workspace, _fake_executor(),
+            {"experiment_id": sub["experiment_id"], "candidate_rank": 2}, 2)
+    finally:
+        entry["runner"] = orig
+    assert "candidate_rank is only supported" in out["error"]
+
+
+def test_p2_end_to_end_rank2_install_and_candidates_summary(monkeypatch):
+    from agent.loop_shared import _decoded_text_for_panel
+    monkeypatch.setattr(
+        _auto_runner, "_run_composite_substitution_transposition",
+        _fake_composite_route_returning("HELLOWORLDMMMM"),
+    )
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(
+        q, state, state.workspace, _fake_executor(),
+        {"type": "composite_substitution_transposition", "branch": "main",
+         "config": {}}, 1)
+    packet = dispatch_experiment_collect(
+        q, state, state.workspace, _fake_executor(),
+        {"experiment_id": sub["experiment_id"], "install": True,
+         "candidate_rank": 2}, 2)
+    name = packet["installed_as"]
+    # Gate-reachability of the trimmed rank-2 branch.
+    assert _decoded_text_for_panel(state.workspace, name) == "HELLOWORLD"
+    # The packet surfaces the padding note so a lead can SEE the trimmed rank-2.
+    summary = {c["rank"]: c for c in packet["candidates"]}
+    assert summary[2]["padding"] == {"char": "M", "length": 4}
+    assert summary[2]["length"] == len("HELLOWORLD")

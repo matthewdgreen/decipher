@@ -244,6 +244,27 @@ class TestRouterContentAutoRoute:
         assert routing["route"] == "composite_substitution_transposition"
         assert routing["solver"] == "composite_substitution_transposition_peel"
 
+    def test_explicit_fractionation_label_suppresses_composite_route(self):
+        # P3 (declaration_hardening_spec.md §4): an EXPLICIT fractionation label
+        # (bifid/trifid/adfgvx/…) trips order_layer_suspected but must NOT route to
+        # the composite peel (it honest-fails on fractionation and confuses the
+        # agent — fs7). The same content with no label still routes composite; an
+        # unrelated label ("unknown") is not suppressed.
+        ciphertext, _s, _m = _make_round4_class_cipher()
+        cipher = _az_cipher_text(ciphertext)
+        # Precondition: the residual-order signal fires for this content.
+        from analysis.transposition_solver import transposition_suspicion
+        assert transposition_suspicion(cipher, "en")["order_layer_suspected"] is True
+        for label in ("bifid", "trifid", "ADFGVX", "adfgx", "polybius", "fractionation"):
+            routing = _select_solver_path(cipher, "en", cipher_system=label)
+            assert routing["route"] != "composite_substitution_transposition", label
+        # No label -> content route still fires.
+        assert _select_solver_path(cipher, "en", cipher_system="")["route"] == \
+            "composite_substitution_transposition"
+        # Unrelated label -> not suppressed (control).
+        assert _select_solver_path(cipher, "en", cipher_system="unknown")["route"] == \
+            "composite_substitution_transposition"
+
     def test_plain_substitution_still_routes_substitution(self):
         # REGRESSION GUARD: a plain monoalphabetic substitution has GOOD n-gram
         # structure (order_layer_suspected=False) and, with word boundaries, must

@@ -495,6 +495,105 @@ def test_check_repair_preconditions_no_reading_returns_blocked(tmp_path):
     assert pre["blocked"]["reason"] == "fresh_reading_required"
 
 
+# ------------------------------------------ P4: decoded-branch repair guard
+# declaration_hardening_spec.md §5: repair of a slim-record decoded branch (panel
+# text served from metadata['decoded_text'], with or without an inherited
+# snapshot key) returns a structured decoded_branch_no_base_key; a mask+key
+# render (null-mask branch) keeps repair available.
+def _install_decoded_branch(ws, name, *, text, cipher_mode):
+    ws.fork(name, "main")
+    ws.set_full_key(name, {})  # slim record: no per-symbol base key
+    b = ws.get_branch(name)
+    b.metadata["decoded_text"] = text
+    b.metadata["cipher_mode"] = cipher_mode
+    return b
+
+
+def test_repair_hypotheses_test_blocks_decoded_branch(tmp_path):
+    server, iid, rev, rt = _basin_ready(tmp_path)
+    _install_decoded_branch(
+        rt.workspace, "decoded", text="THE QUICK BROWN FOXES JUMPED",
+        cipher_mode="composite_substitution_transposition")
+    out = call(server, "repair_hypotheses_test", investigation_id=iid,
+               expected_revision=rev, branch="decoded",
+               hypotheses=[{"word": BASIN_CORRECT_WORD,
+                            "word_index": BASIN_DAMAGED_WORD_INDEX}])
+    assert out["status"] == "error"
+    assert out["reason"] == "decoded_branch_no_base_key"
+    assert "composite_substitution_transposition" in out["detail"]
+    # A keyed branch (main, keyed by apply_basin) is untouched by the guard.
+    out2 = call(server, "repair_hypotheses_test", investigation_id=iid,
+                expected_revision=out["revision"], branch="main",
+                hypotheses=[{"word": BASIN_CORRECT_WORD,
+                             "word_index": BASIN_DAMAGED_WORD_INDEX}])
+    assert out2.get("reason") != "decoded_branch_no_base_key"
+
+
+def test_check_repair_preconditions_decoded_branch_blocked(tmp_path):
+    from tests.support.scripted_v3 import keyed_catton_state
+    from mcp_server.runtime import InvestigationRuntime
+
+    _ct, state = keyed_catton_state()
+    doc = {"schema_version": 1, "meta": {"investigation_id": "x", "revision": 1},
+           "state": state.to_artifact_dict(), "records": {}}
+    runtime = InvestigationRuntime(document=doc, emit=lambda *a, **k: None,
+                                   verify_provider=None, max_cost_usd=5.0,
+                                   synchronous_experiments=True)
+    _install_decoded_branch(runtime.workspace, "decoded", text="SOMEDECODEDTEXT",
+                            cipher_mode="quagmire3")
+    pre = runtime.host.check_repair_preconditions(
+        branch="decoded", reading_id_arg="", turn=1)
+    assert "blocked" in pre
+    assert pre["blocked"]["status"] == "error"
+    assert pre["blocked"]["reason"] == "decoded_branch_no_base_key"
+    # A keyed branch still reaches the reading gate (guard did not fire).
+    keyed = runtime.host.check_repair_preconditions(
+        branch="main", reading_id_arg="", turn=1)
+    assert keyed["blocked"]["reason"] == "fresh_reading_required"
+
+
+def test_decoded_branch_guard_inherited_key_and_mask_precedence(tmp_path):
+    """Review finding #3: an inherited snapshot key does NOT exempt a decoded
+    install — the panel binds metadata['decoded_text'], so repair against the
+    stale key would edit a render verification never sees. Conversely a
+    mask+key render (null-mask branch) wins the precedence and stays
+    repairable, and a partial key WITHOUT decoded_text proceeds as before."""
+    from tests.support.scripted_v3 import keyed_catton_state
+    from mcp_server.runtime import InvestigationRuntime
+
+    _ct, state = keyed_catton_state()
+    doc = {"schema_version": 1, "meta": {"investigation_id": "x", "revision": 1},
+           "state": state.to_artifact_dict(), "records": {}}
+    runtime = InvestigationRuntime(document=doc, emit=lambda *a, **k: None,
+                                   verify_provider=None, max_cost_usd=5.0,
+                                   synchronous_experiments=True)
+    ws = runtime.workspace
+    # (a) decoded install that inherited the keyed source branch's key: FIRES.
+    ws.fork("decoded_keyed", "main")
+    b = ws.get_branch("decoded_keyed")
+    assert b.key, "fixture requires an inherited non-empty key"
+    b.metadata["decoded_text"] = "SOMEDECODEDTEXT"
+    b.metadata["cipher_mode"] = "composite_substitution_transposition"
+    pre = runtime.host.check_repair_preconditions(
+        branch="decoded_keyed", reading_id_arg="", turn=1)
+    assert pre["blocked"]["reason"] == "decoded_branch_no_base_key"
+    # (b) null-mask branch: mask+key render wins over decoded_text; repairable.
+    ws.fork("masked", "main")
+    m = ws.get_branch("masked")
+    m.metadata["decoded_text"] = "SHOULDNOTBIND"
+    m.metadata["null_mask_finalist"] = {"mask": ["Z"]}
+    pre2 = runtime.host.check_repair_preconditions(
+        branch="masked", reading_id_arg="", turn=1)
+    assert pre2["blocked"]["reason"] == "fresh_reading_required"
+    # (c) partial key, no decoded_text: guard silent (spec: partial keys untouched).
+    ws.fork("partial", "main")
+    first_pair = next(iter(ws.get_branch("main").key.items()))
+    ws.set_full_key("partial", dict([first_pair]))
+    pre3 = runtime.host.check_repair_preconditions(
+        branch="partial", reading_id_arg="", turn=1)
+    assert pre3["blocked"]["reason"] == "fresh_reading_required"
+
+
 # --------------------------------------------- verifier-arbitrated repair (MCP)
 # Spec: docs/specs/verifier_arbitrated_repair_spec.md §5.7-5.8, T10-T11.
 # Evidence: docs/evidence/c56de7e6c600_repair_guard_false_reject.json (case 1).

@@ -20,7 +20,7 @@ from artifact.schema import ToolCall
 from investigation import episodes
 from investigation import state as state_module
 from investigation.actions import execute_composite
-from investigation.host import _branch_hash
+from investigation.host import _branch_hash, _decoded_branch_no_base_key
 
 _KNOB_KEYS = ("window_size", "max_edits", "max_hypotheses", "max_hypotheses_per_window")
 _MAX_COMPILES = 8
@@ -38,6 +38,12 @@ def compile_hypotheses(runtime: Any, records: dict, args: dict, turn: int) -> di
     branch = str(args.get("branch") or "")
     if not workspace.has_branch(branch):
         return {"status": "error", "reason": "unknown_branch", "branch": branch}
+    # A slim-record decoded branch (quagmire3 / composite / periodic experiment
+    # install) has no per-symbol base key for word repair to operate on: return a
+    # named error before any compile work rather than a silent no-op.
+    decoded_block = _decoded_branch_no_base_key(workspace, branch)
+    if decoded_block is not None:
+        return decoded_block
     source_hash = _branch_hash(workspace, branch)
 
     # Duplicate suppression by (source content, args digest).
