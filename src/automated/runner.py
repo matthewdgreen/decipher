@@ -3191,6 +3191,7 @@ def _run_transposition_solver(
         "candidate_count": result.get("candidate_count"),
         "elapsed_seconds": result.get("elapsed_seconds"),
         "top_candidates": result.get("candidates"),
+        "keyed_columnar_f2": result.get("keyed_columnar_f2"),
         "note": result.get("note"),
     }
     if result.get("status") != "completed":

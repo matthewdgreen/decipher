@@ -60,6 +60,11 @@ _DICT_WEIGHT = 2.0
 #: solve and skips the expensive annealing strategies.
 _SOLVED_DICT_RATE = 0.85
 
+#: Minimum remaining wall-clock budget (seconds) required to attempt the
+#: keyed-columnar F2 escalation. Measured F2 cost is ~7-9s on ~250 chars, so the
+#: escalation is skipped entirely when less than this remains.
+_F2_MIN_REMAINING_SECONDS = 5.0
+
 
 def _env_float(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
@@ -1164,6 +1169,102 @@ def solve_transposition(
                     break
                 record(name, _run_strategy(name, text, language, deadline=deadline, seed=seed))
 
+    # Keyed-columnar F2 escalation. The SA column-order search (the `columnar`
+    # strategy) misses some keyed columnar orderings (measured: width-11 keyword
+    # misses). When it ran but the incumbent is still below the solved dict-rate
+    # threshold, run the dedicated keyed-columnar search (analysis.columnar_search)
+    # with the language scorer and adopt its top finalist iff its full_score beats
+    # the incumbent (same adopt-if-better convention as the runner's additive
+    # block). Bounded by the shared deadline; skipped when too little budget
+    # remains. Never raises: on error the incumbent is kept and a note recorded.
+    keyed_columnar_f2: dict[str, Any] | None = None
+    best = _best_candidate(all_candidates)
+    if (
+        "columnar" in strategies_run
+        and (best is None or _dict_rate(best.plaintext, language) < _SOLVED_DICT_RATE)
+        and deadline.remaining() >= _F2_MIN_REMAINING_SECONDS
+    ):
+        try:
+            from analysis.columnar_search import (
+                ColumnarSearchConfig,
+                make_language_scorer,
+                search_keyed_columnar,
+            )
+        except Exception as exc:  # pragma: no cover — packaging failure only
+            keyed_columnar_f2 = {
+                "ran": False,
+                "adopted": False,
+                "method": None,
+                "score": None,
+                "note": f"keyed_columnar_f2 unavailable (import failed): {exc}",
+            }
+        else:
+            try:
+                # The hill-climb has no internal deadline hook; its cost is
+                # ~9s at the default 64 restarts on a ~250-char stream and
+                # scales ~linearly with length (every local-search step scores
+                # the full stream). Scale the restart budget to the remaining
+                # wall-clock so the escalation cannot badly overshoot a
+                # nearly-spent deadline; exhaustive widths (<= 8) are cheap
+                # and unaffected by the restart knob.
+                remaining = deadline.remaining()
+                restarts = max(
+                    8,
+                    min(64, int(64 * remaining * 250.0 / (9.0 * max(1, len(text))))),
+                )
+                finalists = search_keyed_columnar(
+                    text,
+                    make_language_scorer(language),
+                    config=ColumnarSearchConfig(seed=seed, restarts=restarts),
+                )
+                # The language scorer ranks finalists ngram-only; adoption is
+                # judged on full_score (ngram + dict weight), so pick the
+                # finalist that maximizes the ADOPTION metric (<= top_n of
+                # them, cheap to score).
+                scored = [
+                    (full_score(f.decoded_stream, language), f) for f in finalists
+                ]
+                f2_score: float | None = None
+                finalist = None
+                if scored:
+                    f2_score, finalist = max(scored, key=lambda pair: pair[0])
+                adopted = False
+                if finalist is not None:
+                    incumbent = best.score if best is not None else float("-inf")
+                    if f2_score > incumbent:
+                        all_candidates.append(
+                            _Candidate(
+                                finalist.decoded_stream,
+                                f2_score,
+                                "columnar",
+                                {
+                                    "width": finalist.column_count,
+                                    "order": list(finalist.column_order),
+                                    "keyword": finalist.keyword,
+                                    "engine": "columnar_search_f2",
+                                    "method": finalist.method,
+                                },
+                            )
+                        )
+                        adopted = True
+                keyed_columnar_f2 = {
+                    "ran": True,
+                    "adopted": adopted,
+                    "method": finalist.method if finalist is not None else None,
+                    "score": round(f2_score, 6) if f2_score is not None else None,
+                }
+            except Exception as exc:  # never let the escalation break the solve
+                keyed_columnar_f2 = {
+                    "ran": True,
+                    "adopted": False,
+                    "method": None,
+                    "score": None,
+                    "note": (
+                        "keyed_columnar_f2 escalation raised, kept the "
+                        f"incumbent: {exc}"
+                    ),
+                }
+
     all_candidates.sort(key=lambda c: c.score, reverse=True)
     best = all_candidates[0] if all_candidates else None
     if best is None:
@@ -1189,7 +1290,7 @@ def solve_transposition(
         seen.add(c.plaintext)
         ranked.append(c)
 
-    return {
+    result: dict[str, Any] = {
         "status": "completed",
         "solver": "transposition_solver",
         "language": language,
@@ -1210,6 +1311,9 @@ def solve_transposition(
             "dictionary + n-gram language model."
         ),
     }
+    if keyed_columnar_f2 is not None:
+        result["keyed_columnar_f2"] = keyed_columnar_f2
+    return result
 
 
 def _best_candidate(cands: list[_Candidate]) -> Optional[_Candidate]:

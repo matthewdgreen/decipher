@@ -28,6 +28,23 @@ frontier (`frontier/automated_solver_frontier.jsonl`) predates all of it.
    route/experiment. This is fs3 in the agentic suite (an honest open-frontier
    probe).
 
+   **CORRECTION (2026-07-19).** The framing above is stale. Since `8e40744`
+   (2026-07-16, "Add transposition-family solver") the standalone route for a
+   content-suspicious/named transposition is `_run_transposition_solver` →
+   `analysis.transposition_solver.solve_transposition`, whose SA column-order
+   search covers keyed columnar — verified end-to-end on the fs3 ciphertext
+   (`run_automated` solves it, dict_rate 0.94, ~6s). The fs3 *agent-surface*
+   failure was tool-selection (it escalated the geometric transform screens,
+   which genuinely lack keyed-columnar coverage, and never submitted an
+   `automated_solver` experiment), not a missing capability. The real residual
+   gap was width robustness: a fresh per-family sweep (widths 4–11) left both
+   width-11 misses on the SA search. That gap is now closed by a keyed-columnar
+   F2 escalation inside `solve_transposition` — when the columnar strategy ran
+   but the incumbent is below the solved dict-rate threshold and the deadline
+   permits, it runs `search_keyed_columnar` with the language scorer and adopts
+   the top finalist iff its `full_score` beats the incumbent (surfaced as a
+   `keyed_columnar_f2` block in the result/step).
+
 ## Still-open frontier (unchanged)
 - Homophonic + transposition, no boundaries (Z340 class) — genuine open frontier.
 - Bifid/fractionation — `diagnoses_only`; diagnosis mis-calls mono (F3 anchoring

@@ -28,6 +28,7 @@ from ciphers.transposition import (
     NihilistTranspositionCipher,
     RailfenceCipher,
     RedefenceCipher,
+    columnar_encrypt,
 )
 
 # Two fixed English passages (~200 letters each) so cases are deterministic.
@@ -133,6 +134,72 @@ def test_nihilist_recovers(key):
     ct = cipher.encrypt(_TEXT_A, key)
     dec = _solve(ct, "nihilist_transposition")
     assert _char_accuracy(dec, padded) >= 0.90, f"key={key}"
+
+
+# ---------------------------------------------------------------------------
+# Keyed-columnar F2 escalation (width robustness)
+# ---------------------------------------------------------------------------
+
+
+def test_keyed_columnar_f2_recovers_width11():
+    """The SA search misses this width-11 keyword columnar; the F2 escalation solves it.
+
+    Fixed plaintext + keyword so the case is deterministic; the F2 hill-climb is
+    seeded via ``solve_transposition``'s ``seed`` (passed to
+    ``ColumnarSearchConfig``). ``THUNDERBOLT`` (width 11) on this passage is one of
+    the width-11 misses the F2 escalation targets: the SA leaves the incumbent
+    below the solved dict-rate threshold, and the keyed-columnar search recovers
+    the exact plaintext.
+    """
+
+    pt = _clean(_TEXT_B)
+    ct = columnar_encrypt(pt, "THUNDERBOLT")  # width 11
+    # Generous explicit budget: decouples the result from machine load (under
+    # heavy CPU contention the default 60s wall-clock could starve the F2
+    # escalation and silently skip it — review finding #2).
+    result = solve_transposition(
+        _cipher_text(ct), language="en", family_hint="columnar_transposition",
+        budget_seconds=240.0,
+    )
+    assert result["status"] == "completed", result
+    assert result["plaintext"] == pt
+    assert result.get("keyed_columnar_f2", {}).get("adopted") is True, result.get(
+        "keyed_columnar_f2"
+    )
+
+
+def test_keyed_columnar_f2_skipped_when_sa_solves():
+    """A width the SA already solves must not trigger (or adopt) the F2 escalation."""
+
+    pt = _clean(_TEXT_A)
+    ct = columnar_encrypt(pt, "SECRET")  # width 6, solved by the SA search
+    # Generous explicit budget so the SA phase always completes (a truncated SA
+    # under contention could leave dict_rate below threshold and let F2 run).
+    result = solve_transposition(
+        _cipher_text(ct), language="en", family_hint="columnar_transposition",
+        budget_seconds=240.0,
+    )
+    assert result["status"] == "completed", result
+    assert _char_accuracy(result["plaintext"], pt) >= 0.90
+    # dict_rate >= threshold, so the escalation is skipped entirely.
+    assert result.get("keyed_columnar_f2") is None, result.get("keyed_columnar_f2")
+
+
+def test_keyed_columnar_f2_skipped_on_tiny_deadline():
+    """A tiny remaining budget skips the F2 escalation; the solve still completes."""
+
+    pt = _clean(_TEXT_A)
+    ct = columnar_encrypt(pt, "LIGHTHOUSEX")  # width 11 (the SA misses it)
+    result = solve_transposition(
+        _cipher_text(ct),
+        language="en",
+        family_hint="columnar_transposition",
+        budget_seconds=1.0,
+    )
+    assert result["status"] == "completed", result
+    # Under ~5s remaining => escalation skipped, so it never adopts.
+    kc = result.get("keyed_columnar_f2")
+    assert kc is None or kc.get("adopted") is not True, kc
 
 
 # ---------------------------------------------------------------------------
