@@ -7635,8 +7635,13 @@ def _homophonic_model(
     """Resolve a continuous n-gram scorer for the substitution/homophonic anneal.
 
     Tiers, strongest first:
-      1. The local Zenith CSV model (proprietary, not redistributed) when present
-         — highest quality for those who have it.
+      1. An EXPLICIT CSV pin via ``DECIPHER_HOMOPHONIC_MODEL`` (opt-in only;
+         e.g. A/B against an upstream Zenith CSV release). The old implicit
+         ``other_tools/`` discovery is gone: it made machines with a local CSV
+         silently solve on a different model source than a fresh clone, so the
+         same run wasn't comparable across checkouts. The bundled binary
+         (tier 2) is built from the same Zenith 2026.2 release and is the
+         registry default everywhere.
       2. The BUNDLED, redistributable binary n-gram model
          (``models/ngram5_<lang>.bin`` via the model registry, respecting env
          pins/variants) — ships in the repo so a FRESH CLONE solves without the
@@ -7645,13 +7650,15 @@ def _homophonic_model(
          which fails composite/substitution solves (fresh-clone regression).
       3. The word-list fallback — a WEAK last resort; warns loudly.
     """
-    # Tier 1: local Zenith CSV (English only; the CSV is an English release).
-    candidate = _default_homophonic_model_path() if language == "en" else None
-    if candidate and candidate.exists():
-        return (
-            homophonic.load_zenith_csv_model(candidate, order=5, max_ngrams=3_000_000),
-            "Using local Zenith continuous n-gram model.",
-        )
+    # Tier 1: explicit CSV pin only (English only; the CSV is an English release).
+    env_path = os.environ.get("DECIPHER_HOMOPHONIC_MODEL") if language == "en" else None
+    if env_path:
+        candidate = Path(env_path).expanduser()
+        if candidate.exists():
+            return (
+                homophonic.load_zenith_csv_model(candidate, order=5, max_ngrams=3_000_000),
+                "Using local Zenith continuous n-gram model.",
+            )
     # Tier 2: bundled binary n-gram model (any language the registry resolves).
     try:
         bin_path = model_registry.resolve_language_model(language)
@@ -7690,10 +7697,10 @@ def _homophonic_model(
         )
     # Tier 3: weak word-list fallback (last resort — flag it loudly).
     warnings.warn(
-        "No continuous n-gram model found (neither the local Zenith CSV nor a "
-        "bundled models/ngram5_*.bin) — using the WEAK word-list fallback; "
-        "substitution/homophonic solves may fail. Ensure the bundled model is "
-        "present (a fresh clone ships it).",
+        "No continuous n-gram model found (neither a DECIPHER_HOMOPHONIC_MODEL "
+        "CSV pin nor a bundled models/ngram5_*.bin) — using the WEAK word-list "
+        "fallback; substitution/homophonic solves may fail. Ensure the bundled "
+        "model is present (a fresh clone ships it).",
         RuntimeWarning,
         stacklevel=2,
     )
@@ -7701,20 +7708,6 @@ def _homophonic_model(
         homophonic.build_continuous_ngram_model(word_list, order=5),
         "Using language word-list fallback continuous model.",
     )
-
-
-def _default_homophonic_model_path() -> Path | None:
-    env_path = os.environ.get("DECIPHER_HOMOPHONIC_MODEL")
-    if env_path:
-        return Path(env_path).expanduser()
-    repo_root = Path(__file__).resolve().parents[2]
-    for candidate in [
-        repo_root / "other_tools" / "zenith-2026.2" / "zenith-model.csv",
-        repo_root / "other_tools" / "zenith" / "zenith-model.csv",
-    ]:
-        if candidate.exists():
-            return candidate
-    return None
 
 
 # Per-THREAD active model-variant selection. Consulted by

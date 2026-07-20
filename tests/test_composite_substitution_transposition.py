@@ -391,6 +391,34 @@ def test_fresh_clone_uses_bundled_binary_not_word_list(monkeypatch):
     assert "bundled binary" in note
 
 
+def test_no_implicit_csv_discovery_without_env_pin(monkeypatch):
+    """With DECIPHER_HOMOPHONIC_MODEL unset, the model MUST be the bundled
+    binary even on a machine that has a local other_tools/ Zenith CSV — the
+    implicit discovery tier is gone, so local runs and fresh clones solve on
+    the same model source."""
+    monkeypatch.delenv("DECIPHER_HOMOPHONIC_MODEL", raising=False)
+    from analysis.homophonic import BinaryBackedNGramModel
+
+    model, note = runner._homophonic_model("en", runner._word_list("en"))
+    assert isinstance(model, BinaryBackedNGramModel), f"got {type(model).__name__}: {note}"
+    assert "bundled binary" in note
+
+
+def test_explicit_csv_pin_still_selects_csv(monkeypatch, tmp_path):
+    """DECIPHER_HOMOPHONIC_MODEL pointing at a real CSV remains an explicit
+    opt-in hatch (A/B against an upstream Zenith CSV release)."""
+    model_path = tmp_path / "model.csv"
+    model_path.write_text(
+        '"abcde","5","4","0.2","-1.6","0.1","-2.3"\n'
+        '"bcdea","5","2","0.1","-2.1","0.1","-2.3"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("DECIPHER_HOMOPHONIC_MODEL", str(model_path))
+    model, note = runner._homophonic_model("en", runner._word_list("en"))
+    assert "zenith_csv" in getattr(model, "source", "")
+    assert "local Zenith" in note
+
+
 def test_binary_adapter_case_folds_and_scores_english(monkeypatch):
     """The adapter must case-fold: the bundled model is lowercase, the anneal
     feeds uppercase. Without the fold every gram floors (real == garbage)."""
