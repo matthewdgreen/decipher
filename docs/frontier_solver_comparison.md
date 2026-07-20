@@ -160,3 +160,31 @@ Headline read:
 - External Zenith is usually faster, sometimes much faster
 - Decipher `zenith_native + Zenith binary` is generally more accurate on this suite
 - Exception: Zodiac, where external Zenith is still slightly ahead on accuracy
+
+
+## Addendum — suite extended to 24 cases (2026-07-20)
+
+Three rows were added after the composite/Quagmire/keyed-columnar programs
+landed; each was validated live against the decipher-automated solver before
+recording (all at `55226d7`-era code, zenith_native profile, bundled models):
+
+| test_id | family | class | measured |
+|---|---|---|---|
+| `synth_en_287tnb_s41` | substitution + keyed columnar (MASONRY) | known_good | char 1.000, 33.1s — the C.1 peel-and-solve route |
+| `synth_en_198ptnb_s43` | plain keyed columnar, width 11 | known_good | char 0.999, 79.6s — requires the F2 escalation (`7f3f09f`); was the workplan's expected bad_result |
+| `synth_en_540q3nb_s42` | blind Quagmire III (kw7/cw8) | **bad_result** | char 0.29 — labeled quag falls through to the generic periodic screen on the automated surface (env-gated, not label-aware); the capability is known_good on the EXPERIMENT surface (round-6, agentic fs2). Flip to known_good when label-aware routing lands. |
+
+Two generation constraints discovered while validating (recorded in the row
+notes): keyed-columnar rows built via the suite transformer must use an exact
+grid-multiple length (the transformer's complete-grid convention coincides
+with the solvers' `columnar_encrypt` inversion only then — 190→0.52 vs
+198→0.999), and blind-quag rows must pin a tableau keyword length inside the
+default sweep list.
+
+**Staleness note:** the three-column table body above predates (a) the Zenith
+binary becoming the tracked registry default (`ae7bfc1`), (b) the removal of
+the implicit local-CSV tier (`435fd93` — local runs and fresh clones now
+solve on the same model source), and (c) the F2 escalation. The
+`decipher-parity` / `zenith-external` / `decipher-zenith-binary` columns
+should be regenerated over the full 24-case suite in a supervised run (the
+external column needs the external Zenith harness).
