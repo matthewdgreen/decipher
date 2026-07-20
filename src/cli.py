@@ -2046,13 +2046,22 @@ def main() -> None:
     mcp.add_argument("--max-cost-usd", type=float, default=5.0,
         help="Per-investigation paid ceiling for server-side verify spend (BUD-1)")
 
+    # investigation — structured investigation CLI (verb tree from the manifest)
+    from investigation_cli import add_investigation_subparser, run_investigation_command
+    add_investigation_subparser(subparsers)
+
     args = parser.parse_args()
 
     if args.command is None:
         parser.print_help()
         sys.exit(1)
-    if args.command not in ("doctor", "diagnose", "mcp-serve"):
+    # The investigation namespace (like mcp-serve) does not need the Rust kernel:
+    # reads/start stay usable without it (spec §7.1).
+    if args.command not in ("doctor", "diagnose", "mcp-serve", "investigation"):
         _require_rust_fast_kernel()
+
+    if args.command == "investigation":
+        sys.exit(run_investigation_command(args))
 
     dispatch = {
         "doctor": cmd_doctor,
