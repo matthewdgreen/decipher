@@ -49,6 +49,7 @@ from workspace import Workspace
 from investigation_service import manifest
 from mcp_server import intake, repair, verify
 from mcp_server.registry import (
+    InvalidInvestigationId,
     InvestigationNotFound,
     InvestigationRegistry,
 )
@@ -80,11 +81,16 @@ class LeasePolicy(Enum):
 
     ``SESSION_HELD`` (MCP): once acquired, a writer lease and its live runtime
     persist for the process lifetime; finalized in :meth:`InvestigationService.shutdown`.
-    The CLI's ``INVOCATION_HELD`` policy (acquire at dispatch, release in a
-    ``finally``) is deferred to I-2 and is NOT implemented here.
+
+    ``INVOCATION_HELD`` (CLI, I-2): a mutating dispatch acquires the lease at
+    dispatch, and AFTER the commit (or any early return/exception past the
+    acquire) releases the lease and drops the runtime from ``_runtimes`` in a
+    ``finally``. Nothing is held between invocations; process teardown is the
+    fallback, explicit release the API.
     """
 
     SESSION_HELD = "session_held"
+    INVOCATION_HELD = "invocation_held"
 
 
 def _server_code_info() -> dict:
@@ -135,11 +141,6 @@ class InvestigationService:
         client_name: str = "unknown",
         lease_policy: LeasePolicy = LeasePolicy.SESSION_HELD,
     ) -> None:
-        if lease_policy is not LeasePolicy.SESSION_HELD:
-            raise NotImplementedError(
-                "only SESSION_HELD is implemented in I-0; the CLI's "
-                "invocation-held policy lands in I-2"
-            )
         self.registry = registry
         self.verify_provider = verify_provider
         self.verify_model = verify_model
@@ -172,8 +173,31 @@ class InvestigationService:
         cell["runtime"] = runtime
         return runtime
 
+    def _release_invocation(self, investigation_id: str) -> None:
+        """INVOCATION_HELD teardown: drop the runtime and release the writer lease.
+
+        The commit already happened inside :meth:`dispatch` (step 8) before this
+        runs, so releasing here holds nothing and commits nothing further.
+        """
+        self._runtimes.pop(investigation_id, None)
+        self.registry.release_lease(investigation_id)
+
     def shutdown(self) -> None:
-        """Finalize + commit every leased runtime (Part 4.4)."""
+        """Finalize leased runtimes; policy-gated (Part 4.4 / I-2 §3.4).
+
+        SESSION_HELD (MCP): finalize + commit every leased runtime, as before.
+        INVOCATION_HELD (CLI): best-effort release of any lease still held —
+        used by the CLI's own ``finally`` so a SIGINT mid-verb still releases
+        before the conventional signal exit. A normally-completed dispatch has
+        already released in its own ``finally``, so this is a mop-up: it does NOT
+        commit (a half-done, interrupted mutation must not be persisted).
+        """
+        if self.lease_policy is LeasePolicy.INVOCATION_HELD:
+            for investigation_id in list(self._runtimes.keys()):
+                self._runtimes.pop(investigation_id, None)
+            for investigation_id in self.registry.held_lease_ids():
+                self.registry.release_lease(investigation_id)
+            return
         for investigation_id, runtime in list(self._runtimes.items()):
             try:
                 runtime.finalize(runtime.state.turn)
@@ -191,6 +215,18 @@ class InvestigationService:
             return {"status": "error", "reason": "invalid_arguments", "errors": errors}
 
         if name == "investigation_start":
+            # INVOCATION_HELD: `start` commits the new document and holds nothing
+            # afterward (I-2 §2.3). Keyed on the lease-set delta, not the success
+            # result: if `_start` raises AFTER its acquire, the id never reaches
+            # the result, so a success-keyed release would leak the flock fd and
+            # runtime to library callers that skip shutdown() (review finding #1).
+            if self.lease_policy is LeasePolicy.INVOCATION_HELD:
+                before = set(self.registry.held_lease_ids())
+                try:
+                    return self._start(arguments)
+                finally:
+                    for new_id in set(self.registry.held_lease_ids()) - before:
+                        self._release_invocation(new_id)
             return self._start(arguments)
         if name == "investigation_list":
             return self._list(arguments)
@@ -198,6 +234,14 @@ class InvestigationService:
         tool_class = manifest.TOOL_CLASSES[name]
         is_mutate = tool_class == "mutate"
         investigation_id = str(arguments.get("investigation_id") or "")
+
+        # Id containment (shared hardening, I-2 §1.2 / spec §4): validate before
+        # any path join, on BOTH transports. A traversal/absolute/overlong/empty
+        # id never touches the filesystem outside the registry root.
+        try:
+            self.registry.validate_id(investigation_id)
+        except InvalidInvestigationId:
+            return {"status": "error", "reason": "invalid_investigation_id"}
 
         # Step 3: resolve. Holder trusts its live runtime; others load fresh.
         holder = self.registry.holds_lease(investigation_id)
@@ -215,77 +259,93 @@ class InvestigationService:
             meta = document["meta"]
             runtime = None
 
-        # Step 4: terminal check (mutations only).
+        # Step 4: terminal check (mutations only). No lease acquired yet, so an
+        # INVOCATION_HELD release is unnecessary on this early return.
         if is_mutate and meta.get("status") != "active":
             return {
                 "status": "blocked", "reason": "investigation_terminal",
                 "terminal_status": meta.get("status"),
             }
 
-        # Step 5: mutations acquire the lease, check the revision, bump the turn.
-        if is_mutate:
-            if not self.registry.acquire_lease(investigation_id):
-                return {
-                    "status": "blocked", "reason": "writer_lease_held",
-                    "holder": self.registry.lease_holder_hint(investigation_id),
-                    "note": (
-                        "Another live session owns writes for this investigation. "
-                        "Continue there, or retry after it exits."
-                    ),
-                }
-            if investigation_id not in self._runtimes:
-                runtime = self._build_runtime(self.registry.load(investigation_id))
-                self._runtimes[investigation_id] = runtime
+        # `acquired` gates the INVOCATION_HELD release below: it is set True only
+        # after THIS dispatch acquires the lease under the invocation-held policy.
+        # SESSION_HELD leaves it False, so the `finally` is a no-op and MCP
+        # behavior is untouched.
+        acquired = False
+        try:
+            # Step 5: mutations acquire the lease, check the revision, bump turn.
+            if is_mutate:
+                if not self.registry.acquire_lease(investigation_id):
+                    return {
+                        "status": "blocked", "reason": "writer_lease_held",
+                        "holder": self.registry.lease_holder_hint(investigation_id),
+                        "note": (
+                            "Another live session owns writes for this investigation. "
+                            "Continue there, or retry after it exits."
+                        ),
+                    }
+                acquired = self.lease_policy is LeasePolicy.INVOCATION_HELD
+                if investigation_id not in self._runtimes:
+                    runtime = self._build_runtime(self.registry.load(investigation_id))
+                    self._runtimes[investigation_id] = runtime
+                else:
+                    runtime = self._runtimes[investigation_id]
+                meta = runtime.meta
+                expected = arguments.get("expected_revision")
+                current = int(meta.get("revision") or 0)
+                if int(expected) != current:
+                    return {
+                        "status": "conflict", "reason": "revision_mismatch",
+                        "expected_revision": expected, "current_revision": current,
+                        "note": (
+                            "State changed since your last brief. Call "
+                            "investigation_status and retry."
+                        ),
+                    }
+                runtime.state.turn += 1
+                runtime.workspace.set_iteration(runtime.state.turn)
+                runtime.executor.set_iteration(runtime.state.turn)
+            elif not holder:
+                runtime = self._build_runtime(document)
+
+            # Step 6: experiment poll (holder only).
+            transitioned: list[str] = []
+            if self.registry.holds_lease(investigation_id) and runtime is self._runtimes.get(investigation_id):
+                transitioned = runtime.queue.poll(runtime.state, runtime.state.turn) or []
+
+            # Step 7: execute.
+            if name == "investigation_status":
+                body: dict = {}
+                did_mutate = False
+            elif name == "request_independent_verification":
+                body, did_mutate = verify.run_independent_verification(
+                    runtime, self.verification_available, str(arguments.get("branch") or "")
+                )
             else:
-                runtime = self._runtimes[investigation_id]
-            meta = runtime.meta
-            expected = arguments.get("expected_revision")
-            current = int(meta.get("revision") or 0)
-            if int(expected) != current:
-                return {
-                    "status": "conflict", "reason": "revision_mismatch",
-                    "expected_revision": expected, "current_revision": current,
-                    "note": (
-                        "State changed since your last brief. Call "
-                        "investigation_status and retry."
-                    ),
-                }
-            runtime.state.turn += 1
-            runtime.workspace.set_iteration(runtime.state.turn)
-            runtime.executor.set_iteration(runtime.state.turn)
-        elif not holder:
-            runtime = self._build_runtime(document)
+                body, did_mutate = self._execute(name, arguments, runtime)
 
-        # Step 6: experiment poll (holder only).
-        transitioned: list[str] = []
-        if self.registry.holds_lease(investigation_id) and runtime is self._runtimes.get(investigation_id):
-            transitioned = runtime.queue.poll(runtime.state, runtime.state.turn) or []
+            # Step 8: commit (mutation OR a poll transition), then inject revision.
+            needs_commit = did_mutate or bool(transitioned)
+            if needs_commit:
+                runtime.host.sync_budget()
+                document = {"schema_version": 1, **runtime.persist_dict()}
+                final_rev = self.registry.commit(investigation_id, document)
+            else:
+                final_rev = int(runtime.meta.get("revision") or 0)
 
-        # Step 7: execute.
-        if name == "investigation_status":
-            body: dict = {}
-            did_mutate = False
-        elif name == "request_independent_verification":
-            body, did_mutate = verify.run_independent_verification(
-                runtime, self.verification_available, str(arguments.get("branch") or "")
-            )
-        else:
-            body, did_mutate = self._execute(name, arguments, runtime)
-
-        # Step 8: commit (mutation OR a poll transition), then inject revision.
-        needs_commit = did_mutate or bool(transitioned)
-        if needs_commit:
-            runtime.host.sync_budget()
-            document = {"schema_version": 1, **runtime.persist_dict()}
-            final_rev = self.registry.commit(investigation_id, document)
-        else:
-            final_rev = int(runtime.meta.get("revision") or 0)
-
-        if name == "investigation_status":
-            body = self._status_body(runtime, final_rev)
-        if is_mutate:
-            body["revision"] = final_rev
-        return body
+            if name == "investigation_status":
+                body = self._status_body(runtime, final_rev)
+            if is_mutate:
+                body["revision"] = final_rev
+            return body
+        finally:
+            # INVOCATION_HELD: release the lease + drop the runtime after the
+            # commit, on any early return (revision_mismatch) or exception past
+            # the acquire. `acquired` is only True when this dispatch actually
+            # took the lease, so a `writer_lease_held` loser never releases the
+            # winner's lease.
+            if acquired:
+                self._release_invocation(investigation_id)
 
     # --------------------------------------------------------------- execution
     def _execute(self, name: str, arguments: dict, runtime: InvestigationRuntime) -> tuple[dict, bool]:

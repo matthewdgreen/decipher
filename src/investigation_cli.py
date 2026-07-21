@@ -8,11 +8,15 @@ argv↔dict mapping and process exit-code classification; it adds ZERO schema or
 validation logic — the shared service validates every argument object against
 the operation manifest.
 
-I-1 scope: the NINE read-class verbs (auto-registered from the operation
-manifest by ``cli_verb``), the canonical ``--input-json`` / ``--input-file``
-input path, and the ``call OPERATION`` escape hatch restricted to read-class
-operations. Mutations, per-invocation leases, ``--revision``, the exhaustive
-exit matrix, and verify/external flags all land in later milestones.
+I-2 scope: the create + mutate verbs join the I-1 reads (all auto-registered
+from the manifest by ``cli_verb``), ``--revision`` aliases ``expected_revision``,
+``start`` gains ``--ciphertext``/``--ciphertext-file`` (``-`` = stdin RAW
+ciphertext) source rules, dispatch runs under the ``INVOCATION_HELD`` lease
+policy (acquire→commit→release per invocation), and the shared exit table gains
+3 (blocked) and 4 (conflict). Three ops keep a typed
+``operation_not_yet_available`` error: ``experiment_submit``/
+``experiment_collect`` (I-3) and ``request_independent_verification`` (I-5).
+Verify/external flags land in I-5.
 """
 from __future__ import annotations
 
@@ -48,23 +52,59 @@ _CLI_INPUT_REASONS = frozenset(
     {"invalid_cli_arguments", "operation_not_yet_available", "unknown_operation"}
 )
 
+# Manifest ops registered as friendly verbs but NOT yet dispatchable in I-2:
+# their canonical name maps to the typed `operation_not_yet_available` error
+# (exit 2) naming the milestone that lands them. The verbs still PARSE and
+# `call` still knows the names; only dispatch is short-circuited BEFORE any
+# registry/service construction (so the registry is untouched — sub-spec §0/§4).
+_EXCLUDED_OPS: dict[str, str] = {
+    "experiment_submit": (
+        "experiments on the CLI (the two-commit lifecycle, --wait/--detach, and "
+        "crash reconciliation) arrive with milestone I-3"
+    ),
+    "experiment_collect": (
+        "experiments on the CLI (the two-commit lifecycle, --wait/--detach, and "
+        "crash reconciliation) arrive with milestone I-3"
+    ),
+    "request_independent_verification": (
+        "verification and every external-call path (--verify-provider / "
+        "--allow-external) arrive with milestone I-5"
+    ),
+}
+
 
 def result_to_exit_code(result: dict) -> int:
-    """The single shared status→exit-code table (extended in I-2).
+    """The single shared status→exit-code table, exhaustive over service classes.
 
-    I-1 classes:
-      - non-error result (`status` != "error")                     -> 0
-      - `invalid_arguments` (service) / CLI input reasons          -> 2
-      - `internal_error`                                           -> 5
-      - any other domain error result                             -> 1
+    Service status classes and their exit codes (spec §3.1 output/exit contract):
+      - non-error/blocked/conflict result (`status` absent or "ok"/…)  -> 0
+      - `status == "blocked"` (investigation_terminal, writer_lease_held,
+        gate refusals such as attestation_required)                    -> 3
+      - `status == "conflict"` (revision_mismatch)                     -> 4
+      - `status == "error"` with:
+          * `invalid_arguments` (schema) / `invalid_investigation_id` /
+            CLI input reasons (parse/mode/unknown/not-yet-available)   -> 2
+          * `internal_error`                                           -> 5
+          * any other domain/lookup/unavailable reason                 -> 1
 
-    Exit codes 3 (blocked) and 4 (revision conflict) are reserved for I-2's
-    mutating verbs; no I-1 read produces them, so they are not classified here.
+    The `reason` field is always the machine-readable identifier; the exit code
+    only classifies. Totality: an unknown reason UNDER `status == "error"` falls
+    through to 1 (reason preserved); any non-error/blocked/conflict status —
+    including domain statuses like "active"/"unsolved" in read bodies — exits 0.
     """
-    if result.get("status") != "error":
+    status = result.get("status")
+    if status == "blocked":
+        return 3
+    if status == "conflict":
+        return 4
+    if status != "error":
         return 0
     reason = result.get("reason")
-    if reason == "invalid_arguments" or reason in _CLI_INPUT_REASONS:
+    if (
+        reason == "invalid_arguments"
+        or reason == "invalid_investigation_id"
+        or reason in _CLI_INPUT_REASONS
+    ):
         return 2
     if reason == "internal_error":
         return 5
@@ -128,6 +168,19 @@ def _add_operation_arguments(vp: argparse.ArgumentParser, op: manifest.Operation
     for prop, pschema in props.items():
         if prop == "investigation_id":
             continue
+        if prop == "expected_revision":
+            # `--revision R` is the friendly alias for expected_revision on every
+            # mutating verb (spec §3.1.4 / sub-spec §3.2). Required-ness stays
+            # service-enforced: a missing revision is the service's
+            # invalid_arguments (exit 2), never an argparse error.
+            dest = "arg_expected_revision"
+            vp.add_argument(
+                "--revision", dest=dest, default=None, type=int, metavar="R",
+                help="Expected revision from `investigation status` "
+                     "(alias for expected_revision; a mismatch is a conflict).",
+            )
+            meta.append(("expected_revision", dest, "scalar"))
+            continue
         kind = _prop_kind(pschema)
         if kind == "json":
             flag = f"--{_kebab(prop)}-json"
@@ -182,11 +235,24 @@ def add_investigation_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     verbs = inv.add_subparsers(dest="investigation_verb", metavar="VERB", required=True)
 
+    # One friendly verb per manifest operation (read + create + mutate). The
+    # three not-yet-dispatchable ops (experiment_submit/experiment_collect ->
+    # I-3, request_independent_verification -> I-5) are still registered; only
+    # their dispatch is short-circuited to the typed error (see _EXCLUDED_OPS).
     for op in manifest.OPERATIONS:
-        if op.operation_class != "read":
-            continue
         vp = verbs.add_parser(op.cli_verb, help=op.description.split(". ")[0])
         _add_operation_arguments(vp, op)
+        if op.name == "investigation_start":
+            # `start` gains the transport-only ciphertext-file alias (spec §3.1.5
+            # / sub-spec §3.3): reads RAW ciphertext bytes (UTF-8), NOT a JSON
+            # object, and fills the schema's `ciphertext` property. Mutually
+            # exclusive with --ciphertext and JSON-object input.
+            vp.add_argument(
+                "--ciphertext-file", dest="ciphertext_file", default=None,
+                metavar="PATH",
+                help="Read RAW ciphertext (UTF-8) from a file ('-' = stdin); "
+                     "fills the ciphertext property (XOR --ciphertext / JSON input).",
+            )
 
     # Reserved transport verb: dispatch any operation by canonical name via JSON.
     cp = verbs.add_parser(
@@ -235,6 +301,29 @@ def _read_input_file(path: str) -> str:
         ) from exc
 
 
+def _read_ciphertext_file(path: str) -> str:
+    """Read RAW ciphertext (UTF-8) for `start --ciphertext-file` ('-' = stdin).
+
+    NOT a JSON object — the whole file content becomes the `ciphertext` value.
+    File-read/UTF-8 failures are typed CLI input errors (exit 2); ciphertext
+    size/format failures remain domain results from the service (sub-spec §3.3).
+    """
+    if path == "-":
+        try:
+            return sys.stdin.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise _CliInputError(
+                "invalid_cli_arguments", f"could not read ciphertext from stdin: {exc}"
+            ) from exc
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _CliInputError(
+            "invalid_cli_arguments",
+            f"could not read --ciphertext-file {path!r}: {exc}",
+        ) from exc
+
+
 def _build_arguments(args: argparse.Namespace) -> tuple[str, dict]:
     """Resolve the (operation_name, argument_object) pair for a friendly verb.
 
@@ -250,6 +339,34 @@ def _build_arguments(args: argparse.Namespace) -> tuple[str, dict]:
     file_path = args.input_file
     json_present = json_text is not None
     file_present = file_path is not None
+
+    # start-only ciphertext source alias (sub-spec §3.3): --ciphertext-file is
+    # one of three mutually exclusive ciphertext sources (--ciphertext XOR
+    # --ciphertext-file XOR JSON-object input). It fills the `ciphertext`
+    # property; ordinary flags (--language/--label/...) may still accompany it.
+    ciphertext_file = getattr(args, "ciphertext_file", None)
+    if ciphertext_file is not None:
+        if json_present or file_present:
+            raise _CliInputError(
+                "invalid_cli_arguments",
+                "--ciphertext-file cannot be combined with --input-json/--input-file",
+            )
+        if getattr(args, "arg_ciphertext", None) is not None:
+            raise _CliInputError(
+                "invalid_cli_arguments",
+                "supply only one of --ciphertext / --ciphertext-file",
+            )
+        obj = {}
+        for prop, dest, kind in meta:
+            val = getattr(args, dest, None)
+            if val is None:
+                continue
+            if kind == "json":
+                obj[prop] = _parse_json_object_value(val, f"--{_kebab(prop)}-json")
+            else:
+                obj[prop] = val
+        obj["ciphertext"] = _read_ciphertext_file(ciphertext_file)
+        return operation, obj
 
     # Which friendly flags were explicitly provided?
     id_present = False
@@ -313,8 +430,11 @@ def _parse_json_object_value(text: str, source: str):
 def _build_call_arguments(args: argparse.Namespace) -> tuple[str, dict]:
     """Resolve (operation_name, argument_object) for the `call` escape hatch.
 
-    Enforces the read-only + known-operation guard BEFORE any registry/service
-    construction (sub-spec §2), so a non-read `call` never touches the registry.
+    Enforces only the known-operation guard here; the not-yet-available
+    exclusions (§3.1) are applied centrally in :func:`run_investigation_command`
+    BEFORE any registry/service construction, so `call` on an excluded op
+    returns the same typed error and never touches the registry. In I-2 `call`
+    dispatches any operation EXCEPT the three exclusions.
     """
     operation = args.operation
     op = manifest.operation_for(operation)
@@ -322,12 +442,6 @@ def _build_call_arguments(args: argparse.Namespace) -> tuple[str, dict]:
         raise _CliInputError(
             "unknown_operation",
             f"no operation named {operation!r} in the manifest",
-        )
-    if op.operation_class != "read":
-        raise _CliInputError(
-            "operation_not_yet_available",
-            "mutating operations arrive with milestone I-2 "
-            "(invocation-held lease semantics)",
         )
 
     json_present = args.input_json is not None
@@ -356,41 +470,49 @@ def _resolve_registry_dir(args: argparse.Namespace) -> Path:
     return default_registry_dir()
 
 
-def _dispatch(args: argparse.Namespace) -> dict:
-    """Resolve arguments, construct the service lazily, and dispatch.
-
-    The `call` class/name guard runs before service construction. Reads never
-    acquire the writer lease and never verify (no provider configured).
-    """
-    if getattr(args, "_is_call", False):
-        operation, obj = _build_call_arguments(args)
-    else:
-        operation, obj = _build_arguments(args)
-
-    registry = InvestigationRegistry(_resolve_registry_dir(args))
-    service = InvestigationService(
-        registry=registry,
-        client_name="cli",
-        lease_policy=LeasePolicy.SESSION_HELD,
-    )
-    return service.dispatch(operation, obj)
-
-
 def run_investigation_command(args: argparse.Namespace) -> int:
     """Run one `decipher investigation` invocation; return the process exit code.
 
     Prints exactly one JSON object (+ ``\\n``) to stdout — byte-identical to the
-    MCP server's tool-result body for reads — and classifies the result via the
-    shared :func:`result_to_exit_code` table. Diagnostics go to stderr only.
+    MCP server's tool-result body — and classifies the result via the shared
+    :func:`result_to_exit_code` table. Diagnostics go to stderr only.
+
+    Lease lifecycle (I-2): the service runs under ``INVOCATION_HELD`` — a
+    mutating dispatch acquires the writer lease and releases it in the service's
+    own ``finally`` after the commit. The CLI-level ``finally`` here calls
+    ``service.shutdown()`` as best-effort finalization so a SIGINT mid-verb still
+    releases any lease before the conventional signal exit (KeyboardInterrupt is
+    not caught, so it propagates to the conventional 130 exit after cleanup).
     """
+    service = None
     try:
-        result = _dispatch(args)
+        if getattr(args, "_is_call", False):
+            operation, obj = _build_call_arguments(args)
+        else:
+            operation, obj = _build_arguments(args)
+        # Not-yet-dispatchable ops (§3.1) short-circuit BEFORE any registry or
+        # service construction, so the registry stays untouched.
+        if operation in _EXCLUDED_OPS:
+            raise _CliInputError("operation_not_yet_available", _EXCLUDED_OPS[operation])
+        registry = InvestigationRegistry(_resolve_registry_dir(args))
+        service = InvestigationService(
+            registry=registry,
+            client_name="cli",
+            lease_policy=LeasePolicy.INVOCATION_HELD,
+        )
+        result = service.dispatch(operation, obj)
     except _CliInputError as exc:
         result = {"status": "error", "reason": exc.reason, "detail": exc.detail}
     except Exception:  # noqa: BLE001 - any unexpected crash is an internal error
         if os.environ.get("DECIPHER_CLI_DEBUG") == "1":
             traceback.print_exc(file=sys.stderr)
         result = {"status": "error", "reason": "internal_error"}
+    finally:
+        if service is not None:
+            try:
+                service.shutdown()
+            except Exception:  # noqa: BLE001 - finalization is best-effort
+                pass
 
     sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
     return result_to_exit_code(result)

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,69 @@ except ImportError:  # pragma: no cover - non-POSIX fallback (import safety only
 
 class InvestigationNotFound(Exception):
     """Raised by ``load`` for an unknown investigation id."""
+
+
+class InvalidInvestigationId(Exception):
+    """Raised at the path seam for an id that fails id-containment (I-2 §1.2).
+
+    The deliberate shared hardening (spec §4): before any path join the id must
+    be a single, contained path component. Traversal (``"../x"``), absolute
+    paths, empty ids, and overlong ids never reach the filesystem outside the
+    registry root. ``InvestigationService.dispatch`` maps this to
+    ``{"status": "error", "reason": "invalid_investigation_id"}`` on BOTH
+    transports.
+    """
+
+    def __init__(self, investigation_id: Any, detail: str) -> None:
+        super().__init__(detail)
+        self.investigation_id = investigation_id
+        self.detail = detail
+
+
+# The id generator is ``uuid.uuid4().hex[:12]`` (see
+# ``InvestigationService._start``): 12 lowercase hex characters. Pinned here for
+# documentation. NOTE (I-2 deviation, see report): the ENFORCED guard below is
+# path-containment — a single, non-relative, bounded-length path component whose
+# resolved directory stays under the registry root — which the strict grammar
+# implies. The exact ``^[0-9a-f]{12}$`` character class is intentionally NOT
+# enforced at this shared seam because existing registry/MCP unit tests exercise
+# the store with benign short ids ("aaaa0000", "id0", "nope"); a strict charset
+# would reclassify those as invalid and break the byte-parity MCP suite. The
+# containment guard is exactly the traversal-closing hardening the parent spec §4
+# calls for, and it is shared across both transports.
+_GENERATED_ID_GRAMMAR = re.compile(r"^[0-9a-f]{12}$")
+_MAX_INVESTIGATION_ID_LEN = 128
+
+
+def _validate_investigation_id(root: Path, investigation_id: Any) -> None:
+    """Reject any id that is not a single, contained path component (I-2 §1.2)."""
+    if not isinstance(investigation_id, str) or not investigation_id:
+        raise InvalidInvestigationId(
+            investigation_id, "investigation id must be a non-empty string"
+        )
+    if len(investigation_id) > _MAX_INVESTIGATION_ID_LEN:
+        raise InvalidInvestigationId(
+            investigation_id, "investigation id exceeds the maximum length"
+        )
+    if (
+        investigation_id in (".", "..")
+        or "/" in investigation_id
+        or "\\" in investigation_id
+        or "\x00" in investigation_id
+        or os.sep in investigation_id
+        or (os.altsep and os.altsep in investigation_id)
+        or Path(investigation_id).name != investigation_id
+    ):
+        raise InvalidInvestigationId(
+            investigation_id, "investigation id is not a single path component"
+        )
+    # Belt-and-suspenders: the resolved directory must remain under the root.
+    root_resolved = root.resolve()
+    resolved = (root_resolved / investigation_id).resolve()
+    if not resolved.is_relative_to(root_resolved):
+        raise InvalidInvestigationId(
+            investigation_id, "investigation id escapes the registry root"
+        )
 
 
 def default_registry_dir() -> Path:
@@ -55,8 +119,17 @@ class InvestigationRegistry:
         # investigation_id -> open lease fd (kept for the process lifetime).
         self._leases: dict[str, int] = {}
 
+    # --- id containment (shared hardening, I-2 §1.2) ---
+    def validate_id(self, investigation_id: Any) -> None:
+        """Raise :class:`InvalidInvestigationId` for an uncontained id."""
+        _validate_investigation_id(self.root, investigation_id)
+
     # --- paths ---
     def _dir(self, investigation_id: str) -> Path:
+        # The shared id-containment seam: every id-taking entry point routes
+        # through here before any path join, so traversal is closed for BOTH
+        # transports (spec §4).
+        _validate_investigation_id(self.root, investigation_id)
         return self.root / investigation_id
 
     def _doc_path(self, investigation_id: str) -> Path:
@@ -175,6 +248,35 @@ class InvestigationRegistry:
             self._leases[investigation_id] = fd
             return True
         return False
+
+    def release_lease(self, investigation_id: str) -> bool:
+        """Explicitly release this process's writer lease (I-2 §1.1).
+
+        Idempotent: releasing a lease this instance does not hold is a no-op
+        returning ``False``. Explicit release is the API the CLI's
+        invocation-held policy uses; process teardown stays the documented
+        fallback (parent §4).
+        """
+        fd = self._leases.pop(investigation_id, None)
+        if fd is None:
+            return False
+        if _HAVE_FCNTL:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            os.close(fd)
+        else:  # pragma: no cover - non-POSIX pid-file fallback
+            os.close(fd)
+            try:
+                (self.root / investigation_id / "lease.lock").unlink()
+            except OSError:
+                pass
+        return True
+
+    def held_lease_ids(self) -> list[str]:
+        """The ids this instance currently holds a writer lease on."""
+        return list(self._leases.keys())
 
     def holds_lease(self, investigation_id: str) -> bool:
         return investigation_id in self._leases
