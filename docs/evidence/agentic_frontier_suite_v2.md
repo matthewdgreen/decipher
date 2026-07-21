@@ -1,0 +1,198 @@
+# Decipher — Agentic Frontier Suite v2 (2026-07-20)
+
+18 fresh ciphers for a single Codex/Sol session to crack via the Decipher MCP
+server. Supersedes the 2026-07-19 v1 suite (all v1 plaintexts are burned —
+full decodes appear in the graded results doc). Contamination-free original
+prose; families deliberately NOT stated (diagnosis is part of each crack).
+New in v2: replication seeds for the flagship families, post-fix expectation
+flips, and probe classes for declaration (padding tails), short-text
+restraint, misleading context, non-English capability, and one historical
+page.
+
+## Setup (once, before starting)
+1. In this repo: `git pull --ff-only && sh scripts/bootstrap.sh`, then restart the app.
+2. Confirm current code: `investigation_list` `server_code.git_head` should match
+   `git rev-parse --short HEAD`, and `experiment_submit` should advertise both
+   `quagmire3_shotgun` and `composite_substitution_transposition`. If not, the
+   server is stale — restart and re-check.
+
+## Orchestration — ONE SUBAGENT PER CIPHER (18 total, run them in parallel)
+For EACH cipher below, spin up a dedicated sub-agent whose sole task is to crack
+that one cipher through the Decipher MCP tools. Each sub-agent:
+- calls `investigation_start` with the ciphertext inline + the stated language
+  (use format `canonical` where a case says so);
+- drives the investigation per `docs/mcp_onboarding.md` §Investigation methodology,
+  from `investigation_status` (diagnose family -> hypothesis branches ->
+  experiments -> read -> verify);
+- uses ONLY Decipher MCP tools — no repo scripts/solvers/Rust directly (this
+  measures the tool surface; record honestly if the surface cannot do something);
+- treats any supplied accession/context note as a CLAIM, not ground truth;
+- honors WF-7: before stopping, `request_independent_verification` on the leading
+  branch, then close with `meta_declare_solution` or `meta_declare_unsolved`.
+
+## Result format — each sub-agent returns EXACTLY this block
+```
+### <cipher_id>
+- investigation_id: <id>
+- verdict: solved | unsolved
+- family (your diagnosis): <e.g. monoalphabetic / homophonic / periodic-poly / ...>
+- leading branch: <name>
+- decode (decode_show, FULL — even if partial/damaged):
+<the decoded text>
+- signals: dict_rate=<>, quad=<>
+- attestation: accepts=<bool>, coherence=<0-10>, language_conf=<>, recoverability=<>, damage=<>
+- route: <one paragraph: how you diagnosed and solved/failed; any tool the surface lacked>
+```
+Do not read files under `docs/evidence/`, `artifacts/`, or anywhere in
+`~/Dropbox/src2/cipher_benchmark/` during the run.
+
+---
+
+## Ciphers
+
+### Cipher 1 — id `gs0_warmup_mono`
+Permitted context: language `en`; word boundaries present (spaced).
+
+```
+RXN FPLR FPKOFSZXRND SH RXN EPFFNQ DNAJLNW RY DNRSDN JHRSF NENDQ LRDNNR XPW NFNIRDSI FSZXR PHW RXNH XN CPFVNW XSL DYJRN YHN ASHPF NENHSHZ ZDNNRSHZ NPIX WPDV OYFN FSVN PH YFW ADSNHW
+```
+
+### Cipher 2 — id `gs1_composite_subtransp_a`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+PCHBCPQDCDXJCGDHGCOMSOHTXCODPLWPOVPCBOBOTHDSPHOHLMQOWWCLUHDWGUTCLFWSHLHCBLSTCZOGOMCOHXUGCKSXSOCGOBHTCMCCSOUJTTPHHBSWCWPPHTOLQSXZHCOHTCWWTTQWKSOICGBZQSGZZGSQBTOUCTPHGCTXCZIUPCODXHZXWHSGTCCOCXATPCSXACHGOWCXHGDVOXKMCODDWCWTPPCSXGDICDOWSSPSCCPCCKOCXJOPPVPMCBHPLHFWTGSHUJHOOHSLWXQFGHDCCUPHXLGCOTCZWPCOCSLXKDXZCDHBUBQCCCDSQCCFLCZOCCXAPSUTBUPDSQOTVWSGBDCMWHQCUOQDQWGTSCTCGAWWTZHPHTILWCBHCWPCPGTOCTHGLPLQMPOTCSXDUVUBQXXPAGLOGXXLCDSC
+```
+
+### Cipher 3 — id `gs2_composite_subtransp_b`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+NDKXGMKNNXKGSNKWZKZZLKBFKBKNOXKFXDZVZMKBZGJOKZLKKHHNOLLULDEGLUBGSNFGKTLOFNZFBKBULBGGMBHBZGEFKUGDYZVNZOZSNYSDZLKDXEUKDBJWOXNGMFPUXZBVXHEMZKHNGBXQHOKLKBKNQZWXZHGNNXUHXGVXZMGKXVMKNFHBZMOLFBPYFXKZHNYHKLBBFEQFSNOXEKDSAOGXSNQVKO
+```
+
+### Cipher 4 — id `gs3_quagmire3_nb_a`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+UFJJEQRXDYFYAJQSEKFQNYVSGEKDWQJNNEGRZLFXHTQMWLOSWOIRYVYGKSSMAJASNHJVAHNNWOIMWLEJONJNHRWXOJJNKHEHNCJQEXGWWSSNKHAXILUZNVUNZJJSEFGHADOVTVYBUECQVRGNUFJQNYVSGAFAKQFPIKCTAQLVWKJTEYRQJKFHQKKDBEKWKKFAJYJVVKFJWKHGQDJPAAFFPOKCOZKRHXISSLOAAXASMACBIHUSQPXPAOHXAKFVTMASDKTRWDJVWOIWAHFJOLUZNVUNZJJPQJUSYOCMXTUWWOIPQTRNDEEIEFMUGERMXYFRGLHRNYURISRZIPGRYPIGKVWXOJJGBRNBNASRZWAGOLXNPXASUZFQEXNIDVOWAXRGGPWBEJKR
+```
+
+### Cipher 5 — id `gs4_quagmire3_nb_b`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+EBSIHZNVVAYFDGTBBSORFXNDZNZXIXEBBUMNDGIQJAQZDJPLDQTLWMGKGIHOKMLBDALKVDGWGIHNMDIOXILACAUBBORRCWXFVFOZIXUBBMUWIAPBXFTLHYQMEKXCPXGRJPMHIAGSZQPWMZMLDHAEDGWQJALVPXZQFVSYPZZVGNJLXJQAVPQRMYQQZNZXIXNEEOOEMJBDDGUSZMGRLUSHHFMCVISPMDYLCQMNMWYLZEZWVUGEUZSHBRFCVIGYLRTKEOOXFXNCVNNTHAUBCARWMAVPJAJKCGOEUAYKMFUBCPUCDAFDCOUAXJBRJPMXPXUDUISPMDNBCCHSMRQKLQTOBNMCVSZZARZLEJSWIMZDPHAKVDGWJAJTNGUECQZWQTSOFOGHBRPCVFXTGVZLIOUYIZZRJASSUZZBVNUSUJWFBPJGIAWIPESLXZZVECIL
+```
+
+### Cipher 6 — id `gs5_vigenere_nb`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+FNLOAVXGNXTKWKYIJYHKKXNODESHSPIOAASZUKJXGPPUBZZYXJLKLRMTOBKQDGUWXKFNLKSXPISTAWQJAAWCFGYMWBDKTXELQXLWWFQXFASBHKZMKSZILMZOYOSEOKEHBBDDMTKXNODEUXOLMQLKAXFNLOSVXKFUWQSKKTKZAUUYMVALPMLYNKNBFKXOUXGPFNLBJYIT
+```
+
+### Cipher 7 — id `gs6_keyed_columnar_w11_nb`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+HORNNNLSTOWWWETTDHNLATEOTIWATIYAGESTOEPNIDEHBEUAAHLHHMIDPEOSLAOEEHHNORESYKTEEZEBEERLSSOOEEINETOVNHTENERISBSEEFERDERYSTSDTLWNMMTGGORETEAEDLENIESLDTRRERHSTNSLDGNFAVAHTHAGEILNTCOODVESATIALCYEMILHWWALOGENE
+```
+
+### Cipher 8 — id `gs7_homophonic_nb`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+37 11 07 37 33 01 12 23 05 12 35 28 01 37 04 10 07 33 15 07 28 37 01 23 27 17 06 02 33 01 35 36 43 10 12 35 37 19 07 27 24 11 12 35 06 07 36 15 37 11 01 37 10 01 05 03 07 17 25 24 09 07 05 37 27 37 10 07 08 12 33 35 37 22 01 23 43 11 27 07 41 07 33 11 07 17 06 37 10 07 14 25 02 01 24 05 10 07 03 19 07 43 12 37 07 44 01 04 37 17 47 25 24 04 07 07 01 04 11 47 07 01 33 26 24 37 11 07 01 23 23 13 42 07 33 35 01 33 45 27 08 37 11 07 24 12 09 10 37 37 11 07 42 01 19 17 07 45 08 18 26 26 06 07 06 01 24 05 07 42 07 34 45 37 34 01 13 24 26 24 37 10 07 06 13 41 13 35 13 25 23 35 37 25 28 28 07 06 08 27 34 27 24 07 08 39 17 17 22 13 24 40 37 07 43 11 07 34 07 42 07 33 13 37 10 01 28 28 07 24 07 05 37 27 03 07 01 24 06 23 07 43 04 34 07 43 36 01 18 43 01 47 35 01 35 16 07 05 43 11 46 01 23 06 43 07 34 07 01 19 43 01 47 36 37 26 18 05 37 10 07 36 01 21 07 31 40 13 07 37 35 37 25 33 45 01 02 27 40 37 37 10 07 23 13 09 11 37 37 11 07 36 04 10 07 05 38 18 07 22 01 37 37 07 34 07 05 19 07 35 35 37 10 01 24 37 11 07 29 07 27 29 18 07 27 24 12 37
+```
+
+### Cipher 9 — id `gs8_latin_sub`
+Permitted context: language `la`; word boundaries present (spaced).
+
+```
+AYWKPWVFAFJW KWMUVNP WPWKWP UX LUXF VFIZUB NB EZVZP ANK JUXBNZP VFJWB MNUXMN WNDKF SUE UX MUN AFBZP MWB NB HNSKUE UXBKW ENABNP MUNE VNMUB EU WNDNK IZUNBNP ENKLWB NB VUSZP JNLNP EZPUB
+```
+
+### Cipher 10 — id `gs9_bifid_probe`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+TIUFGZUANAOLHOISBUGNPSPSUAHQZNSXQHBNVNMAUAESOVTNRNSDANVAHUCEZUNSSZLZUAEXOCWESTTTIHFGTSEIXDVVUCHHUVBFNOBKESTNMZDCSPTMRWBZSSHOVQOTNSTGYPSBAIRPENLV
+```
+
+### Cipher 11 — id `gs10_homo_transp_open`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+05 07 21 33 23 18 23 21 11 21 18 11 17 01 29 29 03 30 07 11 02 31 07 33 30 21 07 33 07 30 07 03 04 23 31 31 11 08 33 30 30 07 29 31 07 02 12 21 30 07 22 30 24 01 29 02 33 04 07 05 07 13 11 30 10 07 07 02 07 21 21 29 02 24 18 31 05 21 07 19 04 38 12 07 07 28 30 18 23 21 23 05 28 28 21 20 18 11 38 07 18 31 33 18 07 07 07 12 21 13 31 21 11 01 10 23 30 11 34 11 31 12 30 36 01 30 19 21 30 24 31 13 06 23 31 08 22 09 06 07 13 18 12
+```
+
+### Cipher 12 — id `gs11_padding_composite`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+UYNUTPCFOGXOKPAGLXVCFTSOXKWSAQSANUMOVGALGLXXUVCLSSHLHEXXXEQPSGXVLTLBAQVEVXXGGXAOVGTBLUCSCHGCXYVVXSQTXAKLXUUOTXXGCVKBTLKNOLLWSVKPAGSQGSCEXWVXYGXKGGXAYGVSASSWAGVXTCLKCUAUCLSKXSGLXEKXQSHAATIXXCSKXXGXUAMUVCEUAPYBUXNAOPAPNLCEVXXKLXCWUPYPKBPSVLWSXKOTLCKCGXVWVQYUIXGHOVQXCMKXOUCUBXKLPXKAAYGLPNGKTQVIAXXXCAAUTGVLKVGXUSGSPFSKEEXTGGGUYSYAY
+```
+
+### Cipher 13 — id `gs12_short_quag3_nb`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+JMMIUZIYGEYDTXQDSHZVZFKAJONPICFAXCMKABLIXJPAIZNAREZKKZFAQWMRSKLAZJEAIYSUJJL
+```
+
+### Cipher 14 — id `gs13_misleading_label_nb`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+Supplied context (treat as a CLAIM, not ground truth): An archivist's accession note claims this is a Vigenere cipher with a six-letter key.
+
+```
+ILVGNNKGROPVDMVUVPSMROHYVDVPILDVSPROINILVMZROVNTVEVDJGNNKMLVDVZSRDVPMNILSISQVOIBDJNTYRGDSDRSOMQNBYPIDSQVLVDXBRVIUNDK
+```
+
+### Cipher 15 — id `gs14_german_homophonic_nb`
+Permitted context: language `de`; NO word boundaries (single continuous stream).
+
+```
+05 06 22 12 26 17 08 06 08 06 23 06 14 15 06 28 02 17 05 06 22 24 06 27 18 17 23 24 01 05 24 31 26 23 24 02 05 24 26 17 05 23 26 04 09 24 06 06 10 17 06 17 16 06 11 23 24 06 22 05 06 22 11 09 16 05 11 06 01 15 24 06 13 26 17 23 24 15 06 09 22 06 17 28 18 15 15 24 06 25 17 05 17 02 04 09 23 10 06 03 06 17 12 01 09 22 06 17 07 01 17 05 06 22 06 10 17 06 13 14 06 11 17 06 28 06 22 13 23 24 02 24 24 11 17 05 06 22 06 10 17 02 14 24 06 22 16 01 17 17 18 09 17 06 28 18 22 24 06 02 22 03 06 11 24 06 24 06 25 17 05 06 22 03 14 10 06 03 25 17 05 15 06 22 17 24 06 05 25 22 04 09 31 25 23 06 09 06 17 16 06 09 22 02 14 23 02 15 15 06 03 25 06 04 09 06 22 11 09 16 12 06 08 06 08 06 03 06 17 09 01 24 24 06 17
+```
+
+### Cipher 16 — id `gs15_french_sub`
+Permitted context: language `fr`; word boundaries present (spaced).
+
+```
+WR HTRFS ERXURFZ XNAADTMMDTI XUDVFR ETRZZR OF ENZI RI XUDVFR UFQRFZ OR WD QRZ RI VFDAO WRM BRFARM EDZIDTRAI QDWJZR WR HRAI TW DWWFQDTI FAR WDQER ODAM MD YRARIZR RI ERZMNAAR AR MDHDTI XNQKTRA OR KDIRDFS XRIIR ERITIR WFQTRZR DHDTI ZDQRARM
+```
+
+### Cipher 17 — id `gs16_railfence_composite`
+Permitted context: language `en`; NO word boundaries (single continuous stream).
+
+```
+OIPDHOIDFHFKODYCVYDACPUJCDDDKJUPUUYUVIDHNOVLDUOVYAOIVKUGDBAICJVEOALACAUQDIOFVJBVXHXODCGSIRHNOKIJYYFGDLAUEVCHPIQDQYDIJDJJUHKCYONUAOYIYYVEYDIGFINUGCIGEYXXFDADIDADDDDBNWGDOVIAJCUHUQDDPOOVDAUSDDVADIUCDGGADFGXHFC
+```
+
+### Cipher 18 — id `gs17_borg_historical`
+Permitted context: language `la`; word boundaries present (spaced); canonical S-token transcription (` | ` separates words) — use format `canonical`.
+
+```
+S008 S006 S015 S015 S003 | S019 S003 S007 S002 S050 S008 S003 | S011 S006 S015 | S016
+S002 S006 S005 | S008 S006 S007 S015 S009 S002 S012 S005 | S019 S003
+S018 S007 S009 S006
+S001 | S008 S012 S008 S009 S006 | S024 S017 | S003 S050 S003 S015 S009 S018 S011 S010 S009 S004 S018
+S058 S071 S050 | S002 S003 S005 S011 S025 S012 | S065 S050 | S004 S003 S011 S002 S003 S004
+S015 S009 S019 S020 | S067 S050 S057 S050 S007 S067 S050 S039 S050 S065 S050 S026 | S003 S004 S017 S009 | S003 S007 S003
+S015 S012 S005 S014 | S005 S009 S007 S012 S019 | S025 S012 S003 S005 | S002 S003 S004
+S007 S003 S015 S009 S019 S014 | S018 S005 S007 S009 S003 | S011 S012 S004 S012 S006 S015 S009 S019
+S008 S003 S014 | S011 S018 S019 S008 S006 S003 | S003 S016 S016 S006 | S050 | S012
+S007 S009 | S005 S003 S004 S012 S003 S008 S009 S002 S009 | S012 S007 S012 S005 S019
+S008 S003 S015 S009 S012 S005 S014 | S016 S006 S002 S018 S025 S012 S003 S007 S008 S012 S015 | S009
+S002 S003 S007 S008 S003 S015 S018 | S019 S008 S003 S013 S007 S006 S018 | S018 S011
+S005 S006 | S018 S017 S016 S012 S015 S003 S008 S018 | S009 S007 | S017 S003 S004 S007 S006
+S005 S003 S015 S009 S006 S014 | S012 S008 | S012 S007 S012 S005 | S018 S012 S012 S005
+S015 S006 | S003 S019 S019 S003 S015 S009 | S011 S018 S019 S019 S009
+S008 S012 S007 S002 | S006 S040 S002 S009 S011 S050 S006 S014 | S006 S008 | S017
+S022 S003 S002 | S022 S015 S009 S013 S006 S022 S009 S006 S015 S009 | S006
+S019 S009 S016 S006 S015 S006 | S006 S019 S008 | S018 S011 S008 S009 S005 S003
+S009 S007 | S002 S003 S008 S003 S015 S015 S003 S002 S008 S003 | S019 S006 S011 S006
+S011 S015 S018 S017 S003 S008 S012 S005 S014 | S006 S008 S009 S050 S003 S005 | S009 S007 | S025 S012
+S007 S018 S017 S009 S004 S009 | S050 S004 S016 S009 S019 S019 S009 S007 S006
+```
