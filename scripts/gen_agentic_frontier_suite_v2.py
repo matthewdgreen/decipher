@@ -166,11 +166,9 @@ def build_cases():
     add("gs6_keyed_columnar_w11_nb", "keyed_columnar_transposition", "standing_capability", "solve_in_surface",
         cipher, p,
         {"word_boundaries": False, "columnar_keyword": kw, "reroll_tries": tries,
-         "note": "width 11 = the F2-escalation regime. HINT-DEPENDENT: the hinted engine "
-                 f"(family_hint=columnar) solves at default 60s budget (verified, {tries} key "
-                 "trial(s)); the BLIND route fails on this case (task #8) — diagnosing "
-                 "transposition and hinting the automated_solver experiment is the agentic "
-                 "requirement."})
+         "note": "width 11 = the F2-escalation regime. Post-2cb3892 (unconditional + "
+                 "wall-clock-bounded F2) the BLIND route solves this at char 1.000; "
+                 f"solver-validated at generation ({tries} key trial(s))."})
 
     # gs7 homophonic nb (numeric homophones), standing frontier.
     p = PROSE["homophonic_nb"]; pl = p.replace(" ", "")
@@ -255,11 +253,12 @@ def build_cases():
     # so the automated floor is ~0.08; the agent surface (mono search + fr dicts +
     # repair) is what is being probed. Expectation set accordingly.
     p = PROSE["french_sub"]; m = rand_perm()
-    add("gs15_french_sub", "simple_substitution", "language_probe", "partial_or_solve",
+    add("gs15_french_sub", "simple_substitution", "language_probe", "solve_or_strong_partial",
         " ".join("".join(m[c] for c in w) for w in p.split()), p,
         {"language": "fr", "word_boundaries": True,
-         "note": "fr models/dicts exist; the blind content route misroutes to the composite "
-                 "peel (measured 0.08) — the agent must drive mono search directly"})
+         "note": "fr models/dicts exist. The pre-2cb3892 misroute into the composite peel "
+                 "(measured 0.08) is FIXED (order-layer signal en-gated); the blind route "
+                 "now measures 0.959 via the substitution default"})
 
     # gs16 railfence composite — MEASURED at generation: the composite peel enters and
     # reports peeled_and_solved but lands wrong-basin garbage (0.09) — the geometric
@@ -268,9 +267,10 @@ def build_cases():
     add("gs16_railfence_composite", "substitution_transposition", "open_frontier", "partial_or_honest",
         RailfenceCipher().encrypt("".join(m[c] for c in pl), 3), p,
         {"word_boundaries": False, "transposition": "railfence3",
-         "note": "substitution THEN 3-rail fence; measured: the peel false-positives into "
-                 "garbage here — correct agent outcome is honest unsolved (or a transform-"
-                 "screen rescue); a false declaration is the failure being probed"})
+         "note": "substitution THEN 3-rail fence; measured: the peel lands wrong-basin "
+                 "garbage here (post-2cb3892 it reports peeled_low_confidence honestly) — "
+                 "correct agent outcome is honest unsolved (or a transform-screen rescue); "
+                 "a false declaration is the failure being probed"})
 
     return cases
 
