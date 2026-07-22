@@ -39,6 +39,7 @@ from __future__ import annotations
 import itertools
 import math
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable
 
@@ -206,6 +207,13 @@ class ColumnarSearchConfig:
     max_no_improve: int = 400   # local-search patience before a restart ends
     top_n: int = 10
     seed: int = 0
+    # Wall-clock bound for the WHOLE search (None = unbounded, the historical
+    # behavior). The exhaustive sweep alone is up to ~46k scorer calls over the
+    # full stream (sum of factorials for widths 2..8), which is minutes on long
+    # streams with an n-gram scorer — callers with a deadline MUST set this.
+    # Checked between widths, between restarts, and periodically inside both
+    # width searchers; on expiry the best-so-far finalists are returned.
+    time_budget_seconds: float | None = None
 
 
 def search_keyed_columnar(
@@ -258,12 +266,23 @@ def search_keyed_columnar(
     if n < 4:
         return finalists
 
+    # Wall-clock guard: shared by the width loop and (via should_stop) both
+    # width searchers. On expiry the best-so-far finalists are returned —
+    # a truncated ranking, never an exception.
+    started = time.monotonic()
+    budget = cfg.time_budget_seconds
+
+    def should_stop() -> bool:
+        return budget is not None and (time.monotonic() - started) >= budget
+
     lo = max(2, cfg.min_width)
     # A width must leave at least 2 rows to be a meaningful transposition.
     hi = min(cfg.max_width, n - 1, n // 2)
     for width in range(lo, hi + 1):
+        if should_stop():
+            break
         if math.factorial(width) <= cfg.exhaustive_max_factorial:
-            best = _search_width_exhaustive(letters, width, scorer)
+            best = _search_width_exhaustive(letters, width, scorer, should_stop=should_stop)
             method = "exhaustive"
         else:
             best = _search_width_hill_climb(
@@ -271,6 +290,7 @@ def search_keyed_columnar(
                 restarts=cfg.restarts,
                 max_no_improve=cfg.max_no_improve,
                 seed=cfg.seed + width,
+                should_stop=should_stop,
             )
             method = "hill_climb"
         if best is None:
@@ -292,10 +312,15 @@ def search_keyed_columnar(
 
 
 def _search_width_exhaustive(
-    letters: str, width: int, scorer: Scorer
+    letters: str, width: int, scorer: Scorer,
+    *, should_stop: Callable[[], bool] | None = None,
 ) -> tuple[tuple[int, ...], str, float] | None:
     best: tuple[tuple[int, ...], str, float] | None = None
-    for order in itertools.permutations(range(width)):
+    for index, order in enumerate(itertools.permutations(range(width))):
+        # The budget check is amortized: 512 scorer calls between checks keeps
+        # the overhead negligible while bounding overshoot to well under a second.
+        if should_stop is not None and index % 512 == 0 and index and should_stop():
+            break
         decoded = columnar_decode_by_order(letters, width, order)
         score = scorer(decoded)
         if best is None or score > best[2]:
@@ -311,16 +336,23 @@ def _search_width_hill_climb(
     restarts: int,
     max_no_improve: int,
     seed: int,
+    should_stop: Callable[[], bool] | None = None,
 ) -> tuple[tuple[int, ...], str, float] | None:
     rng = random.Random(seed)
     best: tuple[tuple[int, ...], str, float] | None = None
     for _ in range(restarts):
+        if should_stop is not None and should_stop():
+            break
         order = list(range(width))
         rng.shuffle(order)
         decoded = columnar_decode_by_order(letters, width, order)
         cur_score = scorer(decoded)
         no_improve = 0
+        steps = 0
         while no_improve < max_no_improve:
+            steps += 1
+            if should_stop is not None and steps % 256 == 0 and should_stop():
+                break
             i, j = rng.randrange(width), rng.randrange(width)
             if i == j:
                 continue

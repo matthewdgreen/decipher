@@ -7594,10 +7594,20 @@ def _run_composite_substitution_transposition(
             "pipeline": peel.get("pipeline"),
         })
 
+    # Outcome honesty: the peel succeeded structurally, but the substitution
+    # anneal can still land wrong-basin pseudo-English. Real solves on this
+    # route measure dict_rate >= 0.85 (round-4 0.93); wrong-basin garbage
+    # measures <= 0.35 (gs16 0.09). A 0.5 cutoff splits the measured
+    # populations with margin, so below it the outcome is downgraded to
+    # "peeled_low_confidence" (the decryption is still returned unchanged).
+    peel_outcome = (
+        "peeled_and_solved" if final_dict_rate >= 0.5 else "peeled_low_confidence"
+    )
+
     step = {
         "name": "composite_substitution_transposition",
         "solver": "composite_substitution_transposition_peel",
-        "outcome": "peeled_and_solved",
+        "outcome": peel_outcome,
         "residual_order": residual,
         "transposition": transposition_record,
         "substitution": {

@@ -173,3 +173,13 @@ class TestOrderLayerSuspected:
         homophonic = " ".join(f"S{i % 40:03d}" for i in range(220))
         signal = transposition_suspicion(parse_canonical_transcription(homophonic))
         assert signal["order_layer_suspected"] is False
+
+    def test_disabled_for_non_en_language(self):
+        # The structure-absent threshold is en-calibrated (S2); for any other
+        # language the order-layer signal is forced False with a reason string,
+        # even on letters that trip the en signal (test_true_on_composite).
+        plain = "".join(c for c in _ORDER_LAYER_PT if "A" <= c <= "Z")
+        composite = ColumnarCipher().encrypt(_substitute(plain, 7), "MASONRY")
+        signal = transposition_suspicion(_ct(composite), "fr")
+        assert signal["order_layer_suspected"] is False
+        assert any("uncalibrated for 'fr'" in reason for reason in signal["reasons"])

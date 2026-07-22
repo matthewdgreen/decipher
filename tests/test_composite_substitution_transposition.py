@@ -180,6 +180,29 @@ class TestEndToEndCompositeRoute:
         assert "transposition" not in step
         assert solver.startswith("native_substitution")
 
+    def test_peel_low_confidence_when_substitution_wrong_basin(self, monkeypatch):
+        # S3: the peel succeeds structurally, but the substitution anneal lands a
+        # wrong-basin decode (dict_rate < 0.5). The outcome must downgrade to
+        # "peeled_low_confidence"; the decryption is still returned unchanged.
+        ciphertext, _s, _m = _make_round4_class_cipher()
+        cipher = _az_cipher_text(ciphertext)
+        garbage = "X" * len(PLAINTEXT)
+        monkeypatch.setattr(
+            runner,
+            "_solve_substitution_with_rescue",
+            lambda cipher_text, language, cipher_id: (
+                "native_substitution_stub", {}, garbage, [],
+            ),
+        )
+        solver, key, decryption, step = _run_composite_substitution_transposition(
+            cipher, "en", cipher_id="test"
+        )
+        assert step["outcome"] == "peeled_low_confidence", step
+        assert decryption == garbage  # still returned unchanged
+        assert step["substitution"]["dict_rate"] < 0.5
+        # The transposition layer is still recorded (peel succeeded structurally).
+        assert step["transposition"]["kind"] == "columnar"
+
 
 class TestRouterExplicitName:
     """Slice C.1 wires the route only by EXPLICIT name; auto-detect is Slice B."""

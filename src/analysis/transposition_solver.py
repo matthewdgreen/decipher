@@ -277,20 +277,38 @@ def transposition_suspicion(
     )
 
     # --- substitution-invariant order-layer signal (§2.3) ---
-    shape_cos = _cosine(sorted(observed, reverse=True), sorted(reference, reverse=True))
-    structure_ratio = ngram.ngram_structure_ratio(text, 2)
-    order_layer_suspected = (
-        n >= _ORDER_LAYER_MIN_TOKENS
-        and shape_cos >= _ORDER_LAYER_SHAPE_COS
-        and 0.0 < structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT
-    )
-    reasons.append(
-        f"language-like monogram SHAPE (sorted cosine {shape_cos:.3f}) with "
-        f"n-gram structure ratio {structure_ratio:.3f} "
-        f"({'<' if structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT else '>='} "
-        f"{_ORDER_LAYER_STRUCTURE_ABSENT:.2f}) -> order layer "
-        f"{'suspected' if order_layer_suspected else 'not suspected'}"
-    )
+    # The structure-absent threshold (_ORDER_LAYER_STRUCTURE_ABSENT) is
+    # calibrated on ENGLISH (composite Slice A); real non-en adjacency (e.g.
+    # French) sits below it, so a plain substituted non-en text would false-fire
+    # as "structure scrambled". Compute the signal only for `en`; other
+    # languages get False + a reason string until the threshold is calibrated
+    # per language (recorded as future work in the spec, not code).
+    # Defensive lowercase fold (review finding #3): the CLI restricts language
+    # choices, but a caller-supplied "EN"/None must not silently disable the
+    # signal for actual English.
+    if (language or "").lower() != "en":
+        order_layer_suspected = False
+        reasons.append(
+            f"order-layer structure threshold uncalibrated for '{language}'; "
+            f"signal disabled"
+        )
+    else:
+        # Computed only on the en branch (finding #4): the non-en path discards
+        # both values, and the structure ratio is a full-stream scan.
+        shape_cos = _cosine(sorted(observed, reverse=True), sorted(reference, reverse=True))
+        structure_ratio = ngram.ngram_structure_ratio(text, 2)
+        order_layer_suspected = (
+            n >= _ORDER_LAYER_MIN_TOKENS
+            and shape_cos >= _ORDER_LAYER_SHAPE_COS
+            and 0.0 < structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT
+        )
+        reasons.append(
+            f"language-like monogram SHAPE (sorted cosine {shape_cos:.3f}) with "
+            f"n-gram structure ratio {structure_ratio:.3f} "
+            f"({'<' if structure_ratio < _ORDER_LAYER_STRUCTURE_ABSENT else '>='} "
+            f"{_ORDER_LAYER_STRUCTURE_ABSENT:.2f}) -> order layer "
+            f"{'suspected' if order_layer_suspected else 'not suspected'}"
+        )
 
     return {
         "suspicious": suspicious,
@@ -1171,17 +1189,23 @@ def solve_transposition(
 
     # Keyed-columnar F2 escalation. The SA column-order search (the `columnar`
     # strategy) misses some keyed columnar orderings (measured: width-11 keyword
-    # misses). When it ran but the incumbent is still below the solved dict-rate
-    # threshold, run the dedicated keyed-columnar search (analysis.columnar_search)
-    # with the language scorer and adopt its top finalist iff its full_score beats
-    # the incumbent (same adopt-if-better convention as the runner's additive
-    # block). Bounded by the shared deadline; skipped when too little budget
-    # remains. Never raises: on error the incumbent is kept and a note recorded.
+    # misses). It fires whenever the `columnar` strategy ran and the deadline
+    # guard passes, UNCONDITIONALLY of the incumbent's score: SA pseudo-English
+    # can cross the solved dict-rate threshold on a wrong basin (a dict-rate
+    # skip here would drop the escalation exactly when it is needed), and no
+    # strategy in this cascade is provably exhaustive (the SA column search is
+    # stochastic; the exhaustive guarantee exists only inside
+    # analysis.columnar_search for widths <= 8), so no incumbent is ever certain.
+    # The dedicated keyed-columnar search (analysis.columnar_search) runs with
+    # the language scorer and its top finalist is adopted iff its full_score
+    # beats the incumbent (same adopt-if-better convention as the runner's
+    # additive block; strict `>` guarantees no regression). Bounded by the
+    # shared deadline; skipped only when too little budget remains. Never raises:
+    # on error the incumbent is kept and a note recorded.
     keyed_columnar_f2: dict[str, Any] | None = None
     best = _best_candidate(all_candidates)
     if (
         "columnar" in strategies_run
-        and (best is None or _dict_rate(best.plaintext, language) < _SOLVED_DICT_RATE)
         and deadline.remaining() >= _F2_MIN_REMAINING_SECONDS
     ):
         try:
@@ -1200,22 +1224,23 @@ def solve_transposition(
             }
         else:
             try:
-                # The hill-climb has no internal deadline hook; its cost is
-                # ~9s at the default 64 restarts on a ~250-char stream and
-                # scales ~linearly with length (every local-search step scores
-                # the full stream). Scale the restart budget to the remaining
-                # wall-clock so the escalation cannot badly overshoot a
-                # nearly-spent deadline; exhaustive widths (<= 8) are cheap
-                # and unaffected by the restart knob.
+                # Wall-clock bound (review finding #1, second review): the
+                # dominant cost is the EXHAUSTIVE width sweep — up to ~46k
+                # full-stream scorer calls for widths 2..8 — which measured
+                # MINUTES on longer streams, not the ~9s the earlier restart
+                # heuristic assumed. The search now takes a hard
+                # time_budget_seconds (checked between widths/restarts and
+                # every few hundred scorer calls) and returns best-so-far on
+                # expiry, so F2 spends at most ~30s and never overshoots a
+                # nearly-spent deadline.
                 remaining = deadline.remaining()
-                restarts = max(
-                    8,
-                    min(64, int(64 * remaining * 250.0 / (9.0 * max(1, len(text))))),
-                )
+                f2_budget = min(max(_F2_MIN_REMAINING_SECONDS, remaining - 2.0), 30.0)
                 finalists = search_keyed_columnar(
                     text,
                     make_language_scorer(language),
-                    config=ColumnarSearchConfig(seed=seed, restarts=restarts),
+                    config=ColumnarSearchConfig(
+                        seed=seed, time_budget_seconds=f2_budget
+                    ),
                 )
                 # The language scorer ranks finalists ngram-only; adoption is
                 # judged on full_score (ngram + dict weight), so pick the

@@ -168,21 +168,35 @@ def test_keyed_columnar_f2_recovers_width11():
     )
 
 
-def test_keyed_columnar_f2_skipped_when_sa_solves():
-    """A width the SA already solves must not trigger (or adopt) the F2 escalation."""
+def test_keyed_columnar_f2_runs_but_does_not_adopt_when_sa_solves():
+    """A width the SA already solves: the F2 escalation now runs unconditionally
+    but must not displace the (already correct) incumbent.
+
+    S1 dropped the dict-rate skip, so the escalation fires whenever the
+    ``columnar`` strategy ran and budget remains. Adoption is strict ``>`` on
+    ``full_score``, so an equal/lower-scoring finalist never displaces a solved
+    incumbent: the escalation is PRESENT with ``adopted is False`` and the
+    returned plaintext is unchanged.
+    """
 
     pt = _clean(_TEXT_A)
     ct = columnar_encrypt(pt, "SECRET")  # width 6, solved by the SA search
     # Generous explicit budget so the SA phase always completes (a truncated SA
-    # under contention could leave dict_rate below threshold and let F2 run).
+    # under contention could leave the incumbent below a real solve).
+    # Modest budget (second-review finding #1): F2 is now wall-clock-capped at
+    # ~30s, so a huge budget only inflates the SA phase; 60s comfortably covers
+    # the width-6 SA solve plus the capped escalation.
     result = solve_transposition(
         _cipher_text(ct), language="en", family_hint="columnar_transposition",
-        budget_seconds=240.0,
+        budget_seconds=60.0,
     )
     assert result["status"] == "completed", result
-    assert _char_accuracy(result["plaintext"], pt) >= 0.90
-    # dict_rate >= threshold, so the escalation is skipped entirely.
-    assert result.get("keyed_columnar_f2") is None, result.get("keyed_columnar_f2")
+    kc = result.get("keyed_columnar_f2")
+    assert kc is not None, "F2 escalation should run unconditionally now"
+    assert kc.get("ran") is True, kc
+    assert kc.get("adopted") is False, kc
+    # The incumbent solve is untouched — exact plaintext equality (finding #2).
+    assert result["plaintext"] == pt
 
 
 def test_keyed_columnar_f2_skipped_on_tiny_deadline():
@@ -200,6 +214,62 @@ def test_keyed_columnar_f2_skipped_on_tiny_deadline():
     # Under ~5s remaining => escalation skipped, so it never adopts.
     kc = result.get("keyed_columnar_f2")
     assert kc is None or kc.get("adopted") is not True, kc
+
+
+def test_keyed_columnar_f2_runs_and_adopts_despite_high_dict_rate_incumbent(monkeypatch):
+    """S1: the escalation fires even when the incumbent's dict-rate looks solved.
+
+    Regression for the width-11 miss: the SA can converge to pseudo-English whose
+    greedy-segmentation dict_rate crosses the solved bar, which used to *skip* the
+    escalation. Here the SA strategy is patched to return a fixed garbage
+    candidate and ``_dict_rate`` is forced to 0.99 (so the incumbent reads as
+    "already solved"); the keyed-columnar search is patched to return the true
+    decode at a strictly better ``full_score``. The escalation must still run and
+    adopt.
+    """
+
+    import analysis.columnar_search as columnar_search
+    import analysis.transposition_solver as ts
+
+    pt = _clean(_TEXT_A)
+    ct = columnar_encrypt(pt, "SECRET")
+
+    # SA strategy returns a fixed wrong-basin candidate with a low incumbent score.
+    garbage = "X" * len(pt)
+    monkeypatch.setattr(
+        ts,
+        "search_columnar",
+        lambda text, language, *, deadline, seed=0: [
+            ts._Candidate(garbage, -10.0, "columnar", {"width": 6, "order": list(range(6))})
+        ],
+    )
+    # Force the incumbent to read as "solved" by dict-rate (old skip condition).
+    monkeypatch.setattr(ts, "_dict_rate", lambda text, language: 0.99)
+
+    class _FakeFinalist:
+        def __init__(self, decoded: str) -> None:
+            self.decoded_stream = decoded
+            self.column_count = 6
+            self.column_order = (0, 1, 2, 3, 4, 5)
+            self.keyword = "SECRET"
+            self.method = "test_fake"
+
+    monkeypatch.setattr(
+        columnar_search,
+        "search_keyed_columnar",
+        lambda text, scorer, *, config=None: [_FakeFinalist(pt)],
+    )
+
+    result = solve_transposition(
+        _cipher_text(ct), language="en", family_hint="columnar_transposition",
+        budget_seconds=240.0,
+    )
+    assert result["status"] == "completed", result
+    kc = result.get("keyed_columnar_f2")
+    assert kc is not None, "escalation must run despite the high-dict-rate incumbent"
+    assert kc.get("ran") is True, kc
+    assert kc.get("adopted") is True, kc
+    assert result["plaintext"] == pt
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +373,34 @@ def test_substitution_does_not_route_to_transposition():
     sub = "".join(chr(65 + perm[ord(c) - 65]) for c in pt)
     route = _select_solver_path(_cipher_text(sub), "en", cipher_system="")
     assert route["route"] != "transposition"
+
+
+def test_fr_composite_does_not_route_to_composite_peel():
+    """S2: the composite CONTENT auto-route is en-only.
+
+    ``order_layer_suspected`` uses an en-calibrated structure threshold, so it is
+    disabled for other languages. A substituted-transposition text that routes to
+    the composite peel under ``en`` must fall through to the substitution default
+    under ``fr`` (whose models/dictionaries are language-correct).
+    """
+
+    from automated.runner import _select_solver_path
+    from ciphers.transposition import ColumnarCipher
+
+    rng = random.Random(5)
+    perm = list(range(26))
+    rng.shuffle(perm)
+    # Long enough for the order-layer min-token guard (>=150 letters).
+    pt = _clean(_TEXT_A + " " + _TEXT_B)
+    sub = "".join(chr(65 + perm[ord(c) - 65]) for c in pt)
+    composite = ColumnarCipher().encrypt(sub, "MASONRY")
+    ct = _cipher_text(composite)
+
+    en_route = _select_solver_path(ct, "en", cipher_system="")
+    assert en_route["route"] == "composite_substitution_transposition", en_route
+
+    fr_route = _select_solver_path(ct, "fr", cipher_system="")
+    assert fr_route["route"] != "composite_substitution_transposition", fr_route
 
 
 def test_route_hint_defers_to_pure_transposition():
