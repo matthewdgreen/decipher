@@ -1,8 +1,9 @@
 # INV Cipher-Family Roadmap
 
-Updated 2026-07-16 after review of the landed INV-0 system, the 35-family
-generator, the no-LLM solver coverage sweep, and the six-case model-diagnosis
-experiment.
+Updated 2026-09-01 after review of the landed INV-0 system, the 35-family
+generator, the no-LLM solver coverage sweep, the six-case model-diagnosis
+experiment, and the source-indexed mechanism reported for Urquhart's Cyphral
+Distich.
 
 The original request was to list cipher families Decipher does not yet address,
 starting with families supported by other tools. That inventory remains useful,
@@ -57,7 +58,7 @@ machine-readable matrix so these facts stop drifting across documents.
 | transposition+homophonic | registry entry | ladder cases | transform-homophonic search exists, composition diagnosis weak |
 | Playfair/polygraphic | registry cover only; discriminator planned | Playfair/two-square/four-square/Hill generated | not solved |
 | fractionation+transposition | registry cover only; discriminator planned | Bifid/Trifid/ADFGX/ADFGVX generated | not solved |
-| numeric book cipher | P8 diagnosis landed | no general generator | diagnosis only |
+| numeric book cipher | P8 diagnosis landed; structured-source matching absent | no general generator | diagnosis only; MCP numeric intake does not yet preserve multi-digit values |
 | nomenclator/codebook | registry only | not generated | not solved |
 | deterministic encodings | not first-class in INV | Base64/Base32/hex/binary/ROT47/Baconian/A1Z26/Morse/tap generated | detect-and-decode missing; some 1:1 forms happen to fall to substitution |
 | plaintext/random/fabrication models | provisional hypothesis | random controls needed | never a conventional solve |
@@ -167,7 +168,70 @@ solver-backed discriminator where needed, and a solver or referral note.
 
 ## Tier 2: historical research frontier
 
-- Numeric book-cipher solving through documented corpus search;
+### 1. Source-indexed numeric and book ciphers
+
+Split this family into two engineering problems rather than treating every
+book cipher as an open-ended corpus search:
+
+1. **Local structured-reference ciphers**: the key text is adjacent, explicitly
+   associated, or strongly suggested by the source. Position may select a page,
+   paragraph, section, or line; the numeric token then selects a word or
+   character. This is the first implementation target because the mechanism is
+   bounded, falsifiable, and can be verified out of sample.
+2. **Open-corpus key search**: the key text is unknown and must be searched over
+   documented candidate corpora. This remains a later, much larger retrieval
+   and indexing problem.
+
+The local structured-reference lane is implemented as reusable machinery, not
+as an Urquhart-specific solver:
+
+- **N1 - numeric intake**: preserve each decimal integer as one token, retain
+  line/group boundaries, and carry the original numeric value through CLI,
+  MCP, case-file, artifact, and experiment interfaces. Add malformed/mixed
+  numeric controls. Do not force numeric values through S-token identities or
+  digit-by-digit letter parsing.
+- **N2 - structured reference documents**: ingest user-approved source text as
+  named pages/sections/paragraphs/lines while preserving edition, source URI,
+  rights, tokenization policy, and stable unit ids. Host agents may read local
+  files or retrieve public sources, but MCP receives inline content or opaque
+  stored-document ids, never arbitrary filesystem paths.
+- **N3 - contextual structure evidence**: compare ciphertext line/position
+  counts and numeric ranges against available document-unit counts and unit
+  lengths. Report cardinality matches, out-of-range rates, nearby textual
+  clues, and counterevidence. A match proposes an experiment; it is not proof.
+- **N4 - indexed-reference experiment**: test compact declared rules such as
+  `position i -> unit i`, `value n -> word n`, then first/last/full-word or
+  character extraction, with a small explicit set of global offsets and
+  tokenization conventions. Emit every coordinate, selected source span,
+  extracted value, failure, and searched degree of freedom.
+- **N5 - predictive verification**: prefer mechanisms learned on one line or
+  prefix and applied unchanged to a held-out line or suffix. Measure exception
+  count, source-edition robustness, parameter sensitivity, language quality,
+  and null/multiple-search baselines. A readable fit with many local offsets is
+  a fitted replay, not a solved mechanism.
+- **N6 - generated evidence**: add synthetic analogs with structured reference
+  documents, distractor documents, multiple languages, OCR/tokenization damage,
+  coincidental cardinality matches, and negative controls. Keep rule parameters
+  and plaintext in the grading layer only. Public historical examples become
+  compatibility tests, not agentic-generalization evidence once their solutions
+  are online.
+
+Historical acceptance should include the Cyphral Distich as a newly public
+compatibility record only after independent source/transcription and rights
+review. The larger Cyphral Octastich should remain a provisional/partial record
+until its edition-dependent offsets and unreadable positions are independently
+checked. The primary benchmark evidence must be held-out synthetic analogs that
+cannot be solved from model memory.
+
+The completed source-aware slice must demonstrate that a simple rule decodes a
+held-out region without new tuning, that plausible distractor documents do not,
+and that reports distinguish exact coordinates from exceptions. Only after this
+lane is measured should Decipher attempt broad Gutenberg-scale or archival
+corpus search.
+
+### 2. Remaining historical frontier
+
+- Open-corpus numeric book-cipher search over documented candidate collections;
 - nomenclator solving and synthetic code-list generation;
 - polyphonic substitution;
 - syllabaries and large-alphabet historical systems;

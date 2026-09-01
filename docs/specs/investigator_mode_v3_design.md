@@ -570,6 +570,10 @@ of small LLM-free slices:
    substitution+transposition case missed by all three model experiments.
 7. Treat language, segmentation, and transcription quality as orthogonal
    hypotheses/views; language-model failure alone is not family evidence.
+8. Add atomic multi-digit numeric representation and calibrated
+   ciphertext-to-document structure comparisons, including coincidental-match
+   and distractor controls. The generic extraction experiment remains INV-3
+   work; INV-0.5 supplies only representation and measured hypothesis evidence.
 
 Calibration harness code and false-rule-out reporting are part of INV-0.5,
 not a deferred presentation feature. Every later family slice adds held-out
@@ -581,6 +585,9 @@ A2-policy declaration guard; note renderer + claim validator;
 `state_seq`/`events.jsonl`/`on_turn_end` (M1 spec amendment); minimal manifest,
 lockfile, and resume. Rich `watch`, diff-reporting, approvals, and presentation
 surfaces wait until the canonical state has survived real multi-session use.
+Source-aware cases store document provenance, version, rights status,
+tokenization policy, and stable unit references in the case file rather than
+embedding an unaudited text blob in a research note.
 Acceptance: a full investigator run on Beale produces a defensible
 research note (diagnosis atoms, hoax-vs-book evidence, frontier section);
 the two-session resume test (I7); declaration blocked while an inbox item
@@ -590,7 +597,10 @@ is unadjudicated.
 `survey` specs; merged `theorize` kind scheduled early; card writes on the
 A10 board; advisory stall counter in context. Acceptance: fake-provider
 theorize test (anomalies in → testable mechanisms + cheap-check plan
-drafts out; untestable → tool gaps); Beale rerun with episode fan-out.
+drafts out; untestable → tool gaps); Beale rerun with episode fan-out. For
+source-aware numeric cases, theorize may propose cardinality/index mechanisms,
+but each proposal must identify a source unit, extraction rule, predicted
+footprint, and cheap falsification test.
 
 **INV-3 — Plans + admission at the queue** (needs M4). `ExperimentPlan`
 enforcement at submit (evidence-basis for expensive tiers, dedup
@@ -603,6 +613,14 @@ repair (the `2ff2c634eaa4` replay as a regression fixture); a D'Agapeyeff
 investigation runs the queue-governed loop and yields honest negative
 results with power annotations.
 
+Source-aware extension: once numeric and structured-document intake land,
+INV-3 also admits a generic `indexed_reference_extract` experiment. Its plan
+binds a document version, unit hierarchy, tokenization policy,
+position-to-unit rule, value-to-item rule, extraction rule, searched offsets,
+and an abandon threshold. The result is coordinate-level evidence, not
+free-form prose. It must disclose all searched degrees of freedom so a fitted
+replay cannot masquerade as a predictive mechanism.
+
 **INV-4 — Verification loop** (needs M5). Verify→evidence write-back with
 basin taxonomy; island short-circuit wiring; brittleness probe; compiled
 `lead_verdict` (minus lineup); familiarity flag; notify gating (D6);
@@ -610,6 +628,12 @@ reader-calibration priors on attestations. Acceptance: borg_0077v fixture
 yields `likely_noise` by compiled verdict; a true-plaintext synthetic at
 85% accuracy scores `promising`; declaration carries coverage summary +
 attestation; crib mismatch hard-blocks a scripted K4-style case.
+
+For indexed-reference mechanisms, INV-4 verification includes an
+unchanged-rule holdout decode, distractor-document controls, exception
+accounting, and source-edition/tokenization sensitivity. Historical coherence
+and rhyme are supporting evidence; predictive coordinates are the acceptance
+evidence.
 
 **INV-5 — Gated spikes** (post-M5/M6, only after INV-1..4 usage shows the
 specific gap): lineup spike under D10 rules; per-family envelopes/
@@ -736,3 +760,28 @@ Diagnosis-first is acceptable. Exact variants are not presumed statically
 identifiable when only successful bounded inversion separates them. The
 2026-07-16 revised sequencing and acceptance rules in the roadmap and INV-0.5
 milestone supersede the original flat family-count ordering.
+
+### Source-aware indexed-reference lane (2026-09-01)
+
+The Cyphral Distich report exposed a useful distinction inside the existing
+`numeric_book_cipher` family. Some book ciphers require infeasible open-corpus
+search; others point to a nearby structured source whose section/page count
+and word ranges make a compact mechanism directly testable. The latter is now
+an explicit roadmap lane in `docs/inv_family_roadmap.md`.
+
+Milestone ownership is split deliberately:
+
+- INV-0.5 owns atomic multi-digit numeric representation,
+  structure-comparison evidence, and generated diagnosis controls.
+- INV-1 owns persistent source-document provenance and
+  research-note/case-file references.
+- INV-2 owns creative but testable mechanism proposals based on cardinality
+  and source clues.
+- INV-3 owns the bounded indexed-reference experiment and
+  degree-of-freedom ledger.
+- INV-4 owns held-out prediction, distractor/null controls, and declaration
+  evidence.
+
+This lane must remain generic. Public solved examples are regression anchors;
+fresh synthetic source-aware analogs measure whether the investigator actually
+discovers the mechanism.

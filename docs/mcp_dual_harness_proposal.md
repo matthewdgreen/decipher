@@ -644,8 +644,13 @@ investigation materially.
 The intake contract can represent:
 
 - ciphertext or transcription, passed inline to `investigation_start`;
+- atomic decimal-integer ciphertext, preserving multi-digit values and line or
+  group boundaries rather than parsing it as individual digit characters;
 - local text/image input read by the host agent and transcribed before the
   inline MCP call (the MCP server still accepts no arbitrary path parameter);
+- optional structured reference documents passed inline or installed under an
+  opaque document id, with named page/section/paragraph/line units, source and
+  edition provenance, rights status, tokenization policy, and stable unit ids;
 - whether existing spaces, line breaks, punctuation, and symbol distinctions
   are believed meaningful;
 - known or suspected language, cipher family, provenance, and historical
@@ -660,6 +665,35 @@ ground-truth-free analysis may start immediately, private material is never
 published, and expensive/networked actions require the normal client approval
 boundary. Do not front-load an eight-question form when the missing answers can
 be inferred later from evidence.
+
+#### 8.1.3a Source-aware investigation extension
+
+Real unknown-cipher work sometimes depends more on archival context than on a
+larger classical-cipher search. The host agent is responsible for
+user-approved web/archive research, local document reading, clue
+interpretation, and proposing compact mechanisms. MCP remains responsible for
+persistent evidence and for running auditable experiments over supplied source
+material.
+
+After the base MCP v1 surface is stable, add a generic structured-reference
+experiment with these properties:
+
+- compare ciphertext position/group counts and numeric ranges against
+  available document units;
+- test a declared position-to-unit, value-to-word/character, and extraction
+  rule with only explicit bounded offsets/tokenization variants;
+- return a coordinate table, failures, exception count, degrees of freedom,
+  language-quality measurements, and unchanged-rule holdout result;
+- support distractor documents and null baselines so broad search cannot
+  manufacture an apparently meaningful fit; and
+- write the hypothesis, source provenance, negative results, and verification
+  outcome into the case file so later sessions do not repeat the search.
+
+This capability is intentionally not an arbitrary server-side Python tool and
+not a special-case book-cipher solver. A Codex or Claude host may write an
+exploratory script while forming the hypothesis; a mechanism promoted into
+Decipher must become a bounded, schema-defined experiment with reproducible
+evidence.
 
 #### 8.1.4 No-API-key and recovery behavior
 
@@ -806,6 +840,10 @@ Operational decisions v1 must make explicitly rather than inherit by accident:
 - INV (investigator mode) is the natural first *consumer* of the MCP surface:
   real unsolved ciphers, no firewall requirement, long exploratory sessions —
   exactly the subscription-economics sweet spot.
+- The source-aware indexed-reference lane in `docs/inv_family_roadmap.md` is a
+  representative post-v1 INV consumer: the general client researches and
+  proposes, while MCP preserves numeric/document structure, executes the rule,
+  and verifies it against holdouts and controls.
 
 ## 11. Initial policy-provenance seed
 

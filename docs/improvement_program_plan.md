@@ -682,6 +682,37 @@ polygraphic/fractionating families, numeric systems, and the historical tail.
 Each slice records its hierarchy level, held-out measured power, uncertainty,
 generator, solver status, and external referral.
 
+### Source-aware numeric/book-cipher lane (added 2026-09-01)
+
+The newly reported Cyphral Distich mechanism motivates a bounded extension of
+the numeric-book-cipher roadmap, not a one-off solver. The authoritative detail
+is in `docs/inv_family_roadmap.md`; milestone ownership is recorded in
+`docs/specs/investigator_mode_v3_design.md`, and the host/MCP responsibility
+split is in `docs/mcp_dual_harness_proposal.md`.
+
+Order of work:
+
+1. Preserve multi-digit numeric tokens and boundaries across CLI, MCP, and
+   artifacts.
+2. Add provenance-bearing structured reference documents with stable units.
+3. Measure ciphertext/document cardinality and range matches as hypothesis
+   evidence, with explicit counterevidence.
+4. Add a bounded indexed-reference extraction experiment with a complete
+   coordinate and degree-of-freedom ledger.
+5. Require unchanged-rule holdout decoding, distractor sources,
+   null/multiple-search controls, and edition/tokenization sensitivity before
+   declaring a mechanism solved.
+6. Generate source-aware analogs across languages, damage levels, distractors,
+   and coincidental matches. Use public historical solutions only as
+   compatibility checks because frontier models may memorize them.
+7. Attempt broad corpus search only after the local structured-reference lane
+   is calibrated and useful.
+
+This lane is a concrete test of the dual-harness thesis: the general host agent
+does archival research and creative clue integration; Decipher supplies the
+structured state, bounded experiment, reproducible evidence, and declaration
+gate.
+
 ### Generator pipeline shape (user-specified 2026-07-15 — binding when built)
 
 1. **Plaintext selection** — driven by language, ERA, frequency
