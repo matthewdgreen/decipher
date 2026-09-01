@@ -23,13 +23,26 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
+import subprocess
 import sys
+import time
 import traceback
 from pathlib import Path
 
 from investigation_service import manifest
-from investigation_service.service import InvestigationService, LeasePolicy
+from investigation_service.service import (
+    ExperimentWaitInterrupted,
+    InvestigationService,
+    LeasePolicy,
+)
 from mcp_server.registry import InvestigationRegistry, default_registry_dir
+
+# The private detach-worker verb: spawned by `experiment-submit --detach`, hidden
+# from help, and excluded from the interface-parity contract (parent §6).
+_RUN_EXPERIMENT_VERB = "_run-experiment"
+# Parent-side timeout waiting for the detached child's submission handshake.
+_DETACH_HANDSHAKE_TIMEOUT_S = 60.0
 
 
 # --------------------------------------------------------------------------- #
@@ -58,14 +71,6 @@ _CLI_INPUT_REASONS = frozenset(
 # `call` still knows the names; only dispatch is short-circuited BEFORE any
 # registry/service construction (so the registry is untouched — sub-spec §0/§4).
 _EXCLUDED_OPS: dict[str, str] = {
-    "experiment_submit": (
-        "experiments on the CLI (the two-commit lifecycle, --wait/--detach, and "
-        "crash reconciliation) arrive with milestone I-3"
-    ),
-    "experiment_collect": (
-        "experiments on the CLI (the two-commit lifecycle, --wait/--detach, and "
-        "crash reconciliation) arrive with milestone I-3"
-    ),
     "request_independent_verification": (
         "verification and every external-call path (--verify-provider / "
         "--allow-external) arrive with milestone I-5"
@@ -253,6 +258,39 @@ def add_investigation_subparser(subparsers: argparse._SubParsersAction) -> None:
                 help="Read RAW ciphertext (UTF-8) from a file ('-' = stdin); "
                      "fills the ciphertext property (XOR --ciphertext / JSON input).",
             )
+        if op.name == "experiment_submit":
+            # experiment-submit gains the mutually-exclusive execution mode
+            # (sub-spec I-3 §3.2/§3.3). --wait (DEFAULT) runs the two-commit
+            # lifecycle in THIS process; --detach spawns the private worker and
+            # returns as soon as the child durably submits. These are transport
+            # flags, not schema args, so they never enter the argument object.
+            mode = vp.add_mutually_exclusive_group()
+            mode.add_argument(
+                "--wait", dest="detach", action="store_false",
+                help="Submit, then wait in this process for the experiment to "
+                     "finish before printing the result (default).",
+            )
+            mode.add_argument(
+                "--detach", dest="detach", action="store_true",
+                help="Spawn a private background worker; print the submit result "
+                     "as soon as the experiment is durably queued, then exit.",
+            )
+            vp.set_defaults(detach=False)
+
+    # Private detach-worker verb (parent §6): hidden from help and excluded from
+    # the parity contract. Spawned by `--detach` with a handshake pipe fd; it
+    # acquires the lease, submits, commits the running record, writes the submit
+    # body to the fd, then harvests+commits the terminal record and exits.
+    # Omitting `help` (rather than passing argparse.SUPPRESS) is what actually
+    # hides a subparser: argparse only lists a verb in help when `help` is given,
+    # while `help=SUPPRESS` prints a literal "==SUPPRESS==" row. The verb stays a
+    # valid (hidden) choice either way.
+    rep = verbs.add_parser(_RUN_EXPERIMENT_VERB)
+    rep.add_argument("--handshake-fd", dest="handshake_fd", type=int, required=True,
+                     metavar="N")
+    rep.add_argument("--input-json", dest="input_json", default=None, metavar="JSON",
+                     help="Canonical experiment_submit argument object as JSON.")
+    rep.set_defaults(_run_experiment_worker=True)
 
     # Reserved transport verb: dispatch any operation by canonical name via JSON.
     cp = verbs.add_parser(
@@ -470,6 +508,153 @@ def _resolve_registry_dir(args: argparse.Namespace) -> Path:
     return default_registry_dir()
 
 
+# --------------------------------------------------------------------------- #
+# --detach: spawn the private worker + block on its submission handshake        #
+# --------------------------------------------------------------------------- #
+def _read_handshake_line(read_fd: int, timeout: float) -> str | None:
+    """Read one newline-terminated line from ``read_fd`` within ``timeout``s.
+
+    Returns the line (without the trailing newline) or ``None`` on timeout / EOF
+    before a complete line. Uses ``select`` on the raw fd so no thread is needed.
+    """
+    buf = b""
+    deadline = time.monotonic() + timeout
+    while b"\n" not in buf:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return None
+        ready, _, _ = select.select([read_fd], [], [], remaining)
+        if not ready:
+            return None
+        chunk = os.read(read_fd, 4096)
+        if not chunk:  # child closed the fd without a complete line
+            break
+        buf += chunk
+    if b"\n" in buf:
+        return buf.split(b"\n", 1)[0].decode("utf-8", errors="replace")
+    return None
+
+
+def _run_detached_submit(registry_dir: Path, obj: dict) -> tuple[dict, int]:
+    """Spawn the private ``_run-experiment`` worker and return its submission body.
+
+    The parent process constructs NO lease and mutates NO state (parent §5): it
+    spawns the worker in a NEW session with stdio at ``/dev/null`` and a dedicated
+    handshake pipe fd, then blocks on the child's one-shot submission line. The
+    child acquires the lease, submits, commits the running record, writes the exact
+    submit body to the fd, and only then keeps the lease to harvest+commit the
+    terminal record. Returns ``(body, exit_code)``.
+    """
+    # Run the SAME source tree as this process (`-m cli`); prepend our own src
+    # directory so the child imports the identical modules under test.
+    src_dir = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = src_dir + (os.pathsep + existing if existing else "")
+
+    read_fd, write_fd = os.pipe()
+    os.set_inheritable(write_fd, True)
+    argv = [
+        sys.executable, "-m", "cli", "investigation",
+        "--registry-dir", str(registry_dir),
+        _RUN_EXPERIMENT_VERB,
+        "--handshake-fd", str(write_fd),
+        "--input-json", json.dumps(obj, ensure_ascii=False),
+    ]
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            pass_fds=(write_fd,),
+            env=env,
+        )
+    finally:
+        os.close(write_fd)  # parent keeps only the read end
+    try:
+        line = _read_handshake_line(read_fd, _DETACH_HANDSHAKE_TIMEOUT_S)
+    finally:
+        os.close(read_fd)
+
+    if line is None:
+        body = {
+            "status": "error", "reason": "detach_handshake_timeout",
+            "detail": (
+                f"the detached worker (pid {proc.pid}) did not send a submission "
+                f"handshake within {int(_DETACH_HANDSHAKE_TIMEOUT_S)}s; it may still "
+                "be running in the background."
+            ),
+        }
+        return body, 5
+    try:
+        body = json.loads(line)
+        if not isinstance(body, dict):
+            raise ValueError("handshake was not a JSON object")
+    except (json.JSONDecodeError, ValueError) as exc:
+        return {
+            "status": "error", "reason": "detach_handshake_invalid",
+            "detail": f"the detached worker sent an unreadable handshake: {exc}",
+        }, 5
+    return body, result_to_exit_code(body)
+
+
+def _run_experiment_worker(args: argparse.Namespace) -> int:
+    """The private ``_run-experiment`` verb body (the detached child).
+
+    Runs the two-commit ``--wait`` lifecycle, firing the handshake callback with
+    the submit result/error body the moment it is durably known (after COMMIT #1,
+    or immediately for an early failure), then keeps the lease to harvest+commit
+    the terminal record. All stdio is redirected by the parent; diagnostics live
+    in the investigation event log, never on stdout. The child's own exit code is
+    irrelevant (the parent already has the handshake).
+    """
+    handshake_fd = args.handshake_fd
+
+    def _on_running(body: dict) -> None:
+        try:
+            os.write(
+                handshake_fd,
+                (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8"),
+            )
+        except OSError:
+            pass  # parent gone: keep running, the work is durably queued.
+        finally:
+            try:
+                os.close(handshake_fd)
+            except OSError:
+                pass
+
+    service = None
+    try:
+        obj = _parse_json_object(args.input_json or "", "--input-json")
+        registry = InvestigationRegistry(_resolve_registry_dir(args))
+        service = InvestigationService(
+            registry=registry, client_name="cli",
+            lease_policy=LeasePolicy.INVOCATION_HELD,
+        )
+        service.run_experiment_to_completion(obj, on_running=_on_running)
+    except ExperimentWaitInterrupted:
+        # Best-effort finalization already happened inside the service.
+        pass
+    except Exception:  # noqa: BLE001 - the child never crashes onto stdout
+        if os.environ.get("DECIPHER_CLI_DEBUG") == "1":
+            traceback.print_exc(file=sys.stderr)
+        # Ensure the parent is not left blocking on the handshake.
+        try:
+            os.close(handshake_fd)
+        except OSError:
+            pass
+    finally:
+        if service is not None:
+            try:
+                service.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+    return 0
+
+
 def run_investigation_command(args: argparse.Namespace) -> int:
     """Run one `decipher investigation` invocation; return the process exit code.
 
@@ -484,7 +669,12 @@ def run_investigation_command(args: argparse.Namespace) -> int:
     releases any lease before the conventional signal exit (KeyboardInterrupt is
     not caught, so it propagates to the conventional 130 exit after cleanup).
     """
+    # The private detach worker never prints to stdout (parent redirects it).
+    if getattr(args, "_run_experiment_worker", False):
+        return _run_experiment_worker(args)
+
     service = None
+    exit_override: int | None = None
     try:
         if getattr(args, "_is_call", False):
             operation, obj = _build_call_arguments(args)
@@ -494,13 +684,30 @@ def run_investigation_command(args: argparse.Namespace) -> int:
         # service construction, so the registry stays untouched.
         if operation in _EXCLUDED_OPS:
             raise _CliInputError("operation_not_yet_available", _EXCLUDED_OPS[operation])
-        registry = InvestigationRegistry(_resolve_registry_dir(args))
-        service = InvestigationService(
-            registry=registry,
-            client_name="cli",
-            lease_policy=LeasePolicy.INVOCATION_HELD,
-        )
-        result = service.dispatch(operation, obj)
+
+        # experiment-submit --detach: the parent spawns a private worker and
+        # never constructs a lease or mutates state (sub-spec I-3 §3.3).
+        if operation == "experiment_submit" and getattr(args, "detach", False):
+            result, exit_override = _run_detached_submit(
+                _resolve_registry_dir(args), obj
+            )
+        else:
+            registry = InvestigationRegistry(_resolve_registry_dir(args))
+            service = InvestigationService(
+                registry=registry,
+                client_name="cli",
+                lease_policy=LeasePolicy.INVOCATION_HELD,
+            )
+            if operation == "experiment_submit":
+                # --wait (default): the two-commit lifecycle in THIS process.
+                result, _final_rev = service.run_experiment_to_completion(obj)
+            else:
+                result = service.dispatch(operation, obj)
+    except ExperimentWaitInterrupted as exc:
+        # SIGINT/SIGTERM during --wait: the service already orphaned+committed and
+        # released the lease. Print the orphan body and exit conventionally.
+        result = exc.body
+        exit_override = 128 + exc.signum
     except _CliInputError as exc:
         result = {"status": "error", "reason": exc.reason, "detail": exc.detail}
     except Exception:  # noqa: BLE001 - any unexpected crash is an internal error
@@ -515,4 +722,4 @@ def run_investigation_command(args: argparse.Namespace) -> int:
                 pass
 
     sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
-    return result_to_exit_code(result)
+    return exit_override if exit_override is not None else result_to_exit_code(result)

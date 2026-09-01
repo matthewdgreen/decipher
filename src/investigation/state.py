@@ -622,7 +622,13 @@ class InvestigationState:
         }
 
     @classmethod
-    def from_artifact_dict(cls, data: dict[str, Any]) -> "InvestigationState":
+    def from_artifact_dict(
+        cls,
+        data: dict[str, Any],
+        *,
+        orphan_loaded_experiments: bool = True,
+        orphan_reason: str = "loaded",
+    ) -> "InvestigationState":
         cipher_data = data["cipher"]
         cipher_alpha = Alphabet(list(cipher_data["cipher_symbols"]))
         pt_alpha = Alphabet(list(cipher_data["plaintext_symbols"]))
@@ -693,7 +699,9 @@ class InvestigationState:
                 str(key) for key in (data.get("workflow_hint_keys") or [])
             ],
             experiment_queue=_normalize_loaded_experiment_records(
-                data.get("experiment_queue") or []
+                data.get("experiment_queue") or [],
+                orphan_active=orphan_loaded_experiments,
+                orphan_reason=orphan_reason,
             ),
             finalist_sessions=FinalistSessionStore.from_dict(
                 data.get("finalist_sessions")
@@ -737,11 +745,18 @@ def _normalize_saturation_entry(value: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_loaded_experiment_records(
     records: list[dict[str, Any]],
+    *,
+    orphan_active: bool = True,
+    orphan_reason: str = "loaded",
 ) -> list[dict[str, Any]]:
-    """A9 load transition: any ``pending|running`` experiment record loaded from
-    an artifact becomes ``orphaned(loaded)`` (its worker thread did not survive
-    serialization). Completed/failed/orphaned records load verbatim — results,
-    sessions, and dedup keys stay live so resume-by-resubmission is cheap.
+    """Normalize serialized experiment records for the caller's lifecycle.
+
+    A9 artifact resume uses the default: any ``pending|running`` record becomes
+    ``orphaned(loaded)`` because its worker did not survive serialization.
+    Registry read-only views opt out because another process may still own the
+    live worker; writer-owned restoration supplies its typed startup reason.
+    Completed/failed/orphaned records always load verbatim, keeping results,
+    sessions, and dedup keys live so resume-by-resubmission stays cheap.
 
     Implemented inline here (a helper in ``experiments.py`` would import-cycle:
     experiments imports ``_serialize_branch``/``_restore_branch_into`` from this
@@ -750,9 +765,9 @@ def _normalize_loaded_experiment_records(
     out: list[dict[str, Any]] = []
     for item in records:
         record = dict(item)
-        if record.get("status") in {"pending", "running"}:
+        if orphan_active and record.get("status") in {"pending", "running"}:
             record["status"] = "orphaned"
-            record["orphan_reason"] = "loaded"
+            record["orphan_reason"] = orphan_reason
         out.append(record)
     return out
 

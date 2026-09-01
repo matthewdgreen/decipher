@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import signal
 import sys
 import time
 import traceback
@@ -73,7 +74,27 @@ _HANDLE_TOOL_MAP = {
 }
 _MAX_CIPHERTEXT = 200_000
 
+# Terminal experiment-record statuses (the two-commit --wait loop waits until the
+# submitted experiment reaches one of these).
+_TERMINAL_EXP = frozenset({"completed", "failed", "orphaned"})
+
 _SERVER_CODE_INFO: dict | None = None
+
+
+class ExperimentWaitInterrupted(Exception):
+    """Raised out of :meth:`InvestigationService.run_experiment_to_completion`
+    when SIGINT/SIGTERM interrupts the ``--wait`` harvest AFTER best-effort state
+    finalization (record orphaned/"interrupted", committed, lease released).
+
+    Carries the orphan-outcome ``body`` (the one JSON object the CLI prints) and
+    the ``signum`` so the CLI can exit conventionally (128 + signum; 130 for
+    SIGINT).
+    """
+
+    def __init__(self, body: dict, signum: int) -> None:
+        super().__init__(f"experiment wait interrupted by signal {signum}")
+        self.body = body
+        self.signum = signum
 
 
 class LeasePolicy(Enum):
@@ -153,7 +174,12 @@ class InvestigationService:
         self._runtimes: dict[str, InvestigationRuntime] = {}
 
     # ---------------------------------------------------------------- lifecycle
-    def _build_runtime(self, document: dict) -> InvestigationRuntime:
+    def _build_runtime(
+        self,
+        document: dict,
+        *,
+        reconcile_stale_experiments: bool = False,
+    ) -> InvestigationRuntime:
         investigation_id = document["meta"]["investigation_id"]
         cell: dict[str, Any] = {}
 
@@ -169,6 +195,7 @@ class InvestigationService:
             verify_provider=self.verify_provider, verify_model=self.verify_model,
             max_cost_usd=self.max_cost_usd,
             synchronous_experiments=self.synchronous_experiments,
+            reconcile_stale_experiments=reconcile_stale_experiments,
         )
         cell["runtime"] = runtime
         return runtime
@@ -274,39 +301,22 @@ class InvestigationService:
         acquired = False
         try:
             # Step 5: mutations acquire the lease, check the revision, bump turn.
+            # Extracted to the shared `_acquire_and_check_revision` helper so the
+            # CLI's two-commit `--wait` flow reuses the SAME lease/revision pipeline
+            # (sub-spec I-3 §1) without duplicating it; dispatch behavior is
+            # unchanged (the MCP suite is the byte-parity witness).
             if is_mutate:
-                if not self.registry.acquire_lease(investigation_id):
-                    return {
-                        "status": "blocked", "reason": "writer_lease_held",
-                        "holder": self.registry.lease_holder_hint(investigation_id),
-                        "note": (
-                            "Another live session owns writes for this investigation. "
-                            "Continue there, or retry after it exits."
-                        ),
-                    }
-                acquired = self.lease_policy is LeasePolicy.INVOCATION_HELD
-                if investigation_id not in self._runtimes:
-                    runtime = self._build_runtime(self.registry.load(investigation_id))
-                    self._runtimes[investigation_id] = runtime
-                else:
-                    runtime = self._runtimes[investigation_id]
-                meta = runtime.meta
-                expected = arguments.get("expected_revision")
-                current = int(meta.get("revision") or 0)
-                if int(expected) != current:
-                    return {
-                        "status": "conflict", "reason": "revision_mismatch",
-                        "expected_revision": expected, "current_revision": current,
-                        "note": (
-                            "State changed since your last brief. Call "
-                            "investigation_status and retry."
-                        ),
-                    }
-                runtime.state.turn += 1
-                runtime.workspace.set_iteration(runtime.state.turn)
-                runtime.executor.set_iteration(runtime.state.turn)
+                runtime, acquired, early = self._acquire_and_check_revision(
+                    investigation_id, runtime, arguments
+                )
+                if early is not None:
+                    return early
             elif not holder:
-                runtime = self._build_runtime(document)
+                # Reads do not own the writer lease. The persisted record may
+                # belong to another process's live worker, so preserve it.
+                runtime = self._build_runtime(
+                    document, reconcile_stale_experiments=False,
+                )
 
             # Step 6: experiment poll (holder only).
             transitioned: list[str] = []
@@ -346,6 +356,276 @@ class InvestigationService:
             # winner's lease.
             if acquired:
                 self._release_invocation(investigation_id)
+
+    def _acquire_and_check_revision(
+        self, investigation_id: str, runtime: InvestigationRuntime | None, arguments: dict
+    ) -> tuple[InvestigationRuntime | None, bool, dict | None]:
+        """Step 5 of the dispatch pipeline (lease acquire + revision check + turn
+        bump), factored so both :meth:`dispatch` and
+        :meth:`run_experiment_to_completion` share ONE lease/revision pipeline.
+
+        Returns ``(runtime, acquired, early_result)``:
+        - ``acquired`` is True only when THIS call took the lease under the
+          INVOCATION_HELD policy (so a ``writer_lease_held`` loser never releases
+          the winner's lease, and the caller's ``finally`` releases exactly once).
+        - ``early_result`` is a ``writer_lease_held`` (lease NOT acquired) or
+          ``revision_mismatch`` (lease acquired -> caller must release) block, or
+          ``None`` on success (turn already bumped).
+        """
+        held_before = self.registry.holds_lease(investigation_id)
+        if not self.registry.acquire_lease(investigation_id):
+            return runtime, False, {
+                "status": "blocked", "reason": "writer_lease_held",
+                "holder": self.registry.lease_holder_hint(investigation_id),
+                "note": (
+                    "Another live session owns writes for this investigation. "
+                    "Continue there, or retry after it exits."
+                ),
+            }
+        acquired_here = not held_before
+        acquired = (
+            acquired_here
+            and self.lease_policy is LeasePolicy.INVOCATION_HELD
+        )
+        try:
+            if investigation_id not in self._runtimes:
+                # A newly acquired writer lease proves no other live process
+                # owns the experiment workers represented by this document.
+                runtime = self._build_runtime(
+                    self.registry.load(investigation_id),
+                    reconcile_stale_experiments=True,
+                )
+                self._runtimes[investigation_id] = runtime
+            else:
+                runtime = self._runtimes[investigation_id]
+        except Exception:
+            # Construction failed before a runtime entered the policy-managed
+            # lifecycle. Release only a lease acquired by this call; an
+            # existing session-held lease belongs to its existing runtime.
+            if acquired_here:
+                self.registry.release_lease(investigation_id)
+            raise
+        meta = runtime.meta
+        expected = arguments.get("expected_revision")
+        current = int(meta.get("revision") or 0)
+        if int(expected) != current:
+            return runtime, acquired, {
+                "status": "conflict", "reason": "revision_mismatch",
+                "expected_revision": expected, "current_revision": current,
+                "note": (
+                    "State changed since your last brief. Call "
+                    "investigation_status and retry."
+                ),
+            }
+        runtime.state.turn += 1
+        runtime.workspace.set_iteration(runtime.state.turn)
+        runtime.executor.set_iteration(runtime.state.turn)
+        return runtime, acquired, None
+
+    def _commit(self, runtime: InvestigationRuntime, investigation_id: str) -> int:
+        """Commit the runtime (mirrors dispatch step 8's commit), returning the
+        new revision. Reused by the two-commit ``--wait`` flow."""
+        runtime.host.sync_budget()
+        document = {"schema_version": 1, **runtime.persist_dict()}
+        return self.registry.commit(investigation_id, document)
+
+    # ------------------------------------------------- experiments (CLI --wait)
+    def run_experiment_to_completion(
+        self, arguments: dict, *, name: str = "experiment_submit",
+        on_running: Any = None,
+    ) -> tuple[dict, int | None]:
+        """The CLI-only two-commit ``--wait`` experiment lifecycle (sub-spec I-3
+        §1). MCP never calls this (its long-lived process runs the queue).
+
+        Reuses the SAME validate/resolve/terminal/lease/revision pipeline as a
+        mutating :meth:`dispatch` (the shared helpers above), then:
+
+        1. Forces the ASYNC queue (``synchronous`` False on this path even if the
+           service was built synchronous — ``status`` must see the running record).
+        2. Submits through the normal host path (COMMIT #1: the running record).
+        3. Polls the queue in-process until the submitted experiment is terminal.
+        4. COMMIT #2 (the terminal record); releases the lease.
+
+        Returns ``(body, final_revision)`` where ``body`` is the ORIGINAL submit
+        result with ``revision`` set to the FINAL commit (so the caller can
+        collect without an avoidable conflict). Early failures (validation,
+        lease-held, revision conflict, terminal investigation) return the ordinary
+        dispatch result untouched (``final_revision`` is None), and the CLI maps
+        them through the existing exit table.
+
+        ``on_running`` (``--detach`` worker only): a one-shot callback invoked with
+        the submit result/error body at the single point it becomes known — after
+        COMMIT #1 for a live submission, or immediately for an early failure. It
+        fires exactly once per invocation and is how the detached child hands the
+        parent its handshake line before the long harvest.
+
+        SIGINT/SIGTERM while waiting marks the submission's non-terminal record
+        ``orphaned``/``"interrupted"``, commits, releases, and raises
+        :class:`ExperimentWaitInterrupted` (the CLI prints the orphan body and
+        exits conventionally, 130 for SIGINT).
+        """
+        notified = False
+
+        def _notify(body: dict) -> dict:
+            nonlocal notified
+            if on_running is not None and not notified:
+                notified = True
+                on_running(body)
+            return body
+
+        # Steps 2-4: validate, id-containment, resolve meta, terminal-check.
+        schema = manifest.schema_for(name)
+        errors = episodes.validate_against_schema(arguments, schema or {})
+        if errors:
+            return _notify({
+                "status": "error", "reason": "invalid_arguments", "errors": errors,
+            }), None
+        investigation_id = str(arguments.get("investigation_id") or "")
+        try:
+            self.registry.validate_id(investigation_id)
+        except InvalidInvestigationId:
+            return _notify({
+                "status": "error", "reason": "invalid_investigation_id",
+            }), None
+        try:
+            meta = self.registry.load(investigation_id)["meta"]
+        except InvestigationNotFound:
+            return _notify({
+                "status": "error", "reason": "investigation_not_found",
+                "investigation_id": investigation_id,
+            }), None
+        if meta.get("status") != "active":
+            return _notify({
+                "status": "blocked", "reason": "investigation_terminal",
+                "terminal_status": meta.get("status"),
+            }), None
+
+        # Step 5: shared lease/revision pipeline.
+        runtime, acquired, early = self._acquire_and_check_revision(
+            investigation_id, None, arguments
+        )
+        if early is not None:
+            if acquired:
+                self._release_invocation(investigation_id)
+            return _notify(early), None
+
+        released = False
+        try:
+            # (1) force the async queue so `status` sees the running record.
+            runtime.queue.synchronous = False
+            # (2) submit through the normal host path.
+            body, _did_mutate = self._execute(name, arguments, runtime)
+            commit1_rev = self._commit(runtime, investigation_id)
+
+            experiment_id = body.get("experiment_id") if isinstance(body, dict) else None
+            record = (
+                runtime.queue._find(runtime.state, str(experiment_id))
+                if experiment_id else None
+            )
+            running_body = dict(body)
+            running_body["revision"] = commit1_rev
+            _notify(running_body)
+
+            waiting = record is not None and record.get("status") not in _TERMINAL_EXP
+            if not waiting:
+                # Error body, dedup-to-completed, or already terminal: nothing to
+                # harvest — the single commit is the final revision.
+                self._release_invocation(investigation_id)
+                released = True
+                return running_body, commit1_rev
+
+            # (3) poll to terminal, guarding the wait with signal cleanup.
+            signum = self._wait_experiment_terminal(runtime, str(experiment_id))
+            if signum is not None:
+                final_rev = self._orphan_interrupted(
+                    runtime, investigation_id, str(experiment_id)
+                )
+                self._release_invocation(investigation_id)
+                released = True
+                orphan_body = {
+                    "status": "interrupted", "reason": "interrupted",
+                    "experiment_id": experiment_id,
+                    "orphan_reason": "interrupted", "revision": final_rev,
+                    "detail": (
+                        "wait interrupted by signal; the experiment was marked "
+                        "orphaned and can be re-run with "
+                        "experiment-submit(resubmit=<id>)."
+                    ),
+                }
+                raise ExperimentWaitInterrupted(orphan_body, signum)
+
+            # (4) COMMIT #2 (terminal record) + release.
+            final_rev = self._commit(runtime, investigation_id)
+            self._release_invocation(investigation_id)
+            released = True
+            final_body = dict(body)
+            final_body["revision"] = final_rev
+            return final_body, final_rev
+        except ExperimentWaitInterrupted:
+            raise
+        finally:
+            if not released:
+                self._release_invocation(investigation_id)
+
+    def _wait_experiment_terminal(
+        self, runtime: InvestigationRuntime, experiment_id: str,
+    ) -> int | None:
+        """Poll the queue on this thread until ``experiment_id`` is terminal.
+
+        Returns ``None`` on normal completion, or the signal number if a
+        SIGINT/SIGTERM arrived during the wait. Signal handlers are installed
+        only for the wait's duration and restored afterwards; they merely record
+        the signum (the loop performs the cleanup). Installation is skipped when
+        not on the main thread (test threads), where ``signal.signal`` raises.
+        """
+        self._wait_signal = None
+
+        def _handler(signum, _frame):
+            self._wait_signal = signum
+
+        installed: list[tuple[int, Any]] = []
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            try:
+                installed.append((sig, signal.getsignal(sig)))
+                signal.signal(sig, _handler)
+            except (ValueError, OSError):
+                # Not the main thread (or unsupported): run without signal
+                # handling — the interrupt semantics only apply to a real process.
+                if installed and installed[-1][0] == sig:
+                    installed.pop()
+        try:
+            queue = runtime.queue
+            state = runtime.state
+            while True:
+                if self._wait_signal is not None:
+                    return self._wait_signal
+                rec = queue._find(state, experiment_id)
+                if rec is None or rec.get("status") in _TERMINAL_EXP:
+                    return None
+                if rec.get("status") == "pending":
+                    queue.poll(state, state.turn)
+                    continue
+                # running: block briefly on the worker's settle event, then harvest.
+                queue.wait_settled(experiment_id, timeout=0.1)
+                queue.poll(state, state.turn)
+        finally:
+            for sig, prev in installed:
+                try:
+                    signal.signal(sig, prev)
+                except (ValueError, OSError):
+                    pass
+
+    def _orphan_interrupted(
+        self, runtime: InvestigationRuntime, investigation_id: str, experiment_id: str,
+    ) -> int:
+        """SIGINT/SIGTERM cleanup: one final poll, mark the submission's
+        non-terminal record orphaned/"interrupted", COMMIT, return the revision."""
+        runtime.queue.poll(runtime.state, runtime.state.turn)
+        rec = runtime.queue._find(runtime.state, experiment_id)
+        if rec is not None and rec.get("status") not in _TERMINAL_EXP:
+            rec["status"] = "orphaned"
+            rec["orphan_reason"] = "interrupted"
+        return self._commit(runtime, investigation_id)
 
     # --------------------------------------------------------------- execution
     def _execute(self, name: str, arguments: dict, runtime: InvestigationRuntime) -> tuple[dict, bool]:

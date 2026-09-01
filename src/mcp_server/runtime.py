@@ -57,6 +57,7 @@ class InvestigationRuntime:
         verify_model: Any = None,
         max_cost_usd: float,
         synchronous_experiments: bool = False,
+        reconcile_stale_experiments: bool = True,
     ) -> None:
         self.meta: dict = document["meta"]
         self.records: dict = document.get("records") or {
@@ -67,7 +68,11 @@ class InvestigationRuntime:
         self.verify_model = verify_model
 
         # 1. state
-        state = InvestigationState.from_artifact_dict(document["state"])
+        state = InvestigationState.from_artifact_dict(
+            document["state"],
+            orphan_loaded_experiments=reconcile_stale_experiments,
+            orphan_reason="no_live_worker_at_startup",
+        )
         self.state = state
         self.workspace = state.workspace
 
