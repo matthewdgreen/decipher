@@ -31,6 +31,7 @@ from agent.loop_shared import (
     _decoded_text_for_panel,
     _metadata_decoded_text,
 )
+from agent.model_provider import ExternalCallBlocked
 from agent.tools_v2 import WorkspaceToolExecutor
 from artifact.schema import ToolCall
 from investigation.actions import COMPOSITE_TOOL_NAMES, execute_composite
@@ -921,6 +922,10 @@ class InvestigationHost:
             result, spend_usd = self._run_verify_episode(
                 candidate_text=candidate_text, goal="", turn=turn
             )
+        except ExternalCallBlocked:
+            # CLI I-5: preserve the transport's last-responsible-moment privacy
+            # refusal. Ordinary provider failures remain structured below.
+            raise
         except Exception as exc:  # noqa: BLE001 - structured, never crashes the tx
             outcome = {**base, "status": "error",
                        "reason": f"invalid verify episode: {exc}"}

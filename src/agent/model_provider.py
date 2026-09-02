@@ -15,6 +15,33 @@ class ModelProviderError(Exception):
     """Provider-neutral API error raised by model adapters."""
 
 
+class ExternalCallBlocked(ModelProviderError):
+    """A transport policy refused an external model call before it was sent.
+
+    This is deliberately distinct from an API/provider failure. Structured CLI
+    callers need the original policy reason to survive the episode and host
+    crash guards so a privacy refusal cannot be mislabeled ``runner_error`` or
+    silently downgraded to an ordinary repair rejection.
+    """
+
+    def __init__(self, reason: str, *, status: str, detail: str) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.status = status
+        self.detail = detail
+
+    def result(self, *, branch: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "status": self.status,
+            "reason": self.reason,
+            "detail": self.detail,
+        }
+        if branch:
+            body["branch"] = branch
+            body["declaration_gate"] = "closed"
+        return body
+
+
 # --- Transient rate-limit retry (2026-07-17, K3/OpenRouter incident) --------
 # An upstream 429 ("temporarily rate-limited upstream ... Retry-After: 1")
 # killed a whole v3 run on turn 2. Transient limits deserve a few short,

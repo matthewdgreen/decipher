@@ -13,10 +13,8 @@ from the manifest by ``cli_verb``), ``--revision`` aliases ``expected_revision``
 ``start`` gains ``--ciphertext``/``--ciphertext-file`` (``-`` = stdin RAW
 ciphertext) source rules, dispatch runs under the ``INVOCATION_HELD`` lease
 policy (acquire→commit→release per invocation), and the shared exit table gains
-3 (blocked) and 4 (conflict). Three ops keep a typed
-``operation_not_yet_available`` error: ``experiment_submit``/
-``experiment_collect`` (I-3) and ``request_independent_verification`` (I-5).
-Verify/external flags land in I-5.
+3 (blocked) and 4 (conflict). I-3/I-4 add the experiment lifecycle. I-5 adds
+explicit verification-provider authority and lands the final excluded verb.
 """
 from __future__ import annotations
 
@@ -29,7 +27,9 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import Any, Callable
 
+from agent.model_provider import ExternalCallBlocked
 from investigation_service import manifest
 from investigation_service.service import (
     ExperimentWaitInterrupted,
@@ -61,21 +61,11 @@ class _CliInputError(Exception):
 
 # Reasons the CLI itself emits (never produced by the service). Kept alongside
 # the service's `invalid_arguments` in the one shared exit table below.
-_CLI_INPUT_REASONS = frozenset(
-    {"invalid_cli_arguments", "operation_not_yet_available", "unknown_operation"}
-)
+_CLI_INPUT_REASONS = frozenset({"invalid_cli_arguments", "unknown_operation"})
 
-# Manifest ops registered as friendly verbs but NOT yet dispatchable in I-2:
-# their canonical name maps to the typed `operation_not_yet_available` error
-# (exit 2) naming the milestone that lands them. The verbs still PARSE and
-# `call` still knows the names; only dispatch is short-circuited BEFORE any
-# registry/service construction (so the registry is untouched — sub-spec §0/§4).
-_EXCLUDED_OPS: dict[str, str] = {
-    "request_independent_verification": (
-        "verification and every external-call path (--verify-provider / "
-        "--allow-external) arrive with milestone I-5"
-    ),
-}
+_VERIFY_PROVIDER_CHOICES = (
+    "anthropic", "openai", "gemini", "openrouter", "ollama", "none",
+)
 
 
 def result_to_exit_code(result: dict) -> int:
@@ -102,6 +92,8 @@ def result_to_exit_code(result: dict) -> int:
         return 3
     if status == "conflict":
         return 4
+    if status == "unavailable":
+        return 1
     if status != "error":
         return 0
     reason = result.get("reason")
@@ -238,12 +230,31 @@ def add_investigation_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Investigation registry directory "
              "(default: $DECIPHER_MCP_REGISTRY or ~/.config/decipher/investigations).",
     )
+    inv.add_argument(
+        "--verify-provider", dest="verify_provider", default=None,
+        choices=_VERIFY_PROVIDER_CHOICES, metavar="PROVIDER",
+        help=(
+            "Explicit provider for independent verification. An ambient API "
+            "key never selects one; external use also requires --allow-external."
+        ),
+    )
+    inv.add_argument(
+        "--verify-model", dest="verify_model", default=None, metavar="MODEL",
+        help="Verification model override (requires --verify-provider).",
+    )
+    inv.add_argument(
+        "--max-cost-usd", dest="max_cost_usd", default=5.0, type=float,
+        metavar="N", help="Hard cost ceiling for verification (default: 5.0).",
+    )
+    inv.add_argument(
+        "--allow-external", dest="allow_external", action="store_true",
+        help="Authorize this invocation to send candidate text to the selected provider.",
+    )
     verbs = inv.add_subparsers(dest="investigation_verb", metavar="VERB", required=True)
 
     # One friendly verb per manifest operation (read + create + mutate). The
-    # three not-yet-dispatchable ops (experiment_submit/experiment_collect ->
-    # I-3, request_independent_verification -> I-5) are still registered; only
-    # their dispatch is short-circuited to the typed error (see _EXCLUDED_OPS).
+    # Every manifest operation is public. Transport-only execution/authority
+    # flags are added below without entering the operation argument object.
     for op in manifest.OPERATIONS:
         vp = verbs.add_parser(op.cli_verb, help=op.description.split(". ")[0])
         _add_operation_arguments(vp, op)
@@ -508,6 +519,107 @@ def _resolve_registry_dir(args: argparse.Namespace) -> Path:
     return default_registry_dir()
 
 
+def _make_cli_verify_provider(provider_name: str, model: str) -> Any:
+    """Construct one explicitly authorized CLI verification provider.
+
+    Kept as a narrow seam so tests can install a fake without reading ambient
+    credentials or making a network call. The caller has already enforced
+    explicit provider selection and ``--allow-external``.
+    """
+    from agent.model_provider import canonical_provider, make_model_provider
+    from cli import _probe_api_key
+
+    provider = canonical_provider(provider_name)
+    key = "" if provider == "ollama" else _probe_api_key(provider)
+    if provider != "ollama" and not key:
+        raise ExternalCallBlocked(
+            "no_verification_provider",
+            status="unavailable",
+            detail=(
+                f"Verification provider {provider!r} was selected, but no API "
+                "key is configured. The declaration gate remains closed."
+            ),
+        )
+    return make_model_provider(provider=provider, api_key=key, model=model)
+
+
+def _requested_verify_model(args: argparse.Namespace) -> str:
+    selected = str(getattr(args, "verify_provider", None) or "").strip().lower()
+    explicit = str(getattr(args, "verify_model", None) or "").strip()
+    if explicit:
+        return explicit
+    if selected and selected != "none":
+        from agent.model_provider import default_model_for_provider
+
+        return default_model_for_provider(selected)
+    # A deferred conditional provider needs a model-shaped attribute before the
+    # authority check fires. This value is never sent anywhere.
+    return "verification-unavailable"
+
+
+def _resolve_cli_verify_provider(args: argparse.Namespace, model: str | None = None) -> Any:
+    """Enforce I-5 authority ordering, then construct the provider."""
+    selected = str(getattr(args, "verify_provider", None) or "").strip().lower()
+    if not selected or selected == "none":
+        raise ExternalCallBlocked(
+            "no_verification_provider",
+            status="unavailable",
+            detail=(
+                "No verification provider was explicitly selected. Ambient API "
+                "keys are ignored by the structured CLI; pass --verify-provider "
+                "and --allow-external to authorize one verification call. The "
+                "declaration gate remains closed."
+            ),
+        )
+    if not bool(getattr(args, "allow_external", False)):
+        raise ExternalCallBlocked(
+            "external_call_not_authorized",
+            status="blocked",
+            detail=(
+                "A verification provider was selected, but this invocation did "
+                "not include --allow-external. No candidate text was sent."
+            ),
+        )
+    return _make_cli_verify_provider(selected, model or _requested_verify_model(args))
+
+
+class _DeferredVerifyProvider:
+    """Provider facade resolved only at the first actual model send.
+
+    ``copy.copy`` is used when an episode model override is selected. Sharing
+    the cache across those shallow copies keeps construction one-per-model while
+    honoring the clone's current ``model`` attribute.
+    """
+
+    def __init__(
+        self,
+        *,
+        provider_name: str,
+        model: str,
+        resolver: Callable[[str], Any],
+    ) -> None:
+        self.provider_name = provider_name
+        self.model = model
+        self._resolver = resolver
+        self._resolved_by_model: dict[str, Any] = {}
+
+    def send(self, **kwargs: Any) -> Any:
+        provider = self._resolved_by_model.get(self.model)
+        if provider is None:
+            provider = self._resolver(self.model)
+            self._resolved_by_model[self.model] = provider
+        return provider.send(**kwargs)
+
+
+def _deferred_cli_verify_provider(args: argparse.Namespace) -> _DeferredVerifyProvider:
+    selected = str(getattr(args, "verify_provider", None) or "").strip().lower()
+    return _DeferredVerifyProvider(
+        provider_name=selected or "unavailable",
+        model=_requested_verify_model(args),
+        resolver=lambda model: _resolve_cli_verify_provider(args, model),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # --detach: spawn the private worker + block on its submission handshake        #
 # --------------------------------------------------------------------------- #
@@ -675,16 +787,13 @@ def run_investigation_command(args: argparse.Namespace) -> int:
 
     service = None
     exit_override: int | None = None
+    operation = ""
+    obj: dict = {}
     try:
         if getattr(args, "_is_call", False):
             operation, obj = _build_call_arguments(args)
         else:
             operation, obj = _build_arguments(args)
-        # Not-yet-dispatchable ops (§3.1) short-circuit BEFORE any registry or
-        # service construction, so the registry stays untouched.
-        if operation in _EXCLUDED_OPS:
-            raise _CliInputError("operation_not_yet_available", _EXCLUDED_OPS[operation])
-
         # experiment-submit --detach: the parent spawns a private worker and
         # never constructs a lease or mutates state (sub-spec I-3 §3.3).
         if operation == "experiment_submit" and getattr(args, "detach", False):
@@ -692,9 +801,28 @@ def run_investigation_command(args: argparse.Namespace) -> int:
                 _resolve_registry_dir(args), obj
             )
         else:
+            op_spec = manifest.operation_for(operation)
+            verify_provider = None
+            if op_spec is not None and op_spec.external_effect is manifest.ExternalEffect.UNCONDITIONAL:
+                # Unconditional verify: authority and provider construction must
+                # precede service construction, lease acquisition, and dispatch.
+                verify_provider = _resolve_cli_verify_provider(args)
+            elif (
+                op_spec is not None
+                and op_spec.external_effect is manifest.ExternalEffect.CONDITIONAL
+                and bool(obj.get("verifier_arbitration"))
+            ):
+                # Repair arbitration is conditional. Do not inspect credentials
+                # or authority until the mechanical checks actually need a send.
+                verify_provider = _deferred_cli_verify_provider(args)
             registry = InvestigationRegistry(_resolve_registry_dir(args))
             service = InvestigationService(
                 registry=registry,
+                verify_provider=verify_provider,
+                verify_model=(
+                    _requested_verify_model(args) if verify_provider is not None else None
+                ),
+                max_cost_usd=float(getattr(args, "max_cost_usd", 5.0)),
                 client_name="cli",
                 lease_policy=LeasePolicy.INVOCATION_HELD,
             )
@@ -708,6 +836,10 @@ def run_investigation_command(args: argparse.Namespace) -> int:
         # released the lease. Print the orphan body and exit conventionally.
         result = exc.body
         exit_override = 128 + exc.signum
+    except ExternalCallBlocked as exc:
+        # This catches both the pre-dispatch unconditional guard and the
+        # deferred repair-arbitration guard at the actual send boundary.
+        result = exc.result(branch=str(obj.get("branch") or "") or None)
     except _CliInputError as exc:
         result = {"status": "error", "reason": exc.reason, "detail": exc.detail}
     except Exception:  # noqa: BLE001 - any unexpected crash is an internal error

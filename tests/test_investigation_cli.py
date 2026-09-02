@@ -26,11 +26,13 @@ from pathlib import Path
 import pytest
 
 import investigation_cli as icli
+from agent.model_provider import ModelResponse, ModelUsage, ToolUseBlock
 from investigation.experiments import EXPERIMENT_TYPES, register_experiment_type
 from investigation.state import InvestigationState
 from investigation_service import manifest
 from investigation_service.service import InvestigationService, LeasePolicy
 from mcp_server.registry import InvestigationRegistry
+from tests.support.mcp import apply_basin
 
 
 _CIPHERTEXT = "HELLO WORLD FROM THE INVESTIGATION CLI TEST SEED CORPUS"
@@ -73,6 +75,80 @@ def _seed(registry_dir: Path) -> str:
     iid = result["investigation_id"]
     service.registry.release_lease(iid)
     return iid
+
+
+def _seed_damaged_basin(registry_dir: Path, *, trawler: bool = False) -> tuple[str, int]:
+    """Persist a repair-ready keyed basin and return ``(id, revision)``.
+
+    The ordinary BROWN fixture is mechanically acceptable. The TRAWLER fixture
+    reproduces the known dictionary/collateral false reject that genuinely
+    reaches verifier arbitration.
+    """
+    plaintext = (
+        "THE MISSING TRAWLER RESTED IN THE COVE"
+        if trawler else "THE QUICK BROWN FOXES JUMPED"
+    )
+    service = InvestigationService(
+        registry=InvestigationRegistry(registry_dir),
+        client_name="test",
+        lease_policy=LeasePolicy.SESSION_HELD,
+    )
+    started = service.dispatch(
+        "investigation_start", {"ciphertext": plaintext.lower(), "language": "en"}
+    )
+    iid = started["investigation_id"]
+    runtime = service._runtimes[iid]
+    if trawler:
+        workspace = runtime.workspace
+        cipher_alpha = workspace.cipher_text.alphabet
+        plain_alpha = workspace.plaintext_alphabet
+        for symbol in cipher_alpha.symbols:
+            target = "I" if symbol == "w" else symbol.upper()
+            workspace.set_mapping(
+                "main", cipher_alpha.id_for(symbol), plain_alpha.id_for(target)
+            )
+    else:
+        apply_basin(runtime)
+    service.shutdown()
+    service.registry.release_lease(iid)
+    revision = InvestigationRegistry(registry_dir).load(iid)["meta"]["revision"]
+    return iid, int(revision)
+
+
+class _PositiveVerifyProvider:
+    """One-response local verifier used by CLI transport tests."""
+
+    model = "fake-cli-verify"
+    provider_name = "openai"
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def send(self, **_kwargs):
+        self.calls += 1
+        verdict = {
+            "coherence": 9,
+            "reader_accepts": True,
+            "reader_accepts_as_solution": True,
+            "target_language_confidence": 0.95,
+            "semantic_recoverability": 0.90,
+            "damage_scope": "local",
+            "repairability": "local_repair",
+            "uncertainty_note": "",
+            "gloss": "reads as clear English",
+            "anomalies": [],
+            "confidence": "high",
+        }
+        return ModelResponse(
+            content=[
+                ToolUseBlock(
+                    id="cli_verify_1",
+                    name="episode_submit_result",
+                    input={"result": verdict, "summary": "reads well"},
+                )
+            ],
+            usage=ModelUsage(50, 10, 0),
+        )
 
 
 def _direct(registry_dir: Path, name: str, arguments: dict) -> dict:
@@ -120,10 +196,9 @@ def test_auto_registration_parity():
     }
     assert manifest_read_verbs == _EXPECTED_READ_VERBS
 
-    # (b) I-2 registers ONE friendly verb per manifest operation (read + create +
-    # mutate), including the three not-yet-dispatchable ops (they parse; only
-    # dispatch is short-circuited). The registered set (minus reserved `call`) is
-    # exactly the manifest's cli_verb set.
+    # (b) The CLI registers ONE friendly verb per manifest operation (read +
+    # create + mutate). The registered set (minus reserved `call`) is exactly
+    # the manifest's cli_verb set.
     parser = _build_parser()
     subparsers_action = next(
         a for a in parser._actions if isinstance(a, argparse._SubParsersAction)
@@ -139,8 +214,7 @@ def test_auto_registration_parity():
     assert "_run-experiment" in registered
     all_manifest_verbs = {op.cli_verb for op in manifest.OPERATIONS}
     assert registered - {"call", "_run-experiment"} == all_manifest_verbs
-    # The experiment verbs are dispatchable in I-3; verify remains registered but
-    # not-yet-dispatchable until I-5.
+    # The experiment and verification verbs are all public and dispatchable.
     for verb in ("experiment-submit", "experiment-collect", "verify"):
         assert verb in registered
 
@@ -190,21 +264,25 @@ def test_call_read_matches_friendly(tmp_path, capsys):
     assert call_body == friendly_body
 
 
-def test_call_excluded_op_not_yet_available(tmp_path, capsys):
-    # meta_declare_solution is dispatchable in I-2; the still-excluded ops are
-    # the two experiment verbs (I-3) and verify (I-5). `call` on their canonical
-    # names returns operation_not_yet_available and never touches the registry.
-    _seed(tmp_path)
+def test_call_verify_obeys_keyless_policy(tmp_path, capsys):
+    iid = _seed(tmp_path)
     before = _tree_snapshot(tmp_path)
     code, body, _ = _run(
         tmp_path,
-        ["call", "request_independent_verification", "--input-json", "{}"],
+        [
+            "call", "request_independent_verification", "--input-json",
+            json.dumps({
+                "investigation_id": iid,
+                "expected_revision": 1,
+                "branch": "main",
+            }),
+        ],
         capsys,
     )
-    assert code == 2
-    assert body["status"] == "error"
-    assert body["reason"] == "operation_not_yet_available"
-    # The registry directory is untouched: no lease created, no event appended.
+    assert code == 1
+    assert body["status"] == "unavailable"
+    assert body["reason"] == "no_verification_provider"
+    # The unconditional privacy guard fires before registry/service creation.
     assert _tree_snapshot(tmp_path) == before
 
 
@@ -698,30 +776,6 @@ def test_call_and_friendly_mutation_parity(tmp_path, capsys):
 
 
 # --------------------------------------------------------------------------- #
-# Exclusions (experiment-submit/-collect -> I-3, verify -> I-5)                 #
-# --------------------------------------------------------------------------- #
-@pytest.mark.parametrize("verb,canonical,milestone", [
-    ("verify", "request_independent_verification", "I-5"),
-])
-def test_excluded_ops_not_yet_available(tmp_path, capsys, verb, canonical, milestone):
-    iid = _seed(tmp_path)
-    before = _tree_snapshot(tmp_path)
-    # Friendly verb.
-    code, body, _ = _run(tmp_path, [verb, iid, "--revision", "1"], capsys)
-    assert code == 2
-    assert body["status"] == "error"
-    assert body["reason"] == "operation_not_yet_available"
-    assert milestone in body["detail"]
-    # `call` on the canonical name gets the same typed error.
-    code2, body2, _ = _run(tmp_path, ["call", canonical, "--input-json", "{}"], capsys)
-    assert code2 == 2
-    assert body2["reason"] == "operation_not_yet_available"
-    assert milestone in body2["detail"]
-    # The registry is untouched by either path.
-    assert _tree_snapshot(tmp_path) == before
-
-
-# --------------------------------------------------------------------------- #
 # Exit-code matrix — the parent's required classes reachable in I-2             #
 # --------------------------------------------------------------------------- #
 def test_exit_code_matrix(tmp_path, capsys, monkeypatch):
@@ -965,11 +1019,215 @@ def test_experiment_verbs_now_dispatchable(tmp_path, capsys):
     code, body, _ = _run(tmp_path, ["experiment-collect", iid, "--revision", "1"], capsys)
     assert code == 0
     assert body.get("reason") != "operation_not_yet_available"
-    # verify is still not-yet-available (I-5).
+    # Verify dispatches too; a keyless CLI gets the I-5 privacy outcome.
     code2, body2, _ = _run(
         tmp_path, ["verify", iid, "--revision", "2", "--branch", "main"], capsys
     )
-    assert code2 == 2 and body2["reason"] == "operation_not_yet_available"
+    assert code2 == 1
+    assert body2["status"] == "unavailable"
+    assert body2["reason"] == "no_verification_provider"
+
+
+# --------------------------------------------------------------------------- #
+# I-5: explicit verification authority                                        #
+# --------------------------------------------------------------------------- #
+def test_verify_ignores_ambient_key_without_explicit_provider(
+    tmp_path, capsys, monkeypatch,
+):
+    iid = _seed(tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-select-a-provider")
+    before = _tree_snapshot(tmp_path)
+    code, body, _ = _run(
+        tmp_path, ["verify", iid, "--revision", "1", "--branch", "main"], capsys
+    )
+    assert code == 1
+    assert body["reason"] == "no_verification_provider"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_verify_requires_allow_external_before_provider_construction(
+    tmp_path, capsys, monkeypatch,
+):
+    iid = _seed(tmp_path)
+
+    def _must_not_construct(*_args, **_kwargs):
+        raise AssertionError("provider construction crossed the consent guard")
+
+    monkeypatch.setattr(icli, "_make_cli_verify_provider", _must_not_construct)
+    before = _tree_snapshot(tmp_path)
+    code, body, _ = _run(
+        tmp_path,
+        [
+            "--verify-provider", "openai",
+            "verify", iid, "--revision", "1", "--branch", "main",
+        ],
+        capsys,
+    )
+    assert code == 3
+    assert body["status"] == "blocked"
+    assert body["reason"] == "external_call_not_authorized"
+    assert _tree_snapshot(tmp_path) == before
+
+
+def test_authorized_verify_unlocks_declaration(tmp_path, capsys, monkeypatch):
+    iid = _seed(tmp_path)
+    provider = _PositiveVerifyProvider()
+    monkeypatch.setattr(
+        icli, "_make_cli_verify_provider", lambda _name, _model: provider
+    )
+    code, verified, _ = _run(
+        tmp_path,
+        [
+            "--verify-provider", "openai", "--allow-external",
+            "verify", iid, "--revision", "1", "--branch", "main",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert verified.get("attestation") is not None
+    assert provider.calls == 1
+
+    code2, declared, _ = _run(
+        tmp_path,
+        [
+            "declare-solution", iid,
+            "--revision", str(verified["revision"]),
+            "--branch", "main",
+            "--rationale", "independently verified",
+            "--self-confidence", "0.95",
+            "--reading-summary", "clear English",
+            "--no-further-iterations-helpful",
+            "--further-iterations-note", "verification complete",
+        ],
+        capsys,
+    )
+    assert code2 == 0
+    assert declared["terminal_status"] == "solved"
+
+
+def test_keyless_declaration_remains_gated(tmp_path, capsys):
+    iid = _seed(tmp_path)
+    code, body, _ = _run(
+        tmp_path,
+        [
+            "declare-solution", iid, "--revision", "1", "--branch", "main",
+            "--rationale", "looks plausible", "--self-confidence", "0.8",
+            "--reading-summary", "partial reading",
+            "--no-further-iterations-helpful",
+            "--further-iterations-note", "none",
+        ],
+        capsys,
+    )
+    assert code == 3
+    assert body["reason"] == "attestation_required"
+
+
+def _prepare_cli_repair(registry_dir: Path, capsys, *, trawler: bool = False):
+    iid, revision = _seed_damaged_basin(registry_dir, trawler=trawler)
+    plaintext = (
+        "THE MISSING TRAWLER RESTED IN THE COVE"
+        if trawler else "THE QUICK BROWN FOXES JUMPED"
+    )
+    word = "TRAWLER" if trawler else "BROWN"
+    _, reading, _ = _run(
+        registry_dir,
+        [
+            "reading-record", iid, "--revision", str(revision),
+            "--branch", "main", "--reading-text", plaintext,
+            "--overall-confidence", "0.8",
+        ],
+        capsys,
+    )
+    _, compiled, _ = _run(
+        registry_dir,
+        [
+            "repair-test", iid,
+            "--revision", str(reading["revision"]),
+            "--branch", "main",
+            "--hypotheses-json", json.dumps([{"word": word, "word_index": 2}]),
+        ],
+        capsys,
+    )
+    assert compiled["status"] == "ok" and compiled["changed_finalists"]
+    return iid, compiled, compiled["changed_finalists"][0]["branch"]
+
+
+def test_mechanical_repair_never_resolves_conditional_provider(
+    tmp_path, capsys, monkeypatch,
+):
+    iid, compiled, winner = _prepare_cli_repair(tmp_path, capsys)
+
+    def _must_not_construct(*_args, **_kwargs):
+        raise AssertionError("mechanical acceptance should not resolve a provider")
+
+    monkeypatch.setattr(icli, "_make_cli_verify_provider", _must_not_construct)
+    code, body, _ = _run(
+        tmp_path,
+        [
+            "repair-transaction", iid,
+            "--revision", str(compiled["revision"]),
+            "--branch", "main", "--compile-id", compiled["compile_id"],
+            "--winner", winner, "--verifier-arbitration",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert body["status"] == "installed"
+    assert body["acceptance"]["arbitration"] == {
+        "requested": True, "engaged": False,
+    }
+
+
+@pytest.mark.parametrize(
+    ("global_args", "expected_code", "expected_reason"),
+    [
+        ([], 1, "no_verification_provider"),
+        (["--verify-provider", "openai"], 3, "external_call_not_authorized"),
+    ],
+)
+def test_needed_arbitration_returns_transport_refusal_without_commit(
+    tmp_path, capsys, global_args, expected_code, expected_reason,
+):
+    iid, compiled, winner = _prepare_cli_repair(tmp_path, capsys, trawler=True)
+    before_revision = InvestigationRegistry(tmp_path).load(iid)["meta"]["revision"]
+    code, body, _ = _run(
+        tmp_path,
+        [
+            *global_args, "repair-transaction", iid,
+            "--revision", str(compiled["revision"]),
+            "--branch", "main", "--compile-id", compiled["compile_id"],
+            "--winner", winner, "--verifier-arbitration",
+        ],
+        capsys,
+    )
+    assert code == expected_code
+    assert body["reason"] == expected_reason
+    assert body["declaration_gate"] == "closed"
+    after_revision = InvestigationRegistry(tmp_path).load(iid)["meta"]["revision"]
+    assert after_revision == before_revision
+
+
+def test_authorized_scripted_arbitration_installs(tmp_path, capsys, monkeypatch):
+    iid, compiled, winner = _prepare_cli_repair(tmp_path, capsys, trawler=True)
+    provider = _PositiveVerifyProvider()
+    monkeypatch.setattr(
+        icli, "_make_cli_verify_provider", lambda _name, _model: provider
+    )
+    code, body, _ = _run(
+        tmp_path,
+        [
+            "--verify-provider", "openai", "--allow-external",
+            "repair-transaction", iid,
+            "--revision", str(compiled["revision"]),
+            "--branch", "main", "--compile-id", compiled["compile_id"],
+            "--winner", winner, "--verifier-arbitration",
+        ],
+        capsys,
+    )
+    assert code == 0
+    assert body["status"] == "installed"
+    assert body["acceptance"]["arbitration"]["status"] == "accepted"
+    assert provider.calls == 1
 
 
 # --------------------------------------------------------------------------- #

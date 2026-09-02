@@ -26,7 +26,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent.loop_shared import _branch_snapshot_for, _decoded_text_for_panel
-from agent.model_provider import _collect_assistant_blocks, call_with_rate_limit_retry
+from agent.model_provider import (
+    ExternalCallBlocked,
+    _collect_assistant_blocks,
+    call_with_rate_limit_retry,
+)
 from agent.tools_v2 import (
     TOOL_DEFINITIONS,
     VALID_TOOL_NAMES,
@@ -1480,7 +1484,7 @@ def run_episode(
 
             # Ran out of turns without submitting → treat as budget exhausted.
             return _final_result_send()
-        except KeyboardInterrupt:
+        except (KeyboardInterrupt, ExternalCallBlocked):
             raise
         except Exception:  # noqa: BLE001 - the runner must never crash the lead.
             return _finish(

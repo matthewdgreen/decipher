@@ -281,6 +281,27 @@ it does not enlarge the divergence set.)
 
 All other 63 rows trace to a named commit, spec section, test, or artifact.
 
+## Structured CLI transport note (I-5)
+
+The structured CLI now exposes the same independent-verification and
+verifier-arbitrated repair domain operations without inheriting MCP's
+session-start credential policy. This is a transport authority rule, not a
+change to DECL or REP:
+
+- ambient API keys never select a CLI verification provider;
+- `--verify-provider` is explicit selection and `--allow-external` is separate,
+  invocation-scoped authorization;
+- unconditional verification enforces both before registry/service/lease work;
+- conditional repair arbitration resolves the provider only if mechanical
+  checks actually reach an external send; and
+- a privacy refusal propagates as `no_verification_provider` (unavailable) or
+  `external_call_not_authorized` (blocked), never as a verifier verdict or an
+  ordinary repair rejection.
+
+The CLI-specific contract and local fake-provider acceptance matrix are pinned
+in `docs/specs/investigation_cli_i5_impl_spec.md`. MCP provider resolution and
+all host declaration/repair gates remain unchanged.
+
 ## Coverage check against §6 minimum
 
 Required by §6: context-family discipline (POL-1), verification gating
