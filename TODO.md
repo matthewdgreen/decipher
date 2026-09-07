@@ -35,6 +35,11 @@ is the authoritative schedule. The initial slices are:
   estimable. Four-page causal labels remain provisional. 98 focused tests pass.
 - [ ] **R4 — Measure routing loss.** Matched blind/family-supplied automated
   runs, then an evidence-backed decision selecting at most two next slices.
+  **Preparation complete; measurement deferred pending R3 review (2026-09-07).**
+  [Harness preparation](docs/reports/reliability_r4_preparation.md): 18 cases,
+  60 frozen requests, pinned source/models/native code, fake-worker resource
+  and firewall checks. Serial campaign ledger/launcher and paired report
+  remain to be wired after R3 closes; no new benchmark run occurred.
 
 The plan specifies outputs, dependencies, acceptance, and the later decision
 criteria. Live provider runs require an applicable explicit budget; none is

@@ -228,6 +228,15 @@ applicable explicit run budget; a fake verifier establishes mechanics only.
 
 ### R4 — Measure routing loss and choose the next work
 
+Preparation update (2026-09-07): with user approval, the
+[harness preparation](reports/reliability_r4_preparation.md) proceeded while
+R3 human source review remains open. All 18 frozen cases produce 60 paired
+requests, with strict runtime-field projection, provenance pins, fake-worker
+timeout/CPU-limit checks and a post-hoc grading scaffold. **No measurement
+was run and R4 remains open.** The serial campaign ledger/launcher and paired
+decision report remain after R3 closure. Requested seeds are not independent
+replicates on engines with fixed internal seeds; preserve that limitation.
+
 Run the R0 packet through two local automated arms at the R2 code revision:
 blind family routing and explicitly supplied family metadata. The latter is a
 diagnostic arm receiving a permitted metadata field, never plaintext, keys, or

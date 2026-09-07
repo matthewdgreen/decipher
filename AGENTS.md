@@ -25,6 +25,11 @@ and comparison acceptance never replace fresh independent verification.
 Retained branches are deletion-protected, not immutable: fork before edits
 when both versions must survive. See `docs/reports/reliability_r2_candidate_retention.md`.
 
+R4 preparation is complete while R3 source review remains open: 18 cases and
+60 requests are frozen, but no paired measurement has run. The preparation
+CLI has no campaign-run option. The serial attempt ledger/launcher and paired
+report remain after R3 closure; see `docs/reports/reliability_r4_preparation.md`.
+
 ---
 
 ## What This Is
