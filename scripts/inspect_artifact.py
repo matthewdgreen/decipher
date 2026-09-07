@@ -74,6 +74,30 @@ def _parse_result(text: str) -> dict:
 def load(path: str | Path) -> dict:
     with open(path, encoding="utf-8") as f:
         artifact = json.load(f)
+    if "execution_status" in artifact and "request_sha256" in artifact:
+        # R4 subprocess envelope: execution completion is distinct from solver
+        # completion, and timeout output never becomes a delivered solution.
+        envelope = artifact
+        result = envelope.get("result") if envelope["execution_status"] == "completed" else None
+        result = result if isinstance(result, dict) else {}
+        artifact = dict(result.get("artifact") or {})
+        artifact.update(model="local automated (no LLM)", provider="none",
+                        run_mode="automated_only", automated_only=True,
+                        status=artifact.get("status") or envelope["execution_status"],
+                        estimated_cost_usd=0.0)
+        artifact["r4_execution"] = {
+            "execution_status": envelope["execution_status"],
+            "request_sha256": envelope["request_sha256"],
+            "wall_seconds": envelope.get("wall_seconds"), "cpu_usage": envelope.get("cpu_usage"),
+            "cpu_usage_scope": envelope.get("cpu_usage_scope"),
+            "seed_evidence": result.get("seed_evidence"),
+            "routes_attempted": result.get("routes_attempted"),
+            "delivery_matches_artifact": result.get("delivery_matches_artifact"),
+            "generated_menu_completeness": result.get("generated_menu_completeness"),
+            "stderr_tail": envelope.get("stderr", "")[-2000:],
+            "progress": [e for e in envelope.get("events", []) if e.get("event") == "progress"],
+            "verification": "not_run; completed is not solved",
+        }
     if (isinstance(artifact.get("meta"), dict) and isinstance(artifact.get("state"), dict)
             and "investigation_state" not in artifact):
         # Registry documents lack a RunArtifact envelope. Project recorded facts
@@ -421,6 +445,12 @@ def format_header(artifact: dict) -> str:
         if facts["cost_usd"] > cutoff:
             cost_line += f" (+${facts['cost_usd'] - cutoff:.4f} final-call overshoot)"
     lines.append(cost_line)
+    if artifact.get("r4_execution"):
+        r4 = artifact["r4_execution"]
+        lines.append(f"  R4      : {r4['execution_status']}; wall={r4['wall_seconds']}s; "
+                     f"CPU={'recorded' if r4['cpu_usage'] else 'unknown'}; verification=not run")
+        lines.append(f"  Delivery: artifact match={r4['delivery_matches_artifact']}; "
+                     "requested seeds are not automatically independent trials")
     lines.append("=" * 70)
     return "\n".join(lines)
 
@@ -1262,6 +1292,7 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
         "analyzer_findings": findings,
         "failed_tool_calls": failed_tool_calls,
         "tool_timing": timing,
+        "r4_execution": artifact.get("r4_execution"),
         "branch_scores": branch_scores,
         "automated_preflight": preflight,
         "cipher_hypotheses": cipher_hypotheses,

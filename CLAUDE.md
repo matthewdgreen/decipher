@@ -25,10 +25,13 @@ and comparison acceptance never replace fresh independent verification.
 Retained branches are deletion-protected, not immutable: fork before edits
 when both versions must survive. See `docs/reports/reliability_r2_candidate_retention.md`.
 
-R4 preparation is complete while R3 source review remains open: 18 cases and
-60 requests are frozen, but no paired measurement has run. The preparation
-CLI has no campaign-run option. The serial attempt ledger/launcher and paired
-report remain after R3 closure; see `docs/reports/reliability_r4_preparation.md`.
+R4 completed on 2026-09-07 under a user-authorized sequencing exception while
+R3 source review remains open. Sixty attempts produced 59 complete artifacts
+and one cleanup-interrupted outcome, with no retry. Eleven matched primary
+synthetic pairs improved from 5/11 near-exact blind to 9/11 family-supplied;
+all four gains were Vigenère/Quagmire. R5 bounded periodic-family routing/probes
+is the one next selected program slice. See `docs/reports/reliability_r4_decision.md`.
+Historical findings remain provisional. No solver/gate or paid-run authority changed.
 
 ---
 

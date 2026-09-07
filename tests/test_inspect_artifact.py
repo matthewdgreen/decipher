@@ -19,6 +19,25 @@ spec.loader.exec_module(inspect_artifact)
 import cli  # noqa: E402
 
 
+def test_r4_envelope_surfaces_execution_and_seed_limits(tmp_path):
+    path = tmp_path / "result.json"
+    envelope = {"execution_status": "completed", "request_sha256": "request-hash", "wall_seconds": 1.5,
+                "cpu_usage": {"self_user_seconds": 0.7}, "events": [],
+                "result": {"artifact": {"status": "completed", "decryption": "THE CAT"},
+                           "delivery_matches_artifact": True,
+                           "seed_evidence": {"independent_replication_established": False}}}
+    path.write_text(json.dumps(envelope))
+    artifact = inspect_artifact.load(path)
+    assert artifact["status"] == "completed" and "char_accuracy" not in artifact
+    assert "verification=not run" in inspect_artifact.format_header(artifact)
+    assert inspect_artifact.build_llm_summary(artifact, [])["r4_execution"]["seed_evidence"] == envelope["result"]["seed_evidence"]
+    envelope.update(execution_status="timeout", cpu_usage=None)
+    path.write_text(json.dumps(envelope))
+    artifact = inspect_artifact.load(path)
+    assert artifact["status"] == "timeout" and "decryption" not in artifact
+    assert "CPU=unknown" in inspect_artifact.format_header(artifact)
+
+
 def test_candidate_reliability_in_human_and_llm_packets():
     from investigation.state import InvestigationState
     from agent.loop_shared import _candidate_content_hash

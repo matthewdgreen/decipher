@@ -1,0 +1,3817 @@
+{
+  "attempted": 60,
+  "campaign": "artifacts/reliability_r4/campaign_v1",
+  "campaign_metadata_sha256": "8903e9eced923f0e4f91215971e11d0b242daa7123a5018b81bbef947b9df9de",
+  "charged_seconds": 1117.6867763362243,
+  "execution_context": {
+    "basis": "Recorded tool launch and resume boundary, before post-hoc grading",
+    "interpretation": "Any pair straddling the context boundary is not a clean paired timing or causal-quality comparison. Keep it descriptive, without rerunning either arm.",
+    "interruption": {
+      "job_id": "j9ed34fc5d36bf0e0",
+      "observed_error": "PermissionError: Operation not permitted in os.killpg during guard cleanup",
+      "response": "Paused controller with SIGINT; bounded in-flight guard completed; verified no surviving R4 worker before resume.",
+      "result": "No final artifact published; no retry. Unknown solver outcome."
+    },
+    "schema": "reliability-r4-execution-context-v1",
+    "segments": [
+      {
+        "context": "workspace_sandbox",
+        "first_attempt": 1,
+        "last_attempt": 15
+      },
+      {
+        "context": "host_cleanup_authorized",
+        "first_attempt": 16,
+        "last_attempt": 60
+      }
+    ]
+  },
+  "execution_context_sha256": "1df84a01de348052e9fd872b98ce9376a4725a38b52d3dd07752241ce8100afc",
+  "execution_counts": {
+    "completed": 59,
+    "interrupted": 1
+  },
+  "grading_packet_sha256": "9941e6714cc3e42017ee1c527b8b7d59a4350c8cdae2bb619d349eccdbf92d5b",
+  "known_worker_wall_seconds": 877.5665537870955,
+  "limitations": [
+    "Primary synthetic cases, development repeats, historical diagnostics and controls are separate strata.",
+    "Repeated request seeds are not automatically independent engine seeds.",
+    "Missing/timeout output is unknown quality, never a zero-accuracy score.",
+    "Saved-text maxima are post-hoc diagnostics, not exhaustive generated-menu quality or a selectable oracle.",
+    "Historical scores use unreviewed frozen references; no source/repair conclusions until R3 review.",
+    "No provider verification or live-agent advantage was measured.",
+    "The sandbox-to-host cleanup change is recorded; any boundary-straddling pair is descriptive, not a clean causal/timing comparison."
+  ],
+  "matched_complete_primary_observations": {
+    "both_below_near_exact": 2,
+    "both_near_exact": 5,
+    "family_supplied_material_gain": 4
+  },
+  "pairs": [
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.3976143141153082,
+          "path": "artifact.decryption",
+          "sha256": "7f5b3eb1e1d8f640ad6d30370a3227e0a9c28d2de1aa8f1000ffc57287382e29",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r2364d0069826",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.6114960000268184,
+        "cpu_usage": {
+          "children_system_seconds": 0.22186299999999998,
+          "children_user_seconds": 0.848961,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135561216,
+          "self_system_seconds": 0.054123,
+          "self_user_seconds": 0.117075
+        },
+        "delivered_sha256": "7f5b3eb1e1d8f640ad6d30370a3227e0a9c28d2de1aa8f1000ffc57287382e29",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j492a2c0189506bf5",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.3976143141153082,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "492a2c0189506bf5e4ec15fb33cad3536820dca5d86905c788760cb793c00ac8",
+        "result_file_sha256": "f187cfd63feb9d758a569c388dc72d221d1e51a0e660b55c3677dc177a4cba28",
+        "role": "held_out",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.605436916986946,
+        "worker_stderr": ""
+      },
+      "case_id": "r2364d0069826",
+      "different_route_or_solver": true,
+      "family": "quagmire3",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "ae865a7c255039f9ef5e68ef9f287b141c055e79e8105252e1505f7351f799ca",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r2364d0069826",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 7.756927167007234,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 43581440,
+          "self_system_seconds": 0.30016899999999996,
+          "self_user_seconds": 25.397378
+        },
+        "delivered_sha256": "ae865a7c255039f9ef5e68ef9f287b141c055e79e8105252e1505f7351f799ca",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j7690db51f6b5cc16",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "7690db51f6b5cc167511b09d641f297013f0626d2109295dd9925e959e1d2d12",
+        "result_file_sha256": "05d9c6cd81924b80771fb6f6188371dec22210ddfa5d9f12a97d89721a614ea3",
+        "role": "held_out",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 10,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": true,
+          "requested_seed": 61001
+        },
+        "solver": "quagmire3_shotgun_rust",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 6.75511262496002,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.6023856858846919
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.4174454828660436,
+          "path": "artifact.decryption",
+          "sha256": "afca7b502ddc2af9aa37ee5b175a823900dd4c0572a08951bee178acdf27ffb6",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r2714bba5ed4f",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.458130291022826,
+        "cpu_usage": {
+          "children_system_seconds": 0.174778,
+          "children_user_seconds": 0.750212,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135790592,
+          "self_system_seconds": 0.041432,
+          "self_user_seconds": 0.110428
+        },
+        "delivered_sha256": "afca7b502ddc2af9aa37ee5b175a823900dd4c0572a08951bee178acdf27ffb6",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "j4d7e9d7360add447",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.4174454828660436,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "4d7e9d7360add44737e22f54d3ba87bdcb655e9bc93a2ba54e6fff76101a5724",
+        "result_file_sha256": "8158ffbcbf8d2bf436c6e4cb170887c12008423cdbd84d296174ae5c6c391759",
+        "role": "held_out",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.4563852080027573,
+        "worker_stderr": ""
+      },
+      "case_id": "r2714bba5ed4f",
+      "different_route_or_solver": true,
+      "family": "vigenere",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "fcc13e564a2f6786a264bb3c1e08af7bdb36db4aabf8da2da330df0933f8052d",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r2714bba5ed4f",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.437999374989886,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38486016,
+          "self_system_seconds": 0.044174,
+          "self_user_seconds": 1.336492
+        },
+        "delivered_sha256": "fcc13e564a2f6786a264bb3c1e08af7bdb36db4aabf8da2da330df0933f8052d",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "j85f18d69952f4dd3",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "85f18d69952f4dd33a8b605dca43b7b8495d612d7e24a00ee2d9f145b3c32f24",
+        "result_file_sha256": "72484d1f35ea8f0d37a1491482559deea3daef779981f54919bfea89f7c8e7ba",
+        "role": "held_out",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 8,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "periodic_polyalphabetic_screen",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.4357219579978846,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.5825545171339563
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.7643593519882179,
+          "path": "artifact.decryption",
+          "sha256": "4ac21dd4b265ffb86762c19091dbb3d8c2fea53428a335495a432ceb65b4f3d0",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r28e01a013def",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5050850000116043,
+        "cpu_usage": {
+          "children_system_seconds": 0.134273,
+          "children_user_seconds": 0.758332,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134414336,
+          "self_system_seconds": 0.041969,
+          "self_user_seconds": 0.113159
+        },
+        "delivered_sha256": "4ac21dd4b265ffb86762c19091dbb3d8c2fea53428a335495a432ceb65b4f3d0",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j06c9ee9cf02452e8",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.7643593519882179,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "06c9ee9cf02452e86e4985ee0eba74aeda8a926c3c579dcd8bf2367c4ed49e9d",
+        "result_file_sha256": "cb0b90818efbad7e4493cd6d981bb06a13e0cba946695c3a9118a034704dd41a",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5037073330022395,
+        "worker_stderr": ""
+      },
+      "case_id": "r28e01a013def",
+      "different_route_or_solver": false,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.7643593519882179,
+          "path": "artifact.decryption",
+          "sha256": "4ac21dd4b265ffb86762c19091dbb3d8c2fea53428a335495a432ceb65b4f3d0",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r28e01a013def",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5549993329914287,
+        "cpu_usage": {
+          "children_system_seconds": 0.137619,
+          "children_user_seconds": 0.759151,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134529024,
+          "self_system_seconds": 0.038829999999999996,
+          "self_user_seconds": 0.109292
+        },
+        "delivered_sha256": "4ac21dd4b265ffb86762c19091dbb3d8c2fea53428a335495a432ceb65b4f3d0",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "jb12c531384120e19",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.7643593519882179,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "b12c531384120e19363d0f407a3615c498ab758f1010d9be7f07a253804a2cf0",
+        "result_file_sha256": "7c7a684c3923ecf5157057c49a70e6dc7af660de6085a64955485cd26e39400a",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5540488330298103,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact",
+        "provisional_pending_R3"
+      ],
+      "role": "historical_diagnostic",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "ea2ce42afd31ce5618c7db32263fc7aec6128f48c8b6c47545f2b927d96961c0",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r28e40081dfcb",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 10.80125079199206,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132874240,
+          "self_system_seconds": 0.24656699999999998,
+          "self_user_seconds": 9.480944
+        },
+        "delivered_sha256": "ea2ce42afd31ce5618c7db32263fc7aec6128f48c8b6c47545f2b927d96961c0",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j30fc47c6be122407",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "30fc47c6be122407239377b091ea4b812fc241ba9b1b856f55035b5cb2be3e1d",
+        "result_file_sha256": "96fb353741d9b056690e6133ad405eb13f3859848e38f4aee2fb5018147d78e4",
+        "role": "held_out",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 9.79863812495023,
+        "worker_stderr": ""
+      },
+      "case_id": "r28e40081dfcb",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "ea2ce42afd31ce5618c7db32263fc7aec6128f48c8b6c47545f2b927d96961c0",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r28e40081dfcb",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.07961095898645,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132874240,
+          "self_system_seconds": 0.27835,
+          "self_user_seconds": 9.646382
+        },
+        "delivered_sha256": "ea2ce42afd31ce5618c7db32263fc7aec6128f48c8b6c47545f2b927d96961c0",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "jf836034c8f7edbb4",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "f836034c8f7edbb4dacd35d1bb7816ead887cd7e8d1f202edc143fef95c3d8b9",
+        "result_file_sha256": "2284e005bf87ada88db73c565fcf8f1c43e4b39bee8a3a5d819d64153b30247e",
+        "role": "held_out",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.076272292004433,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.4938650306748466,
+          "path": "artifact.decryption",
+          "sha256": "fea13545132c9531aa2130688bfd364f2162d0bdf84786a07cb666da46a71368",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r30f56fe30434",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5607570419670083,
+        "cpu_usage": {
+          "children_system_seconds": 0.192161,
+          "children_user_seconds": 0.954073,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135430144,
+          "self_system_seconds": 0.038861,
+          "self_user_seconds": 0.102972
+        },
+        "delivered_sha256": "fea13545132c9531aa2130688bfd364f2162d0bdf84786a07cb666da46a71368",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j2bb89027a45acd30",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.4938650306748466,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "2bb89027a45acd30920369534915dc8e3134fd06e3885e9b08f24cffcb99ab7b",
+        "result_file_sha256": "9a82e28ea3bc1b99314ccc878e08f2e7f8f71f5fd40c83e2474d10ba22590ae3",
+        "role": "held_out",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5590232910471968,
+        "worker_stderr": ""
+      },
+      "case_id": "r30f56fe30434",
+      "different_route_or_solver": true,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": null,
+        "case_id": "r30f56fe30434",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 181,
+        "cpu_usage": null,
+        "delivered_sha256": null,
+        "delivery_matches_artifact": null,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "interrupted",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j9ed34fc5d36bf0e0",
+        "post_hoc_delivered": null,
+        "request_sha256": "9ed34fc5d36bf0e01d3f31b046c0532e1c12a203d8013d13bbc40389bddf8fc6",
+        "result_file_sha256": null,
+        "role": "held_out",
+        "routes": [],
+        "saved_distinct_texts": null,
+        "saved_minus_delivered_char": null,
+        "seed": 61001,
+        "seed_evidence": null,
+        "solver": null,
+        "solver_error": null,
+        "solver_status": null,
+        "wall_seconds": null,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "quality_comparison_unavailable"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": null
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": null,
+        "case_id": "r344a95fba0cd",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.506718542019371,
+        "cpu_usage": {
+          "children_system_seconds": 0.192872,
+          "children_user_seconds": 0.7604059999999999,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135708672,
+          "self_system_seconds": 0.040659999999999995,
+          "self_user_seconds": 0.110954
+        },
+        "delivered_sha256": "2bac1a9e0b105f71cb6272867b135069368ae986a1a952d5d5b1a654c444a5eb",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": false,
+        "family": null,
+        "job_id": "j27a46c78f318ac75",
+        "post_hoc_delivered": null,
+        "request_sha256": "27a46c78f318ac75795cc15396ca526563af4cbe9f9677a21d023a89fb0fe671",
+        "result_file_sha256": "faab477fd7ff9a7f5717f998967bb0f278cb0147ac85b401415bf4cad93caf35",
+        "role": "random_control",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": null,
+        "saved_minus_delivered_char": null,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5029652090161107,
+        "worker_stderr": ""
+      },
+      "case_id": "r344a95fba0cd",
+      "different_route_or_solver": false,
+      "family": null,
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": null,
+        "case_id": "r344a95fba0cd",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.509899166005198,
+        "cpu_usage": {
+          "children_system_seconds": 0.19139599999999998,
+          "children_user_seconds": 0.7527349999999999,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135643136,
+          "self_system_seconds": 0.03964,
+          "self_user_seconds": 0.10811599999999999
+        },
+        "delivered_sha256": "2bac1a9e0b105f71cb6272867b135069368ae986a1a952d5d5b1a654c444a5eb",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": false,
+        "family": null,
+        "job_id": "jd84bacd3604ea2c3",
+        "post_hoc_delivered": null,
+        "request_sha256": "d84bacd3604ea2c35c0cbafa9110146bbefef889141c99238ccc858453e05120",
+        "result_file_sha256": "bafad4cd07d938d934ca6087e599593a2cadd46b7c101850c50b6d037bc10d86",
+        "role": "random_control",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": null,
+        "saved_minus_delivered_char": null,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5065462500206195,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "control_no_success_expectation"
+      ],
+      "role": "random_control",
+      "seed": 61001,
+      "supplied_minus_blind_char": null
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.49333333333333335,
+          "path": "artifact.decryption",
+          "sha256": "1e9de89742c2682108e654d2d1c461176fc9cad0fec461ad27e277f13e3560b2",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r4b69511c80d8",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.6133294170140289,
+        "cpu_usage": {
+          "children_system_seconds": 0.1667,
+          "children_user_seconds": 0.7503289999999999,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134496256,
+          "self_system_seconds": 0.053555,
+          "self_user_seconds": 0.123897
+        },
+        "delivered_sha256": "1e9de89742c2682108e654d2d1c461176fc9cad0fec461ad27e277f13e3560b2",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j9a0665c1e5a9e044",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.49333333333333335,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "9a0665c1e5a9e044f134ce6ab9222c8b7082dff45b641c2b8391d359c2fcf379",
+        "result_file_sha256": "7dfa7299273eeb16dc908394fd9ec2f978f138ce44fbb4abbb0b5037b8fed844",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.6090187089866959,
+        "worker_stderr": ""
+      },
+      "case_id": "r4b69511c80d8",
+      "different_route_or_solver": false,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.49333333333333335,
+          "path": "artifact.decryption",
+          "sha256": "1e9de89742c2682108e654d2d1c461176fc9cad0fec461ad27e277f13e3560b2",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r4b69511c80d8",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.6142323749954812,
+        "cpu_usage": {
+          "children_system_seconds": 0.169933,
+          "children_user_seconds": 0.8179059999999999,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134709248,
+          "self_system_seconds": 0.045138,
+          "self_user_seconds": 0.12093799999999999
+        },
+        "delivered_sha256": "1e9de89742c2682108e654d2d1c461176fc9cad0fec461ad27e277f13e3560b2",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j88d644a7e5015b50",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.49333333333333335,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "88d644a7e5015b501e2b28161d7ae29179683facf5bab74df57aa6be1bcc6469",
+        "result_file_sha256": "9d37b66e3fce31e38486f18f5c38b886147d6f2d3d990314224323bc577f455b",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.6131911670090631,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact",
+        "provisional_pending_R3"
+      ],
+      "role": "historical_diagnostic",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.326133909287257,
+          "path": "artifact.decryption",
+          "sha256": "0c8539be630e89185b7f80272849e2e8dcd91b86ab5f30ecffb8fea93777a70f",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r56a9357dfd05",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 61.24432691698894,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39665664,
+          "self_system_seconds": 0.5956089999999999,
+          "self_user_seconds": 58.339263
+        },
+        "delivered_sha256": "0c8539be630e89185b7f80272849e2e8dcd91b86ab5f30ecffb8fea93777a70f",
+        "delivery_matches_artifact": true,
+        "execution_context": "workspace_sandbox",
+        "execution_status": "completed",
+        "expected_solve": false,
+        "family": "bifid",
+        "job_id": "j39a791daf814ca56",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.326133909287257,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "39a791daf814ca560922c9bb236ec3518b96c7264e4c678343cddcaab72463c6",
+        "result_file_sha256": "fe4511ba3dafe61354ebd2472d623307f20a88e8edf23d1dd4c655903d156f65",
+        "role": "unsupported_control",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 60.24332204199163,
+        "worker_stderr": ""
+      },
+      "case_id": "r56a9357dfd05",
+      "different_route_or_solver": false,
+      "family": "bifid",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.326133909287257,
+          "path": "artifact.decryption",
+          "sha256": "0c8539be630e89185b7f80272849e2e8dcd91b86ab5f30ecffb8fea93777a70f",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r56a9357dfd05",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 61.333987541962415,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39862272,
+          "self_system_seconds": 0.305816,
+          "self_user_seconds": 58.222667
+        },
+        "delivered_sha256": "0c8539be630e89185b7f80272849e2e8dcd91b86ab5f30ecffb8fea93777a70f",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": false,
+        "family": "bifid",
+        "job_id": "j9d7322fbcb305661",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.326133909287257,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "9d7322fbcb3056615c090805823e19b6b1513945e82501529e74a98b5cd77d0f",
+        "result_file_sha256": "1315b59a3aff56fa96ec8259b4c098bfb95892f37ea0642b3b8f445f3109b749",
+        "role": "unsupported_control",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 60.33233312499942,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": false,
+      "observations": [
+        "control_no_success_expectation",
+        "execution_context_not_matched_or_unrecorded"
+      ],
+      "role": "unsupported_control",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.654525791993365,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132857856,
+          "self_system_seconds": 0.101925,
+          "self_user_seconds": 10.165468
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j08e8b05f463bd544",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "08e8b05f463bd5441a915cad761cce461d2ac500d0e84bcb2cc7602d8fd1aabe",
+        "result_file_sha256": "bc23d6a6bcdf3cee8cb822ef06c71813e4666a9b1282696aaab91d0b5b38ae57",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.653303041006438,
+        "worker_stderr": ""
+      },
+      "case_id": "r63d10cd9134b",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 12.704785542038735,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132726784,
+          "self_system_seconds": 0.12995199999999998,
+          "self_user_seconds": 10.372283
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "ja49cc5855dc349c0",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "a49cc5855dc349c07767bddb4e89368dc7bda5b504bddb6a7ba69506b08357f2",
+        "result_file_sha256": "6fc5a6d86031ef658018512ff14bfe630102610af36a241cb5ec8279a2448555",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 11.700462292006705,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.695121166994795,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132939776,
+          "self_system_seconds": 0.113315,
+          "self_user_seconds": 10.120529
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j0696e1e09946742b",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "0696e1e09946742bd40f7fe805128989af01aab4c19b513cce41829c49cba4cc",
+        "result_file_sha256": "361fbc92552b5d0b20c9f2035d6a4003f608e585851f56a8b9919d5a817746c0",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.693860166997183,
+        "worker_stderr": ""
+      },
+      "case_id": "r63d10cd9134b",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.589626166969538,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132579328,
+          "self_system_seconds": 0.088415,
+          "self_user_seconds": 10.123037
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j914616dc45668866",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "914616dc45668866745b1c7a12e162bd05914a1e2cd9011b96d4f3d5d79c6f7b",
+        "result_file_sha256": "309e17a1b1f76e408907083921121638d8fa269d04aed8fb0f2408da120443ce",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.58859958301764,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.668448333977722,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132907008,
+          "self_system_seconds": 0.11946899999999999,
+          "self_user_seconds": 10.127568
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "ja7032025135f5035",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "a7032025135f50354cce6bd20952279f428eff5a7a69d3a61e98223aa8d15870",
+        "result_file_sha256": "524854b176961d1ab640cee7add6d405bd7a8faab20951fca9484da1f8f79f2a",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.667172249988653,
+        "worker_stderr": ""
+      },
+      "case_id": "r63d10cd9134b",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+          "word_accuracy": 1.0
+        },
+        "case_id": "r63d10cd9134b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 11.680604333989322,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 132857856,
+          "self_system_seconds": 0.11547199999999999,
+          "self_user_seconds": 10.144288
+        },
+        "delivered_sha256": "52487ad5b889b39b0719f5cb0e1c939290d13516fc4148c9a29e33a0929ae975",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "jca11fd91cb0af54e",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 1.0
+        },
+        "request_sha256": "ca11fd91cb0af54e5ca3e1ffbce9134c4f9a611ac3b1a573c3c481a1f299db17",
+        "result_file_sha256": "ae4a7e0b16e92ff1b8b3d2ab17fddf69385b37c179b198dfdd4874f5938b5794",
+        "role": "development",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "native_substitution_continuous_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 10.679065083968453,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.32087227414330216,
+          "path": "artifact.decryption",
+          "sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 56.38548637495842,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 40124416,
+          "self_system_seconds": 0.267388,
+          "self_user_seconds": 54.064366
+        },
+        "delivered_sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "jbae7ce265d87b5e5",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.32087227414330216,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "bae7ce265d87b5e5d4ec91f03060abab0ec4af898154f01dd82cc5de7e73ca04",
+        "result_file_sha256": "ed491d15007f3ab6ffae88691e51b0ec142b2f5fcf6a5c3b60b334ef2116af59",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 55.37434199999552,
+        "worker_stderr": ""
+      },
+      "case_id": "r766311e4367b",
+      "different_route_or_solver": true,
+      "family": "vigenere",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.640915500000119,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38371328,
+          "self_system_seconds": 0.030187,
+          "self_user_seconds": 1.510839
+        },
+        "delivered_sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "j6b6a4430e72c12c9",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "6b6a4430e72c12c9491defe3418ad025da0a71f694d18c1bee457603d265bf80",
+        "result_file_sha256": "15f7a334e31f222bba3509bd314796bd9d69275207469dd9003242d94c25b964",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 7,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "periodic_polyalphabetic_screen",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.639701000007335,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.6791277258566979
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.32087227414330216,
+          "path": "artifact.decryption",
+          "sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 57.90537816705182,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39747584,
+          "self_system_seconds": 0.383251,
+          "self_user_seconds": 54.496349
+        },
+        "delivered_sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "jc5766e2f7a768834",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.32087227414330216,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "c5766e2f7a768834cfce2f32173e3718a1f920064978f42cf18e8fc4740c18c7",
+        "result_file_sha256": "43ca4c9ffcb0c83b9719216c0701b60773682652fd71809cd5930caae565ac41",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 56.90392204199452,
+        "worker_stderr": ""
+      },
+      "case_id": "r766311e4367b",
+      "different_route_or_solver": true,
+      "family": "vigenere",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.594149707991164,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38404096,
+          "self_system_seconds": 0.029653,
+          "self_user_seconds": 1.504629
+        },
+        "delivered_sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "jdc2cd88f3771d055",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "dc2cd88f3771d05541b849dd475769e0c7315382ffce3e7d209e8479928836d1",
+        "result_file_sha256": "7010cbbb0ee105a384917faf7495f32cbf80f46aa6f07e103260f6b4d7c49d07",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 7,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "periodic_polyalphabetic_screen",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.5921445830026641,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.6791277258566979
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.32087227414330216,
+          "path": "artifact.decryption",
+          "sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 56.59091087500565,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39665664,
+          "self_system_seconds": 0.262437,
+          "self_user_seconds": 54.17919
+        },
+        "delivered_sha256": "4b67c0d4232f785719dec303866aa88d4d4a2e3d0464d9ddfd465cf13b2bbaa4",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "jdf4144ec0d90c062",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.32087227414330216,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "df4144ec0d90c062be3b04e7d270077f973b18bcb3db618cd87959485e035426",
+        "result_file_sha256": "12541263c7e582b42af4a15260f6318a39570c342de14444f2dc884031f99a6a",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 55.58806774998084,
+        "worker_stderr": ""
+      },
+      "case_id": "r766311e4367b",
+      "different_route_or_solver": true,
+      "family": "vigenere",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r766311e4367b",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.6502624579588883,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38354944,
+          "self_system_seconds": 0.028561,
+          "self_user_seconds": 1.534271
+        },
+        "delivered_sha256": "d02951bbe1738401fe8031b702bf5a297b476ad367fd7e1ee6da7c04746a7405",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "vigenere",
+        "job_id": "j2e87ba047101c335",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "2e87ba047101c3350e9db4e39cffedf2c71b503ecf79041baca929169b5d0664",
+        "result_file_sha256": "9effea885423205100ddd321c4327bd7b5f0b6ef9e19c16d453caa8608fbca94",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 7,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "periodic_polyalphabetic_screen",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.6481731250532903,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.6791277258566979
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5608874580357224,
+        "cpu_usage": {
+          "children_system_seconds": 0.211439,
+          "children_user_seconds": 0.951855,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135610368,
+          "self_system_seconds": 0.041138,
+          "self_user_seconds": 0.104553
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j0909990106f88ef5",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "0909990106f88ef53ce13aa8492e590e8c10cbacb97ea8a9868560d8e3282915",
+        "result_file_sha256": "6196395ac51ef4ab63504e6b48f0762a81bbdc5721a7b6364b88efc4c9e1bd61",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5588014170061797,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c66ad5f5ed5",
+      "different_route_or_solver": false,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.7843721249955706,
+        "cpu_usage": {
+          "children_system_seconds": 0.250176,
+          "children_user_seconds": 1.073367,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134463488,
+          "self_system_seconds": 0.049585,
+          "self_user_seconds": 0.111676
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j04306dae767c44a8",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "04306dae767c44a862649edbc493d38a4bf0e550eaec85073744074d46151e03",
+        "result_file_sha256": "752b07afbf2d11af9401e681d3898caafb930002e542fd4785d04af7b763e936",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.7831680410308763,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5597682499792427,
+        "cpu_usage": {
+          "children_system_seconds": 0.199213,
+          "children_user_seconds": 0.9944139999999999,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135380992,
+          "self_system_seconds": 0.043021,
+          "self_user_seconds": 0.105214
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "jdf91bcf098ee6a56",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "df91bcf098ee6a5693e8b41cac8942ac8c5468d79389e11dd617a770aa124c08",
+        "result_file_sha256": "3e6feebee15a52df0bce98fe6e4196018c5fad575700f655555dbe67f4f82c19",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5586687080212869,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c66ad5f5ed5",
+      "different_route_or_solver": false,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5992894999799319,
+        "cpu_usage": {
+          "children_system_seconds": 0.241587,
+          "children_user_seconds": 1.042944,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135593984,
+          "self_system_seconds": 0.042647,
+          "self_user_seconds": 0.110232
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "jf65c45dd9bd0f654",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "f65c45dd9bd0f6540181805befc0b1e828a0aca25f2dc63ee939a1aee738f9d9",
+        "result_file_sha256": "680aab6ead1f58fc5e9bb1c3ff99ee9e71aa896efd125c7ec151216cd4774473",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.598144666000735,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.6610322500346228,
+        "cpu_usage": {
+          "children_system_seconds": 0.24306799999999998,
+          "children_user_seconds": 1.098473,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135774208,
+          "self_system_seconds": 0.04276,
+          "self_user_seconds": 0.10947799999999999
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j8a007e010806a80e",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "8a007e010806a80e161ec983b85639c9691e4804f68b1819c0f788a9f0e106bb",
+        "result_file_sha256": "447576297ec0959b01bff455a17c283e880d220e9765833dcba6cd7d051d6a80",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.6598980000126176,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c66ad5f5ed5",
+      "different_route_or_solver": false,
+      "family": "homophonic_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.956386292834891,
+          "path": "artifact.decryption",
+          "sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c66ad5f5ed5",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 1.5635001659975387,
+        "cpu_usage": {
+          "children_system_seconds": 0.20809,
+          "children_user_seconds": 0.952649,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 135659520,
+          "self_system_seconds": 0.042165999999999995,
+          "self_user_seconds": 0.10507999999999999
+        },
+        "delivered_sha256": "abbe847a65e327f98f7000e37a85bdc1d14251694e58c24f3bb7728b913c3efe",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "homophonic_substitution",
+        "job_id": "j9b47bb1936874624",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.956386292834891,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "9b47bb193687462485396126366e2438c18382f422fbc0696bfda0efda802eb1",
+        "result_file_sha256": "60b9598f595c4e0020c9de8bffd22bcbd52d948bb3ece4f218ad499542c774ae",
+        "role": "development",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 0.5617419999907725,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 20.622217542026192,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178749440,
+          "self_system_seconds": 0.161405,
+          "self_user_seconds": 18.970583
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "je79ebe75a32e7c7c",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "e79ebe75a32e7c7c2dd881c0647ccb0b7e7ec2262b65227911aa92d65c4d36cf",
+        "result_file_sha256": "b1a3580af4ac36b31d94c911589d195eca70ae12e81860602714709051f70ea8",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 19.621019417012576,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c9fc7f9326e",
+      "different_route_or_solver": false,
+      "family": "substitution_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 20.24664687499171,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178536448,
+          "self_system_seconds": 0.151785,
+          "self_user_seconds": 18.91211
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "j1b88702cb67f0009",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "1b88702cb67f0009f96cf9812fabfa25c359b8798e237bf50c874b6a66f8572e",
+        "result_file_sha256": "0d7336c61d89240b5d2209565779a4cd9c3954b9b807b56cf64abf5451c92031",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 19.245356582978275,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 21.25875941698905,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178388992,
+          "self_system_seconds": 0.21986499999999998,
+          "self_user_seconds": 19.316292
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "j58accf9aa2949091",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "58accf9aa29490919c7048278ced99ccf4229b81427d6c89ecca7f73eb91ef8c",
+        "result_file_sha256": "fdeb2288fad816e88328898fb30ec44fcb3c211e21ec7dd841954b904534fa82",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 20.25741720799124,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c9fc7f9326e",
+      "different_route_or_solver": false,
+      "family": "substitution_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 20.412331541010644,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178634752,
+          "self_system_seconds": 0.158449,
+          "self_user_seconds": 18.94837
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "j98bedde1776d2c5a",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "98bedde1776d2c5aa5a9c635453a38b8b99a869a7dd7e7dd5936480187e65684",
+        "result_file_sha256": "9115d6fa2fe039ce452d3efd3b24a2c32af02034ff36490676e459c0fda20feb",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 19.410985250025988,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 20.080506541999057,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178765824,
+          "self_system_seconds": 0.1492,
+          "self_user_seconds": 18.723294
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "j99dadfe62c7c2ab5",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "99dadfe62c7c2ab5adaf52738b514f5265f5277356f0be72595219328110f564",
+        "result_file_sha256": "cd96ad220e1835f55f78f624413b34ccc2a84086a3b3906e73d10c3cecf05eb0",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 19.07942558301147,
+        "worker_stderr": ""
+      },
+      "case_id": "r8c9fc7f9326e",
+      "different_route_or_solver": false,
+      "family": "substitution_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r8c9fc7f9326e",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 19.815343625028618,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 178831360,
+          "self_system_seconds": 0.115711,
+          "self_user_seconds": 18.518712
+        },
+        "delivered_sha256": "f982e630c07f58ab66c258809d8c461fb494917fd0c89f57081037544b596d3a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "jb3c0adaf416170dc",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "b3c0adaf416170dc15a47625ec6a09a8b63cbf6d2f00ebbfda1507801234d6b1",
+        "result_file_sha256": "adde12d9a31e031f689ee3c8a8f916dadd3f53341cfecf511710733615112e69",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 18.814144041971304,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.3153692614770459,
+          "path": "artifact.decryption",
+          "sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 28.00696629198501,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 184647680,
+          "self_system_seconds": 0.205785,
+          "self_user_seconds": 25.532397
+        },
+        "delivered_sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j76b2377d42ab31ad",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.3153692614770459,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "76b2377d42ab31ad162a8d48750bfe7e4568fec984034298b97bc580241b5d04",
+        "result_file_sha256": "f5417ff4dda7867690015397f8e396da5d18b9cd74e35fdaa28ac78a5edf0085",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 27.006055333011318,
+        "worker_stderr": ""
+      },
+      "case_id": "r96f9e4d54195",
+      "different_route_or_solver": true,
+      "family": "quagmire3",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 8.61593075003475,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 43171840,
+          "self_system_seconds": 0.24612199999999998,
+          "self_user_seconds": 27.334603
+        },
+        "delivered_sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j08150f0d6353cfaf",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "08150f0d6353cfafb4efe43580e03520e0a3917b6d449fe0ba7b2b48494e474d",
+        "result_file_sha256": "528ab5123d1dc60ff962fa591fb96b8cb551b60b0935f7df42ecf275a5cfb89e",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 5,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": true,
+          "requested_seed": 61001
+        },
+        "solver": "quagmire3_shotgun_rust",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 7.614546791010071,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.6846307385229541
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.3153692614770459,
+          "path": "artifact.decryption",
+          "sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 26.687372166954447,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 184303616,
+          "self_system_seconds": 0.190189,
+          "self_user_seconds": 25.208855
+        },
+        "delivered_sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "jb447385513da6312",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.3153692614770459,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "b447385513da6312d6cbd80e530d52e990c51bd847ef3583b6cb5ba0eaffdf7b",
+        "result_file_sha256": "6d804bebfbaaacea917e1edf138cc21042d1f0e2760e05faee071fb5f715ee4a",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 25.685187957948074,
+        "worker_stderr": ""
+      },
+      "case_id": "r96f9e4d54195",
+      "different_route_or_solver": true,
+      "family": "quagmire3",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 8.569725209032185,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 43417600,
+          "self_system_seconds": 0.21368299999999998,
+          "self_user_seconds": 27.365456
+        },
+        "delivered_sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j54bf9ab5054ed275",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "54bf9ab5054ed2756b4e7d7bcd43d866203ea62b91006e2ee6b96cdf957b4ad1",
+        "result_file_sha256": "feab23041f1c0db6958501e5057955a49753301ad7ddb0f3511a39fdc5e8f645",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 7,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": true,
+          "requested_seed": 61002
+        },
+        "solver": "quagmire3_shotgun_rust",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 7.5680871669901535,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.6846307385229541
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.3153692614770459,
+          "path": "artifact.decryption",
+          "sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 26.36942879104754,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 184320000,
+          "self_system_seconds": 0.149759,
+          "self_user_seconds": 24.902791
+        },
+        "delivered_sha256": "698f895e48172d2f88913218c271d457200f263b28371c22537aff07be4b950b",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j69f9140075793428",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.3153692614770459,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "69f9140075793428a3b30269855a268e5a910d3d8c0d336a6b303e4d5a8953af",
+        "result_file_sha256": "0ae6008dfc80889dd402ae0b249a4ab138590e9fc2e280f12f56be19d200ae4c",
+        "role": "development",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 25.368340165994596,
+        "worker_stderr": ""
+      },
+      "case_id": "r96f9e4d54195",
+      "different_route_or_solver": true,
+      "family": "quagmire3",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+          "word_accuracy": 0.0
+        },
+        "case_id": "r96f9e4d54195",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 8.556536541960668,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 43204608,
+          "self_system_seconds": 0.246449,
+          "self_user_seconds": 27.173942
+        },
+        "delivered_sha256": "e0cb0a20868dfae2bec1618fe1dd5152e6db06d66c62bf73eb3d40f37d01b6ed",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "quagmire3",
+        "job_id": "j54302e7ea7d4b1a6",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "54302e7ea7d4b1a61f91575a15fe7d0d043020e8ca3334eba93f27f73d862b48",
+        "result_file_sha256": "39fcb3c108d21b940531426096352a883bd9d0c8e020c3cf0dd539f7113bb930",
+        "role": "development",
+        "routes": [
+          "periodic_polyalphabetic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": true,
+          "requested_seed": 61003
+        },
+        "solver": "quagmire3_shotgun_rust",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 7.555411375011317,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "family_supplied_material_gain"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.6846307385229541
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.6947040498442367,
+          "path": "artifact.decryption",
+          "sha256": "efb8f1cd69a81841df444a635b67999c0ddae4256e3feebb13a8d379d3d38fcc",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rade10dabbb0c",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 22.07100862497464,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39649280,
+          "self_system_seconds": 0.150109,
+          "self_user_seconds": 20.29091
+        },
+        "delivered_sha256": "efb8f1cd69a81841df444a635b67999c0ddae4256e3feebb13a8d379d3d38fcc",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j063ba4f6efa68125",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.6947040498442367,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "063ba4f6efa68125ef634ad850215be6787bfe822e77e5916af7e19072d42888",
+        "result_file_sha256": "36eee5cf21443b36989c11a4004fc8d61167769918196ea9d9549ad75b356e6f",
+        "role": "held_out",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 21.069966082985047,
+        "worker_stderr": ""
+      },
+      "case_id": "rade10dabbb0c",
+      "different_route_or_solver": true,
+      "family": "columnar_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.6947040498442367,
+          "path": "artifact.decryption",
+          "sha256": "efb8f1cd69a81841df444a635b67999c0ddae4256e3feebb13a8d379d3d38fcc",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rade10dabbb0c",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 28.17653837503167,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 805306368,
+          "self_system_seconds": 0.307066,
+          "self_user_seconds": 29.935678
+        },
+        "delivered_sha256": "efb8f1cd69a81841df444a635b67999c0ddae4256e3feebb13a8d379d3d38fcc",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j4ff841080871112d",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.6947040498442367,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "4ff841080871112dcb9f3767b97e6aa5e0f14ba495aeab04d63c9a682323fd6d",
+        "result_file_sha256": "69324dc075d7a6ee416a20c8f5df53c5d956a9bd5785794f4fe68c7ac98a32f8",
+        "role": "held_out",
+        "routes": [
+          "pure_transposition"
+        ],
+        "saved_distinct_texts": 24,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 27.172288000001572,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.9130434782608695,
+          "path": "artifact.decryption",
+          "sha256": "6edf6a14ff5c65ab8c8d5fbd6ae62f41d37022f918abf234c270ed324c3b515a",
+          "word_accuracy": 0.6794871794871795
+        },
+        "case_id": "rb95fa4ff3b16",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 13.834646083007101,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38322176,
+          "self_system_seconds": 0.11517999999999999,
+          "self_user_seconds": 12.411527
+        },
+        "delivered_sha256": "6edf6a14ff5c65ab8c8d5fbd6ae62f41d37022f918abf234c270ed324c3b515a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "jf49de3df111998d0",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.9130434782608695,
+          "word_accuracy": 0.6794871794871795
+        },
+        "request_sha256": "f49de3df111998d064f9d2b2ac60d327975fad10d84d83d8b4895b68964d93fe",
+        "result_file_sha256": "50ddfc9824f2b4e5deb5b5fd036c5569f712b7590458792d14c016ac3af19db0",
+        "role": "historical_diagnostic",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 12.833388832979836,
+        "worker_stderr": ""
+      },
+      "case_id": "rb95fa4ff3b16",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.9130434782608695,
+          "path": "artifact.decryption",
+          "sha256": "6edf6a14ff5c65ab8c8d5fbd6ae62f41d37022f918abf234c270ed324c3b515a",
+          "word_accuracy": 0.6794871794871795
+        },
+        "case_id": "rb95fa4ff3b16",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 13.669997374992818,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 38387712,
+          "self_system_seconds": 0.090657,
+          "self_user_seconds": 12.213681
+        },
+        "delivered_sha256": "6edf6a14ff5c65ab8c8d5fbd6ae62f41d37022f918abf234c270ed324c3b515a",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j7a574532c575044d",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.9130434782608695,
+          "word_accuracy": 0.6794871794871795
+        },
+        "request_sha256": "7a574532c575044d891f3743aefe155b0cb0f9c1e6530540cc0347aff0e2adfe",
+        "result_file_sha256": "6547247b6b4ba0eb5c8b155e50c55a8bf961b9170172a22f96435f632b4de699",
+        "role": "historical_diagnostic",
+        "routes": [
+          "substitution"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "native_substitution_anneal",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 12.665539833018556,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact",
+        "provisional_pending_R3"
+      ],
+      "role": "historical_diagnostic",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.4344569288389513,
+          "path": "artifact.decryption",
+          "sha256": "45eec362b3ed178a5acfe0e3763c87337b40ba56f5b257f921155397964a779c",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rd4421d9528aa",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.0990830000373535,
+        "cpu_usage": {
+          "children_system_seconds": 0.230018,
+          "children_user_seconds": 0.818021,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134709248,
+          "self_system_seconds": 0.056691,
+          "self_user_seconds": 0.5756169999999999
+        },
+        "delivered_sha256": "45eec362b3ed178a5acfe0e3763c87337b40ba56f5b257f921155397964a779c",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j56d8b7f9f1d48476",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.4344569288389513,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "56d8b7f9f1d48476f6b8582bda416e648b5eb0972857845dd387bfe6768a6219",
+        "result_file_sha256": "980a41ce3de3ccab472ffa673c6b1d72776a0581ab8322287e8ac7d5f273206d",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.0979345419909805,
+        "worker_stderr": ""
+      },
+      "case_id": "rd4421d9528aa",
+      "different_route_or_solver": false,
+      "family": "simple_substitution",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 0.4344569288389513,
+          "path": "artifact.decryption",
+          "sha256": "45eec362b3ed178a5acfe0e3763c87337b40ba56f5b257f921155397964a779c",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rd4421d9528aa",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 2.2667654580436647,
+        "cpu_usage": {
+          "children_system_seconds": 0.23990499999999998,
+          "children_user_seconds": 0.937731,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 134299648,
+          "self_system_seconds": 0.062766,
+          "self_user_seconds": 0.568377
+        },
+        "delivered_sha256": "45eec362b3ed178a5acfe0e3763c87337b40ba56f5b257f921155397964a779c",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "simple_substitution",
+        "job_id": "j5ce816e3378e81d6",
+        "post_hoc_delivered": {
+          "char_accuracy": 0.4344569288389513,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "5ce816e3378e81d69df41416572b1414d58dacd8ac6866bafed5c4aeb49cc74e",
+        "result_file_sha256": "d60ac6fdba4e9c67939b7899a60d290361dd7561c93ec939301754e23dfbb354",
+        "role": "historical_diagnostic",
+        "routes": [
+          "homophonic"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "zenith_native",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 1.2657374169793911,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_below_near_exact",
+        "provisional_pending_R3"
+      ],
+      "role": "historical_diagnostic",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "3242bc8e5b2ada7f2c55b42cd262890e40c983fc51be63630c382f9121c61e11",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rd783dfec76e6",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 21.191276416997425,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 179388416,
+          "self_system_seconds": 0.164026,
+          "self_user_seconds": 19.474483
+        },
+        "delivered_sha256": "3242bc8e5b2ada7f2c55b42cd262890e40c983fc51be63630c382f9121c61e11",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "jf1fe4d18419fa9cc",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "f1fe4d18419fa9cceba3fb582e800b3b000d6ead2be3f4fb319354bc5d967ca0",
+        "result_file_sha256": "98c26f3ee04c1f093246cc09acf3bb862a77c4d34cea0051e1fd1e7c5af17197",
+        "role": "held_out",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 20.189891541027464,
+        "worker_stderr": ""
+      },
+      "case_id": "rd783dfec76e6",
+      "different_route_or_solver": false,
+      "family": "substitution_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "3242bc8e5b2ada7f2c55b42cd262890e40c983fc51be63630c382f9121c61e11",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rd783dfec76e6",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 22.3804719580221,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 179650560,
+          "self_system_seconds": 0.24249099999999998,
+          "self_user_seconds": 20.261762
+        },
+        "delivered_sha256": "3242bc8e5b2ada7f2c55b42cd262890e40c983fc51be63630c382f9121c61e11",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "substitution_transposition",
+        "job_id": "j4a77ee3fa00dec45",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "4a77ee3fa00dec451ae4dfb9810f10af3a11b6e7ef1edbc5d3f244416b9d2501",
+        "result_file_sha256": "1c54a554735ebe1dd0d683eff663bc4ba09c3329099fa5d6059d232c5c35b0c4",
+        "role": "held_out",
+        "routes": [
+          "composite_substitution_transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "composite_substitution_transposition_peel",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 21.375351208029315,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "held_out",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 22.507640500029083,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39845888,
+          "self_system_seconds": 0.176262,
+          "self_user_seconds": 20.683222
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j484e8fd6c66df3d5",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "484e8fd6c66df3d5aedc46c5957e9fd2aaf1162c7c80f820feba6f8bacb99cee",
+        "result_file_sha256": "d319034bc8b39be8ef1ab2ee0e342d6abb89ed63db21f1f3e550b2178ab78ab1",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 21.5063341659843,
+        "worker_stderr": ""
+      },
+      "case_id": "rf6e129136170",
+      "different_route_or_solver": true,
+      "family": "columnar_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 28.918627750012092,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 802095104,
+          "self_system_seconds": 0.34675,
+          "self_user_seconds": 30.546451
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j71925f4e071362a1",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "71925f4e071362a122fba3d1a7ba2ef2d0b62b663048545e8d4917de4d1ebfd7",
+        "result_file_sha256": "7abebdc4f2c5d7267d7606987c83754f4527f41f34fc3fb676e397955c6415bc",
+        "role": "development",
+        "routes": [
+          "pure_transposition"
+        ],
+        "saved_distinct_texts": 26,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61001,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61001
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 27.917693666007835,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61001,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 22.60125175002031,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39780352,
+          "self_system_seconds": 0.203176,
+          "self_user_seconds": 20.695169
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j2aec82afd27efc5a",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "2aec82afd27efc5a59a65d0b1990db61ec83fc286ff6d62aa446ce3c4219ae5b",
+        "result_file_sha256": "cf33d19f530285d2e70505b3e6883ff6c6756a8b44671a8eaa159ff3a5f77948",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 21.600084124947898,
+        "worker_stderr": ""
+      },
+      "case_id": "rf6e129136170",
+      "different_route_or_solver": true,
+      "family": "columnar_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 29.202705958043225,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 784416768,
+          "self_system_seconds": 0.553118,
+          "self_user_seconds": 30.958492
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j249bf037be1c6b69",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "249bf037be1c6b69c2bac3eb1dcfec54abdd0aea0712464a6fe74fbe3b51bbb2",
+        "result_file_sha256": "2d652222f2cd380d8490e52228a95f8d354744af4a71bed0b75964c11f8506c9",
+        "role": "development",
+        "routes": [
+          "pure_transposition"
+        ],
+        "saved_distinct_texts": 26,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61002,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61002
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 28.201140583027154,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61002,
+      "supplied_minus_blind_char": 0.0
+    },
+    {
+      "blind": {
+        "arm": "blind_family",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 21.92088099999819,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 39944192,
+          "self_system_seconds": 0.11502899999999999,
+          "self_user_seconds": 20.493861
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "jce0f5afd9a1cb67a",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "ce0f5afd9a1cb67a3034f674a5a49abc394e876ab5cc585a16324cdcf8587eb5",
+        "result_file_sha256": "e45b7e3aa4ef1001084c63249a33453cb830cc55d3829976d58c55be3e903338",
+        "role": "development",
+        "routes": [
+          "transposition"
+        ],
+        "saved_distinct_texts": 1,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 20.919602417037822,
+        "worker_stderr": ""
+      },
+      "case_id": "rf6e129136170",
+      "different_route_or_solver": true,
+      "family": "columnar_transposition",
+      "family_supplied": {
+        "arm": "family_supplied",
+        "best_generated_limitation": "saved menus are not an exhaustive generated-candidate trace",
+        "best_generated_quality": null,
+        "best_saved": {
+          "char_accuracy": 1.0,
+          "path": "artifact.decryption",
+          "sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+          "word_accuracy": 0.0
+        },
+        "case_id": "rf6e129136170",
+        "causal_attribution": "requires paired route/candidate evidence; no automatic wrong-route label",
+        "charged_seconds": 28.52630270802183,
+        "cpu_usage": {
+          "children_system_seconds": 0.0,
+          "children_user_seconds": 0.0,
+          "cpu_limit_per_process": [
+            720,
+            720
+          ],
+          "maxrss_units": "bytes on macOS; KiB on Linux",
+          "self_maxrss": 803356672,
+          "self_system_seconds": 0.370886,
+          "self_user_seconds": 30.818266
+        },
+        "delivered_sha256": "cf6af09187ac9176aa9042fa57f42714628544ff7f14f75285c6ce01e7f26b46",
+        "delivery_matches_artifact": true,
+        "execution_context": "host_cleanup_authorized",
+        "execution_status": "completed",
+        "expected_solve": true,
+        "family": "columnar_transposition",
+        "job_id": "j99e1e129140dceb1",
+        "post_hoc_delivered": {
+          "char_accuracy": 1.0,
+          "word_accuracy": 0.0
+        },
+        "request_sha256": "99e1e129140dceb12adf341621a659f566d7df1730962e719a807ea6af027b56",
+        "result_file_sha256": "1ae59ffb2f137eb70b3b0b32235a67a87ced8934301bee6da72a1b056787e312",
+        "role": "development",
+        "routes": [
+          "pure_transposition"
+        ],
+        "saved_distinct_texts": 26,
+        "saved_minus_delivered_char": 0.0,
+        "seed": 61003,
+        "seed_evidence": {
+          "independent_replication_established": false,
+          "limitation": "Quagmire exposes an injected seed; an echoed seed alone is not an independence proof. Other shipped routes use fixed internal seeds and/or mixed RNGs. Treat repeated calls as repeated executions, not independent seed trials.",
+          "quagmire_seed_echo_matches": null,
+          "requested_seed": 61003
+        },
+        "solver": "transposition_permutation_search",
+        "solver_error": "",
+        "solver_status": "completed",
+        "wall_seconds": 27.52466566703515,
+        "worker_stderr": ""
+      },
+      "matched_execution_context": true,
+      "observations": [
+        "both_near_exact"
+      ],
+      "role": "development",
+      "seed": 61003,
+      "supplied_minus_blind_char": 0.0
+    }
+  ],
+  "plan_sha256": "baca3c3452c84e7695e48d8662bb6e10edf64f9bce10f7fffbcbd177bbbf5c36",
+  "planned": 60,
+  "primary_synthetic_arm_near_exact": {
+    "blind": 5,
+    "family_supplied": 9
+  },
+  "primary_synthetic_matched_complete_pairs": 11,
+  "primary_synthetic_observations": {
+    "both_below_near_exact": 2,
+    "both_near_exact": 5,
+    "family_supplied_material_gain": 4,
+    "quality_comparison_unavailable": 1
+  },
+  "primary_synthetic_pair_count": 12,
+  "r3_review": "pending",
+  "report_script_sha256": "092f68215ecd6cac5722b9f5fc8fbeb93d25e98620eeb9405ad897fed2368ece",
+  "schema": "reliability-r4-report-v1",
+  "solver_revision": "9eaf309fee3ece258e202ddd186e2ee290874b8c",
+  "solver_status_counts": {
+    "completed": 59
+  },
+  "wall_unknown_attempts": 1
+}

@@ -228,13 +228,36 @@ applicable explicit run budget; a fake verifier establishes mechanics only.
 
 ### R4 — Measure routing loss and choose the next work
 
-Preparation update (2026-09-07): with user approval, the
+Execution update (2026-09-07): **R4 complete; R3 remains open.** The
+[measurement](reports/reliability_r4_measurement.md) records all 60 attempts,
+59 complete artifacts and one interrupted artifact-publication attempt with
+no retry. Eleven complete, context-matched primary synthetic pairs improve
+from 5/11 near-exact blind to 9/11 family-supplied. All four material gains
+are Vigenère/Quagmire. The [decision](reports/reliability_r4_decision.md)
+selects exactly one next slice: **R5 bounded periodic-family routing/probes**,
+with fresh controls and explicit acceptance/stop/resource criteria. Historical
+findings remain provisional; broader solver, K4, packaging and live-agent work
+remain unselected. Local validation: 324 focused tests pass.
+
+Sequencing amendment (2026-09-07, user-authorized): R3 human source review
+may take time, so proceed with the R4 local automated measurement in parallel.
+R3 remains open. Synthetic cases and runtime/mechanical evidence may support
+R4 decisions; historical quality scores remain provisional and must not be
+used to settle source/editorial/repair questions pending that review. This
+changes execution order only: the frozen cases, solver baseline, seeds,
+metadata firewall, resource limits and prohibition on paid calls are unchanged.
+`scripts/run_reliability_routing.py` records this authority separately from the
+immutable preparation. Its explicit `--allow-r3-pending` flag does not mark R3
+complete or relax any live investigation gate.
+
+Earlier preparation checkpoint (2026-09-07): with user approval, the
 [harness preparation](reports/reliability_r4_preparation.md) proceeded while
 R3 human source review remains open. All 18 frozen cases produce 60 paired
 requests, with strict runtime-field projection, provenance pins, fake-worker
-timeout/CPU-limit checks and a post-hoc grading scaffold. **No measurement
-was run and R4 remains open.** The serial campaign ledger/launcher and paired
-decision report remain after R3 closure. Requested seeds are not independent
+timeout/CPU-limit checks and a post-hoc grading scaffold. No measurement
+had run at that checkpoint. The serial campaign ledger/launcher and paired
+decision report were still pending; the execution update above supersedes
+that status and the original wait for R3 closure. Requested seeds are not independent
 replicates on engines with fixed internal seeds; preserve that limitation.
 
 Run the R0 packet through two local automated arms at the R2 code revision:

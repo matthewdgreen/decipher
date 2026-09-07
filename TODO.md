@@ -33,13 +33,29 @@ is the authoritative schedule. The initial slices are:
   Seventeen packet cases; 13/13 original attestation texts recovered; one
   exact synthetic control rejected out of two; no labeled-negative rate is
   estimable. Four-page causal labels remain provisional. 98 focused tests pass.
-- [ ] **R4 — Measure routing loss.** Matched blind/family-supplied automated
+- [x] **R4 — Measure routing loss.** Matched blind/family-supplied automated
   runs, then an evidence-backed decision selecting at most two next slices.
-  **Preparation complete; measurement deferred pending R3 review (2026-09-07).**
+  **Complete (2026-09-07), independently of the still-open R3 source review.**
+  [Measurement](docs/reports/reliability_r4_measurement.md) and
+  [decision](docs/reports/reliability_r4_decision.md): 60 attempts, 59 complete
+  artifacts, one cleanup-interrupted result with no retry. On 11 matched,
+  complete primary synthetic pairs, near-exact recovery rises from 5/11 blind
+  to 9/11 supplied; all four gains are Vigenère/Quagmire. 324 focused tests pass.
+  **Sequencing amendment (2026-09-07): user authorized proceeding while R3
+  source review remains open.** Local automated runs only; historical scores
+  and source/repair conclusions remain provisional. Frozen inputs and budgets
+  are unchanged. Serial launcher now records durable attempts and never
+  silently retries interrupted or failed runs.
+  Earlier preparation checkpoint (before the sequencing amendment):
   [Harness preparation](docs/reports/reliability_r4_preparation.md): 18 cases,
   60 frozen requests, pinned source/models/native code, fake-worker resource
   and firewall checks. Serial campaign ledger/launcher and paired report
-  remain to be wired after R3 closes; no new benchmark run occurred.
+  were still pending at that checkpoint; the completed measurement is above.
+- [ ] **R5 — Bounded periodic-family routing/probes.** The one next program
+  slice selected by R4. Reuse existing periodic engines, add ground-truth-blind
+  diagnosis/probes with fallback, and validate on fresh positives/negative
+  controls under the [decision's acceptance and budget](docs/reports/reliability_r4_decision.md).
+  No implementation or new run has started. A second investment remains open.
 
 The plan specifies outputs, dependencies, acceptance, and the later decision
 criteria. Live provider runs require an applicable explicit budget; none is
