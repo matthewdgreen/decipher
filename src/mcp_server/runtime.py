@@ -74,6 +74,9 @@ class InvestigationRuntime:
             orphan_reason="no_live_worker_at_startup",
         )
         self.state = state
+        if not state.comparison_records:
+            # Read-only migration from pre-R2 MCP records into shared state.
+            state.comparison_records = [dict(row) for row in self.records["comparisons"]]
         self.workspace = state.workspace
 
         # 2. language resources (run_v3 lines 293-296)

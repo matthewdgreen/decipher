@@ -111,8 +111,11 @@ def test_candidate_list_and_show(tmp_path):
     entry = cl["candidates"][0]
     assert set(entry) >= {"scores", "roles", "verification", "content_hash"}
     assert entry["verification"] == "unavailable"  # keyless
+    assert "retained_portfolio" in cl
     cs = call(server, "candidate_show", investigation_id=iid, branch="main")
     assert "decoded_text" in cs and "attestation_history" in cs
+    assert cs["key_state"]["content_hash"] == cs["content_hash"]
+    assert set(cs["key_state"]) >= {"key", "mode_key_state", "null_mask", "word_spans", "token_order"}
 
 
 # ------------------------------------------------------------------- records

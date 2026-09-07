@@ -241,9 +241,11 @@ _COMPARE_SCHEMA = {
             },
             "required": ["branch", "verdict"],
         }},
-        "winner": {"type": ["string", "null"]},
+        "best_candidate": {"type": ["string", "null"], "description": "Best supported partial, even if none is solved."},
+        "accepts_as_solution": {"type": "boolean", "description": "Advisory only; never an independent attestation."},
+        "rationale": {"type": "string", "description": "Explain preference, or why no candidate is rankable."},
     },
-    "required": ["ranking", "verdicts", "winner"],
+    "required": ["ranking", "verdicts", "best_candidate", "accepts_as_solution", "rationale"],
 }
 
 # M5.3 Slice 6: the diplomatic `verify` result schema. ``coherence`` is a
@@ -414,7 +416,10 @@ EPISODE_KINDS: dict[str, dict[str, Any]] = {
         "contract": (
             "You are a COMPARE worker. Rank the given branches by how well their "
             "decodes read as the target language; report a ranking, a verdict and "
-            "rationale per branch, and the winner (or null if none is convincing)."
+            "rationale per branch, best_candidate (the best supported PARTIAL, "
+            "even when none is solved), accepts_as_solution (advisory only), and "
+            "rationale. A null best_candidate means none is rankable, not merely "
+            "that all are imperfect. Comparison never grants declaration authority."
         ),
     },
     "repair": {

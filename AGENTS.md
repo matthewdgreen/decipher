@@ -2,6 +2,29 @@
 
 Project context for Codex sessions. Keep this file updated as the project evolves.
 
+## Current development plan (2026-09-06)
+
+`docs/improvement_program_plan.md`, section "Current plan — 2026-09-06",
+governs development order: R0 evidence baseline → R1 CLI closure → R2 candidate
+preservation → R3 verification/residual audit → R4 paired routing measurement.
+Later slices are selected from those results. `TODO.md` mirrors this queue;
+older priorities, milestone sequences, and handoffs are historical scope, not
+an alternative schedule. Update both when a slice closes. This plan does not
+change live investigation doctrine, runtime gates, or authorize paid runs.
+
+Commit at slice boundaries rather than accumulating uncommitted slices. Keep
+unfinished review gates explicit in reports and commit descriptions; push when
+requested by the user.
+
+R0–R2 are complete as of 2026-09-07. R3's local audit is complete, but its
+required human source review remains open; see `docs/reports/reliability_r3_audit.md`.
+No R3 runtime gate or paid-run authority changed. R2's shared candidate
+portfolio retains at most six distinct rendered-text hashes and exposes
+partial preference separately from solved acceptance. Portfolio membership
+and comparison acceptance never replace fresh independent verification.
+Retained branches are deletion-protected, not immutable: fork before edits
+when both versions must survive. See `docs/reports/reliability_r2_candidate_retention.md`.
+
 ---
 
 ## What This Is
@@ -49,6 +72,11 @@ Licensing note:
 ---
 
 ## Cracking a cipher (MCP quick path)
+
+The operation manifest (`src/investigation_service/manifest.py`) drives BOTH
+the MCP tool list and `decipher investigation`; surface changes happen there
+and are enforced by `tests/test_interface_parity.py` and
+`tests/test_investigation_cli.py`.
 
 This repo ships an MCP server exposing the investigation surface. A checked-in
 `.codex/config.toml` / `.mcp.json` wires it up once the project is trusted;

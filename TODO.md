@@ -1,5 +1,77 @@
 # Decipher TODO
 
+## Current execution queue — 2026-09-06
+
+The [Improvement Program Plan](docs/improvement_program_plan.md#current-plan--2026-09-06)
+is the authoritative schedule. The initial slices are:
+
+- [x] **R0 — Freeze evidence and define losses.** Saved-candidate baseline,
+  provenance audit, and an 18-case pilot with a fixed comparison protocol.
+  [Report](docs/reports/reliability_r0_baseline.md); eight artifacts replayed,
+  18/18 cases frozen; missing historical provenance remains explicit.
+- [x] **R1 — Finish the investigation CLI.** I-6 parity/onboarding and I-7
+  complete interface review/README acceptance; local scripted verification.
+  [Acceptance report](docs/reports/reliability_r1_cli_acceptance.md): 227 tests
+  passed; two capstone findings fixed and independently rechecked by Astra
+  (user-authorized replacement for Fable). The separate [live Codex/Astra
+  observation](docs/reports/codex_astra_r1_observation.md) recovered 501/501
+  letters post-hoc and closed honestly keyless/unsolved; no model advantage claimed.
+- [x] **R2 — Preserve and deliver candidates.** Reproduce and fix lifecycle
+  losses, separate comparison from solved acceptance, and retain useful
+  partials across CLI/MCP and V3. Reuse the relevant M5.3a sections.
+  Complete 2026-09-07. Full suite: 2,048 passed, three skipped; its sole
+  fresh-clone packaging failure was resolved and a 129-test follow-up passed.
+  A separate 129-test run included native CLI acceptance. The
+  [R2 report](docs/reports/reliability_r2_candidate_retention.md) records
+  hash-bound preferences, bounded portfolios, status/key delivery, and limitations.
+- [ ] **R3 — Audit verification and historical residuals.** Labeled packet,
+  source-aware residual analysis, retrospective verifier report, and separate
+  reconstruction/reading/editorial outcome definitions. **Local audit complete;
+  human source review pending (2026-09-07).** [Audit](docs/reports/reliability_r3_audit.md),
+  [outcome contract](docs/reliability_r3_outcome_contract.md), and
+  [starting worksheet](docs/reports/reliability_r3_source_review.md).
+  Seventeen packet cases; 13/13 original attestation texts recovered; one
+  exact synthetic control rejected out of two; no labeled-negative rate is
+  estimable. Four-page causal labels remain provisional. 98 focused tests pass.
+- [ ] **R4 — Measure routing loss.** Matched blind/family-supplied automated
+  runs, then an evidence-backed decision selecting at most two next slices.
+
+The plan specifies outputs, dependencies, acceptance, and the later decision
+criteria. Live provider runs require an applicable explicit budget; none is
+scheduled by this planning update. Broader V3 work, sparse-null routing,
+models, family expansion, manuscript/source tools, and larger sweeps remain
+options to select from the results, not a predetermined second phase.
+
+### Mechanism-recovery candidates after R4 — added 2026-09-07
+
+The [external K4 review](docs/reports/k4_external_tooling_review_2026_09_07.md)
+feeds the existing supplied-plaintext capability track. These are unscheduled
+options for the post-R4 decision (which selects at most two next slices).
+The [MR0–MR4 plan](docs/polyalphabetic_capability_plan.md#mechanism-recovery-slices--external-review-2026-09-07)
+owns detailed scope, dependencies, and acceptance; this list mirrors it.
+
+- [ ] **MR0 — Convention compatibility and calibration.** Explicit Quagmire
+  indicator origin, independent replay vectors, and reproducible external
+  fixture evaluation with source/duplicate/rights controls.
+- [ ] **MR1 — Supplied-plaintext mechanism recovery.** Masked evidence and
+  correspondence, convention-labeled streams, compact periodic/affine models,
+  parameter/provenance audit, and frozen-fit held-out prediction. Include
+  freely fitted lookup mechanisms as negative controls from the first release.
+- [ ] **MR2 — Generic crib constraints and bounded Gromark probes.** Derive
+  constraints from evidence rather than K4-specific indices; distinguish
+  necessary filters from complete alphabet feasibility and mechanism recovery.
+- [ ] **MR3 — Calibrated statistical experiments.** Seeded null generators,
+  whole-search controls, completed-trial accounting, uncertainty, and a ledger
+  of tested variants and negative results.
+- [ ] **MR4 — Separator and layered-mechanism diagnostics.** Bounded group
+  partitions, coordinate-preserving composition/inspection, and missing
+  running-key variant controls, using MR1/MR3 evidence contracts.
+
+All entries below are the historical backlog and technical scope. Older
+"Priority" numbers and unchecked boxes do not override this queue or prove
+that a feature is still missing. Verify implementation and evidence before
+resuming one. Update this queue and the current plan together when work closes.
+
 ## Agentic Parity Program
 
 Goal: the agentic solver should have at least the same practical solving
@@ -7,14 +79,15 @@ capability as the best available non-agentic solvers on clean benchmark tasks,
 and failures should identify a missing tool, a weak tool, a wrong agent choice,
 or a benchmark data issue.
 
-Current planning split:
-- The next bounded agent-loop follow-up is **M5.3a candidate retention and
-  sparse-null reliability**, specified in
+Planning references (execution order is R0–R4 above):
+- **M5.3a candidate retention and sparse-null reliability**, specified in
   `docs/specs/agent_v3_m5_3a_candidate_reliability_spec.md`. It splits compare
   ranking from solved acceptance, protects a diverse finalist portfolio,
   adds sparse-null coverage debt, and requires repeated no-LLM Borg replays
-  plus matched synthetic null/no-null controls before one separately approved
-  paid smoke. It does not authorize a Stage-1 packet or M6 bake-off.
+  plus matched synthetic null/no-null controls. R2 takes the retention and
+  comparison work; R4 informs whether to implement sparse-null routing.
+  Its old six-step sequence and paid-smoke progression are not the current
+  schedule. Stage-1 and the full M6 bake-off remain deferred.
 - The Agent Loop Redesign plan is considered complete after Milestone 4 smoke
   coverage.
 - New Copiale/generalization work is tracked in
@@ -25,15 +98,15 @@ Current planning split:
   candidate packets, Copiale research promotion, German model/solver
   upgrades, LLM reader scout, agent cost/robustness work) is prioritized in
   `docs/improvement_program_plan.md`.
-- After the Copiale track, the next major capability priority should be
-  better statistical diagnostics for unknown cipher families, aiming for
-  parity with strong identifier/diagnostic tools such as dCode and Boxentriq.
-  This should become the front door for deciding which solver families and
-  agent tool menus to activate.
+- The unknown-family roadmap remains a capability inventory. R4 measures
+  whether better routing or stronger engines would help most before choosing
+  the next diagnosis or solver slice.
 
 ## Evaluation Integrity
 
-- [ ] Add explicit "ground-truth firewall" regression tests and review checks.
+- [ ] Audit and extend existing "ground-truth firewall" regression coverage
+  as the active slices add surfaces (`tests/test_ground_truth_firewall.py`
+  already implements the initial Phase 0 coverage).
   Ground truth may only be used for post-hoc grading/reporting after a solver
   or agent has produced a candidate. It must not affect routing, prompt
   construction, candidate ranking, repair decisions, rescue/retry decisions,
@@ -370,7 +443,10 @@ homophonic, transposition+homophonic, and historical manuscript benchmarks.
   - Include period detection, key-length search, crib-aware modes, and
     automated-vs-agentic comparison fixtures.
   - [ ] Add the explicitly labeled known-plaintext mechanism-recovery mode
-    specified in `docs/polyalphabetic_capability_plan.md`. Its motivating use
+    specified in `docs/polyalphabetic_capability_plan.md` and decomposed in
+    [MR0–MR4](docs/polyalphabetic_capability_plan.md#mechanism-recovery-slices--external-review-2026-09-07).
+    This is the same post-R4 capability track listed above, not a second queue.
+    Its motivating use
     case is a cipher such as Kryptos K4 after a plaintext becomes available but
     the mechanism and key remain unknown. It should use the supplied plaintext
     as authorized evidence to derive the effective keystream, rank compact

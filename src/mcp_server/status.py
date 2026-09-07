@@ -192,4 +192,6 @@ def build_status_brief(
         _render_window(state, executor, turn, DEFAULT_WINDOW_TOKENS),
         _render_advisory(state, executor, verification_available),
     ]
+    from investigation.portfolio import render_portfolio
+    sections.append(render_portfolio(state, executor))
     return "\n\n".join(section for section in sections if section)

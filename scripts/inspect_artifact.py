@@ -73,7 +73,28 @@ def _parse_result(text: str) -> dict:
 
 def load(path: str | Path) -> dict:
     with open(path, encoding="utf-8") as f:
-        return json.load(f)
+        artifact = json.load(f)
+    if (isinstance(artifact.get("meta"), dict) and isinstance(artifact.get("state"), dict)
+            and "investigation_state" not in artifact):
+        # Registry documents lack a RunArtifact envelope. Project recorded facts
+        # only: do not infer an external client's model, transcript, or spend.
+        meta, state = artifact["meta"], _inv_state(artifact)
+        terminal = meta.get("terminal") or {}
+        declaration = terminal.get("declaration") or {}
+        artifact = {**artifact, "investigation_state": state,
+                    "model": "external client (not recorded)", "provider": "external client",
+                    "loop_version": "cli/mcp", "cipher_id": meta.get("investigation_id"),
+                    "status": meta.get("status"), "language": state.get("language"),
+                    "iterations_used": state.get("turn"), "started_at": meta.get("created_at"),
+                    "finished_at": meta.get("updated_at"),
+                    "solution": terminal.get("solution"), "best_branch": declaration.get("best_branch"),
+                    "final_summary": declaration.get("reading_summary"),
+                    "attestations": state.get("verify_attestations") or [],
+                    "experiments": state.get("experiment_queue") or [],
+                    "estimated_cost_usd": sum(float(e.get("cost_usd") or 0)
+                                              for e in state.get("budget_ledger") or []),
+                    "cost_scope": "Recorded Decipher provider calls only; external-client spend is unknown."}
+    return artifact
 
 
 # ---------------------------------------------------------------------------
@@ -272,8 +293,13 @@ def format_timeline(timeline: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _inv_state(artifact: dict) -> dict:
-    """The investigation_state sub-dict (v3), or {} for v2/older artifacts."""
+    """Shared state from a V3 artifact or CLI/MCP registry document."""
     state = artifact.get("investigation_state")
+    if not isinstance(state, dict) and isinstance(artifact.get("meta"), dict):
+        state = artifact.get("state")
+        if isinstance(state, dict) and not state.get("comparison_records"):
+            # Read-only compatibility with pre-R2 client comparison records.
+            state = {**state, "comparison_records": (artifact.get("records") or {}).get("comparisons") or []}
     return state if isinstance(state, dict) else {}
 
 
@@ -402,6 +428,50 @@ def format_header(artifact: dict) -> str:
 # ---------------------------------------------------------------------------
 # Tool usage summary
 # ---------------------------------------------------------------------------
+
+def candidate_reliability_summary(artifact: dict) -> dict:
+    """R2: partial preference, acceptance, and full-shortlist freshness separately."""
+    raw = _inv_state(artifact)
+    hashes = {}
+    try:
+        from investigation.state import InvestigationState
+        from agent.loop_shared import _candidate_content_hash, _decoded_text_for_panel
+        state = InvestigationState.from_artifact_dict(raw)
+        hashes = {name: _candidate_content_hash(_decoded_text_for_panel(state.workspace, name))
+                  for name in state.workspace.branch_names()}
+    except (KeyError, ValueError, TypeError):
+        pass
+    portfolio = [{**row, "hash_fresh": hashes.get(row.get("branch")) == row.get("content_hash") if hashes else None}
+                 for row in raw.get("candidate_portfolio") or []]
+    comparisons = []
+    for entry in raw.get("episode_ledger") or []:
+        binding = entry.get("comparison_binding")
+        if isinstance(binding, dict):
+            comparisons.append({**binding, "ranking": (entry.get("result") or {}).get("ranking"),
+                                "best_candidate": binding.get("best_candidate", binding.get("winner")),
+                                "accepts_as_solution": binding.get("accepts_as_solution", False)})
+    for entry in raw.get("comparison_records") or []:
+        comparisons.append({**entry, "best_candidate": entry.get("best_partial")})
+    for row in comparisons:
+        bound = row.get("branch_hashes") or {}
+        row["shortlist_hashes_fresh"] = bool(bound) and all(hashes.get(n) == h for n, h in bound.items()) if hashes else None
+    return {"retained_portfolio": portfolio, "comparisons": comparisons[-8:],
+            "note": "Preference and retention are not independent verification or solved acceptance."}
+
+
+def format_candidate_reliability(artifact: dict) -> str:
+    report = candidate_reliability_summary(artifact)
+    if not report["retained_portfolio"] and not report["comparisons"]:
+        return ""
+    lines = ["Candidate reliability (partial preference != solved acceptance):"]
+    for row in report["retained_portfolio"]:
+        lines.append(f"  retained {row.get('branch')}: {row.get('roles')} hash_fresh={row.get('hash_fresh')} "
+                     f"verification={row.get('verification')} needs_verification={row.get('verification_priority')}")
+    for row in report["comparisons"]:
+        lines.append(f"  compare best={row.get('best_candidate')} accepts_as_solution={row.get('accepts_as_solution', False)} "
+                     f"shortlist_fresh={row.get('shortlist_hashes_fresh')} ranking={row.get('ranking')}")
+    return "\n".join(lines)
+
 
 def format_episodes(artifact: dict) -> str:
     """Minimal episodes table for v3 artifacts (M2). Empty string when none."""
@@ -1168,6 +1238,8 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
 
     return {
         "model": artifact.get("model"),
+        "candidate_reliability": candidate_reliability_summary(artifact),
+        "cost_scope": artifact.get("cost_scope"),
         "provider": facts["provider"],
         "test_id": artifact.get("test_id"),
         "status": artifact.get("status"),
@@ -1742,6 +1814,8 @@ def inspect_one(
     timeline = build_timeline(artifact)
 
     print(format_header(artifact))
+    if artifact.get("cost_scope"):
+        print(artifact["cost_scope"])
     print()
 
     def _emit(text: str) -> None:
@@ -1760,6 +1834,7 @@ def inspect_one(
     _emit(format_saturation(artifact))
     _emit(format_repair_transactions(artifact))
     _emit(format_branch_roles(artifact))
+    _emit(format_candidate_reliability(artifact))
     _emit(format_repair_hypothesis_time(artifact))
     composite_table = format_composite_calls(artifact)
     if composite_table:

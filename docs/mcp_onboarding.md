@@ -61,6 +61,87 @@ take?" into a one-call assertion instead of a guess.
 
 ---
 
+## 1a. CLI mode — the same investigation, fresh code per command
+
+`decipher investigation` exposes the same 23 operations, persisted state, and
+declaration gates as MCP. Use it from a terminal or a coding-agent session.
+After bootstrap, each command loads the current checkout: **no MCP/client
+restart is needed for this surface**. Rebuild dependencies/kernels when they
+change. An already-running detached worker continues on the code it started
+with; do not assume an update changes that worker in flight.
+
+```bash
+.venv/bin/decipher investigation start --ciphertext-file cipher.txt --format letters --language en
+.venv/bin/decipher investigation list
+```
+
+Set `INV_ID` to the returned `investigation_id`. Read status before mutations
+and set `REV` to its latest `revision`; do not reuse a revision after a write.
+
+```bash
+.venv/bin/decipher investigation status "$INV_ID"
+.venv/bin/decipher investigation diagnose "$INV_ID"
+.venv/bin/decipher investigation experiment-submit "$INV_ID" --revision "$REV" \
+  --type automated_solver --branch main --config-json '{}' --wait
+```
+
+`--wait` is the default and returns after persisting completion. Save the
+returned `experiment_id` as `EXP_ID`, and refresh `REV` from status. Then:
+
+```bash
+.venv/bin/decipher investigation experiment-collect "$INV_ID" --revision "$REV" \
+  --experiment-id "$EXP_ID" --install
+```
+
+Set `BRANCH` to the returned `installed_as`, then inspect it:
+
+```bash
+.venv/bin/decipher investigation decode "$INV_ID" --branch "$BRANCH"
+.venv/bin/decipher investigation candidates "$INV_ID"
+```
+
+For a keyed-tableau hypothesis use `--type quagmire3_shotgun`; for a
+substitution-then-transposition hypothesis use
+`--type composite_substitution_transposition`. `experiment-submit --help`
+documents the config input; the operation manifest exposes each type's config
+schema. These are bounded searches, not guaranteed solves.
+
+Global transport flags go **before** the verb: `--registry-dir DIR`,
+`--verify-provider PROVIDER`, `--verify-model MODEL`, `--max-cost-usd N`, and
+`--allow-external`. Without explicit provider selection, verification returns
+`no_verification_provider`, even with an ambient API key. Selection without
+`--allow-external` returns `external_call_not_authorized`. Only when you intend
+to authorize a provider call (which may be billed), refresh `REV` and run:
+
+```bash
+.venv/bin/decipher investigation --verify-provider openai --allow-external \
+  verify "$INV_ID" --revision "$REV" --branch "$BRANCH"
+```
+
+A positive, current-content attestation permits `declare-solution`; it does
+not declare automatically. A keyless candidate remains reviewable but cannot
+be declared solved. Close an exhausted investigation with `declare-unsolved`
+and an accurate account of the partial result and verification limitation.
+
+Every verb accepts a canonical object via `--input-json JSON` or
+`--input-file PATH` (`-` reads stdin). Nested objects/lists use `--*-json`
+friendly flags. `call CANONICAL_NAME --input-json JSON` reaches the same
+operation. Stdout is one JSON object; read its `status`/`reason`, not just the
+exit code: 0 success, 1 unavailable/domain failure, 2 invalid input, 3 blocked,
+4 revision conflict, 5 internal error. A completed experiment is not a solved
+investigation.
+Explicit `--help` is the human-readable exception (exit 0); actual argparse
+failures still emit a single JSON error, with usage text only on stderr.
+
+Use `--detach` instead of `--wait` for long work. Its initial response means
+submission, not completion; status/collect later harvests it. After a crash,
+the next writer reconciles interrupted work as `orphaned`. CLI and MCP can
+continue the same registry, but a live MCP writer or detached worker holds a
+lease: finish/release that owner before switching writers. Never edit registry
+files to bypass a lease or a declaration gate.
+
+---
+
 ## 2. Investigation methodology
 
 You are the strategist of a cipher investigation; the Decipher MCP server is

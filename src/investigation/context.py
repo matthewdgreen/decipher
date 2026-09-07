@@ -716,6 +716,19 @@ def _render_window(
     branch = ws.get_branch(best)
     pt = ws.plaintext_alphabet
 
+    # Match candidate inspection and attestation, including metadata/null masks.
+    from investigation.reading import build_candidate_reading_packet
+    from agent.loop_shared import _metadata_decoded_text
+    if _metadata_decoded_text(ws, best) is not None:
+        packet = build_candidate_reading_packet(ws, best, window_tokens=window_tokens)
+        if not packet.spans:
+            return "## Full-decode window\n(empty candidate)"
+        span = packet.spans[turn % len(packet.spans)]
+        return _truncate(
+            f"## Full-decode window (branch `{best}`, candidate span {span.span_id}; "
+            f"renderer {packet.renderer_id}; rotates each turn)\n{span.text}", _WINDOW_CAP,
+        )
+
     def _decode(t: int) -> str:
         return pt.symbol_for(branch.key[t]) if t in branch.key else "?"
 
@@ -987,6 +1000,8 @@ def build_lead_context(
         _render_branch_cards(state, executor, branch_cards),
         _render_hypothesis_board(state),
     ]
+    from investigation.portfolio import render_portfolio
+    view_sections.append(render_portfolio(state, executor))
     episode_section = _render_episode_ledger(state)
     if episode_section:
         view_sections.append(episode_section)

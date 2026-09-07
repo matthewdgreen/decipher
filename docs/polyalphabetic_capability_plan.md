@@ -462,6 +462,9 @@ Current Kryptos-specific state:
 Remaining keyed-Vigenere work:
 
 - **Known-plaintext mechanism-recovery mode (future, explicitly non-blind).**
+  Implementation candidates and external-review follow-up are grouped in
+  [MR0–MR4 below](#mechanism-recovery-slices--external-review-2026-09-07).
+  The governing R0–R4 program remains the execution order.
   Add a clearly labeled research command for cases such as Kryptos K4 where
   plaintext has become available but the cryptographic mechanism and key have
   not. The supplied plaintext is authorized evidence in this mode: use it to
@@ -531,3 +534,143 @@ Remaining keyed-Vigenere work:
 - Crib-aware scoring for short famous ciphers.
 - Agent tools to try a tableau keyword, inspect the resulting periodic branch,
   and compare keyed-Vigenere hypotheses against ordinary Vigenere branches.
+
+## Mechanism-recovery slices — external review 2026-09-07
+
+Status: **planned, not implemented or scheduled**. The
+[current improvement plan](improvement_program_plan.md#current-plan--2026-09-06)
+selects at most two next bounded slices after R4. MR0 and MR1 are the proposed
+starting candidates for this track; their inclusion does not commit to MR2–MR4
+or displace the current reliability work. The existing mode contract above
+remains the correctness requirement. The
+[external review](reports/k4_external_tooling_review_2026_09_07.md)
+records pinned source revisions, actual checks, reuse limitations, and the
+distinction between existing Decipher capabilities and proposed additions.
+
+### MR0 — Convention compatibility and independent calibration
+
+Scope: make alphabet/indicator conventions explicit before using external
+fixtures to judge search. The review reproduced a Quagmire I mismatch against
+the ACA SPRINGFEVER/FLOWER example: Decipher differs by +9 modulo 26 because
+the indicator origin differs. Expose/document the indicator-under-letter or
+equivalent origin parameter and conversion without changing existing K1/K2
+replay semantics or silently reinterpreting saved keys.
+
+Use independent reference vectors for supported Quagmire variants. Evaluate
+the reviewed III/IV fixture collections through a reproducible importer or
+local adapter: record source revision/hash, headerless schema, duplicate and
+cross-set overlap handling, and the distinction between supplied-key replay
+and unknown-key search. Keep K4-crib-conditioned texts separate from ordinary
+fresh controls and keep answers out of blind runtime inputs. Resolve code,
+dataset, and corpus reuse rights before copying or redistributing material;
+independent mathematical fixtures can provide acceptance meanwhile.
+
+Acceptance: the ACA Quagmire I vector matches with its declared origin; current
+K1/K2 and III/IV regression semantics remain stable; equivalent parameterizations
+round-trip and are identified explicitly. Fixture evaluation reports exact
+replay, duplicate grouping, and provenance independently of solving success.
+The review's 38,370 exact III/IV replays are baseline evidence, not a new
+search-performance result. No broad search run is needed to close MR0.
+
+### MR1 — Minimal supplied-plaintext mode with prediction audit
+
+Depends on MR0's convention contract. Deliver a separately labeled research
+run accepting ciphertext and explicitly supplied, possibly partial plaintext.
+Represent confirmed anchors, user-supplied text, uncertain alternatives, and
+unknown positions with source/confidence/masks. Preserve original positions
+through direct alignment and a bounded declared set of offsets, reversals,
+and existing permutation pipelines; unsupported correspondence must be
+reported, not silently coerced. Do not fetch target benchmark answers.
+
+Derive effective streams under Vigenere/Beaufort/Variant Beaufort and supplied
+keyed alphabets, then fit compact periodic and affine/progressive explanations.
+The first release must already report parameter origins, free/fixed values,
+constraints consumed, ambiguity/equivalent models, residuals, and frozen-fit
+holdout predictions. A decoder whose constants were fitted from plaintext is
+not independently derived merely because it takes no plaintext at runtime.
+Freeze both parameter fitting and model selection before the final holdout;
+report unidentifiable or uncovered key/helper states explicitly.
+
+Reuse candidate/experiment machinery and the shared CLI/MCP operation manifest
+where applicable, but isolate these records from ordinary blind investigations.
+Persist the supplied-evidence provenance, convention, correspondence, split,
+fitted mechanism, predictions, and audit result in a resumable artifact and
+surface them in the standard artifact inspector. Do not reinterpret the
+ordinary decipherment declaration gate as a mechanism-authenticity test.
+
+Acceptance: generated compact mechanisms predict held-out regions with frozen
+parameters; random streams, wrong supplied readings, and freely fitted lookup
+models are correctly rejected or labeled fitted/underdetermined. Include a
+generic additive forest with enough table freedom to fit arbitrary streams,
+inspired by the SolveKryptos audit. Source annotations, round-trip persistence,
+and prior blind-run isolation must survive both interfaces. Exact reproduction
+of supplied plaintext alone cannot close this slice.
+
+### MR2 — Generic crib constraints and bounded Gromark probes
+
+Depends on MR1's evidence/convention contract. Generalize Bean's hardcoded
+crib-index tests into modular equations, equalities, and inequalities derived
+from arbitrary supplied positions and the hypothesized correspondence.
+Start with existing periodic/keyed-alphabet helpers, then add a bounded
+Gromark recurrence/primer probe with explicit base, primer length, seed/range,
+budget, and source-state hashes. Use correct modular arithmetic and enforce
+alphabet bijections when required by the chosen family.
+
+Separate cheap necessary filters from complete parameter/alphabet feasibility.
+Return contradiction witnesses, remaining domains/equivalent keys, and the
+exact exhausted search scope. A surviving primer is not a recovered mechanism;
+a timeout or an empty bounded menu does not exclude a whole family. Broad
+statistical rarity claims additionally require MR3.
+
+Acceptance: generated keys survive constraints, inconsistent cribs produce
+explainable contradictions, and finalist feasibility agrees with exhaustive
+small-domain controls. Independent fit/holdout tests measure recovery and
+ambiguity. Bean's 39 K4 primer survivors are a compatibility observation only;
+reproducing that count is not sufficient acceptance. Gromark remains an opt-in
+family hypothesis, not a K4 routing default.
+
+### MR3 — Reproducible statistical experiments
+
+Build on MR1's evidence records; this infrastructure can be selected without
+first completing the Gromark extension. Support declared statistics such as
+crib-letter distances, lagged repeats, window/rotation entropy, and transform
+repeat counts. Record signed versus modular arithmetic and alphabet order.
+Provide seeded histogram-preserving shuffles, alphabet/row/block controls,
+uniform strings, and generated-family controls as appropriate to each claim.
+
+For every null trial, repeat the entire bounded search over selected offsets,
+widths, thresholds, alphabets, or separators. Count completed trials and one
+best-statistic/any-hit result per trial, rather than matching collections per
+generated ciphertext. Report exceedances, Monte Carlo intervals, search scope,
+and zero-hit limitations. Retain negative results and model-selection history
+in a deduplicated experiment ledger; support reproducible budgeted shards.
+
+Acceptance: fixed seeds reproduce results; duplicate hits cannot inflate an
+any-hit probability; incomplete trials do not enter denominators; selected
+maxima are compared against searched controls; and small enumerable cases
+agree with exact reference calculations. No published million/billion-trial
+rarity is inherited as a Decipher calibration result.
+
+### MR4 — Separator groups, layered mechanisms, and position explanations
+
+Depends on MR1 and MR3. Generalize K4nundrum into bounded canonical segment
+partitions with cached frequency vectors and symmetry reduction. Track repeated
+segment occurrences by position. Equal frequency shapes propose a hypothesis;
+require a subsequent constraint/prediction test before treating a grouping or
+separator as mechanism evidence. Null deletion must preserve source/crib
+coordinates and satisfy the declared plaintext/ciphertext length model.
+
+Compose existing transforms and keyed/running-key primitives in explicitly
+declared layer orders. Add a per-position explanation spanning original
+coordinate, intermediate indices, alphabet/key values, and output. Fill only
+measured generator gaps, including running-key alphabet variants and both
+running-key/transposition orders; reuse the existing family generator rather
+than importing an entire second cipher library or UI.
+
+Acceptance: generated segmented/layered cases distinguish correct from wrong
+orders or grouping hypotheses under frozen tests; traces agree with actual
+replay; coincidental shape matches do not become solves; and source locations
+remain stable through masks/transpositions. A W grouping on K4 is a regression
+observation, not an acceptance claim about its historical mechanism. Broader
+geometry, interactive UI, and open-corpus running-key search remain separate
+unscheduled decisions.

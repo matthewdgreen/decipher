@@ -1,5 +1,10 @@
 # Investigator Mode (INV) — File Index & Continuation Guide
 
+Current scheduling (2026-09-06): follow
+[R0–R4 in the improvement plan](improvement_program_plan.md#current-plan--2026-09-06).
+This index retains technical navigation; old "next" recommendations are
+superseded. R4's routing measurements determine the next INV implementation.
+
 Everything needed to continue the INV work, 2026-07-16. INV = the local,
 LLM-free cipher-family DIAGNOSIS system (`decipher diagnose`) + the
 model-diagnosis experiment harness + the long-range family roadmap.
@@ -85,11 +90,8 @@ numbers, CipherLens, and the gate-lift decisions. Not in the repo.
   `echo "S001 S002 | S003" | .venv/bin/decipher diagnose - --json`.
 - Re-verify scoring: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_calibration_inv0.py -q`.
 - Rebuild the model suite / run / report: the three `*_inv_*` scripts in §3.
-- **Highest-value next INV work (LLM-free, Codex-safe):** execute INV-0.5 from
-  the design: first generate the canonical support matrix and expand the
-  held-out diagnosis/calibration benchmark; then add Tier-0 representation
-  detection, broad transposition evidence with solver-backed variant probes,
-  and composition-aware diagnosis for substitution+transposition. In parallel,
-  INV-1 should begin as a thin persistent case file, not the full presentation
-  surface. Run the report/playbook model ablation only after the expanded local
-  benchmark exists. Run CipherLens only after aligning labels and test data.
+- **Current INV contribution:** R0's bounded pilot and R4's matched
+  blind/family-supplied routing experiment. Use the results to select probes,
+  representation detection, calibration expansion, or a specific solver gap.
+  Full taxonomy expansion, new case-file features, model/playbook ablations,
+  and external comparisons remain options for the later decision record.

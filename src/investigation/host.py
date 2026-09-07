@@ -212,9 +212,10 @@ def _episode_result_digest(
         return f'proposed "{text}" (confidence {conf_str})'
 
     if kind == "compare":
-        winner = data.get("winner")
+        winner = data.get("best_candidate", data.get("winner"))
         ranking = [str(b) for b in (data.get("ranking") or [])][:3]
-        head = f"winner {winner}" if winner else "no winner"
+        head = f"best partial {winner}" if winner else "no rankable candidate"
+        head += f"; accepts_as_solution={data.get('accepts_as_solution', False)} (advisory)"
         if ranking:
             head += f" (ranked: {', '.join(ranking)})"
         return head
@@ -572,6 +573,14 @@ class InvestigationHost:
         ] = {}                                            # was read_call_cache, L777
 
     def handle_tool(self, tu: dict[str, Any], turn: int) -> str:
+        from investigation.portfolio import refresh_portfolio
+        refresh_portfolio(self.state, self.executor)
+        try:
+            return self._handle_tool(tu, turn)
+        finally:
+            refresh_portfolio(self.state, self.executor)
+
+    def _handle_tool(self, tu: dict[str, Any], turn: int) -> str:
         name = tu["name"]
         if name not in self._available_tools:
             self._emit("lead_tool_rejected", {
@@ -1179,11 +1188,12 @@ class InvestigationHost:
             "spend_usd": spend_usd,
         }
         if kind == "compare" and isinstance(result.result, dict):
-            winner = result.result.get("winner")
+            winner = result.result.get("best_candidate")
             binding = {
                 "branch_hashes": compare_branch_hashes or {},
-                "winner": winner,
-                "winner_hash": (
+                "best_candidate": winner,
+                "accepts_as_solution": result.result.get("accepts_as_solution") is True,
+                "best_candidate_hash": (
                     (compare_branch_hashes or {}).get(str(winner))
                     if winner is not None else None
                 ),
@@ -2129,6 +2139,8 @@ class InvestigationHost:
 
 
     def sync_budget(self) -> None:
+        from investigation.portfolio import refresh_portfolio
+        refresh_portfolio(self.state, self.executor)
         self.state.budget_ledger = (
             self._prior_budget + self.episode_budget + list(self._session.usage_entries())
         )

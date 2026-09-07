@@ -151,6 +151,10 @@ mode-specific work.*
 ---
 
 ### `workspace_delete`
+
+Investigation-retained candidates are protected from deletion until explicitly
+rejected/superseded and the host refreshes its portfolio. Protection does not
+freeze keys or grant solved status; fork before editing if both versions matter.
 Delete a branch. Cannot delete `main`.
 
 | Parameter | Type | Notes |
@@ -1676,6 +1680,9 @@ line per outstanding experiment plus summaries of any that just completed. With
 `experiment_id`: return the result packet and mark it collected. A completed
 `quagmire3_shotgun` packet additionally carries a ranked `candidates` list
 (`rank`, `score`, `selection_score`, `preview`) so a lead can choose a finalist.
+R2 adds exact plaintext `content_hash`, `duplicate_of_rank`, and
+`distinct_candidate_count`: duplicate readings are labeled without changing
+solver ranks or discarding alternative keys. Candidate identity is not verification.
 
 | Parameter | Type | Notes |
 |-----------|------|-------|
@@ -1704,8 +1711,8 @@ live in `src/mcp_server/tools.py`; methodology and recovery in
 | `observe_diagnosis` | read | Ranked LLM-free cipher-family diagnosis. |
 | `decode_show` | read | Paired encoded/decoded rows for a branch. |
 | `hypothesis_next_steps` | read | Advisory next-step suggestions (WF-1). |
-| `candidate_list` | read | The candidate portfolio with labeled signals (WF-6). |
-| `candidate_show` | read | Full detail for one candidate branch. |
+| `candidate_list` | read | Branches with labeled signals (WF-6), plus a bounded hash-deduplicated `retained_portfolio` with roles, aliases, and verification debt. |
+| `candidate_show` | read | Full detail for one candidate branch, including the shared candidate packet's `key_state` (recovered mode keys, null mask, boundaries, token order, transforms, renderer/hash). |
 | `branch_adjudicate` | read | Read-only comparison table over 2-8 branches. |
 | `hypothesis_branch_create` | mutate | Create a hypothesis branch. |
 | `hypothesis_branch_update` | mutate | Update a hypothesis branch. |

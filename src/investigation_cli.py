@@ -59,6 +59,26 @@ class _CliInputError(Exception):
         self.detail = detail
 
 
+class InvestigationArgumentParser(argparse.ArgumentParser):
+    """Keep pre-dispatch argparse failures on the investigation JSON contract.
+
+    Used for the root parser only when the requested command is investigation;
+    argparse propagates this class to subparsers. Explicit --help stays human
+    readable with exit 0. No registry or provider is touched on a parse error.
+    """
+
+    def error(self, message: str) -> None:
+        self.print_usage(sys.stderr)
+        raise _CliInputError("invalid_cli_arguments", message)
+
+    def parse_args(self, args=None, namespace=None):
+        try:
+            return super().parse_args(args, namespace)
+        except _CliInputError as exc:
+            print(json.dumps({"status": "error", "reason": exc.reason, "detail": exc.detail}))
+            self.exit(2)
+
+
 # Reasons the CLI itself emits (never produced by the service). Kept alongside
 # the service's `invalid_arguments` in the one shared exit table below.
 _CLI_INPUT_REASONS = frozenset({"invalid_cli_arguments", "unknown_operation"})
@@ -213,7 +233,7 @@ def _add_operation_arguments(vp: argparse.ArgumentParser, op: manifest.Operation
 def add_investigation_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register `decipher investigation` and its verb tree from the manifest.
 
-    One friendly verb per read-class :class:`OperationSpec` (auto-registered by
+    One friendly verb per :class:`OperationSpec` (auto-registered by
     ``cli_verb`` — no hand-written verb list), plus the reserved ``call``
     escape hatch. Global transport options precede the verb.
     """
@@ -252,7 +272,7 @@ def add_investigation_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     verbs = inv.add_subparsers(dest="investigation_verb", metavar="VERB", required=True)
 
-    # One friendly verb per manifest operation (read + create + mutate). The
+    # One friendly verb per manifest operation (read + create + mutate).
     # Every manifest operation is public. Transport-only execution/authority
     # flags are added below without entering the operation argument object.
     for op in manifest.OPERATIONS:

@@ -1,0 +1,1386 @@
+{
+  "audit_revision": "c4554c5323a64d0a0662220ad379f07dc427dc2a",
+  "audit_script_sha256": "987edd9aaed8b3d9b22458ea0508441edc4ff9a6e38209a4527c7a0a35509580",
+  "available_cases": 18,
+  "model_files": {
+    "de": {
+      "path": "/Users/mgreen/Dropbox/src2/decipher/models/ngram5_de_dta.bin",
+      "sha256": "288888db9f55227e9321c01d4c16c8398d6411c646b7cd823540b2a39c6d1afa"
+    },
+    "en": {
+      "path": "/Users/mgreen/Dropbox/src2/decipher/models/ngram5_en_zenith.bin",
+      "sha256": "0fc92b96a6018347e936eff9417b3b54a8e144b016ea921c7769f1be0f24fe63"
+    },
+    "la": {
+      "path": "/Users/mgreen/Dropbox/src2/decipher/models/ngram5_la.bin",
+      "sha256": "b2b92f631982e5dbabf0946ed8aa59268a31f8b08568ec689836953e2c73890c"
+    }
+  },
+  "runtime_manifest_sha256": "ea22bc8a4a791275f03919eca6b450e80ab98c1d694d1208307886e18f2ae357",
+  "saved_artifacts": [
+    {
+      "artifact": "artifacts/m5_3_targeted_smokes/repair_path/v3/borg_single_B_borg_0109v/1/borg_single_B_borg_0109v/8d5bce9769b1.json",
+      "artifact_sha256": "dd44cd5e11546d4d80c758ad012b9863273315090d911da1e4e3cc219579ff01",
+      "branches": [
+        {
+          "boundary_mode": "source",
+          "branch": "anneal_simple_1",
+          "content_hash": "94be8b84d0c980f7deca0752238fc69a6d115d067a7a10e21311bde1448574bc",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [
+            {
+              "content_hash": "94be8b84d0c980f7deca0752238fc69a6d115d067a7a10e21311bde1448574bc",
+              "damage_scope": "basin_wide",
+              "episode_id": "309e1f7f54f3",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.9130434782608695,
+            "correct_chars": 315,
+            "correct_words": 53,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6794871794871795
+          },
+          "post_hoc_rank": 3,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "94be8b84d0c980f7deca0752238fc69a6d115d067a7a10e21311bde1448574bc",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "wide_simple_result",
+          "content_hash": "f191c3a45eed93f9fef8d6a2b6cc525e9776166ebe0fa2d92db8348b1b8a5aa2",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.9130434782608695,
+            "correct_chars": 315,
+            "correct_words": 53,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6794871794871795
+          },
+          "post_hoc_rank": 3,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "f191c3a45eed93f9fef8d6a2b6cc525e9776166ebe0fa2d92db8348b1b8a5aa2",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "nullmask_main",
+          "content_hash": "c08ea41287d0f595c3cd73b1a582fae413ddceaa38daf0e124fe4acd9cac78ee",
+          "historical_boundary_loss": true,
+          "historical_unsegmented_score": {
+            "char_accuracy": 0.9650145772594753,
+            "correct_chars": 331,
+            "correct_words": 0,
+            "total_chars": 343,
+            "total_words": 77,
+            "word_accuracy": 0.0
+          },
+          "historical_unsegmented_verdict_count": 1,
+          "mapped_count": 22,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.9650145772594753,
+            "correct_chars": 331,
+            "correct_words": 64,
+            "total_chars": 343,
+            "total_words": 78,
+            "word_accuracy": 0.8205128205128205
+          },
+          "post_hoc_rank": 1,
+          "renderer": "key_with_null_mask_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+          "solver_rank": 3
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "wide_nullmask_result",
+          "content_hash": "c08ea41287d0f595c3cd73b1a582fae413ddceaa38daf0e124fe4acd9cac78ee",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": {
+            "char_accuracy": 0.9650145772594753,
+            "correct_chars": 331,
+            "correct_words": 0,
+            "total_chars": 343,
+            "total_words": 77,
+            "word_accuracy": 0.0
+          },
+          "historical_unsegmented_verdict_count": 1,
+          "mapped_count": 22,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.9650145772594753,
+            "correct_chars": 331,
+            "correct_words": 64,
+            "total_chars": 343,
+            "total_words": 78,
+            "word_accuracy": 0.8205128205128205
+          },
+          "post_hoc_rank": 1,
+          "renderer": "key_with_null_mask_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "6faa3de13a9890d6b3c67127dd8b658d060f3e8af3c781be562e1b827dfce027",
+          "solver_rank": 3
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "automated_preflight",
+          "content_hash": "ba731f8d356648a08399939f3c099dc3140c8f1ac519a3f90853f70c5bb1985d",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [
+            {
+              "content_hash": "ba731f8d356648a08399939f3c099dc3140c8f1ac519a3f90853f70c5bb1985d",
+              "damage_scope": "basin_wide",
+              "episode_id": "926f20cefe1d",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.8492753623188406,
+            "correct_chars": 293,
+            "correct_words": 41,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.5256410256410257
+          },
+          "post_hoc_rank": 5,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "ba731f8d356648a08399939f3c099dc3140c8f1ac519a3f90853f70c5bb1985d",
+          "solver_rank": 5
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_anneal_1",
+          "content_hash": "06f32180e6a848a4bb045c8ec736de7b88c17f838f8dc60338188d3fb34082bd",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.4,
+            "correct_chars": 138,
+            "correct_words": 0,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.0
+          },
+          "post_hoc_rank": 6,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "06f32180e6a848a4bb045c8ec736de7b88c17f838f8dc60338188d3fb34082bd",
+          "solver_rank": 6
+        }
+      ],
+      "ciphertext_sha256": "3ee3af1722a702cd3f82824b2fe7a7c0c69b4199376a45eca6c06b7370601c91",
+      "current_replay_best_saved_char": 0.9650145772594753,
+      "current_replay_selection_char_gap": 0.0,
+      "explicit_provenance": [
+        {
+          "field": "investigation_state.experiment_queue[3].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "investigation_state.experiment_queue[6].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[3].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[6].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        }
+      ],
+      "findings": [
+        "Historical snapshots flattened canonical source boundaries for null-mask branch(es): nullmask_main.",
+        "Historical verifier rejection(s) were bound to the unsegmented content for: nullmask_main. Corrected renderings require fresh verification.",
+        "Post-hoc best nullmask_main, wide_nullmask_result ranked 3 by the ground-truth-free scalar ordering."
+      ],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 2.713537,
+      "historical_delivered_char": 0.9650145772594753,
+      "historical_delivered_word": 0.0,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "8d5bce9769b1",
+      "selected_branch": "nullmask_main",
+      "served_models": [],
+      "test_id": "borg_single_B_borg_0109v"
+    },
+    {
+      "artifact": "artifacts/m5_3_targeted_smokes/repair_path_fixed/v3/borg_single_B_borg_0109v/1/borg_single_B_borg_0109v/ac129831aebc.json",
+      "artifact_sha256": "ec80cadbd4b00b30c5cae0ae869dedb1222b59b749356c99837af31790a07b33",
+      "branches": [
+        {
+          "boundary_mode": "source",
+          "branch": "hillclimb_subst_1",
+          "content_hash": "bf3c4cec5ec8c1c983ba35113e43f33ad4668f171f7dc564a9b4fcb23b8684c4",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [
+            {
+              "content_hash": "bf3c4cec5ec8c1c983ba35113e43f33ad4668f171f7dc564a9b4fcb23b8684c4",
+              "damage_scope": "distributed",
+              "episode_id": "d1cfafe8727b",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.9101449275362319,
+            "correct_chars": 314,
+            "correct_words": 52,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6666666666666666
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "bf3c4cec5ec8c1c983ba35113e43f33ad4668f171f7dc564a9b4fcb23b8684c4",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "automated_preflight",
+          "content_hash": "e98eb7db944130ba1119798500026c353e962ccb735a439028375a6acde725da",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [
+            {
+              "content_hash": "e98eb7db944130ba1119798500026c353e962ccb735a439028375a6acde725da",
+              "damage_scope": "basin_wide",
+              "episode_id": "699c65c6575f",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.9101449275362319,
+            "correct_chars": 314,
+            "correct_words": 52,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6666666666666666
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "e98eb7db944130ba1119798500026c353e962ccb735a439028375a6acde725da",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "auto_subst_transform_1",
+          "content_hash": "3bc1f7da05f197eee53e08d0a4bcfe483a5d6b74974d38e9c61f4ae0ab660722",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.8956521739130435,
+            "correct_chars": 309,
+            "correct_words": 48,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6153846153846154
+          },
+          "post_hoc_rank": 4,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "3bc1f7da05f197eee53e08d0a4bcfe483a5d6b74974d38e9c61f4ae0ab660722",
+          "solver_rank": 3
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "wide_targeted_repair_1",
+          "content_hash": "2a6ea2d85cae21a30eca2cf16478647d217ce19cabf239dd519dd21f8e010cbf",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.8956521739130435,
+            "correct_chars": 309,
+            "correct_words": 48,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6153846153846154
+          },
+          "post_hoc_rank": 4,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "2a6ea2d85cae21a30eca2cf16478647d217ce19cabf239dd519dd21f8e010cbf",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "legacy_wide_alt_1",
+          "content_hash": "612450b912dc2aa1435ea23a31a3d07f812f78cf41b687ec8455b85e4d7a49ae",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.8956521739130435,
+            "correct_chars": 309,
+            "correct_words": 49,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6282051282051282
+          },
+          "post_hoc_rank": 3,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "612450b912dc2aa1435ea23a31a3d07f812f78cf41b687ec8455b85e4d7a49ae",
+          "solver_rank": 5
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "broad_subst_1",
+          "content_hash": "eda06a543549c604132c0c229e077b3d56584cb4426fa9fd3d289b0dddc104f0",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.8956521739130435,
+            "correct_chars": 309,
+            "correct_words": 48,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.6153846153846154
+          },
+          "post_hoc_rank": 4,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "eda06a543549c604132c0c229e077b3d56584cb4426fa9fd3d289b0dddc104f0",
+          "solver_rank": 6
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "legacy_wide_alt_2",
+          "content_hash": "a9f5bcc4878f77ba4d03596b0359015814595bc69dbff40a937b06c7570aac8e",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.7768115942028986,
+            "correct_chars": 268,
+            "correct_words": 29,
+            "total_chars": 345,
+            "total_words": 78,
+            "word_accuracy": 0.3717948717948718
+          },
+          "post_hoc_rank": 7,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "a9f5bcc4878f77ba4d03596b0359015814595bc69dbff40a937b06c7570aac8e",
+          "solver_rank": 7
+        }
+      ],
+      "ciphertext_sha256": "3ee3af1722a702cd3f82824b2fe7a7c0c69b4199376a45eca6c06b7370601c91",
+      "current_replay_best_saved_char": 0.9101449275362319,
+      "current_replay_selection_char_gap": 0.0,
+      "explicit_provenance": [
+        {
+          "field": "loop_events[94].payload.arguments.config.model_variant",
+          "value": "gutenberg"
+        },
+        {
+          "field": "investigation_state.experiment_queue[1].config.model_variant",
+          "value": "gutenberg"
+        },
+        {
+          "field": "investigation_state.experiment_queue[1].result.steps[0].model_variant",
+          "value": "gutenberg"
+        },
+        {
+          "field": "experiments[1].config.model_variant",
+          "value": "gutenberg"
+        },
+        {
+          "field": "experiments[1].result.steps[0].model_variant",
+          "value": "gutenberg"
+        }
+      ],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 2.2216549999999993,
+      "historical_delivered_char": 0.9101449275362319,
+      "historical_delivered_word": 0.6666666666666666,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "ac129831aebc",
+      "selected_branch": "hillclimb_subst_1",
+      "served_models": [],
+      "test_id": "borg_single_B_borg_0109v"
+    },
+    {
+      "artifact": "artifacts/m5_3_targeted_smokes/positive_word_boundary/m5_3_positive_word_boundary_control/29b8f89ad6ee.json",
+      "artifact_sha256": "0c879d176c7633749b8c22d480c34f5363bd98e58cbde3882231c808dcb4d2ca",
+      "branches": [
+        {
+          "boundary_mode": "source",
+          "branch": "automated_preflight",
+          "content_hash": "7ee5bb7d4f972750fd812a80ecbdfa0665f2ccde165893d409ffd4b26d7febd3",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 22,
+          "matching_verdicts": [
+            {
+              "content_hash": "7ee5bb7d4f972750fd812a80ecbdfa0665f2ccde165893d409ffd4b26d7febd3",
+              "damage_scope": "local",
+              "episode_id": "550be300d7c1",
+              "reader_accepts_as_solution": true
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 1.0,
+            "correct_chars": 207,
+            "correct_words": 39,
+            "total_chars": 207,
+            "total_words": 39,
+            "word_accuracy": 1.0
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "7ee5bb7d4f972750fd812a80ecbdfa0665f2ccde165893d409ffd4b26d7febd3",
+          "solver_rank": 1
+        }
+      ],
+      "ciphertext_sha256": "e69b2e86bbf35bc3358757824a913556ca2c217af12e5e30e80dcdd42e25d656",
+      "current_replay_best_saved_char": 1.0,
+      "current_replay_selection_char_gap": 0.0,
+      "explicit_provenance": [],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 0.08463499999999999,
+      "historical_delivered_char": 1.0,
+      "historical_delivered_word": 1.0,
+      "historical_status": "solved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "29b8f89ad6ee",
+      "selected_branch": "automated_preflight",
+      "served_models": [],
+      "test_id": "m5_3_positive_word_boundary_control"
+    },
+    {
+      "artifact": "artifacts/m5_3_targeted_smokes/positive_declaration/v3/synth_en_250nb_s4/1/synth_en_250nb_s4/d65f5f4876a7.json",
+      "artifact_sha256": "9ff52ca33fecf10ffcc4e4771bd2480286329a519dd05471c324c416e6ae3bf0",
+      "branches": [
+        {
+          "boundary_mode": "none",
+          "branch": "automated_preflight",
+          "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 24,
+          "matching_verdicts": [
+            {
+              "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+              "damage_scope": "distributed",
+              "episode_id": "b401892c3b15",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 1.0,
+            "correct_chars": 1208,
+            "correct_words": 0,
+            "total_chars": 1208,
+            "total_words": 0,
+            "word_accuracy": null
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "alternate_simple_substitution",
+          "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 24,
+          "matching_verdicts": [
+            {
+              "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+              "damage_scope": "distributed",
+              "episode_id": "b401892c3b15",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 1.0,
+            "correct_chars": 1208,
+            "correct_words": 0,
+            "total_chars": 1208,
+            "total_words": 0,
+            "word_accuracy": null
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "alternate_homophonic_transform",
+          "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 24,
+          "matching_verdicts": [
+            {
+              "content_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+              "damage_scope": "distributed",
+              "episode_id": "b401892c3b15",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 1.0,
+            "correct_chars": 1208,
+            "correct_words": 0,
+            "total_chars": 1208,
+            "total_words": 0,
+            "word_accuracy": null
+          },
+          "post_hoc_rank": 1,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "5e268b0b49b954b095c34019feadcba248ad1da958130e30a05da4b9f382f686",
+          "solver_rank": 1
+        }
+      ],
+      "ciphertext_sha256": "990af60f2e6b21f0151e71a9f9420d1078d6e417ed41f328eafd2f48ccda420e",
+      "current_replay_best_saved_char": 1.0,
+      "current_replay_selection_char_gap": 0.0,
+      "explicit_provenance": [],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 0.6321350000000001,
+      "historical_delivered_char": 1.0,
+      "historical_delivered_word": 0.0,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "d65f5f4876a7",
+      "selected_branch": "automated_preflight",
+      "served_models": [],
+      "test_id": "synth_en_250nb_s4"
+    },
+    {
+      "artifact": "artifacts/tier_a_v3/cli/9f547bfcf55a.json",
+      "artifact_sha256": "d63d6541a8b5973794f7cf4367afa7a75b1848ab57b3913977822f233e868268",
+      "branches": [
+        {
+          "boundary_mode": "none",
+          "branch": "quagmire3_solution",
+          "content_hash": "782fc5bc7707001ca0b2b4761c284690b35ed90d116e59607e5d66ecfc6144d4",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 0,
+          "matching_verdicts": [
+            {
+              "content_hash": "782fc5bc7707001ca0b2b4761c284690b35ed90d116e59607e5d66ecfc6144d4",
+              "damage_scope": "distributed",
+              "episode_id": "918b53fc51b4",
+              "reader_accepts_as_solution": true
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "782fc5bc7707001ca0b2b4761c284690b35ed90d116e59607e5d66ecfc6144d4",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "automated_preflight",
+          "content_hash": "312ba9f4ce6da8e23f5a9576543cb31058e8f5643e1cda810d6f39e176e6389f",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 26,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "312ba9f4ce6da8e23f5a9576543cb31058e8f5643e1cda810d6f39e176e6389f",
+          "solver_rank": 2
+        }
+      ],
+      "ciphertext_sha256": "d67025ebfaedd9860c78100e4d39b286ebee885b256d4cb0edbef2385aef3544",
+      "current_replay_best_saved_char": null,
+      "current_replay_selection_char_gap": null,
+      "explicit_provenance": [],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 1.865865,
+      "historical_delivered_char": null,
+      "historical_delivered_word": null,
+      "historical_status": "solved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "9f547bfcf55a",
+      "selected_branch": "quagmire3_solution",
+      "served_models": [],
+      "test_id": "cli"
+    },
+    {
+      "artifact": "artifacts/borg_single_B_borg_0077v/640e959623f4.json",
+      "artifact_sha256": "b575879616fc9dd4266d48f1b73f6da41339690f43556f75f21de4eef8e718d4",
+      "branches": [
+        {
+          "boundary_mode": "source",
+          "branch": "null_mask_homophonic_1",
+          "content_hash": "71c457655709e2061f4385f41762ed8dccf43e81aa85924822811bf38e4253b2",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": {
+            "char_accuracy": 0.778125,
+            "correct_chars": 249,
+            "correct_words": 0,
+            "total_chars": 320,
+            "total_words": 68,
+            "word_accuracy": 0.0
+          },
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 30,
+          "matching_verdicts": [
+            {
+              "content_hash": "71c457655709e2061f4385f41762ed8dccf43e81aa85924822811bf38e4253b2",
+              "damage_scope": "basin_wide",
+              "episode_id": "0e19c58eda1c",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.778125,
+            "correct_chars": 249,
+            "correct_words": 25,
+            "total_chars": 320,
+            "total_words": 71,
+            "word_accuracy": 0.352112676056338
+          },
+          "post_hoc_rank": 1,
+          "renderer": "key_with_null_mask_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "71c457655709e2061f4385f41762ed8dccf43e81aa85924822811bf38e4253b2",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_cluster_1",
+          "content_hash": "635867dcd6422ba3e36282acce89f9c4bd65dc473b17efb8887bb7d606e341d9",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.7327327327327328,
+            "correct_chars": 244,
+            "correct_words": 23,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.323943661971831
+          },
+          "post_hoc_rank": 2,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "635867dcd6422ba3e36282acce89f9c4bd65dc473b17efb8887bb7d606e341d9",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_anneal_1",
+          "content_hash": "7e9bec5beb697a778b3c1b3d178d752949d35b38961d5ba9b62dbdbd132972f0",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.5795795795795796,
+            "correct_chars": 193,
+            "correct_words": 12,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.16901408450704225
+          },
+          "post_hoc_rank": 3,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "7e9bec5beb697a778b3c1b3d178d752949d35b38961d5ba9b62dbdbd132972f0",
+          "solver_rank": 3
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "automated_preflight",
+          "content_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [
+            {
+              "content_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+              "damage_scope": "basin_wide",
+              "episode_id": "5fe4d18e84b1",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.3783783783783784,
+            "correct_chars": 126,
+            "correct_words": 2,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.028169014084507043
+          },
+          "post_hoc_rank": 5,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "auto_targeted_repair_1",
+          "content_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [
+            {
+              "content_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+              "damage_scope": "basin_wide",
+              "episode_id": "5fe4d18e84b1",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": {
+            "char_accuracy": 0.3783783783783784,
+            "correct_chars": 126,
+            "correct_words": 2,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.028169014084507043
+          },
+          "post_hoc_rank": 5,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "9a6bbdc2cee71a8932746494daa1135869cab8c694048611428833da8b0ff6c5",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_anneal_1_cand2",
+          "content_hash": "a49cea4af8c6728120873a19e28ed52b32f581cd5e49e0fec02d017b8ce8cb5d",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.37237237237237236,
+            "correct_chars": 124,
+            "correct_words": 2,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.028169014084507043
+          },
+          "post_hoc_rank": 7,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "a49cea4af8c6728120873a19e28ed52b32f581cd5e49e0fec02d017b8ce8cb5d",
+          "solver_rank": 6
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_anneal_1_cand3",
+          "content_hash": "3ed808d15c9cc3a403124e6a492c2fc7398d04d3b69dc34f5e02a962b9fa602e",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 32,
+          "matching_verdicts": [],
+          "post_hoc": {
+            "char_accuracy": 0.38738738738738737,
+            "correct_chars": 129,
+            "correct_words": 2,
+            "total_chars": 333,
+            "total_words": 71,
+            "word_accuracy": 0.028169014084507043
+          },
+          "post_hoc_rank": 4,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "3ed808d15c9cc3a403124e6a492c2fc7398d04d3b69dc34f5e02a962b9fa602e",
+          "solver_rank": 7
+        }
+      ],
+      "ciphertext_sha256": "b18920ed8bcb6d4f67246296379b546cd8c74882dafc0d1f18c0e8fb1344bd6e",
+      "current_replay_best_saved_char": 0.778125,
+      "current_replay_selection_char_gap": 0.0,
+      "explicit_provenance": [
+        {
+          "field": "investigation_state.experiment_queue[1].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[1].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        }
+      ],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 2.3574569999999997,
+      "historical_delivered_char": 0.778125,
+      "historical_delivered_word": 0.352112676056338,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "640e959623f4",
+      "selected_branch": "null_mask_homophonic_1",
+      "served_models": [],
+      "test_id": "borg_single_B_borg_0077v"
+    },
+    {
+      "artifact": "artifacts/tier_a_v3/cli/407e29ec7c70.json",
+      "artifact_sha256": "07da45d73dbead0ed87d410f4535c680ea73ee7c8f18a6876034e19350d6b35d",
+      "branches": [
+        {
+          "boundary_mode": "source",
+          "branch": "nullmask_route_rank",
+          "content_hash": "3f328830eb6243d90bbc30ffdec6c53d0ccc334ed74df50a72f94735034d08e8",
+          "historical_boundary_loss": true,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 63,
+          "matching_verdicts": [
+            {
+              "content_hash": "3f328830eb6243d90bbc30ffdec6c53d0ccc334ed74df50a72f94735034d08e8",
+              "damage_scope": "basin_wide",
+              "episode_id": "1221ce6506b2",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "key_with_null_mask_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "3f328830eb6243d90bbc30ffdec6c53d0ccc334ed74df50a72f94735034d08e8",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "automated_preflight",
+          "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 63,
+          "matching_verdicts": [
+            {
+              "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+              "damage_scope": "basin_wide",
+              "episode_id": "8d501293f697",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_full",
+          "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 63,
+          "matching_verdicts": [
+            {
+              "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+              "damage_scope": "basin_wide",
+              "episode_id": "8d501293f697",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "source",
+          "branch": "homophonic_transform_full",
+          "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 63,
+          "matching_verdicts": [
+            {
+              "content_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+              "damage_scope": "basin_wide",
+              "episode_id": "8d501293f697",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "72f007473b21bab3047c65ee77fbc77825fef9c11dbe0f4aea8f3ace86aae76e",
+          "solver_rank": 2
+        }
+      ],
+      "ciphertext_sha256": "7754759d408ecd8ea5c12b7a4ab037b96e2617c752fc7a20d3f9d4fb6d3bbb09",
+      "current_replay_best_saved_char": null,
+      "current_replay_selection_char_gap": null,
+      "explicit_provenance": [
+        {
+          "field": "loop_events[174].payload.arguments.config.model_variant",
+          "value": "mixed"
+        },
+        {
+          "field": "loop_events[185].payload.arguments.config.model_variant",
+          "value": "parity"
+        },
+        {
+          "field": "investigation_state.experiment_queue[2].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "investigation_state.experiment_queue[3].config.model_variant",
+          "value": "mixed"
+        },
+        {
+          "field": "investigation_state.experiment_queue[4].config.model_variant",
+          "value": "parity"
+        },
+        {
+          "field": "investigation_state.experiment_queue[4].result.steps[0].model_variant",
+          "value": "parity"
+        },
+        {
+          "field": "investigation_state.experiment_queue[4].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[2].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[3].config.model_variant",
+          "value": "mixed"
+        },
+        {
+          "field": "experiments[4].config.model_variant",
+          "value": "parity"
+        },
+        {
+          "field": "experiments[4].result.steps[0].model_variant",
+          "value": "parity"
+        },
+        {
+          "field": "experiments[4].result.steps[3].solver_profile",
+          "value": "zenith_native"
+        }
+      ],
+      "findings": [
+        "Historical snapshots flattened canonical source boundaries for null-mask branch(es): nullmask_route_rank."
+      ],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 3.146944,
+      "historical_delivered_char": null,
+      "historical_delivered_word": null,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "407e29ec7c70",
+      "selected_branch": "nullmask_route_rank",
+      "served_models": [],
+      "test_id": "cli"
+    },
+    {
+      "artifact": "artifacts/tier_a_v3/cli/1d6d78083226.json",
+      "artifact_sha256": "445b6aa3f58ad3d53068f8c54024e30b42d7566c3f4216fb6a3f916a6711ff8b",
+      "branches": [
+        {
+          "boundary_mode": "none",
+          "branch": "automated_preflight",
+          "content_hash": "9c1888782b10abcd2bf4198e294a2be6a29fa4cca62dfd84922b2f28531907a1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [
+            {
+              "content_hash": "9c1888782b10abcd2bf4198e294a2be6a29fa4cca62dfd84922b2f28531907a1",
+              "damage_scope": "basin_wide",
+              "episode_id": "12d8da99ea9e",
+              "reader_accepts_as_solution": false
+            }
+          ],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [
+            "best_scored_branch",
+            "workflow_branch",
+            "declared_or_selected_branch"
+          ],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "9c1888782b10abcd2bf4198e294a2be6a29fa4cca62dfd84922b2f28531907a1",
+          "solver_rank": 1
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "null_mask_candidate",
+          "content_hash": "587b491d3288eecac614886040a3ad18411560754445382b44879af47cf7fc11",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 20,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "key_with_null_mask_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "587b491d3288eecac614886040a3ad18411560754445382b44879af47cf7fc11",
+          "solver_rank": 2
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "route_candidate",
+          "content_hash": "cfc67faf6235b2669bdcd356aa7f591992e1c8a42aa799c8438053d8b0b05322",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "cfc67faf6235b2669bdcd356aa7f591992e1c8a42aa799c8438053d8b0b05322",
+          "solver_rank": 3
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "transform_homophonic_fullscreen",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "subst_plus_route_auto",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "homophonic_family_route_full",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "subst_route_full_800",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "broad_transform_subst_candidate",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "route_subst_broad_dedup",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        },
+        {
+          "boundary_mode": "none",
+          "branch": "final_route_substitution_screen",
+          "content_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "historical_boundary_loss": false,
+          "historical_unsegmented_score": null,
+          "historical_unsegmented_verdict_count": 0,
+          "mapped_count": 23,
+          "matching_verdicts": [],
+          "post_hoc": null,
+          "post_hoc_rank": null,
+          "renderer": "decoded_text_v1",
+          "roles": [],
+          "roundtrip_content_equal": true,
+          "roundtrip_structure_equal": true,
+          "saved_render_hash": "310a8602f8e32761dedc3e1194e121089f76f0d2b438c144c34388b37fb78fc1",
+          "solver_rank": 4
+        }
+      ],
+      "ciphertext_sha256": "4d01f9a77b697a993649a91095f8ede87e8a3ea464fd97fb218be531ccb6627b",
+      "current_replay_best_saved_char": null,
+      "current_replay_selection_char_gap": null,
+      "explicit_provenance": [
+        {
+          "field": "investigation_state.experiment_queue[6].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        },
+        {
+          "field": "experiments[6].result.steps[2].solver_profile",
+          "value": "zenith_native"
+        }
+      ],
+      "findings": [],
+      "generated_menu_completeness": "unknown: final snapshots do not prove all generated candidates were saved",
+      "historical_code_revision": null,
+      "historical_cost_usd": 3.636614000000002,
+      "historical_delivered_char": null,
+      "historical_delivered_word": null,
+      "historical_status": "unsolved",
+      "replay_status": "completed",
+      "requested_model": "gpt-5.5",
+      "roundtrip_failures": [],
+      "run_id": "1d6d78083226",
+      "selected_branch": "automated_preflight",
+      "served_models": [],
+      "test_id": "cli"
+    }
+  ],
+  "unavailable_cases": []
+}

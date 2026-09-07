@@ -1,12 +1,10 @@
 # M5.3 Implementation Plan + Codex-INV Coordination Contract
 
-**STATUS 2026-07-17:** M5.3 has landed. Its next bounded follow-up is M5.3a,
-specified in
-`docs/specs/agent_v3_m5_3a_candidate_reliability_spec.md`. That plan addresses
-compare semantics, protected finalist retention, sparse-null coverage, local
-replays, and synthetic controls before any further paid Borg smoke. The
-historical implementation sequence below remains as the record of completed
-M5.3 work.
+**STATUS 2026-09-06:** M5.3 landed in July. Follow
+[the current improvement plan](improvement_program_plan.md#current-plan--2026-09-06)
+for new work. R2 takes the comparison/retention subset of M5.3a after R0's
+baseline; R4 informs the sparse-null routing decision. The historical sequence
+below records completed M5.3 work and does not schedule a paid Borg smoke.
 
 2026-07-16. Fable implements M5.3 (v3 control reliability, spec
 `docs/specs/agent_v3_m5_3_control_reliability_spec.md`).

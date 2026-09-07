@@ -1,5 +1,312 @@
 # Improvement Program Plan
 
+## Current plan — 2026-09-06
+
+This is the authoritative execution order for repository development. It
+supersedes the older phase order below, the numbered priorities in `TODO.md`,
+and the immediate-work ordering in the family roadmap and session handoffs.
+Those documents retain technical scope and historical evidence. Their unchecked
+boxes are not an instruction to start another workstream.
+
+The objective is to turn Decipher's existing solving power into useful,
+reproducible results, especially on historical material. The initial commitment
+is R0–R4 below. Later implementation choices remain open until their evidence
+is available. This planning revision schedules no paid runs or default changes.
+
+### Starting point and evidence
+
+- CLI I-0–I-5 are implemented; I-3/I-4 landed together in `b9353ae`, followed
+  by I-5 in `c4554c5`. I-6/I-7 are the remaining CLI closure work.
+- V3 and M5.3 are implemented. The full post-fix M6 acceptance/default-switch
+  decision is outstanding. M5.3a remains a design input, with its work split
+  across the slices and decisions below.
+- The local suite at `c4554c5` passed on 2026-09-06: 1,933 passed, 2 skipped.
+  This verifies local mechanics, not current benchmark performance.
+- Ground-truth firewall tests already exist in
+  `tests/test_ground_truth_firewall.py`; extend measured gaps rather than
+  treating the original Phase 0 checklist as unimplemented.
+- The [dual-interface results](evidence/v3_vs_mcp_matrix.md) show shared
+  tool improvements benefiting both interfaces, with no consistent interface
+  winner on the small historical sample.
+- The [Borg selection report](reports/m5_3_borg_candidate_selection_2026_07_17.md)
+  separates lost boundaries, weak ranking, and variation in generated basins.
+  The [verification report](reports/m5_3_targeted_smokes_2026_07_17.md) also
+  records exact character recovery rejected as an incomplete reading.
+
+### Initial slices
+
+| Order | Slice | Concrete deliverable | Completion condition |
+|---|---|---|---|
+| R0 | Freeze evidence and define losses | Reproducible baseline report and small pilot manifest | Every case has provenance, a measured loss or explicit unknown, and a fixed comparison protocol |
+| R1 | Finish the investigation CLI | I-6 parity/onboarding and I-7 review/README acceptance | A complete local workflow survives both interfaces, restarts, and keyless use with accurate outcomes |
+| R2 | Preserve and deliver candidates | Candidate lifecycle fixes and the retention/comparison subset of M5.3a | Fixed candidate sets survive install/render/save/resume, and useful partials remain reviewable |
+| R3 | Audit verification and historical residuals | Labeled calibration packet, retrospective report, and outcome definitions | We can distinguish reconstruction errors, reading uncertainty, and evaluator limitations without changing the gate |
+| R4 | Measure routing loss | Paired blind/family-supplied local experiment and decision report | Same-budget results identify which losses justify the next implementation slice |
+
+Execute R0 first, then R1–R4 in order. Each slice closes with its evidence,
+limitations, and targeted checks recorded. A planning slice can complete with
+an explicitly unresolved research question; a missing measurement is never a
+passing capability result. If an earlier slice invalidates a later experiment,
+record the change to that experiment before executing it.
+
+### R0 — Freeze evidence and define losses
+
+Execution update (2026-09-06): the [baseline report](reports/reliability_r0_baseline.md)
+and JSON companion now exist. `scripts/build_reliability_packet.py` produced
+18/18 cases at `artifacts/reliability_r0/runtime/cases.jsonl`, with separate
+gitignored grading data and an immutable-output check. Eight historical
+artifacts replayed; no current serialization roundtrip failed. The Borg
+ranking disagreement persists in saved scalar ordering, while old boundary/attestation
+losses must not be confused with current delivered-candidate loss. Full
+generated-menu completeness and missing historical model/revision provenance
+remain explicit unknowns. No new solve or live-agent outcome is claimed.
+
+Scope: local inventory, saved-artifact replay, and evaluation setup. Reuse
+`scripts/inspect_artifact.py`, the candidate-selection reports, existing
+generators, and `scripts/solver_coverage_sweep.py` as appropriate. Introduce
+only the extraction/reporting code needed for this packet.
+
+1. Inventory the saved failure and success cases behind the reports above.
+   Pin code revision, ciphertext/source hash, model variant/checksum, boundary
+   policy, solver settings, candidate identity, and attestation content hash.
+   Missing or incompatible artifacts are recorded; historical summaries are
+   not silently relabeled as runs of current code.
+2. Follow each available candidate through generation, retention, comparison,
+   installation, rendering, persistence/resume, and verification. Record
+   multiple contributing losses when appropriate, separating mechanical
+   defects from search/selection quality and missing evidence.
+3. Freeze an 18-case pilot: two fresh cases each for simple substitution,
+   homophonic substitution, ordinary periodic polyalphabetic, Quagmire III,
+   keyed columnar, and substitution+transposition; four historical diagnostic
+   anchors (Borg 0109v/0045v and Copiale p017/p068); and Bifid plus random-text
+   negative controls. Use distinct plaintext sources and keys for each pair,
+   with one development and one held-out case. Historical anchors are already
+   inspected diagnostics, not new generalization evidence.
+4. Freeze case-level expectations, CPU/time limits, search profiles, thread
+   counts, seeds, permitted context, and the R4 comparison protocol before
+   fresh runs. Validate synthetic encryption/decryption independently of the
+   search route where possible. Keep plaintext, keys, and grading labels in
+   the grading store, outside runtime inputs and agent-visible fixtures.
+   Use opaque runtime IDs and strip family-bearing names/metadata from the
+   blind arm. Select historical source records in the grading controller.
+
+Output: `docs/reports/reliability_r0_baseline.md`, a machine-readable companion,
+and a versioned runtime-safe pilot manifest with grading-store references.
+Report best-generated versus
+delivered character/word quality separately, stage failures, and time/cost
+where available. Candidate replays must expose missing historical candidates
+rather than assuming that the saved menu contains everything generated.
+
+Acceptance: the report rebuilds locally; every pilot case is validated or
+explicitly unavailable; already-fixed defects become regression cases. A
+missing-case list limits R4's coverage claim and cannot be counted as passing. Do
+not reopen old bugs solely because an old report describes them. R0 should
+leave one short list of reproducible losses for R2 and unresolved measurements
+for R3/R4, without starting a new solver or a general taxonomy project.
+
+### R1 — Finish the investigation CLI
+
+Close I-6 and I-7 under [the CLI specification](specs/investigation_cli_spec.md).
+Keep the I-7 whole-interface review and complete README audit as explicit
+deliverables. Existing implementation and provider-authority rules remain
+the starting point.
+
+Execution update (2026-09-06): **R1 complete**; see the
+[acceptance report](reports/reliability_r1_cli_acceptance.md). The combined
+local check passed 227 tests, including the native CLI round-6 acceptance
+(566/566 characters post-hoc, fake-reader gate workflow). The user authorized
+a separate Astra capstone reviewer instead of Fable. That review found two
+P2 issues—non-JSON argparse failures and a terminal-state/lease race—both fixed
+and independently rechecked. Remaining native child-cleanup and live-client
+coverage limits are explicit in the report. R2 subsequently addresses the live
+client's narrow lifecycle/reporting findings.
+
+Acceptance covers the scripted local sequence start → diagnose → experiment
+→ install → decode → fake verification → declaration, cross-interface
+continuation, revision/lease handling, worker interruption/recovery, and
+unchanged candidate state after save/resume. Keyless operation returns the
+candidate and a precise verification limitation; it does not silently acquire
+authority for a provider call. Finish with a fresh-checkout operator recipe,
+correct setup/model documentation, and interface parity checks.
+
+This closes the current interface program. Rich presentation surfaces, client
+reading attestations, new public operations, and unrelated refactors are later
+choices unless a reproduced acceptance defect requires a narrowly scoped fix.
+
+Live-client follow-up completed (2026-09-07): the user launched a fresh Astra
+solving session from the runtime-only brief. The [observation report](reports/codex_astra_r1_observation.md)
+records 501/501 letters recovered post-hoc, four experiments, and honest keyless
+unsolved closure. It does not establish a new frontier or an Astra/Sol advantage.
+For any future client follow-up, prepare a fresh runtime-only brief and ask the
+user to launch it separately.
+Do not give that solving session this planning conversation, grading files, or
+answer-bearing reports. Record client/model identity, interface/code freshness,
+commands/tool use, candidate preservation, and honest closure. This is a
+separate observation from both fake-provider acceptance and the R4 no-LLM
+matrix; it does not substitute for the specified independent capstone review.
+
+### R2 — Preserve and deliver candidates
+
+Execution update (2026-09-07): **R2 complete; R3 is next.** Full suite: 2,048
+passed, three skipped; its sole fresh-clone packaging failure was resolved and
+the 129-test follow-up passed. Separate native-inclusive acceptance also passed
+129 tests. See the [R2 report](reports/reliability_r2_candidate_retention.md)
+for the shared portfolio/comparison contract, observed CLI fixes, and bounded
+protection semantics. Sparse-null routing remains deferred to the R4 decision.
+
+Use R0's reproduced failures and the retention/comparison sections of
+[M5.3a](specs/agent_v3_m5_3a_candidate_reliability_spec.md). Implement the
+following as small, separately reviewable changes:
+
+1. Repair observed candidate lifecycle defects across the shared service and
+   V3 path. Test substitutions, null masks, source/custom boundaries, periodic
+   decoded branches, and transform metadata using fixed candidate fixtures.
+   Preserve content identity and invalidate attestations when rendered content
+   changes. Reuse existing candidate packets and serializers.
+2. Separate comparison preference from acceptance as solved. A worker may
+   prefer a useful partial even when no candidate is a solution. Preserve a
+   bounded, diverse portfolio selected using runtime evidence, plus the
+   automated baseline, so later work cannot silently lose earlier results.
+3. Make candidate roles, reasons for selection, and freshness visible in the
+   normal artifact inspector. Keep identical candidate evidence available
+   through CLI/MCP and V3, with scripted tests for interface-specific behavior.
+
+Acceptance: fixed-input replay preserves the intended content and structure
+through install/render/save/resume; useful partials remain retrievable without
+becoming accepted solutions; stale attestations cannot authorize changed text;
+and the known candidate-loss regressions pass. Post-hoc grading measures the
+quality gap but never chooses a runtime winner. Tests cover deceptive fluent
+candidates as well as true improvements.
+
+Sparse-null auto-routing from M5.3a is deliberately left for the R4 decision.
+Its matched null/no-null controls inform the evaluation, but the existence of
+the old spec does not predetermine the policy. No new learned ranker, repair
+mechanism, or declaration threshold is required to close R2.
+
+### R3 — Audit verification and historical residuals
+
+Execution update (2026-09-07): **local audit complete; required human source
+review is pending, so R3 remains open.** The [audit](reports/reliability_r3_audit.md)
+and sibling JSON bind 17 calibration cases, four saved historical candidates,
+and 13 original hash-matched verifier verdicts. One of two exact synthetic
+references was rejected as solution-grade; false acceptance is not estimable
+without labeled negatives. These are historical observations, not current-model
+rates. The [outcome contract](reliability_r3_outcome_contract.md) separates
+reconstruction, reading, and editorial restoration and proposes, but does not
+authorize, a bounded prospective experiment. The [source-review worksheet](reports/reliability_r3_source_review.md)
+starts the human review required below. Local validation: 98 focused tests pass;
+generation is deterministic/idempotent and no source or runtime artifact was edited.
+
+Start with local evidence and the residual-composition measurement in
+[the repair rethink](repair_mechanism_rethink.md#70-step-0--residual-composition-measurement-grading-side-runs-first).
+
+1. Label a compact packet spanning exact spaced/unspaced reconstructions,
+   historical spelling/abbreviations, fluent wrong candidates, localized key
+   errors, boundary errors, and genuine ambiguity. Use synthetic construction
+   evidence and separately reviewed historical references. Do not equate
+   fluency with correctness or a conflicting occurrence with a transcription
+   error. Record ambiguous and unreviewed labels explicitly.
+2. Classify residuals on the four historical anchors: consistent mapping
+   errors, occurrence conflicts, boundaries, editorial additions/lacunae,
+   grading effects, and unknown causes. Follow the source-review requirements
+   of the linked experiment. Missing source evidence limits the conclusion.
+3. Report three independent axes: cipher-derived reconstruction, intelligible
+   reading, and editorial/source restoration. Replay of a key/pipeline proves
+   consistency only; it is not sufficient evidence of a correct decipherment.
+   Proposed editorial changes remain separate from canonical decoded text.
+4. Audit saved verifier verdicts only against their original content and
+   policy/model version. Report false acceptance/rejection counts with
+   denominators, uncertain labels, and sample-size limitations. Historical
+   observations do not establish current-provider rates. Define a bounded
+   prospective verification experiment if the saved evidence is insufficient.
+
+Output: a calibration packet, residual report, and proposed outcome contract.
+Closure requires traceable labels and explicit remaining measurement needs;
+it does not require the existing verifier to pass. R3 changes no runtime gate
+and invents no terminal status. Any live verification experiment needs an
+applicable explicit run budget; a fake verifier establishes mechanics only.
+
+### R4 — Measure routing loss and choose the next work
+
+Run the R0 packet through two local automated arms at the R2 code revision:
+blind family routing and explicitly supplied family metadata. The latter is a
+diagnostic arm receiving a permitted metadata field, never plaintext, keys, or
+answer-derived cribs. Fix language equally in the two arms so the family
+comparison isolates one variable; unknown-language evaluation remains a
+separate later axis. Give unsupported/random controls no fictional solve
+expectation.
+
+Use the same frozen resource limits, model files, seeds, and input conventions.
+R0 must specify which development cases receive three-seed replication and
+the objective trigger for any additional paired repeats; do not choose repeats
+to improve an observed result or selectively retry failed held-out cases.
+Record timeouts, routes attempted, candidate quality before/after delivery,
+and actual resources. Diagnose only from runtime-safe inputs; join labels
+after each arm completes. Keep the held-out results descriptive if the sample
+is too small for a stable conclusion.
+
+Output: a reproducible report distinguishing wrong-route losses, absent or weak
+engines, candidate-selection losses, representation defects, and verification
+questions. Scripted interface tests cover R1/R2; this local experiment cannot
+claim improved live-agent behavior or superiority of one agent interface.
+
+Close R4 with a decision record selecting at most two next bounded slices. For
+each, cite the observed problem, expected user benefit, acceptance experiment,
+resource ceiling, and what result would cause us to stop or choose differently.
+If evidence is inconclusive, select a discriminating measurement before a large
+implementation. The existing V2/V3 default remains until its acceptance gate
+is separately satisfied.
+
+### Later work — open decisions
+
+| Evidence obtained | Candidate next investment | Evidence required before broader adoption |
+|---|---|---|
+| Good candidates exist but are still ranked poorly | Candidate ranking or comparison calibration | Independent-source holdouts reduce delivered-quality loss without hiding deceptive candidates |
+| Family-supplied arm wins reliably | Bounded diagnosis/probes, representation preflight, or sparse-null routing | Paired routing gains, matched negative controls, and measured resource use |
+| Both arms fail with correct routing | One solver/model improvement tied to a specific gap | Fresh varied cases show recovery beyond the frozen baseline |
+| Correct reconstructions are rejected, or fluent wrong candidates accepted | Verification/outcome changes and historical-language calibration | A prospective labeled evaluation measures both error directions |
+| Historical residuals are mainly mapping/boundary errors | Focused repair or segmentation | Known-error closure and collateral-error controls |
+| Source/occurrence/editorial uncertainty dominates | A small manuscript workflow: source-linked annotations, transcription variants, or shared-page evidence | Held-out source/page evidence helps while proposed readings remain distinct from supported corrections |
+| Supplied reference documents make a bounded numeric test feasible | Source-aware book-cipher N1–N6 pilot | Unchanged-rule holdout decoding, distractor sources, and recorded exceptions |
+| Supplied plaintext leaves the key/mechanism unresolved; external review identifies reusable probes and a replay-convention gap | Known-plaintext mechanism recovery: select bounded MR0/MR1 slices first | Independent convention vectors, masked-evidence provenance, frozen-fit holdout prediction, and rejection of freely fitted replay as recovery |
+| Live-agent choices still lose quality after shared fixes | A small paired agent experiment, then targeted V3/MCP work | Incremental benefit over the same automated baseline at measured cost |
+
+Planning addition (2026-09-07): the
+[K4 external-tooling review](reports/k4_external_tooling_review_2026_09_07.md)
+informs the [MR0–MR4 capability slices](polyalphabetic_capability_plan.md#mechanism-recovery-slices--external-review-2026-09-07).
+MR0 covers convention compatibility and independent calibration fixtures; MR1
+delivers the explicit supplied-plaintext mode with parameter/provenance audits
+and held-out prediction. These are candidates for the post-R4 decision, not
+new R0–R4 acceptance requirements or a commitment to all five slices. MR2–MR4
+cover generic crib/Gromark constraints, calibrated statistical experiments,
+and separator/layered-mechanism diagnostics. Each selected slice still needs
+the decision record, acceptance experiment, and resource ceiling above.
+The review's known-plaintext fixtures must not enter the blind R4 runtime
+packet, and this planning addition authorizes no solver runs or code imports.
+
+The full M6 bake-off/default switch, broad family expansion, large stress-suite
+growth, custom-loop redesign, model training, M5.4, and open-corpus book search
+remain unscheduled. Encoding preflight and legacy cleanup can become small
+chosen slices when their benefit is evidenced; they are not prerequisites to
+finish this initial packet. The family roadmap remains the inventory of options.
+
+Success measures are delivered reconstruction quality, time to a reproducible
+useful result, best-generated versus delivered quality, verification errors,
+and incremental benefit over automation. Report these separately; do not roll
+process compliance, readable partials, and exact recovery into one solve rate.
+Freeze any thresholds before examining held-out results. Update this section
+and `TODO.md` when a slice closes or a later decision is made, with links to
+the actual report and revision. Preserve negative findings and unresolved cases.
+
+---
+
+## Historical program and technical scope — July–September 2026
+
+The original plan below is retained for provenance and implementation detail.
+Its phase order, timing, old approval notes, and unchecked boxes are historical;
+the current R0–R4 sequence above governs scheduling. Applicable correctness,
+provenance, review, and ground-truth isolation requirements still apply.
+
 Status: opened 2026-07-13 from a full architecture review of the agent loop,
 tool surface, solver stack, and Copiale research scripts. This is the
 cross-cutting engineering/capability program that sits alongside
@@ -539,7 +846,7 @@ built.
   word-repair tools, boundary actuators move into their own files), not as
   a big-bang refactor.
 
-## Suggested Landing Order
+## Historical Suggested Landing Order (superseded by R0–R4)
 
 1. ✅ Phase 0 (landed `ef4ac9a`).
 2. Baseline snapshot + Phase 1 packet + session store.
@@ -668,12 +975,14 @@ representation, broad family, exact variant, composition, and modifier. Every
 diagnosable mechanism needs generated calibration evidence, but close variants
 may require bounded solver-backed probes rather than a fictional static
 classifier. Generator parameters and plaintext remain post-hoc evaluation data
-only. The immediate deliverable is the INV-0.5 diagnosis benchmark and
-calibration report described in `docs/inv_family_roadmap.md`.
+only. The July deliverable was the INV-0.5 diagnosis benchmark and calibration
+report described in `docs/inv_family_roadmap.md`; R0/R4 now start with a bounded
+pilot before deciding whether to expand it.
 
 ## INV family roadmap (long-range support task, 2026-07-15)
 
-`docs/inv_family_roadmap.md` is now the authoritative order. Immediate work is
+Historical July ordering (superseded by R0–R4):
+`docs/inv_family_roadmap.md` prioritized
 the canonical support matrix and calibration benchmark, followed by Tier-0
 representation detection, broad transposition plus solver-backed variant
 probes, layered/composite diagnosis, and unknown-language/transcription axes.

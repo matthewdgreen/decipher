@@ -1300,6 +1300,23 @@ def test_q3_end_to_end_install(monkeypatch):
     assert _decoded_text_for_panel(state.workspace, name) == "THE QUICK BROWN FOX"
 
 
+def test_q3_duplicate_plaintexts_keep_stable_ranks_and_alternative_keys(monkeypatch):
+    candidates = _q3_candidates()
+    candidates[1]["plaintext"] = candidates[0]["plaintext"]
+    _patch_q3_engine(monkeypatch, _fake_q3_engine(candidates=candidates))
+    _ct, state = _make_state()
+    q = ExperimentQueue(synchronous=True)
+    sub = dispatch_experiment_submit(q, state, state.workspace, _fake_executor(),
+                                    {"type": "quagmire3_shotgun", "branch": "main", "config": {}}, 1)
+    packet = dispatch_experiment_collect(q, state, state.workspace, _fake_executor(),
+                                        {"experiment_id": sub["experiment_id"], "install": True,
+                                         "candidate_rank": 2}, 2)
+    assert packet["distinct_candidate_count"] == 1
+    assert [c["rank"] for c in packet["candidates"]] == [1, 2]
+    assert packet["candidates"][1]["duplicate_of_rank"] == 1
+    assert state.workspace.get_branch(packet["installed_as"]).metadata["cycleword"] == "CYCLEB"
+
+
 def test_q3_install_strips_inherited_null_mask_shadow(monkeypatch):
     """A null-mask block inherited from the source snapshot must not shadow the
     quagmire decoded_text in _metadata_decoded_text (review finding 1)."""

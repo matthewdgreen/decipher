@@ -9,15 +9,15 @@ lockstep contract, spec §6/§7.1). Both transport skins call into this one laye
   lifecycle, and a call into ``dispatch``; and
 - the structured investigation CLI (I-1+) keeps only argv↔dict mapping.
 
-This is a pure byte-parity extraction: the same dicts flow, the same gates fire,
-the same revision injection happens. No behavior change.
+Both transports share the same domain gates and revision injection. Their
+lease lifetime and external-call authority policies are explicit.
 
 Lease-lifetime policy: the service accepts a :class:`LeasePolicy`. MCP passes
 ``SESSION_HELD`` — runtimes and their writer leases live for the process
-lifetime and are finalized in :meth:`shutdown`, exactly as before. The CLI's
-invocation-held policy is deferred to I-2 (it needs the registry's explicit
-``release_lease``/``close`` API, which does not exist yet); only ``SESSION_HELD``
-is implemented here.
+lifetime and are finalized in :meth:`shutdown`, exactly as before. CLI passes
+``INVOCATION_HELD`` and releases the writer lease after each command.
+Experiment wait/detach owns its lease through the running and completion
+commits; external verification is separately authorized by execution policy.
 """
 from __future__ import annotations
 
@@ -368,8 +368,9 @@ class InvestigationService:
         - ``acquired`` is True only when THIS call took the lease under the
           INVOCATION_HELD policy (so a ``writer_lease_held`` loser never releases
           the winner's lease, and the caller's ``finally`` releases exactly once).
-        - ``early_result`` is a ``writer_lease_held`` (lease NOT acquired) or
-          ``revision_mismatch`` (lease acquired -> caller must release) block, or
+        - ``early_result`` is a ``writer_lease_held`` (lease NOT acquired),
+          ``investigation_terminal`` or ``revision_mismatch`` (lease acquired
+          -> invocation-held caller must release) block, or
           ``None`` on success (turn already bumped).
         """
         held_before = self.registry.holds_lease(investigation_id)
@@ -406,6 +407,14 @@ class InvestigationService:
                 self.registry.release_lease(investigation_id)
             raise
         meta = runtime.meta
+        # The pre-lease check is only an optimization. Another writer can close
+        # the investigation between that read and this acquire; recheck the
+        # current state under the lease before revision/turn/domain execution.
+        if meta.get("status") != "active":
+            return runtime, acquired, {
+                "status": "blocked", "reason": "investigation_terminal",
+                "terminal_status": meta.get("status"),
+            }
         expected = arguments.get("expected_revision")
         current = int(meta.get("revision") or 0)
         if int(expected) != current:
@@ -446,9 +455,10 @@ class InvestigationService:
         3. Polls the queue in-process until the submitted experiment is terminal.
         4. COMMIT #2 (the terminal record); releases the lease.
 
-        Returns ``(body, final_revision)`` where ``body`` is the ORIGINAL submit
-        result with ``revision`` set to the FINAL commit (so the caller can
-        collect without an avoidable conflict). Early failures (validation,
+        Returns ``(body, final_revision)`` retaining submit identity/config but
+        refreshing revision, status, slots, and summary at the FINAL commit
+        (so the caller can collect without an avoidable conflict or stale
+        running indicator). Early failures (validation,
         lease-held, revision conflict, terminal investigation) return the ordinary
         dispatch result untouched (``final_revision`` is None), and the CLI maps
         them through the existing exit table.
@@ -560,6 +570,9 @@ class InvestigationService:
             released = True
             final_body = dict(body)
             final_body["revision"] = final_rev
+            final_body["status"] = record["status"]
+            final_body["slots"] = runtime.queue.slots_summary(runtime.state)
+            final_body["summary"] = record.get("summary") or ""
             return final_body, final_rev
         except ExperimentWaitInterrupted:
             raise
@@ -836,9 +849,15 @@ class InvestigationService:
         total = len(entries)
         return {
             "candidates": entries[offset: offset + limit],
+            "retained_portfolio": self._portfolio_view(runtime),
             "total": total, "offset": offset,
             "note": "Scores are individual signals (dict_rate, quad), not a ranking (WF-6).",
         }
+
+    @staticmethod
+    def _portfolio_view(runtime: InvestigationRuntime) -> list[dict]:
+        from investigation.portfolio import candidate_portfolio
+        return candidate_portfolio(runtime.state, runtime.executor)
 
     def _candidate_show(self, runtime: InvestigationRuntime, arguments: dict) -> dict:
         state = runtime.state
@@ -879,9 +898,19 @@ class InvestigationService:
         ]
         return {
             **entry, "decoded_text": decoded,
+            "key_state": self._candidate_key_state(ws, branch),
             "attestation_history": attestation_history,
             "readings": readings, "repair_transactions": repair_txs,
         }
+
+    @staticmethod
+    def _candidate_key_state(workspace: Workspace, branch: str) -> dict:
+        from investigation.candidates import candidate_packet_for_branch
+        packet = candidate_packet_for_branch(workspace, branch).to_dict()
+        return {key: packet[key] for key in (
+            "content_hash", "renderer_id", "capabilities", "key", "mode_key_state",
+            "null_mask", "word_spans", "token_order", "transform_pipeline",
+        )}
 
     # --------------------------------------------------------------- records
     def _reading_record(self, runtime: InvestigationRuntime, arguments: dict) -> dict:
@@ -963,6 +992,7 @@ class InvestigationService:
             "rationale": str(arguments.get("rationale") or ""),
         }
         runtime.records.setdefault("comparisons", []).append(record)
+        state.comparison_records.append(dict(record))
         state.add_evidence(
             "client_comparison", turn=state.turn,
             summary=f"client ranked {ranking[:3]}...",

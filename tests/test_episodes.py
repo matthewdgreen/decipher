@@ -409,7 +409,8 @@ def test_a4_episode_rejects_off_toolset_tool():
 def test_budget_categories_per_kind_and_model():
     state = _simple_state()
     survey_good = {"findings": [], "suspected_modes": [], "recommended_next": []}
-    compare_good = {"ranking": ["main"], "verdicts": [], "winner": "main"}
+    compare_good = {"ranking": ["main"], "verdicts": [], "best_candidate": "main",
+                    "accepts_as_solution": False, "rationale": "best partial"}
     run_episode(
         EpisodeSpec("survey", "g", inputs={"branches": ["main"]}),
         state, session=EpisodeFake([[_submit(survey_good)]],
@@ -546,7 +547,8 @@ def _episode_fakes():
                     "overall_confidence": 0.6}
     compare_good = {"ranking": ["main"],
                     "verdicts": [{"branch": "main", "verdict": "best"}],
-                    "winner": "main"}
+                    "best_candidate": "main", "accepts_as_solution": False,
+                    "rationale": "best partial"}
     verify_good = {"coherence": 8, "reader_accepts": True,
                    "reader_accepts_as_solution": True, "gloss": "reads",
                    "anomalies": [], "confidence": "high"}
@@ -593,7 +595,8 @@ def test_scripted_workflow_end_to_end(_episode_fakes):
 
     # The identical episode snapshot deduplicates onto main and records an alias.
     compare = next(e for e in ledger if e["kind"] == "compare")
-    assert compare["result"]["winner"] == "main"
+    assert compare["result"]["best_candidate"] == "main"
+    assert compare["result"]["accepts_as_solution"] is False
     assert not any(b.name == "search_result" for b in art.branches)
     assert art.investigation_state["branch_aliases"][0]["requested_name"] == "search_result"
     # The declaration was gated by (and carries) a verify attestation.

@@ -304,6 +304,21 @@ all host declaration/repair gates remain unchanged.
 
 ## Coverage check against §6 minimum
 
+I-6 transport coverage (2026-09-06): `tests/test_interface_parity.py` checks all
+23 canonical objects through inline/file/stdin input and a dummy manifest
+projection through both surfaces. Lifecycle, cross-surface collection, lease,
+revision, interruption, and consent assertions remain in
+`tests/test_investigation_cli.py`. The opt-in
+`tests/test_investigation_cli_native_acceptance.py` exercises the real Quagmire
+search through CLI install/reload and a **fake** verifier; fake verification
+tests gate composition, not reading quality. No DECL/REP/GT gate changed.
+The I-7 independent whole-interface review was completed by a separate Astra
+reviewer with explicit user authorization to replace Fable. It found and
+rechecked fixes for pre-dispatch JSON parsing and the terminal-state/lease
+race. The latter strengthens enforcement of the existing terminal invariant,
+not its policy. See `docs/reports/reliability_r1_cli_acceptance.md` for evidence
+and coverage limitations.
+
 Required by §6: context-family discipline (POL-1), verification gating
 (DECL-1..8, GT-2), repeated-call suppression (DUP-1..4, SAT-4, EXP-2),
 repair acceptance (REP-1..7), saturation (SAT-1..3), workflow routing

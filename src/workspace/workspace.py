@@ -32,6 +32,7 @@ class Workspace:
             "main": Branch(name="main", key={}, parent=None, created_iteration=0)
         }
         self._iteration: int = 0
+        self.protected_branches: set[str] = set()
 
     def _default_word_spans(self, branch_name: str | None = None) -> list[tuple[int, int]]:
         if branch_name is not None:
@@ -232,6 +233,8 @@ class Workspace:
             raise WorkspaceError("Cannot delete 'main' branch")
         if name not in self._branches:
             raise WorkspaceError(f"Branch not found: {name}")
+        if name in self.protected_branches:
+            raise WorkspaceError("Cannot delete retained candidate; reject/supersede and refresh its portfolio first")
         del self._branches[name]
 
     def tag(self, name: str, tag: str) -> None:

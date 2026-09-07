@@ -52,6 +52,7 @@ class BranchCandidatePacket:
     token_order: tuple[int, ...] | None
     transform_pipeline: dict[str, Any] | None
     rendered_token_indices: tuple[int, ...]
+    mode_key_state: dict[str, Any]
 
     @property
     def primary_capability(self) -> str:
@@ -84,6 +85,7 @@ class BranchCandidatePacket:
             "token_order": list(self.token_order) if self.token_order is not None else None,
             "transform_pipeline": self.transform_pipeline,
             "rendered_token_indices": list(self.rendered_token_indices),
+            "mode_key_state": dict(self.mode_key_state),
         }
 
 
@@ -130,4 +132,9 @@ def candidate_packet_for_branch(workspace: Any, branch_name: str) -> BranchCandi
         token_order=(tuple(branch.token_order) if branch.token_order is not None else None),
         transform_pipeline=branch.transform_pipeline,
         rendered_token_indices=rendered_token_indices(workspace, branch_name),
+        mode_key_state={key: metadata[key] for key in (
+            "key_type", "cipher_mode", "quagmire_type", "alphabet_keyword",
+            "cycleword", "cycleword_shifts", "plaintext_alphabet", "ciphertext_alphabet",
+            "mode_key_state",
+        ) if key in metadata},
     )

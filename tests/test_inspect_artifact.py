@@ -19,6 +19,60 @@ spec.loader.exec_module(inspect_artifact)
 import cli  # noqa: E402
 
 
+def test_candidate_reliability_in_human_and_llm_packets():
+    from investigation.state import InvestigationState
+    from agent.loop_shared import _candidate_content_hash
+    from models.alphabet import Alphabet
+    from models.cipher_text import CipherText
+    from workspace import Workspace
+    state = InvestigationState(workspace=Workspace(CipherText(raw="ABCD", alphabet=Alphabet(list("ABCD")))))
+    state.workspace.fork("partial").metadata["decoded_text"] = "THE CAT"
+    state.workspace.fork("other").metadata["decoded_text"] = "THE DOG"
+    hashes = {"partial": _candidate_content_hash("THE CAT"), "other": _candidate_content_hash("THE DOG")}
+    state.candidate_portfolio = [{"branch": "partial", "content_hash": hashes["partial"],
+                                  "roles": ["compare_best_partial"], "verification": "missing",
+                                  "verification_priority": True}]
+    state.episode_ledger = [{"kind": "compare", "status": "ok",
+                             "result": {"ranking": ["partial", "other"]},
+                             "comparison_binding": {"branch_hashes": hashes, "best_candidate": "partial",
+                                                    "accepts_as_solution": False}}]
+    artifact = {"investigation_state": state.to_artifact_dict()}
+    report = inspect_artifact.build_llm_summary(artifact, [])['candidate_reliability']
+    assert report["retained_portfolio"][0]["hash_fresh"] is True
+
+    registry = {"meta": {"status": "unsolved"}, "state": state.to_artifact_dict(),
+                "records": {"comparisons": [{"best_partial": "partial", "branch_hashes": hashes,
+                                              "accepts_as_solution": False}]}}
+    client_report = inspect_artifact.candidate_reliability_summary(registry)
+    assert client_report["comparisons"][-1]["best_candidate"] == "partial"
+    assert client_report["comparisons"][-1]["shortlist_hashes_fresh"] is True
+    assert "comparison_records" not in registry["state"] or registry["state"]["comparison_records"] == []
+    assert report["comparisons"][0]["shortlist_hashes_fresh"] is True
+    assert report["comparisons"][0]["accepts_as_solution"] is False
+    human = inspect_artifact.format_candidate_reliability(artifact)
+    assert "best=partial" in human and "needs_verification=True" in human
+    state.workspace.get_branch("other").metadata["decoded_text"] = "CHANGED"
+    report = inspect_artifact.candidate_reliability_summary({"investigation_state": state.to_artifact_dict()})
+    assert report["comparisons"][0]["shortlist_hashes_fresh"] is False
+    assert report["retained_portfolio"][0]["hash_fresh"] is True
+
+
+def test_registry_inspection_reports_recorded_identity_and_cost_scope(tmp_path):
+    path = tmp_path / "investigation.json"
+    document = {"meta": {"investigation_id": "local", "status": "unsolved",
+                         "terminal": {"declaration": {"best_branch": "partial"}}},
+                "state": {"language": "en", "turn": 3, "budget_ledger": [{"cost_usd": 0.125}]}}
+    path.write_text(json.dumps(document))
+    artifact = inspect_artifact.load(path)
+    facts = inspect_artifact.derive_run_facts(artifact)
+    assert facts["status"] == "unsolved" and facts["loop_version"] == "cli/mcp"
+    assert facts["final_branch"] == "partial"
+    assert artifact["estimated_cost_usd"] == 0.125
+    assert "not recorded" in facts["model"]
+    assert "external-client spend is unknown" in artifact["cost_scope"]
+    assert json.loads(path.read_text()) == document
+
+
 def test_llm_summary_includes_analyzer_findings_and_runtime_evidence():
     artifact = {
         "model": "gpt-test",

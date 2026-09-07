@@ -248,6 +248,11 @@ def test_e2e_reads_body_parity(tmp_path, capsys):
     code, body, _ = _run(tmp_path, ["candidates", iid], capsys)
     assert code == 0
     assert body == _direct(tmp_path, "candidate_list", {"investigation_id": iid})
+    assert "retained_portfolio" in body
+    code, body, _ = _run(tmp_path, ["candidate", iid, "--branch", "main"], capsys)
+    assert code == 0
+    assert body == _direct(tmp_path, "candidate_show", {"investigation_id": iid, "branch": "main"})
+    assert body["key_state"]["content_hash"] == body["content_hash"]
 
 
 # --------------------------------------------------------------------------- #
@@ -1274,6 +1279,8 @@ def test_two_commit_visibility(tmp_path):
     # FINAL revision so a collect will not conflict.
     assert final_rev == running_rev + 1
     assert body["revision"] == final_rev
+    assert body["status"] == "completed"
+    assert body["slots"]["running"] == 0
     assert _record_status(tmp_path, iid) == "completed"
 
     exp_id = body["experiment_id"]
@@ -1306,15 +1313,19 @@ def test_wait_result_parity(tmp_path):
         })
         svc_mcp.shutdown()
 
-    # The ONLY documented differences are the final-revision (one extra --wait
-    # commit) and the volatile experiment_id; everything else is byte-equal.
+    # R2: --wait reports completion; asynchronous submission reports running.
+    # Compare stable submission identity separately from lifecycle fields.
     assert wait_body["revision"] == mcp_body["revision"] + 1
     assert wait_rev == wait_body["revision"]
     a = dict(wait_body)
     b = dict(mcp_body)
+    assert a["status"] == "completed" and a["slots"]["running"] == 0
+    assert b["status"] == "running" and b["slots"]["running"] == 1
     for d in (a, b):
         d["experiment_id"] = "X"
         d["revision"] = 0
+        for lifecycle in ("status", "slots", "summary"):
+            d.pop(lifecycle, None)
     assert a == b
 
 

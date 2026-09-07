@@ -1530,7 +1530,15 @@ def cmd_mcp_serve(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
+    from investigation_cli import InvestigationArgumentParser
+
+    # Investigation parsing must honor JSON stdout even before dispatch.
+    # Other top-level commands retain their existing argparse behavior.
+    parser_class = (
+        InvestigationArgumentParser if sys.argv[1:2] == ["investigation"]
+        else argparse.ArgumentParser
+    )
+    parser = parser_class(
         prog="decipher",
         description="Decipher — Classical Cipher Cryptanalysis Tool",
     )

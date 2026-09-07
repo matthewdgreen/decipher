@@ -2057,6 +2057,8 @@ def dispatch_experiment_collect(
             }
         installed_name = installed
         record["installed_as"] = installed_name
+        if record.get("type") == "automated_solver":
+            record.setdefault("baseline_installed_as", installed_name)
         source_card = state.hypothesis_board.get(str(record.get("branch") or ""))
         if source_card is not None:
             fields = {
@@ -2107,6 +2109,20 @@ def dispatch_experiment_collect(
             }
             for idx, c in enumerate(top_candidates, 1)
         ]
+        # Preserve stable solver ranks (and every recovered key), while making
+        # duplicate plaintext explicit so it is not mistaken for new evidence.
+        from agent.loop_shared import _candidate_content_hash
+        seen_hashes: dict[str, int] = {}
+        for candidate, item in zip(top_candidates, packet["candidates"]):
+            plaintext = candidate.get("plaintext")
+            if not isinstance(plaintext, str) or not plaintext:
+                continue
+            h = _candidate_content_hash(plaintext)
+            item["content_hash"] = h
+            item["duplicate_of_rank"] = seen_hashes.get(h)
+            seen_hashes.setdefault(h, item["rank"])
+        packet["distinct_candidate_count"] = len(seen_hashes)
+        packet["candidate_identity_note"] = "Exact rendered-text hashes; ranks and alternative keys are preserved."
     if session_id is not None:
         # F7: surface the session so the lead can find it — id + capped initial
         # review + the v2 suggested-next-tools triplet.

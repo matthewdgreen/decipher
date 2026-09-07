@@ -1,5 +1,11 @@
 # Decipher Project Progress
 
+Historical snapshot: the April status and priorities below are retained as a
+record, not current development guidance. See the
+[current plan](docs/improvement_program_plan.md#current-plan--2026-09-06)
+and [execution queue](TODO.md#current-execution-queue--2026-09-06) for the active
+slices and their decision points.
+
 **Last Updated**: April 20, 2026
 **Status**: CLI reliability and hardest-test instrumentation in place ✅
 

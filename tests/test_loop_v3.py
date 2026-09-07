@@ -1691,7 +1691,7 @@ def test_v3_fallback_rekeys_on_reader_accepts_as_solution():
     state.verify_attestations.append(
         _negative_att("main", hash_main, turn=2, episode_id="a2"))
     _branch3, selection3 = _select_v3_fallback(state, executor)
-    assert selection3["tier"] in {"fresh_compare_winner", "scalar_fallback"}
+    assert selection3["tier"] in {"fresh_compare_best_partial", "scalar_fallback"}
 
 
 class _ClampVerifyFake(VerifyWorkerFake):

@@ -1102,7 +1102,8 @@ def test_episode_result_digest_other_kinds():
     compare = _episode_result_digest("compare", "ok", None, {
         "winner": "alt", "ranking": ["alt", "main"],
     })
-    assert compare.startswith("winner alt") and "ranked: alt, main" in compare
+    assert compare.startswith("best partial alt") and "ranked: alt, main" in compare
+    assert "accepts_as_solution=False" in compare
     assert _episode_result_digest("repair", "ok", None, {
         "applied": True, "edits": ["e1", "e2"], "best_branch": "alt_repair_3",
     }) == "applied 2 edit(s) → alt_repair_3"

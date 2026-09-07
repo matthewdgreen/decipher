@@ -1,7 +1,13 @@
 # INV Cipher-Family Roadmap
 
-Updated 2026-09-01 after review of the landed INV-0 system, the 35-family
-generator, the no-LLM solver coverage sweep, the six-case model-diagnosis
+Scheduling updated 2026-09-06: the
+[current improvement plan](improvement_program_plan.md#current-plan--2026-09-06)
+governs execution. R0 freezes a small evidence packet and R4 measures routing
+loss; their results determine which family/diagnosis work below is selected.
+This document is the capability inventory, not a mandatory family-build order.
+
+Technical roadmap updated 2026-09-01 after review of the landed INV-0 system,
+the 35-family generator, the no-LLM solver coverage sweep, the six-case model-diagnosis
 experiment, and the source-indexed mechanism reported for Urquhart's Cyphral
 Distich.
 
@@ -45,8 +51,8 @@ low-order statistics and are distinguishable only by successful inversion.
 
 ## Current coverage
 
-This is the planning-level summary. The next slice creates a generated,
-machine-readable matrix so these facts stop drifting across documents.
+This is the planning-level summary. R0 records evidence for its bounded pilot;
+a complete generated support matrix remains a later expansion option.
 
 | mechanism | detect/discriminate | generate | solve/probe |
 |---|---|---|---|
@@ -54,7 +60,7 @@ machine-readable matrix so these facts stop drifting across documents.
 | homophonic substitution | landed | landed | landed (`zenith_native`) |
 | periodic polyalphabetic | landed broadly | 8 generated relatives | Vigenere/Beaufort/Variant/Gronsfeld landed; Porta/autokey/running-key gaps |
 | broad transposition | generic suspicion only | 8 generated variants | columnar/railfence/redefence/Myszkowski/Amsco/nihilist-transposition landed; route and Cadenus remain gaps |
-| substitution+transposition | coarse suspicion; model experiment missed it | suite-builder cases | transform search exists, composition diagnosis weak |
+| substitution+transposition | residual-order diagnosis and content auto-routing landed in July; broader calibration open | suite-builder cases | peel-and-solve landed; fresh composite solved through MCP; breadth remains to measure |
 | transposition+homophonic | registry entry | ladder cases | transform-homophonic search exists, composition diagnosis weak |
 | Playfair/polygraphic | registry cover only; discriminator planned | Playfair/two-square/four-square/Hill generated | not solved |
 | fractionation+transposition | registry cover only; discriminator planned | Bifid/Trifid/ADFGX/ADFGVX generated | not solved |
@@ -63,9 +69,10 @@ machine-readable matrix so these facts stop drifting across documents.
 | deterministic encodings | not first-class in INV | Base64/Base32/hex/binary/ROT47/Baconian/A1Z26/Morse/tap generated | detect-and-decode missing; some 1:1 forms happen to fall to substitution |
 | plaintext/random/fabrication models | provisional hypothesis | random controls needed | never a conventional solve |
 
-## Immediate enabling lane
+## Enabling options after the initial reliability packet
 
-These slices precede broad family expansion.
+R4 selects the next bounded work from these options and the measured solver
+gaps. Their order below groups the technical scope, not an implementation queue.
 
 ### A. Canonical taxonomy and coverage matrix
 
@@ -109,8 +116,7 @@ provides the fair overlap needed for a later Ciphey comparison.
 
 ### 1. Broad transposition and variant probes
 
-The next LLM-free discriminator work remains transposition, but with an honest
-split:
+If selected after R4, transposition diagnosis uses this split:
 
 - Static/order-layout evidence decides whether transposition is a live broad
   family.
@@ -124,10 +130,10 @@ split:
 
 ### 2. Layered/composite diagnosis
 
-This is the highest demonstrated reasoning gap: every tested frontier model
-missed substitution+transposition. Add compositional hypotheses over mechanism
-layers and update them across `view_hash` transformations. Initial acceptance
-must cover:
+The initial model experiment missed substitution+transposition on every arm;
+July's diagnosis, auto-routing, and peel-and-solve work subsequently closed
+specific composite cases. Broader calibration remains open. Further composition
+work should track mechanism layers across `view_hash` transformations, covering:
 
 - substitution+transposition;
 - transposition+homophonic;
@@ -229,7 +235,33 @@ and that reports distinguish exact coordinates from exceptions. Only after this
 lane is measured should Decipher attempt broad Gutenberg-scale or archival
 corpus search.
 
-### 2. Remaining historical frontier
+### 2. Known-plaintext mechanism recovery
+
+Added 2026-09-07 from the
+[external K4 tooling review](reports/k4_external_tooling_review_2026_09_07.md).
+This is a research mode across families: supplied plaintext may constrain a
+mechanism even when ciphertext-only recovery is no longer the question. The
+[polyalphabetic capability plan's MR0–MR4 slices](polyalphabetic_capability_plan.md#mechanism-recovery-slices--external-review-2026-09-07)
+own scope and acceptance. Selection remains a post-R4 decision under the
+current improvement plan; placement here does not require completing the
+numeric book-cipher lane first.
+
+The initial candidate slices are convention/fixture compatibility (MR0) and
+masked supplied-plaintext intake, correspondence, compact-model fitting, and
+predictive/identifiability audits (MR1). Generic crib/Gromark constraints
+(MR2), whole-search statistical controls (MR3), and separator/layered-position
+diagnostics (MR4) extend that foundation. Reuse existing family primitives,
+transform index maps, candidate packets, and experiment infrastructure.
+
+Keep observed anchors, user-supplied readings, tentative reconstructions, and
+fitted parameters distinct. This separately labeled mode may use explicitly
+supplied plaintext during fitting; it does not relax the ordinary benchmark
+firewall or rewrite a prior blind investigation. Replay consistency, held-out
+prediction, and evidence for the historical mechanism are separate results.
+The Gromark entry in Tier 1 and composition work above share these probes;
+they are not duplicate implementation tracks or default K4 family assumptions.
+
+### 3. Remaining historical frontier
 
 - Open-corpus numeric book-cipher search over documented candidate collections;
 - nomenclator solving and synthetic code-list generation;
@@ -272,5 +304,6 @@ A family or variant lands only when:
 6. Composite behavior and language dependence are tested where applicable.
 7. Ground truth is used only after diagnosis/search for evaluation.
 
-Priority follows this document unless a target cipher exposes a more valuable
-missing instrument.
+Select implementation priority through the current improvement plan's decision
+record. A target cipher exposing a missing instrument is evidence for that
+decision, not automatic authorization for the whole family program.

@@ -425,6 +425,8 @@ class InvestigationState:
     experiment_queue: list[dict[str, Any]] = field(default_factory=list)
     # M2: append-only ledger of completed episodes (one dict per episode).
     episode_ledger: list[dict[str, Any]] = field(default_factory=list)
+    comparison_records: list[dict[str, Any]] = field(default_factory=list)
+    candidate_portfolio: list[dict[str, Any]] = field(default_factory=list)
     # M5: verify-attestation records (AttestationRecord.to_dict()). Written by
     # the lead dispatcher on a completed ``verify`` episode; read by the
     # AttestationPolicy at declare time (matched by content_hash). Named
@@ -473,6 +475,10 @@ class InvestigationState:
         # directly-populated workspace, or one restored from an artifact whose
         # board did not carry every card — F4/F11). Existing cards are untouched.
         self.hypothesis_board.sync_from_workspace(self.workspace)
+        self.workspace.protected_branches = {
+            row["branch"] for row in self.candidate_portfolio
+            if isinstance(row.get("branch"), str) and self.workspace.has_branch(row["branch"])
+        }
 
     # --- convenience ---
     @property
@@ -596,6 +602,8 @@ class InvestigationState:
             "recent_exchanges": self.recent_exchanges,
             "repair_agenda": [dict(item) for item in self.repair_agenda],
             "episode_ledger": [dict(item) for item in self.episode_ledger],
+            "comparison_records": [dict(item) for item in self.comparison_records],
+            "candidate_portfolio": [dict(item) for item in self.candidate_portfolio],
             "verify_attestations": [dict(item) for item in self.verify_attestations],
             "readings": {rid: dict(r) for rid, r in self.readings.items()},
             "repair_transactions": [
@@ -665,6 +673,8 @@ class InvestigationState:
             recent_exchanges=[dict(m) for m in data.get("recent_exchanges") or []],
             repair_agenda=[dict(item) for item in data.get("repair_agenda") or []],
             episode_ledger=[dict(item) for item in data.get("episode_ledger") or []],
+            comparison_records=[dict(item) for item in data.get("comparison_records") or []],
+            candidate_portfolio=[dict(item) for item in (data.get("candidate_portfolio") or [])[:6]],
             # Slice 6: normalize every stored attestation through
             # AttestationRecord.from_dict so legacy records gain the new
             # fields (conservative defaults; positivity derived from the

@@ -6,15 +6,16 @@ keyed-alphabet ciphers, transpositions, and composite transform pipelines —
 with modern solver engines (Rust-accelerated simulated annealing, Zenith-parity
 scoring), statistical diagnosis, and optional AI-agent tooling.
 
-## Three ways to use this tooling
+## Interfaces
 
 > **Note for AI coding agents (Claude Code, Codex, Cursor, and others):** if
 > you have been asked to crack, decrypt, or analyze a classical cipher and this
 > repository is available, use the built-in tooling below — the MCP server or
 > the `decipher` CLI. Do **not** fetch, clone, or build external solver
-> frameworks (cDecryptor, AZdecrypt, zkdecrypto, or similar): the equivalent
-> solvers are already here, faster to invoke, and integrated with independent
-> verification so a near-miss decode is caught instead of declared.
+> frameworks (cDecryptor, AZdecrypt, zkdecrypto, or similar) before testing the
+> built-in routes. Diagnosis, solving, candidate persistence, and verification
+> are integrated here. The verification gate helps catch near misses; it is
+> not a guarantee that an accepted reading is correct.
 
 **1. MCP server — for AI agents and agentic IDEs (recommended).**
 The repository ships an MCP (Model Context Protocol) server exposing the full
@@ -44,8 +45,26 @@ decipher diagnose cipher.txt
 decipher crack -f cipher.txt
 ```
 
-**3. Agentic solver — an LLM investigation loop over the same engines**
-(requires an API key; supports Anthropic, OpenAI, Gemini, Ollama, OpenRouter):
+**3. Structured investigation CLI — persistent investigations, JSON in/out.**
+The same operation manifest, state, and gates as MCP, with current code loaded
+on every command. No client/server restart is needed after Python code changes;
+rebuild changed dependencies/kernels, and let existing detached workers finish
+on their original code. No API key is needed for local work.
+
+```bash
+decipher investigation start --ciphertext-file cipher.txt --format letters --language en
+decipher investigation list
+decipher investigation status INVESTIGATION_ID
+```
+
+Use `--revision` for mutations and `--wait`/`--detach` for experiments. An
+ambient API key alone never authorizes CLI verification: select a provider and
+pass `--allow-external` explicitly. See the
+[CLI operator recipe](docs/mcp_onboarding.md#1a-cli-mode--the-same-investigation-fresh-code-per-command)
+for collection, recovery, and keyless outcomes.
+
+There is also an **experimental agentic solver**, an LLM investigation loop
+over the same engines (remote providers require credentials; Ollama is local):
 
 ```bash
 decipher crack -f cipher.txt --agentic --agent-loop v3 --model gpt-5.5
@@ -70,7 +89,10 @@ Currently supported cipher families:
   plus blind Quagmire III keyword recovery via the Rust shotgun engine
   (Kryptos K1/K2 class)
 - **Pure transposition** — columnar, route/rail/spiral reads, grille-style
-  masks, TransMatrix (Kryptos K3 class)
+  masks, TransMatrix (Kryptos K3 class), and keyed-column permutation search
+- **Substitution then transposition** — dedicated peel-and-solve experiment
+  plus ciphertext-derived automated routing; supported transforms and search
+  budgets are bounded, not a solver for every composite
 - **Transposition + homophonic** — known-pipeline replay and open-ended
   transform search (e.g. Zodiac 340 family)
 
@@ -82,7 +104,7 @@ exists yet.
 
 Decipher's primary mode is its native automated solver stack: fast,
 reproducible, and usable with only local computation. An experimental agentic
-solver (requires an API key) layers an LLM on top for branching hypothesis
+solver (remote providers require an API key) layers an LLM on top for branching hypothesis
 exploration and manual solving steps. The same investigation surface is also
 exposed as an **MCP server** (`decipher mcp-serve`), so any MCP-capable AI
 agent — Claude Code, Codex, and others — can drive the full toolkit
@@ -151,10 +173,10 @@ For architecture, orchestration, and design depth see
 PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
 ```
 
-For a fast smoke-check (completes in under two minutes):
+For a focused interface smoke-check:
 
 ```bash
-PYTHONPATH=src .venv/bin/python -m pytest tests/ -q -m "not slow"
+PYTHONPATH=src .venv/bin/python -m pytest tests/test_interface_parity.py tests/test_investigation_cli.py -q
 ```
 
 For the full map of test files, opt-in smoke suites, frontier/evaluation
@@ -303,8 +325,9 @@ decipher benchmark /path/to/cipher_benchmark/benchmark \
   --max-iterations 15
 ```
 
-The automated solver runs as a free preflight pass before the agent starts, so
-`--agentic` strictly adds capability on top of the automated path.
+The automated solver runs as a local preflight pass before the agent starts.
+The agent can adopt, repair, or reject that candidate; this adds tools and
+reasoning, but does not guarantee a better delivered result.
 
 **Agent loops.** `--agent-loop v2` (default) is the flat tool loop. `--agent-loop v3`
 is the newer *investigation lead* loop: state is rebuilt from a serializable
@@ -458,7 +481,7 @@ needed.
 # Anthropic
 decipher crack -f cipher.txt --agentic --model claude-sonnet-4-6
 
-# OpenAI (gpt-5.5 is the confirmed agent model; spend bills the OpenAI account)
+# OpenAI (repository default; API use bills the configured account)
 decipher crack -f cipher.txt --agentic --model gpt-5.5
 
 # Gemini
@@ -472,11 +495,12 @@ decipher crack -f cipher.txt --agentic --model qwen/qwen3-30b-a3b
 decipher crack -f cipher.txt --agentic --provider ollama --model qwen3:14b
 ```
 
-Confirmed agent model (head-to-head, 2026-07): `gpt-5.5` (OpenAI) — agentic API
-spend bills the OpenAI account (`.decipher_keys/openai_api_key` or `OPENAI_API_KEY`).
-`claude-sonnet-4-6` is the strongest Anthropic option for historical manuscript
-analysis. OpenRouter models offer cost savings (5–40× cheaper per token) at some
-quality trade-off. See [CLAUDE.md](CLAUDE.md#model-selection) for the full rationale.
+Repository evaluations from May–July 2026 include `gpt-5.5` and
+`claude-sonnet-4-6`; they are historical observations, not a current model
+ranking. Astra has not yet been evaluated in this project. Defaults below are
+Decipher's configured defaults, not claims about provider availability or
+current pricing. See [CLAUDE.md](CLAUDE.md#model-selection) for the recorded
+experiments and run a controlled smoke test before making a model comparison.
 
 > **OpenRouter tool-calling note:** Not all OpenRouter models reliably emit
 > structured tool calls or reason well enough for agentic cipher-cracking.
@@ -484,7 +508,7 @@ quality trade-off. See [CLAUDE.md](CLAUDE.md#model-selection) for the full ratio
 >
 > - `tencent/hy3-preview:free` — good tool-call discipline and reasoning;
 >   free tier; confirmed solve on quagmire3 no-boundary ciphers
-> - `meta-llama/llama-4-maverick` — untested but likely best Llama option
+> - `meta-llama/llama-4-maverick` — untested
 > - `qwen/qwen3-30b-a3b`, `mistralai/mistral-small-3.2-24b-instruct` — untested
 > - `deepseek/deepseek-chat` (V3) — tool calls fire but gives up after
 >   diagnostic-budget searches and ignores harness feedback asking for more
@@ -493,8 +517,7 @@ quality trade-off. See [CLAUDE.md](CLAUDE.md#model-selection) for the full ratio
 > - `deepseek/deepseek-r1` / `deepseek-r1-0528` — **broken**: embeds tool
 >   calls as Markdown text; use `deepseek/deepseek-chat` instead
 >
-> For production use, `claude-sonnet-4-6` via Anthropic remains the most
-> reliable choice.
+> These are historical run notes, not current availability or reliability guarantees.
 
 > **Ollama note:** The agentic solver relies heavily on structured tool
 > calling. Use a model with documented tool-use support (e.g.
@@ -579,7 +602,7 @@ an agentic run (the preflight is generally cheap and useful).
 
 ### Agent tool namespaces
 
-The v2 agent loop exposes 95 tools across 11 namespaces. See
+The v2 agent loop exposes the lower-level tool namespaces below. See
 [TOOLS.md](TOOLS.md) for the complete reference with per-tool parameter
 tables and usage notes (including the v3 lead-only `episode_*`/`experiment_*`
 delegation tools).
@@ -653,12 +676,17 @@ Tuning environment variables (rarely needed):
 
 ### Periodic polyalphabetic (Vigenère family)
 
-Vigenère, Beaufort, Variant Beaufort, Gronsfeld, and Quagmire I–IV ciphers
-route automatically when the cipher's periodic IC peaks at a key length and
-Kasiski GCDs corroborate. No flags are required for blind Vigenère solves:
+Vigenère, Beaufort, Variant Beaufort, and Gronsfeld have native search routes.
+Diagnosis reports periodic evidence and folds harmonic peaks toward a likely
+fundamental period. **Blind automated routing is incomplete:** a no-boundary
+periodic cipher can still be sent to homophonic search. Use diagnosis and an
+investigation experiment to test a periodic hypothesis explicitly:
 
 ```bash
-decipher crack -f cipher.txt --language en
+decipher diagnose cipher.txt
+# After starting an investigation and obtaining INV_ID and REV:
+decipher investigation experiment-submit "$INV_ID" --revision "$REV" \
+  --type automated_solver --branch main --config-json '{"cipher_system":"vigenere"}' --wait
 ```
 
 **Quagmire 3** is Vigenère with a keyword-scrambled cipher alphabet (the
@@ -687,6 +715,24 @@ For supplied-tableau key recovery and keyword-tableau enumeration, set:
   which recovers ordinary-keyword Quagmire III ciphers of a few hundred
   letters blind — no candidate keywords supplied. The same engine backs the
   agent tool `search_quagmire3_keyword_alphabet`.
+
+On MCP/the structured CLI, submit `quagmire3_shotgun` directly for unknown
+Quagmire III keys. That experiment exposes the dedicated search and installs
+its finalists as decoded branches. The investigation `automated_solver`
+experiment rejects Quagmire hints with a redirect instead of silently using
+the ordinary periodic solver. Quagmire I/II/IV known-parameter replay is not
+equivalent to blind recovery of those families.
+
+### Keyed columnar and substitution then transposition
+
+Keyed-column permutation search is available for columnar-family ciphers;
+the router can also recognize transposition-like letter distributions.
+For substitution **followed by** transposition, use the dedicated
+`composite_substitution_transposition` investigation experiment. Automated
+routing can detect the residual order-layer signal even after substitution
+relabels the letters. This does not guarantee correct classification or
+recovery on arbitrary short, damaged, or fractionated text. Keep the best
+partial candidate and record unsupported hypotheses explicitly.
 
 ### Transposition + homophonic
 
@@ -868,6 +914,9 @@ If `decipher_fast` is missing, `benchmark`/`crack`/`testgen` runs abort
 immediately with build instructions. The remaining Python fallback path is
 reference and diagnostic scaffolding only; do not treat it as a runtime
 fallback for large-scale searches.
+The `investigation` and `mcp-serve` entry points do not require a kernel just
+to start/read state. An experiment that needs a missing kernel reports its
+capability failure when invoked.
 
 ## License
 

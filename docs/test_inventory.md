@@ -46,6 +46,55 @@ suite skipped unless explicitly enabled.
 
 ## Opt-In Pytest Suites
 
+R3's default grading-side checks are in `tests/test_verification_residual_audit.py`:
+exhaustive short-string alignment-tie tests, conditional mapping/occurrence
+patterns, separate boundary/editorial denominators, opaque calibration inputs,
+original-hash verifier binding, legacy-policy uncertainty, review sampling,
+output immutability, and absence of runtime imports. Reproduce the offline audit:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/audit_verification_residuals.py \
+  --out artifacts/reliability_r3 --report docs/reports/reliability_r3_audit.md
+```
+
+Identical reruns are allowed; changed output is refused. Use new paths for a
+later revision. Only `artifacts/reliability_r3/runtime/candidates.jsonl` is a
+reader-input file; the labels, source-review worksheets, and report are grading
+material. This command makes no solver or provider calls and does not satisfy
+the plan's separate human source-review requirement.
+
+R2's default fixed-candidate tests live in `tests/test_candidate_retention.py`:
+hash-bound comparison preferences, six-entry diverse retention, fresh-verification
+debt, protected deletion, and key/structure identity through JSON resume.
+`tests/test_inspect_artifact.py` covers human/LLM reliability packets and registry
+identity/cost reporting. CLI/MCP and experiment tests cover terminal `--wait`
+state, recovered-key inspection, and duplicate finalist labeling. These are
+scripted checks, not model-quality measurements.
+
+### Reliability baseline and investigation CLI
+
+```bash
+PYTHONPATH=src .venv/bin/pytest tests/test_reliability_packet.py tests/test_interface_parity.py tests/test_investigation_cli.py -q
+DECIPHER_RUN_NATIVE_CLI_ACCEPTANCE=1 PYTHONPATH=src .venv/bin/pytest tests/test_investigation_cli_native_acceptance.py -q
+```
+
+The first command protects packet source separation, runtime allowlisting,
+saved-verdict identity, manifest projection, canonical JSON input, and CLI
+lifecycle/privacy. The opt-in test uses the real Rust round-6 Quagmire search
+through CLI install/reload and keyless refusal, then a local fake reader through
+declaration. Expected plaintext is checked only post-hoc; fake verification
+is not independent reading evidence. No external provider calls are made.
+
+Build the frozen R0 packet/audit with:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/build_reliability_packet.py --out artifacts/reliability_r0
+```
+
+Identical reruns are allowed; changed output is refused. For a later-code audit,
+use a new `--out` directory and `--report` path, preserving the frozen baseline.
+Keep the grading subdirectory and answer-bearing reports out of solving sessions.
+
 ### Historical Milestone 4 Automated Smoke
 
 This runs real benchmark-backed cases through the no-LLM automated runner. It

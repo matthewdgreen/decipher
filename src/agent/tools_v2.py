@@ -224,7 +224,7 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     },
     {
         "name": "workspace_delete",
-        "description": "Delete a branch. Cannot delete 'main'.",
+        "description": "Delete a branch. Cannot delete 'main' or a retained investigation candidate; reject/supersede and refresh its portfolio first.",
         "input_schema": {
             "type": "object",
             "properties": {"name": {"type": "string"}},

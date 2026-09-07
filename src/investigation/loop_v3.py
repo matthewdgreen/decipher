@@ -69,38 +69,13 @@ from workspace import Workspace
 def _fresh_compare_winner(
     state: InvestigationState,
 ) -> tuple[str, dict[str, Any]] | None:
-    """Return the newest compare winner whose complete hash binding is fresh."""
-    for entry in reversed(state.episode_ledger):
-        if entry.get("kind") != "compare" or entry.get("status") != "ok":
-            continue
-        binding = entry.get("comparison_binding")
-        if not isinstance(binding, dict):
-            continue
-        hashes = binding.get("branch_hashes") or {}
-        winner = str(binding.get("winner") or "")
-        if not winner or winner not in hashes or not _active_branch(state.workspace, winner):
-            continue
-        if any(
-            not state.workspace.has_branch(name)
-            or _branch_hash(state.workspace, name) != expected_hash
-            for name, expected_hash in hashes.items()
-        ):
-            continue
-        if binding.get("winner_hash") != _branch_hash(state.workspace, winner):
-            continue
-        result = entry.get("result") or {}
-        verdict = next(
-            (
-                str(item.get("verdict") or "")
-                for item in (result.get("verdicts") or [])
-                if str(item.get("branch") or "") == winner
-            ),
-            "",
-        ).lower()
-        if "reject" in verdict or verdict in {"invalid", "not viable"}:
-            continue
-        return winner, binding
-    return None
+    """Legacy internal alias; new records and runtime language say best partial."""
+    return _fresh_compare_best_candidate(state)
+
+
+def _fresh_compare_best_candidate(state: InvestigationState):
+    from investigation.portfolio import fresh_compare_best_candidate
+    return fresh_compare_best_candidate(state)
 
 
 def _select_v3_fallback(
@@ -148,12 +123,12 @@ def _select_v3_fallback(
             "shortlist": shortlist,
         }
 
-    compare = _fresh_compare_winner(state)
+    compare = _fresh_compare_best_candidate(state)
     if compare is not None:
         winner, binding = compare
         return winner, {
-            "tier": "fresh_compare_winner",
-            "rationale": "Selected the winner of the newest hash-fresh compare episode.",
+            "tier": "fresh_compare_best_partial",
+            "rationale": "Selected a hash-fresh best partial; comparison does not authorize a solved declaration.",
             "comparison_binding": dict(binding),
             "shortlist": shortlist,
         }
@@ -163,7 +138,7 @@ def _select_v3_fallback(
     )
     return branch, {
         "tier": "scalar_fallback",
-        "rationale": "No fresh positive attestation or fresh compare winner was available.",
+        "rationale": "No fresh positive attestation or fresh compare best partial was available.",
         "scores": scores,
         "shortlist": shortlist,
     }

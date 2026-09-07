@@ -1,7 +1,14 @@
 # Agent Loop v3 M5.3a - Candidate Retention and Sparse-Null Reliability
 
-Status: PLANNED. This is the next bounded v3 follow-up after M5.3. It does not
-reopen M5.3 worker budgets, the repair mechanism, M5.4, or the M6 bake-off.
+Status: comparison/retention (sections 3–4) implemented under R2 on 2026-09-07;
+see the [R2 report](../reports/reliability_r2_candidate_retention.md).
+Remaining technical scope is PLANNED; scheduling revised 2026-09-06 by
+[the improvement plan](../improvement_program_plan.md#current-plan--2026-09-06).
+R2 uses the comparison/retention sections and R0's reproduced evidence/limits.
+Sparse-null routing is an open decision after R4, informed by this spec's
+matched null/no-null controls. The original implementation/commit order and
+paid-smoke progression below are retained for reference, not current scheduling.
+M5.3 worker budgets, the repair mechanism, M5.4, and M6 remain outside R2.
 
 Motivating evidence:
 

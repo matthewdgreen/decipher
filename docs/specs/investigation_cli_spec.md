@@ -1,7 +1,22 @@
 # Spec — `decipher investigation`: the structured investigation CLI
 
-Status: DRAFT for implementation; external interface review incorporated
-2026-07-19. Author: Fable (main loop), 2026-07-19.
+Status: I-0–I-5 implemented as of `c4554c5` (2026-09-02; I-3/I-4 landed
+together). I-6/I-7 are complete in the 2026-09-06 working tree under R1 in
+[the current improvement plan](../improvement_program_plan.md#current-plan--2026-09-06).
+The [acceptance report](../reports/reliability_r1_cli_acceptance.md) records the
+README audit, independent review, two fixed/rechecked findings, 227 passing
+tests, and remaining coverage limitations. The separate live Astra solving
+test subsequently completed; see its [observation report](../reports/codex_astra_r1_observation.md).
+R2 incorporates its terminal-status and candidate-display findings.
+
+Reviewer authorization (2026-09-06): the user explicitly authorized a separate
+**Astra** code review in place of the Fable review named below. The whole-surface
+scope and acceptance requirements are unchanged. Record configured reviewer
+identity and actual served identity separately when the latter is available;
+do not invent a served-model verification. A live Astra solving session is a
+different experiment and does not satisfy this code-review requirement.
+External interface review incorporated 2026-07-19. Author: Fable (main loop),
+2026-07-19.
 Origin: external agent evaluation (GPT-5.6-sol, fresh session, 2026-07-19)
 reviewed the repo independently and concluded the missing piece is "first-class,
 machine-readable access to the investigation state machine that MCP already
@@ -206,14 +221,16 @@ process is short-lived. Two modes, explicit:
 - `--wait` (default): submit through the normal asynchronous queue, COMMIT the
   pending/running record first, then wait in this process, harvest, and COMMIT
   the terminal experiment record before releasing the lease. The command emits
-  the ordinary `experiment_submit` result body once and exits after the second
-  commit, with `revision` set to the FINAL commit so the caller can immediately
-  collect without an avoidable conflict. This two-commit rule makes `status`
+  submit identity/config once and exits after the second commit, refreshing
+  `revision`, `status`, `slots`, and `summary` from the FINAL committed state so
+  the caller can immediately collect without a stale running indicator or an
+  avoidable conflict. This R2 correction follows the live Astra observation.
+  This two-commit rule makes `status`
   useful while a caller has put the command in the shell background with `&`;
   do not use the current single synchronous dispatch transaction, which would
   hide the running record until completion. The two transport commits are the
-  sole intentional temporal difference from MCP's immediate async response;
-  all domain fields and gates remain shared.
+  intentional temporal difference from MCP's immediate async response;
+  experiment identity, configuration, results, and gates remain shared.
 - `--detach`: the parent does not acquire the lease or mutate state. It spawns a
   private `decipher investigation _run-experiment` worker in a new session and
   receives a one-shot readiness message over a private pipe. The CHILD
