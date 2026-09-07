@@ -43,6 +43,9 @@ from mcp_server.registry import InvestigationRegistry, default_registry_dir
 _RUN_EXPERIMENT_VERB = "_run-experiment"
 # Parent-side timeout waiting for the detached child's submission handshake.
 _DETACH_HANDSHAKE_TIMEOUT_S = 60.0
+# Grace given to a child that closed the handshake pipe (EOF) so its exit status
+# is observable before the parent decides "died" vs "still running".
+_DETACH_EXIT_GRACE_S = 0.5
 
 
 # --------------------------------------------------------------------------- #
@@ -643,28 +646,29 @@ def _deferred_cli_verify_provider(args: argparse.Namespace) -> _DeferredVerifyPr
 # --------------------------------------------------------------------------- #
 # --detach: spawn the private worker + block on its submission handshake        #
 # --------------------------------------------------------------------------- #
-def _read_handshake_line(read_fd: int, timeout: float) -> str | None:
+def _read_handshake_line(read_fd: int, timeout: float) -> tuple[str | None, str]:
     """Read one newline-terminated line from ``read_fd`` within ``timeout``s.
 
-    Returns the line (without the trailing newline) or ``None`` on timeout / EOF
-    before a complete line. Uses ``select`` on the raw fd so no thread is needed.
+    Returns ``(line, outcome)`` where outcome is ``"line"``, ``"eof"`` (the
+    child closed the pipe without a complete line) or ``"deadline"``. The two
+    failure outcomes are reported differently: an EOF from a still-running
+    child is NOT a timeout, and saying so would be false (follow-up review
+    finding #1). Uses ``select`` on the raw fd so no thread is needed.
     """
     buf = b""
     deadline = time.monotonic() + timeout
     while b"\n" not in buf:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            return None
+            return None, "deadline"
         ready, _, _ = select.select([read_fd], [], [], remaining)
         if not ready:
-            return None
+            return None, "deadline"
         chunk = os.read(read_fd, 4096)
         if not chunk:  # child closed the fd without a complete line
-            break
+            return None, "eof"
         buf += chunk
-    if b"\n" in buf:
-        return buf.split(b"\n", 1)[0].decode("utf-8", errors="replace")
-    return None
+    return buf.split(b"\n", 1)[0].decode("utf-8", errors="replace"), "line"
 
 
 def _run_detached_submit(registry_dir: Path, obj: dict) -> tuple[dict, int]:
@@ -706,11 +710,43 @@ def _run_detached_submit(registry_dir: Path, obj: dict) -> tuple[dict, int]:
     finally:
         os.close(write_fd)  # parent keeps only the read end
     try:
-        line = _read_handshake_line(read_fd, _DETACH_HANDSHAKE_TIMEOUT_S)
+        line, outcome = _read_handshake_line(read_fd, _DETACH_HANDSHAKE_TIMEOUT_S)
     finally:
         os.close(read_fd)
 
     if line is None:
+        # Three distinguishable failures, three honest messages. EOF plus a dead
+        # child is an exit; EOF plus a LIVE child (it closed the pipe but is
+        # still working — e.g. a solver pool keeping the interpreter up) is
+        # neither an exit nor a timeout and must not claim a 60s wait elapsed.
+        returncode = proc.poll()
+        if returncode is None:
+            try:
+                returncode = proc.wait(timeout=_DETACH_EXIT_GRACE_S)
+            except subprocess.TimeoutExpired:
+                returncode = None
+        if returncode is not None:
+            signal_note = (
+                f" (killed by signal {-returncode})" if returncode < 0 else ""
+            )
+            return {
+                "status": "error", "reason": "detach_worker_exited",
+                "detail": (
+                    f"the detached worker (pid {proc.pid}) exited with status "
+                    f"{returncode}{signal_note} before sending the handshake; "
+                    "check `investigation status` and the investigation event log."
+                ),
+            }, 5
+        if outcome == "eof":
+            return {
+                "status": "error", "reason": "detach_handshake_closed",
+                "detail": (
+                    f"the detached worker (pid {proc.pid}) closed the handshake "
+                    "pipe without sending a submission line and is still "
+                    "running; check `investigation status` and the investigation "
+                    "event log."
+                ),
+            }, 5
         body = {
             "status": "error", "reason": "detach_handshake_timeout",
             "detail": (
@@ -732,6 +768,24 @@ def _run_detached_submit(registry_dir: Path, obj: dict) -> tuple[dict, int]:
     return body, result_to_exit_code(body)
 
 
+def _worker_event(
+    registry: InvestigationRegistry | None, investigation_id: str,
+    event: str, payload: dict,
+) -> None:
+    """Append one detached-worker diagnostic to the investigation event log.
+
+    Sub-spec §3.3: the child's stdio is at ``/dev/null``, so this log is the ONLY
+    place its lifecycle and failures are observable. ``append_event`` swallows its
+    own I/O errors; the ``registry is None`` guard covers a crash so early that no
+    registry could be built.
+    """
+    if registry is None or not investigation_id:
+        return
+    registry.append_event(investigation_id, {
+        "ts": time.time(), "event": event, "payload": payload, "turn": 0,
+    })
+
+
 def _run_experiment_worker(args: argparse.Namespace) -> int:
     """The private ``_run-experiment`` verb body (the detached child).
 
@@ -739,52 +793,90 @@ def _run_experiment_worker(args: argparse.Namespace) -> int:
     the submit result/error body the moment it is durably known (after COMMIT #1,
     or immediately for an early failure), then keeps the lease to harvest+commit
     the terminal record. All stdio is redirected by the parent; diagnostics live
-    in the investigation event log, never on stdout. The child's own exit code is
-    irrelevant (the parent already has the handshake).
+    in the investigation event log, never on stdout — a crash writes a
+    ``detached_worker_error`` line there and exits non-zero, so a silent death is
+    still recoverable evidence.
     """
-    handshake_fd = args.handshake_fd
+    # A single-slot holder so the handshake fd is closed EXACTLY once: closing a
+    # bare integer twice can hit an unrelated descriptor that reused the number.
+    handshake = {"fd": args.handshake_fd}
+
+    def _close_handshake() -> None:
+        fd = handshake["fd"]
+        if fd < 0:
+            return
+        handshake["fd"] = -1
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
     def _on_running(body: dict) -> None:
-        try:
-            os.write(
-                handshake_fd,
-                (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8"),
-            )
-        except OSError:
-            pass  # parent gone: keep running, the work is durably queued.
-        finally:
+        fd = handshake["fd"]
+        if fd >= 0:
             try:
-                os.close(handshake_fd)
+                os.write(fd, (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8"))
             except OSError:
-                pass
+                pass  # parent gone: keep running, the work is durably queued.
+        _close_handshake()
 
     service = None
+    registry: InvestigationRegistry | None = None
+    investigation_id = ""
+    exit_code = 0
     try:
-        obj = _parse_json_object(args.input_json or "", "--input-json")
+        # Build the registry FIRST so the event log is reachable from the error
+        # handler below even when the service call is what fails.
         registry = InvestigationRegistry(_resolve_registry_dir(args))
+        obj = _parse_json_object(args.input_json or "", "--input-json")
+        investigation_id = str(obj.get("investigation_id") or "")
+        _worker_event(registry, investigation_id, "detached_worker_started", {
+            "pid": os.getpid(),
+        })
         service = InvestigationService(
             registry=registry, client_name="cli",
             lease_policy=LeasePolicy.INVOCATION_HELD,
         )
-        service.run_experiment_to_completion(obj, on_running=_on_running)
+        body, final_rev = service.run_experiment_to_completion(
+            obj, on_running=_on_running
+        )
+        # Carry the actual outcome (review finding #5): a handshake reporting
+        # revision_mismatch/writer_lease_held is not "completed", and the log
+        # should answer "what did the detached run do" without a second lookup.
+        _worker_event(registry, investigation_id, "detached_worker_finished", {
+            "pid": os.getpid(),
+            "outcome": "completed" if body.get("status") != "error" else "error",
+            "status": body.get("status"),
+            "reason": body.get("reason"),
+            "experiment_id": body.get("experiment_id"),
+            "final_revision": final_rev,
+        })
     except ExperimentWaitInterrupted:
         # Best-effort finalization already happened inside the service.
-        pass
-    except Exception:  # noqa: BLE001 - the child never crashes onto stdout
+        _worker_event(registry, investigation_id, "detached_worker_finished", {
+            "pid": os.getpid(), "outcome": "interrupted",
+        })
+    except Exception as exc:  # noqa: BLE001 - the child never crashes onto stdout
         if os.environ.get("DECIPHER_CLI_DEBUG") == "1":
             traceback.print_exc(file=sys.stderr)
-        # Ensure the parent is not left blocking on the handshake.
-        try:
-            os.close(handshake_fd)
-        except OSError:
-            pass
+        _worker_event(registry, investigation_id, "detached_worker_error", {
+            "error": "".join(
+                traceback.format_exception_only(type(exc), exc)
+            ).strip(),
+        })
+        exit_code = 1
     finally:
+        # Idempotent, so it lives here (review finding #4): this also covers the
+        # BaseException paths and removes the obligation to reason about
+        # _notify always preceding ExperimentWaitInterrupted. The parent must
+        # never be left blocking on a handshake that will never arrive.
+        _close_handshake()
         if service is not None:
             try:
                 service.shutdown()
             except Exception:  # noqa: BLE001
                 pass
-    return 0
+    return exit_code
 
 
 def run_investigation_command(args: argparse.Namespace) -> int:

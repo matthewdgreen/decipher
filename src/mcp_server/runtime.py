@@ -58,6 +58,7 @@ class InvestigationRuntime:
         max_cost_usd: float,
         synchronous_experiments: bool = False,
         reconcile_stale_experiments: bool = True,
+        reconcile_reason: str = "loaded",
     ) -> None:
         self.meta: dict = document["meta"]
         self.records: dict = document.get("records") or {
@@ -67,11 +68,13 @@ class InvestigationRuntime:
         self.records.setdefault("repair_compiles", [])
         self.verify_model = verify_model
 
-        # 1. state
+        # 1. state. The typed `no_live_worker_at_startup` reason is a claim about
+        # writer ownership, which only a lease-backed caller can make; a direct
+        # construction keeps the conservative `loaded` default.
         state = InvestigationState.from_artifact_dict(
             document["state"],
             orphan_loaded_experiments=reconcile_stale_experiments,
-            orphan_reason="no_live_worker_at_startup",
+            orphan_reason=reconcile_reason,
         )
         self.state = state
         if not state.comparison_records:

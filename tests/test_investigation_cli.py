@@ -1403,6 +1403,157 @@ def test_detach_handshake(tmp_path, capsys, monkeypatch, stub_dir):
     assert InvestigationRegistry(reg).load(iid)["meta"]["revision"] == 3
 
 
+def _events(registry_dir: Path, iid: str) -> list[dict]:
+    path = registry_dir / iid / "events.jsonl"
+    if not path.exists():
+        return []
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX pipe required")
+def test_detached_worker_crash_reaches_the_event_log(tmp_path, monkeypatch):
+    """Sub-spec §3.3: the detached child's stdio is /dev/null, so a crash after
+    the handshake must still leave evidence in the investigation event log — and
+    the worker must exit non-zero rather than reporting success."""
+    iid = _seed(tmp_path)
+    handshake = {"status": "running", "experiment_id": "exp_probe", "revision": 2}
+
+    def _boom(self, arguments, *, name="experiment_submit", on_running=None):
+        if on_running is not None:
+            on_running(handshake)
+        raise RuntimeError("injected worker failure")
+
+    monkeypatch.setattr(
+        InvestigationService, "run_experiment_to_completion", _boom, raising=True
+    )
+    read_fd, write_fd = os.pipe()
+    args = argparse.Namespace(
+        handshake_fd=write_fd, registry_dir=str(tmp_path),
+        input_json=json.dumps({
+            "investigation_id": iid, "expected_revision": 1,
+            "type": "stub_instant", "branch": "main", "config": {},
+        }),
+    )
+    try:
+        code = icli._run_experiment_worker(args)
+        # The handshake still reached the parent before the crash.
+        line, outcome = icli._read_handshake_line(read_fd, 5.0)
+    finally:
+        os.close(read_fd)
+    assert code != 0
+    assert outcome == "line"
+    assert json.loads(line) == handshake
+
+    events = _events(tmp_path, iid)
+    kinds = [e["event"] for e in events]
+    assert "detached_worker_started" in kinds
+    error = [e for e in events if e["event"] == "detached_worker_error"]
+    assert len(error) == 1
+    assert "injected worker failure" in error[0]["payload"]["error"]
+    assert error[0]["turn"] == 0 and isinstance(error[0]["ts"], float)
+    assert "detached_worker_finished" not in kinds
+
+
+def test_handshake_fd_is_closed_exactly_once(tmp_path, monkeypatch):
+    """Review finding #2: the crash test cannot detect a DOUBLE close (a second
+    os.close on a dead number raises a swallowed EBADF). Discriminating probe:
+    reopen a pipe right after the handshake close so it reuses the just-freed
+    descriptor, then crash. If the error path closed the fd a second time it
+    would kill one of the reused descriptors."""
+    iid = _seed(tmp_path)
+    reused: dict[str, int] = {}
+
+    def _boom(self, arguments, *, name="experiment_submit", on_running=None):
+        if on_running is not None:
+            on_running({"status": "running", "experiment_id": "e", "revision": 2})
+        r2, w2 = os.pipe()  # very likely reuses the number just closed
+        reused["r"], reused["w"] = r2, w2
+        raise RuntimeError("injected after handshake")
+
+    monkeypatch.setattr(
+        InvestigationService, "run_experiment_to_completion", _boom, raising=True
+    )
+    read_fd, write_fd = os.pipe()
+    args = argparse.Namespace(
+        handshake_fd=write_fd, registry_dir=str(tmp_path),
+        input_json=json.dumps({
+            "investigation_id": iid, "expected_revision": 1,
+            "type": "stub_instant", "branch": "main", "config": {},
+        }),
+    )
+    try:
+        code = icli._run_experiment_worker(args)
+    finally:
+        os.close(read_fd)
+    assert code != 0
+    # The descriptor number was genuinely recycled, so this is a real probe.
+    assert write_fd in (reused["r"], reused["w"])
+    try:
+        os.fstat(reused["r"])  # would raise EBADF if double-closed
+        os.fstat(reused["w"])
+    finally:
+        for fd in (reused["r"], reused["w"]):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+
+def test_detach_handshake_timeout_requires_a_live_child(tmp_path, capsys, monkeypatch):
+    """Review finding #3: F2 changed the timeout branch's precondition (the
+    child must still be ALIVE), and nothing pinned it. A child that never writes
+    and outlives the deadline is a genuine timeout, not an exit."""
+    iid = _seed(tmp_path)
+    sleeper = tmp_path / "sleeper.sh"
+    sleeper.write_text("#!/bin/sh\nsleep 30\n")
+    sleeper.chmod(0o755)
+    monkeypatch.setattr(sys, "executable", str(sleeper))
+    monkeypatch.setattr(icli, "_DETACH_HANDSHAKE_TIMEOUT_S", 1.0)
+
+    started = time.monotonic()
+    code, body, _ = _run(
+        tmp_path,
+        ["experiment-submit", iid, "--revision", "1", "--type", "stub_instant",
+         "--branch", "main", "--config-json", "{}", "--detach"],
+        capsys,
+    )
+    elapsed = time.monotonic() - started
+    assert code == 5
+    assert body["reason"] == "detach_handshake_timeout", body
+    assert elapsed < 10.0, f"took {elapsed:.1f}s; the 1s deadline did not apply"
+@pytest.mark.skipif(
+    os.name != "posix" or not os.path.exists("/usr/bin/false"),
+    reason="POSIX /usr/bin/false required",
+)
+def test_detach_worker_exit_before_handshake_is_not_reported_as_timeout(
+    tmp_path, capsys, monkeypatch,
+):
+    """A child that dies in milliseconds closes the pipe (EOF), which reads the
+    same as a timeout. The parent must distinguish them from the child's exit
+    status instead of claiming the worker 'may still be running'."""
+    iid = _seed(tmp_path)
+    # Point the spawn at a binary that exits immediately without a handshake.
+    monkeypatch.setattr(sys, "executable", "/usr/bin/false")
+    started = time.monotonic()
+    code, body, _ = _run(
+        tmp_path,
+        ["experiment-submit", iid, "--revision", "1", "--type", "stub_instant",
+         "--branch", "main", "--detach"],
+        capsys,
+    )
+    assert code == 5
+    assert body["reason"] == "detach_worker_exited"
+    assert "exited with status" in body["detail"]
+    # It returned on the child's death, not after the 60s handshake timeout.
+    assert time.monotonic() - started < 30.0
+    # Nothing was submitted and no lease leaked.
+    assert _record_status(tmp_path, iid) is None
+    assert _lease_free(tmp_path, iid)
+
+
 # --------------------------------------------------------------------------- #
 # SIGKILL reconciliation (real subprocess worker)                              #
 # --------------------------------------------------------------------------- #
@@ -1416,7 +1567,7 @@ def test_kill_reconciliation(tmp_path, stub_dir):
     }
     proc, read_fd = _spawn_detach_child(reg, obj, stub_dir)
     try:
-        line = icli._read_handshake_line(read_fd, 20.0)
+        line, _outcome = icli._read_handshake_line(read_fd, 20.0)
         assert line is not None, "child never sent a submission handshake"
         submit_body = json.loads(line)
         exp_id = submit_body["experiment_id"]

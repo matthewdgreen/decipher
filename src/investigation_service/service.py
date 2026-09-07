@@ -78,6 +78,10 @@ _MAX_CIPHERTEXT = 200_000
 # submitted experiment reaches one of these).
 _TERMINAL_EXP = frozenset({"completed", "failed", "orphaned"})
 
+# Cadence of the two-commit --wait poll loop: the settle-event timeout for a
+# running record, and the sleep between polls for a pending (slot-starved) one.
+_WAIT_POLL_INTERVAL_S = 0.1
+
 _SERVER_CODE_INFO: dict | None = None
 
 
@@ -179,6 +183,7 @@ class InvestigationService:
         document: dict,
         *,
         reconcile_stale_experiments: bool = False,
+        reconcile_reason: str = "loaded",
     ) -> InvestigationRuntime:
         investigation_id = document["meta"]["investigation_id"]
         cell: dict[str, Any] = {}
@@ -196,6 +201,7 @@ class InvestigationService:
             max_cost_usd=self.max_cost_usd,
             synchronous_experiments=self.synchronous_experiments,
             reconcile_stale_experiments=reconcile_stale_experiments,
+            reconcile_reason=reconcile_reason,
         )
         cell["runtime"] = runtime
         return runtime
@@ -391,10 +397,13 @@ class InvestigationService:
         try:
             if investigation_id not in self._runtimes:
                 # A newly acquired writer lease proves no other live process
-                # owns the experiment workers represented by this document.
+                # owns the experiment workers represented by this document. Only
+                # this lease-backed path may claim the typed reason; a direct
+                # runtime construction has no such proof and stays "loaded".
                 runtime = self._build_runtime(
                     self.registry.load(investigation_id),
                     reconcile_stale_experiments=True,
+                    reconcile_reason="no_live_worker_at_startup",
                 )
                 self._runtimes[investigation_id] = runtime
             else:
@@ -520,6 +529,19 @@ class InvestigationService:
             return _notify(early), None
 
         released = False
+
+        def _release() -> None:
+            """Release exactly once, and only a lease THIS call acquired.
+
+            Mirrors :meth:`dispatch`'s ``finally``: under SESSION_HELD (or when a
+            lease was already held before this call) ``acquired`` is False and the
+            lease/runtime belong to their existing owner, so this is a no-op.
+            """
+            nonlocal released
+            released = True
+            if acquired:
+                self._release_invocation(investigation_id)
+
         try:
             # (1) force the async queue so `status` sees the running record.
             runtime.queue.synchronous = False
@@ -540,8 +562,7 @@ class InvestigationService:
             if not waiting:
                 # Error body, dedup-to-completed, or already terminal: nothing to
                 # harvest — the single commit is the final revision.
-                self._release_invocation(investigation_id)
-                released = True
+                _release()
                 return running_body, commit1_rev
 
             # (3) poll to terminal, guarding the wait with signal cleanup.
@@ -550,8 +571,7 @@ class InvestigationService:
                 final_rev = self._orphan_interrupted(
                     runtime, investigation_id, str(experiment_id)
                 )
-                self._release_invocation(investigation_id)
-                released = True
+                _release()
                 orphan_body = {
                     "status": "interrupted", "reason": "interrupted",
                     "experiment_id": experiment_id,
@@ -566,8 +586,7 @@ class InvestigationService:
 
             # (4) COMMIT #2 (terminal record) + release.
             final_rev = self._commit(runtime, investigation_id)
-            self._release_invocation(investigation_id)
-            released = True
+            _release()
             final_body = dict(body)
             final_body["revision"] = final_rev
             final_body["status"] = record["status"]
@@ -578,7 +597,7 @@ class InvestigationService:
             raise
         finally:
             if not released:
-                self._release_invocation(investigation_id)
+                _release()
 
     def _wait_experiment_terminal(
         self, runtime: InvestigationRuntime, experiment_id: str,
@@ -616,16 +635,22 @@ class InvestigationService:
                 if rec is None or rec.get("status") in _TERMINAL_EXP:
                     return None
                 if rec.get("status") == "pending":
+                    # Pending only persists while every slot is busy, so pace this
+                    # branch with the same short interval the running branch waits
+                    # on rather than spinning the CPU.
                     queue.poll(state, state.turn)
+                    time.sleep(_WAIT_POLL_INTERVAL_S)
                     continue
                 # running: block briefly on the worker's settle event, then harvest.
-                queue.wait_settled(experiment_id, timeout=0.1)
+                queue.wait_settled(experiment_id, timeout=_WAIT_POLL_INTERVAL_S)
                 queue.poll(state, state.turn)
         finally:
             for sig, prev in installed:
                 try:
                     signal.signal(sig, prev)
-                except (ValueError, OSError):
+                except (ValueError, OSError, TypeError):
+                    # TypeError: `getsignal` returns None for a handler installed
+                    # outside Python, which `signal.signal` cannot restore.
                     pass
 
     def _orphan_interrupted(
