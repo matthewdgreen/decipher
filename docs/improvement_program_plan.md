@@ -235,6 +235,19 @@ applicable explicit run budget; a fake verifier establishes mechanics only.
 
 ### R5 — Selected follow-up: bounded periodic-family routing/probes
 
+Implementation update (2026-09-08): **R5b complete; R5c remains open.** The
+[implementation report](reports/reliability_r5_implementation.md) records the
+off-by-default periodic probe, shared 45-second child deadline, strict
+mode-specific replay/language selection, bounded candidate retention, nested
+cleanup acknowledgements, unchanged fallback and artifact diagnostics. The
+R5 single-arm launcher requires a recent machine preflight and uses durable
+no-retry records, inherited locking and pinned provenance. Cleanup/controller
+reservations are 195 seconds per unknown arm within the unchanged 5760-second
+campaign ceiling. 355 focused tests pass. No fresh cases were evaluated and no
+provider calls were made. R5c still requires post-hoc report/acceptance checks,
+a fresh machine-usage check, the paired measurement and a default decision.
+
+Earlier preparation checkpoint:
 2026-09-08: R5a preparation is complete; R5 itself remains open. The
 [specification](specs/reliability_r5_periodic_routing_spec.md) freezes the
 diagnostic, bounded search, replay/selection, retention and fallback rules
@@ -244,8 +257,8 @@ anchors, 32 family-blind baseline/prototype requests, disjoint fresh source
 documents, provenance and 153 passing focused tests. No real solver calls or
 production changes were made.
 
-Next checkpoint is R5b: implement the opt-in prototype and fake-worker tests,
-then pin the campaign adapter. R5c executes the frozen 32-arm, 96-minute-maximum
+At preparation, the next checkpoint was R5b; the implementation update above
+supersedes that status. R5c executes the frozen 32-arm, 96-minute-maximum
 local experiment and decides whether to adopt the default. Unsuccessful or
 incomplete acceptance leaves the prototype off; it does not authorize rerolls,
 threshold tuning or more runs. R3 source review remains open and independent.

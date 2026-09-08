@@ -42,9 +42,13 @@ Historical findings remain provisional. No solver/gate or paid-run authority cha
 
 R5a preparation completed on 2026-09-08: a frozen 16-case/32-arm packet and
 `docs/specs/reliability_r5_periodic_routing_spec.md` precede implementation.
-See `docs/reports/reliability_r5_preparation.md`. Next is R5b opt-in bounded
-probes and fake-worker tests, then R5c measurement/adoption decision. R5 remains
-open; no solver evaluation or routing default changed in the preparation.
+See `docs/reports/reliability_r5_preparation.md`. R5b completed on 2026-09-08:
+`DECIPHER_PERIODIC_ROUTING=probe_v1` enables bounded opt-in probes; unset/off
+preserves existing routing. See `docs/reports/reliability_r5_implementation.md`
+for cleanup, candidate/fallback semantics and the pinned single-arm adapter.
+355 focused tests pass. Next is R5c report/acceptance checks, machine preflight,
+paired measurement and adoption decision. No fresh evaluation or paid calls
+have run; R5 remains open and the default remains off.
 
 ---
 

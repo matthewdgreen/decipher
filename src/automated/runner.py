@@ -425,6 +425,9 @@ def _run_automated_impl(
     on_step: "OnStep | None" = None,
 ) -> AutomatedRunResult:
     """Run the best available local techniques without any LLM call."""
+    periodic_mode = os.environ.get("DECIPHER_PERIODIC_ROUTING", "off")
+    if periodic_mode not in {"off", "probe_v1"}:
+        raise ValueError("DECIPHER_PERIODIC_ROUTING must be off or probe_v1")
     started = time.time()
     run_id = uuid.uuid4().hex[:12]
     # F8: a step-append hook drives optional CLI progress narration. Plain list
@@ -629,7 +632,30 @@ def _run_automated_impl(
             })
         selected_transform_candidate = _selected_ranked_transform_candidate(transform_search_report)
         diagnostic_transform_candidate = _diagnostic_ranked_transform_candidate(transform_search_report)
-        if selected_transform_candidate is not None:
+        periodic_selected = None
+        if periodic_mode == "probe_v1":
+            from automated.periodic_probe import diagnose, run_probe, selected_step
+            diagnosis = diagnose(cipher_text, language, cipher_system=cipher_system,
+                solver_hints=solver_hints, transform_pipeline=transform_pipeline,
+                transform_search=transform_search, model_variant=model_variant)
+            if diagnosis["periods"]:
+                probe_step = run_probe(cipher_text, diagnosis)
+                probe_step["fallback_route"] = dict(routing)
+                if not probe_step["execution"].get("cleanup_confirmed"):
+                    probe_step["decision"] = "abort_cleanup_uncertain"
+                steps.append(probe_step)
+                if probe_step["decision"] == "abort_cleanup_uncertain":
+                    raise RuntimeError("periodic probe cleanup unconfirmed; fallback not started")
+                periodic_selected = probe_step["selected"]
+            else:
+                steps.append({"name": "probe_periodic_routing", "mode": periodic_mode,
+                              "diagnosis": diagnosis, "decision": "skipped",
+                              "fallback_route": dict(routing), "candidates": []})
+        if periodic_selected is not None:
+            solver = periodic_selected["solver"]
+            key, decryption = {}, periodic_selected["plaintext"]
+            steps.append(selected_step(periodic_selected))
+        elif selected_transform_candidate is not None:
             solver = "transform_search_homophonic"
             key = {
                 int(k): int(v)
@@ -2755,8 +2781,14 @@ def format_automated_preflight_for_llm(
             "the leading mode is uncertain."
         )
 
+    for probe in (s for s in steps if s.get("name") == "probe_periodic_routing"):
+        execution = probe.get("execution") or {}
+        lines.append(f"- Bounded periodic probe: {probe.get('decision')}; "
+                     f"periods={(probe.get('diagnosis') or {}).get('periods', [])}; "
+                     f"execution={execution.get('execution_status', 'not_run')}; "
+                     "language/replay signals do not establish verified acceptance.")
     primary_step = next(
-        (step for step in steps if step.get("name") != "route_automated_solver"),
+        (step for step in steps if step.get("name") not in {"route_automated_solver", "probe_periodic_routing"}),
         steps[0] if steps else None,
     )
 

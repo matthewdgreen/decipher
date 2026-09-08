@@ -19,6 +19,22 @@ spec.loader.exec_module(inspect_artifact)
 import cli  # noqa: E402
 
 
+def test_periodic_probe_diagnostics_in_human_and_llm_reports():
+    step = {"name": "probe_periodic_routing", "mode": "probe_v1", "decision": "fallback",
+            "diagnosis": {"reason": "periodic_evidence", "periods": [4, 8]},
+            "execution": {"execution_status": "timeout", "cleanup_confirmed": True, "wall_seconds": 45.1},
+            "fallback_route": {"route": "homophonic"}, "selected": None,
+            "candidates": [{"content_hash": "abc", "engine": "periodic", "period": 4,
+                            "replay_consistent": True, "delivery_eligible": False, "validation": {}}]}
+    artifact = {"steps": [step], "status": "completed"}
+    text = inspect_artifact.format_automated_steps(artifact)
+    assert "timeout" in text and "cleanup=True" in text and "retained=1" in text and "unverified" in text
+    result = inspect_artifact.build_llm_summary(artifact, [])["periodic_routing_probes"][0]
+    assert result["diagnosis"]["periods"] == [4, 8]
+    assert result["execution"]["execution_status"] == "timeout"
+    assert result["candidates"][0]["content_hash"] == "abc" and result["selected_hash"] is None
+
+
 def test_r4_envelope_surfaces_execution_and_seed_limits(tmp_path):
     path = tmp_path / "result.json"
     envelope = {"execution_status": "completed", "request_sha256": "request-hash", "wall_seconds": 1.5,
@@ -36,6 +52,18 @@ def test_r4_envelope_surfaces_execution_and_seed_limits(tmp_path):
     artifact = inspect_artifact.load(path)
     assert artifact["status"] == "timeout" and "decryption" not in artifact
     assert "CPU=unknown" in inspect_artifact.format_header(artifact)
+
+
+def test_r5_envelope_keeps_cleanup_failure_honest(tmp_path):
+    path = tmp_path / "r5.json"
+    path.write_text(json.dumps({"schema": "reliability-r5-execution-v1",
+        "execution_status": "cleanup_failed", "cleanup_confirmed": False,
+        "request_sha256": "hash", "error": "nested guard unconfirmed", "result": None}))
+    artifact = inspect_artifact.load(path)
+    assert "r4_execution" not in artifact
+    assert artifact["r5_execution"]["cleanup_confirmed"] is False
+    assert "nested guard unconfirmed" in inspect_artifact.format_header(artifact)
+    assert inspect_artifact.build_llm_summary(artifact, [])["r5_execution"]["execution_status"] == "cleanup_failed"
 
 
 def test_candidate_reliability_in_human_and_llm_packets():

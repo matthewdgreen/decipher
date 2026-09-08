@@ -85,7 +85,8 @@ def load(path: str | Path) -> dict:
                         run_mode="automated_only", automated_only=True,
                         status=artifact.get("status") or envelope["execution_status"],
                         estimated_cost_usd=0.0)
-        artifact["r4_execution"] = {
+        execution_key = "r5_execution" if envelope.get("schema") == "reliability-r5-execution-v1" else "r4_execution"
+        artifact[execution_key] = {
             "execution_status": envelope["execution_status"],
             "request_sha256": envelope["request_sha256"],
             "wall_seconds": envelope.get("wall_seconds"), "cpu_usage": envelope.get("cpu_usage"),
@@ -97,6 +98,9 @@ def load(path: str | Path) -> dict:
             "stderr_tail": envelope.get("stderr", "")[-2000:],
             "progress": [e for e in envelope.get("events", []) if e.get("event") == "progress"],
             "verification": "not_run; completed is not solved",
+            "cleanup_confirmed": envelope.get("cleanup_confirmed"),
+            "execution_error": envelope.get("error"),
+            "cleanup_registry": envelope.get("cleanup_registry"),
         }
     if (isinstance(artifact.get("meta"), dict) and isinstance(artifact.get("state"), dict)
             and "investigation_state" not in artifact):
@@ -445,10 +449,15 @@ def format_header(artifact: dict) -> str:
         if facts["cost_usd"] > cutoff:
             cost_line += f" (+${facts['cost_usd'] - cutoff:.4f} final-call overshoot)"
     lines.append(cost_line)
-    if artifact.get("r4_execution"):
-        r4 = artifact["r4_execution"]
-        lines.append(f"  R4      : {r4['execution_status']}; wall={r4['wall_seconds']}s; "
+    if artifact.get("r4_execution") or artifact.get("r5_execution"):
+        r4 = artifact.get("r5_execution") or artifact["r4_execution"]
+        label = "R5" if artifact.get("r5_execution") else "R4"
+        lines.append(f"  {label}      : {r4['execution_status']}; wall={r4['wall_seconds']}s; "
                      f"CPU={'recorded' if r4['cpu_usage'] else 'unknown'}; verification=not run")
+        if label == "R5":
+            lines.append(f"  Cleanup : confirmed={r4.get('cleanup_confirmed')}")
+            if r4.get("execution_error"):
+                lines.append(f"  Guard   : {r4['execution_error']}")
         lines.append(f"  Delivery: artifact match={r4['delivery_matches_artifact']}; "
                      "requested seeds are not automatically independent trials")
     lines.append("=" * 70)
@@ -1180,6 +1189,16 @@ def format_automated_steps(artifact: dict[str, Any]) -> str:
             lines.append(_format_null_mask_step(step))
         elif name == "search_word_repair":
             lines.extend(_format_word_repair_step(step))
+        elif name == "probe_periodic_routing":
+            diagnostic = step.get("diagnosis") or {}
+            execution = step.get("execution") or {}
+            selected = step.get("selected") or {}
+            lines.append(
+                f"  Periodic probe: {step.get('decision')}; reason={diagnostic.get('reason')}; "
+                f"periods={diagnostic.get('periods', [])}; execution={execution.get('execution_status', 'not_run')}; "
+                f"wall={execution.get('wall_seconds', 'n/a')}s; cleanup={execution.get('cleanup_confirmed', 'n/a')}; "
+                f"retained={len(step.get('candidates') or [])}; selected={selected.get('content_hash', 'none')}; "
+                f"fallback={(step.get('fallback_route') or {}).get('route')}; unverified")
     if not lines:
         return ""
     return "Automated refinement steps:\n" + "\n".join(lines)
@@ -1293,6 +1312,14 @@ def build_llm_summary(artifact: dict, timeline: list[dict]) -> dict:
         "failed_tool_calls": failed_tool_calls,
         "tool_timing": timing,
         "r4_execution": artifact.get("r4_execution"),
+        "r5_execution": artifact.get("r5_execution"),
+        "periodic_routing_probes": [
+            {**{k: s.get(k) for k in ("mode", "diagnosis", "execution", "decision", "stages", "fallback_route")},
+             "selected_hash": (s.get("selected") or {}).get("content_hash"),
+             "candidates": [{k: c.get(k) for k in ("content_hash", "engine", "period", "replay_consistent",
+                                                    "delivery_eligible", "validation")}
+                            for c in (s.get("candidates") or [])[:6]]}
+            for s in (artifact.get("steps") or []) if isinstance(s, dict) and s.get("name") == "probe_periodic_routing"],
         "branch_scores": branch_scores,
         "automated_preflight": preflight,
         "cipher_hypotheses": cipher_hypotheses,
