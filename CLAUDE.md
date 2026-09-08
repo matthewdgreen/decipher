@@ -33,6 +33,12 @@ all four gains were Vigenère/Quagmire. R5 bounded periodic-family routing/probe
 is the one next selected program slice. See `docs/reports/reliability_r4_decision.md`.
 Historical findings remain provisional. No solver/gate or paid-run authority changed.
 
+R5a preparation completed on 2026-09-08: a frozen 16-case/32-arm packet and
+`docs/specs/reliability_r5_periodic_routing_spec.md` precede implementation.
+See `docs/reports/reliability_r5_preparation.md`. Next is R5b opt-in bounded
+probes and fake-worker tests, then R5c measurement/adoption decision. R5 remains
+open; no solver evaluation or routing default changed in the preparation.
+
 ---
 
 ## What This Is

@@ -226,6 +226,24 @@ it does not require the existing verifier to pass. R3 changes no runtime gate
 and invents no terminal status. Any live verification experiment needs an
 applicable explicit run budget; a fake verifier establishes mechanics only.
 
+### R5 — Selected follow-up: bounded periodic-family routing/probes
+
+2026-09-08: R5a preparation is complete; R5 itself remains open. The
+[specification](specs/reliability_r5_periodic_routing_spec.md) freezes the
+diagnostic, bounded search, replay/selection, retention and fallback rules
+before implementation. The [preparation report](reports/reliability_r5_preparation.md)
+records twelve fresh cases plus four previously inspected R4 regression
+anchors, 32 family-blind baseline/prototype requests, disjoint fresh source
+documents, provenance and 153 passing focused tests. No real solver calls or
+production changes were made.
+
+Next checkpoint is R5b: implement the opt-in prototype and fake-worker tests,
+then pin the campaign adapter. R5c executes the frozen 32-arm, 96-minute-maximum
+local experiment and decides whether to adopt the default. Unsuccessful or
+incomplete acceptance leaves the prototype off; it does not authorize rerolls,
+threshold tuning or more runs. R3 source review remains open and independent.
+The deferred model comparison and packaging reorganization do not start here.
+
 ### R4 — Measure routing loss and choose the next work
 
 Execution update (2026-09-07): **R4 complete; R3 remains open.** The

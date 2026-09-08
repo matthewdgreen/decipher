@@ -55,7 +55,12 @@ is the authoritative schedule. The initial slices are:
   slice selected by R4. Reuse existing periodic engines, add ground-truth-blind
   diagnosis/probes with fallback, and validate on fresh positives/negative
   controls under the [decision's acceptance and budget](docs/reports/reliability_r4_decision.md).
-  No implementation or new run has started. A second investment remains open.
+  **R5a preparation complete (2026-09-08):** [specification](docs/specs/reliability_r5_periodic_routing_spec.md)
+  and [frozen packet](docs/reports/reliability_r5_preparation.md): 12 fresh
+  cases plus four R4 regression anchors, 32 paired requests, 153 focused tests
+  passing. No solver evaluation or runtime implementation yet. Next: R5b
+  opt-in bounded probes and fake-worker checks; then R5c paired measurement
+  and default-adoption decision. A second investment remains open.
 
 The plan specifies outputs, dependencies, acceptance, and the later decision
 criteria. Live provider runs require an applicable explicit budget; none is
