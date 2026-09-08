@@ -13,6 +13,13 @@ reproducible results, especially on historical material. The initial commitment
 is R0–R4 below. Later implementation choices remain open until their evidence
 is available. This planning revision schedules no paid runs or default changes.
 
+**Shared-machine launch policy (2026-09-08):** before starting or resuming any
+evaluation, inspect the execution host for other active runs and CPU/memory
+contention, coordinate/defer overlaps by default, and record the preflight in
+run provenance. This includes provider-backed experiments even when CPU is
+idle. Follow [the shared preflight policy](evaluation_machine_preflight.md).
+It adds a launch check, not paid-run authority or a change to frozen protocols.
+
 ### Starting point and evidence
 
 - CLI I-0–I-5 are implemented; I-3/I-4 landed together in `b9353ae`, followed

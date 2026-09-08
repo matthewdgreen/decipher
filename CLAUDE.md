@@ -16,6 +16,13 @@ Commit at slice boundaries rather than accumulating uncommitted slices. Keep
 unfinished review gates explicit in reports and commit descriptions; push when
 requested by the user.
 
+Before starting or resuming **any evaluation**, check the execution host for
+other active runs, CPU/load and memory pressure; API-waiting workers count too.
+Defer overlapping evaluations by default and coordinate with their owner/user.
+Record the check and launch decision with run provenance. Never stop another
+session's processes without authorization. This applies across repositories
+and worktrees; see `docs/evaluation_machine_preflight.md` for the shared policy.
+
 R0–R2 are complete as of 2026-09-07. R3's local audit is complete, but its
 required human source review remains open; see `docs/reports/reliability_r3_audit.md`.
 No R3 runtime gate or paid-run authority changed. R2's shared candidate
